@@ -2239,6 +2239,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "systemd-journal-sdk-host"
+version = "0.7.2"
+dependencies = [
+ "libc",
+ "systemd-journal-sdk-common",
+ "tempfile",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "systemd-journal-sdk-index"
 version = "0.7.2"
 dependencies = [

@@ -10,21 +10,6 @@ Last updated: 2026-06-17
 
 ## Pending
 
-- SOW-0115 - Portable writer identity & monotonic helpers: open,
-  blocked-on-user-decisions after repeat external review. Design a strict OS-agnostic
-  writer contract where
-  `_MACHINE_ID`, `_BOOT_ID`, and generated-entry `__MONOTONIC_TIMESTAMP` are
-  mandatory caller-provided anchors, plus a separate optional Layer-3 helper
-  API/package that produces local-host values on Linux/FreeBSD/macOS/Windows
-  when that is the caller's intended identity source. User accepted FreeBSD
-  locked state-backed boot-id synthesis under `/var/run` by default with caller
-  path override, Rust/Go product scope after SOW-0116, and hard
-  native-only/no-subprocess policy. Initial external review on 2026-06-16
-  returned 7/7 NOT READY TO IMPLEMENT votes; after SOW hardening, repeat review
-  returned 6/7 NOT READY TO IMPLEMENT votes and 1/7 READY vote before the
-  language-scope reduction. The SOW must resolve non-Linux boot-id strategy,
-  state-file locking/security, Rust helper relocation/clock semantics, and
-  breaking-change migration before implementation.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
   for OTEL writer paths after inventory and writer gates.
 - SOW-0049 - Netdata Reader Plugin SDK Integration: open. Component integration
@@ -50,8 +35,25 @@ Last updated: 2026-06-17
 - SOW-0098 - Rust Legacy Core Duplication Debt: open. Follow-up from SOW-0096
   to analyze and reduce real Rust `jf`/`journal-core` duplication only where
   shared primitives preserve historical compatibility and reader performance.
+- SOW-0118 - Host Helper Release And Netdata Integration Planning: open.
+  Follow-up from SOW-0115 to release the SDK version containing the Rust/Go
+  strict writer and optional host-helper work, then plan Netdata-side adoption
+  for Rust NetFlow and Go SNMP traps with read-only Netdata inspection first.
 ## Recently Closed Or Completed
 
+- SOW-0115 - Portable writer identity & monotonic helpers: completed. Rust and
+  Go now enforce a strict OS-agnostic writer contract where `_MACHINE_ID`,
+  `_BOOT_ID`, and generated-entry `__MONOTONIC_TIMESTAMP` are caller-provided
+  anchors, with separate optional helper packages (`go/journalhost` and
+  `systemd-journal-sdk-host` / `journal_host`) for local-host Linux, FreeBSD,
+  macOS, and Windows values. Validation included Go full suite, Go
+  FreeBSD/macOS/Windows helper compile checks, Rust host/log/core tests, Rust
+  Windows host-helper compile, docs validation, 31/31 verified examples,
+  runtime purity, `git diff --check`, and SOW audit. Completed-implementation
+  reviews ran three rounds: real blockers were fixed, five final reviewers
+  voted READY TO IMPLEMENT, and the remaining minimax run timed out after a
+  partial no-blocker/READY transcript. SOW-0118 tracks release and Netdata
+  integration planning.
 - SOW-0117 - v0.7.2 Release: completed. Rust crates were published to
   crates.io at `0.7.2`, `master` was pushed through release commit
   `400bddde36d1e41a2b17943076752567a0826407`, and annotated tags `v0.7.2`

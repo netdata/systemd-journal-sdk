@@ -86,8 +86,10 @@ timestamps, machine IDs, boot IDs, and metadata. They do not discover host
 identity, run external programs, read `/proc`, or acquire writer locks
 implicitly.
 
-Host identity discovery and cooperating-writer locks are optional helpers. Use
-them only when the integration explicitly needs them.
+Writers require explicit machine ID, boot ID, and generated-entry monotonic
+timestamps. Host identity discovery and cooperating-writer locks are optional
+helpers. Use them only when the integration explicitly needs them, and pass
+helper results to the writer explicitly.
 
 ## Production Defaults
 

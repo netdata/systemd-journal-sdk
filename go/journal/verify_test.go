@@ -34,7 +34,7 @@ func TestVerifyFileAndKeyWorkWithTinyReaderWindows(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	opts := Options{Seal: testSealOpts()}
+	opts := testOptionsWithSeal(testSealOpts())
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("create sealed writer: %v", err)
@@ -42,12 +42,12 @@ func TestVerifyFileAndKeyWorkWithTinyReaderWindows(t *testing.T) {
 	if err := w.Append([]Field{
 		StringField("MESSAGE", strings.Repeat("bounded verifier ", 128)),
 		StringField("PRIORITY", "6"),
-	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
 	if err := w.Append([]Field{
 		StringField("MESSAGE", strings.Repeat("second bounded verifier ", 128)),
-	}, EntryOptions{RealtimeUsec: 2500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 2500000, MonotonicUsec: 2}); err != nil {
 		t.Fatalf("append second entry: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -82,7 +82,7 @@ func TestVerifyFileWithKeySealedBasic(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	opts := Options{Seal: testSealOpts()}
+	opts := testOptionsWithSeal(testSealOpts())
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("create sealed writer: %v", err)
@@ -90,7 +90,7 @@ func TestVerifyFileWithKeySealedBasic(t *testing.T) {
 	if err := w.Append([]Field{
 		StringField("MESSAGE", "hello sealed world"),
 		StringField("PRIORITY", "6"),
-	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -113,14 +113,14 @@ func TestVerifyFileWithKeySealedWrongKeyFails(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	opts := Options{Seal: testSealOpts()}
+	opts := testOptionsWithSeal(testSealOpts())
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("create sealed writer: %v", err)
 	}
 	if err := w.Append([]Field{
 		StringField("MESSAGE", "hello"),
-	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -141,19 +141,19 @@ func TestVerifyFileWithKeySealedTamperedDataFails(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	opts := Options{Seal: testSealOpts()}
+	opts := testOptionsWithSeal(testSealOpts())
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("create sealed writer: %v", err)
 	}
 	if err := w.Append([]Field{
 		StringField("MESSAGE", "sealed-covered"),
-	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
 	if err := w.Append([]Field{
 		StringField("MESSAGE", "later-entry"),
-	}, EntryOptions{RealtimeUsec: 2500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 2500000, MonotonicUsec: 2}); err != nil {
 		t.Fatalf("append later entry: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -176,7 +176,8 @@ func TestVerifyFileWithKeyCompactSealed(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	opts := Options{Seal: testSealOpts(), Compact: true}
+	opts := testOptionsWithSeal(testSealOpts())
+	opts.Compact = true
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("create compact sealed writer: %v", err)
@@ -184,7 +185,7 @@ func TestVerifyFileWithKeyCompactSealed(t *testing.T) {
 	if err := w.Append([]Field{
 		StringField("MESSAGE", "compact sealed"),
 		StringField("PRIORITY", "6"),
-	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -201,7 +202,7 @@ func TestVerifyFileWithKeyEmptySealedFile(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	opts := Options{Seal: testSealOpts()}
+	opts := testOptionsWithSeal(testSealOpts())
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("create sealed writer: %v", err)
@@ -220,13 +221,13 @@ func TestVerifyFileWithKeyUnsealedFile(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("create unsealed writer: %v", err)
 	}
 	if err := w.Append([]Field{
 		StringField("MESSAGE", "unsealed"),
-	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -243,14 +244,14 @@ func TestVerifyFileWithKeyMalformedTagEpoch(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	opts := Options{Seal: testSealOpts()}
+	opts := testOptionsWithSeal(testSealOpts())
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("create sealed writer: %v", err)
 	}
 	if err := w.Append([]Field{
 		StringField("MESSAGE", "hello"),
-	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -292,14 +293,14 @@ func TestVerifyFileWithKeyRejectsAlignedSizeOverflow(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	opts := Options{Seal: testSealOpts()}
+	opts := testOptionsWithSeal(testSealOpts())
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("create sealed writer: %v", err)
 	}
 	if err := w.Append([]Field{
 		StringField("MESSAGE", "alignment-overflow"),
-	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
 	if err := w.Close(); err != nil {

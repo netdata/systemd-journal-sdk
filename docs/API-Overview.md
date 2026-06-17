@@ -82,7 +82,7 @@ presents less. The layers below explain what each surface costs.
 | direct-file writer | caller owns one file lifecycle | lowest lifecycle overhead |
 | directory writer | active file, rotation, retention, naming | production backend path |
 | optional lock helper | cooperating SDK writer exclusion | explicit helper, not part of core writer construction |
-| optional identity helper | host machine or boot identity discovery | explicit helper; core writers do not probe host identity |
+| optional identity helper | local-host machine ID, boot ID, and monotonic timestamp source | explicit helper; callers pass values to writers |
 
 ## Field-Name Policy
 

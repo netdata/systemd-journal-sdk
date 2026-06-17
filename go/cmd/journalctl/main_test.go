@@ -15,6 +15,24 @@ import (
 
 const validFSSVerificationKey = "c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900"
 
+var (
+	cliMachineID = journal.UUID{0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f}
+	cliBootID    = journal.UUID{0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f}
+)
+
+func cliOptions() journal.Options {
+	return journal.Options{MachineID: cliMachineID, BootID: cliBootID}
+}
+
+func cliEntryOptions(monotonic uint64) journal.EntryOptions {
+	return journal.EntryOptions{
+		RealtimeUsec:     1_700_000_000_000_000 + monotonic,
+		RealtimeUsecSet:  true,
+		MonotonicUsec:    monotonic,
+		MonotonicUsecSet: true,
+	}
+}
+
 func TestRunTailReturnsLatestEntries(t *testing.T) {
 	path := writeCLIJournal(t, []cliEntry{
 		{message: "entry-1", priority: "6"},
@@ -73,14 +91,14 @@ func TestRunMatchSemanticsAndStandaloneDisjunction(t *testing.T) {
 
 func TestRunExportOutputUsesBinaryEncoding(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "export.journal")
-	w, err := journal.Create(path, journal.Options{})
+	w, err := journal.Create(path, cliOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
 	if err := w.Append([]journal.Field{
 		journal.StringField("MESSAGE", "binary export"),
 		{Name: "BINARY", Value: []byte{0x00, 0x01, '\n', 0xff}},
-	}, journal.EntryOptions{}); err != nil {
+	}, cliEntryOptions(1)); err != nil {
 		t.Fatalf("Append error: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -162,7 +180,7 @@ func writeCLIJournal(t *testing.T, entries []cliEntry) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "cli.journal")
-	w, err := journal.Create(path, journal.Options{})
+	w, err := journal.Create(path, cliOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -170,7 +188,7 @@ func writeCLIJournal(t *testing.T, entries []cliEntry) string {
 		if err := w.Append([]journal.Field{
 			journal.StringField("MESSAGE", entry.message),
 			journal.StringField("PRIORITY", entry.priority),
-		}, journal.EntryOptions{RealtimeUsec: uint64(1000 + i)}); err != nil {
+		}, journal.EntryOptions{RealtimeUsec: uint64(1000 + i), MonotonicUsec: uint64(i + 1)}); err != nil {
 			t.Fatalf("Append %q error: %v", entry.message, err)
 		}
 	}
@@ -346,7 +364,8 @@ func TestRunVerifySealedWithoutKeyRequiresKey(t *testing.T) {
 func TestRunVerifyKeySealedPasses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cli-sealed.journal")
 	seed := make([]byte, 12)
-	opts := journal.Options{Seal: &journal.SealOptions{Seed: seed, IntervalUsec: 1000000, StartUsec: 1000000}}
+	opts := cliOptions()
+	opts.Seal = &journal.SealOptions{Seed: seed, IntervalUsec: 1000000, StartUsec: 1000000}
 	w, err := journal.Create(path, opts)
 	if err != nil {
 		t.Fatalf("Create sealed error: %v", err)
@@ -354,7 +373,7 @@ func TestRunVerifyKeySealedPasses(t *testing.T) {
 	if err := w.Append([]journal.Field{
 		journal.StringField("MESSAGE", "sealed-ok"),
 		journal.StringField("PRIORITY", "6"),
-	}, journal.EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, journal.EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("Append error: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -374,14 +393,15 @@ func TestRunVerifyKeySealedPasses(t *testing.T) {
 func TestRunVerifyKeySealedWrongKeyFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cli-sealed-wrong.journal")
 	seed := make([]byte, 12)
-	opts := journal.Options{Seal: &journal.SealOptions{Seed: seed, IntervalUsec: 1000000, StartUsec: 1000000}}
+	opts := cliOptions()
+	opts.Seal = &journal.SealOptions{Seed: seed, IntervalUsec: 1000000, StartUsec: 1000000}
 	w, err := journal.Create(path, opts)
 	if err != nil {
 		t.Fatalf("Create sealed error: %v", err)
 	}
 	if err := w.Append([]journal.Field{
 		journal.StringField("MESSAGE", "sealed-wrong"),
-	}, journal.EntryOptions{RealtimeUsec: 1500000}); err != nil {
+	}, journal.EntryOptions{RealtimeUsec: 1500000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("Append error: %v", err)
 	}
 	if err := w.Close(); err != nil {

@@ -11,7 +11,8 @@ use startup::{ActiveFile, RotationState, build_startup_state};
 
 use crate::{Result, WriterError};
 use itoa::Buffer as ItoaBuffer;
-use journal_common::{Microseconds, RealtimeClock, monotonic_now};
+pub use journal_common::EntryTimestamps;
+use journal_common::{Microseconds, RealtimeClock};
 use journal_core::error::JournalError;
 use journal_core::file::mmap::MmapMut;
 use journal_core::file::{
@@ -77,33 +78,6 @@ pub trait LogLifecycleObserver: Send + Sync {
 
 pub trait LogArtifactSizer: Send + Sync {
     fn journal_artifact_size(&self, journal_path: &Path) -> Result<u64>;
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EntryTimestamps {
-    /// Optional source timestamp for `_SOURCE_REALTIME_TIMESTAMP` field injection.
-    pub source_realtime_usec: Option<u64>,
-    /// Optional journal entry realtime timestamp override.
-    pub entry_realtime_usec: Option<u64>,
-    /// Optional journal entry monotonic timestamp override.
-    pub entry_monotonic_usec: Option<u64>,
-}
-
-impl EntryTimestamps {
-    pub fn with_source_realtime_usec(mut self, ts: u64) -> Self {
-        self.source_realtime_usec = Some(ts);
-        self
-    }
-
-    pub fn with_entry_realtime_usec(mut self, ts: u64) -> Self {
-        self.entry_realtime_usec = Some(ts);
-        self
-    }
-
-    pub fn with_entry_monotonic_usec(mut self, ts: u64) -> Self {
-        self.entry_monotonic_usec = Some(ts);
-        self
-    }
 }
 
 impl Log {
@@ -232,10 +206,11 @@ impl Log {
             None => self.clock.now().get(),
         };
 
-        let desired_monotonic = match timestamp_override.and_then(|ts| ts.entry_monotonic_usec) {
-            Some(ts) => ts,
-            None => monotonic_now().map_err(WriterError::Io)?.get(),
-        };
+        let desired_monotonic = timestamp_override
+            .and_then(|ts| ts.entry_monotonic_usec)
+            .ok_or_else(|| {
+                WriterError::InvalidConfig("entry monotonic timestamp is required".to_string())
+            })?;
 
         let monotonic = if desired_monotonic > self.last_monotonic_usec {
             desired_monotonic
@@ -245,6 +220,15 @@ impl Log {
         self.last_monotonic_usec = monotonic;
 
         Ok((realtime, monotonic))
+    }
+
+    fn require_entry_monotonic(timestamps: &EntryTimestamps) -> Result<()> {
+        if timestamps.entry_monotonic_usec.is_none() {
+            return Err(WriterError::InvalidConfig(
+                "entry monotonic timestamp is required".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Creates a new journal log.
@@ -315,9 +299,13 @@ impl Log {
 
     /// Writes a journal entry.
     ///
-    /// If `source_realtime_usec` is provided, a `_SOURCE_REALTIME_TIMESTAMP` field will be added
-    /// to record the original timestamp from the source (in microseconds since Unix epoch).
-    /// This is useful when ingesting logs from external sources that have their own timestamps.
+    /// This compatibility method always returns an error under the strict
+    /// writer contract. Use [`Log::write_entry_with_timestamps`] and provide
+    /// an explicit entry monotonic timestamp.
+    #[deprecated(
+        since = "0.7.2",
+        note = "use write_entry_with_timestamps and provide an explicit entry monotonic timestamp"
+    )]
     pub fn write_entry(
         &mut self,
         items: &[&[u8]],
@@ -345,6 +333,7 @@ impl Log {
         if items.is_empty() {
             return Err(WriterError::EmptyEntry);
         }
+        Self::require_entry_monotonic(&timestamps)?;
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
         self.prepare_append_for_realtime(entry_realtime)?;
@@ -372,6 +361,14 @@ impl Log {
     /// This is the preferred path when the producer already has split field
     /// names and values. If `source_realtime_usec` is provided, a
     /// `_SOURCE_REALTIME_TIMESTAMP` field is added.
+    ///
+    /// This compatibility method always returns an error under the strict
+    /// writer contract. Use [`Log::write_fields_with_timestamps`] and provide
+    /// an explicit entry monotonic timestamp.
+    #[deprecated(
+        since = "0.7.2",
+        note = "use write_fields_with_timestamps and provide an explicit entry monotonic timestamp"
+    )]
     pub fn write_fields(
         &mut self,
         fields: &[StructuredField<'_>],
@@ -388,8 +385,9 @@ impl Log {
 
     /// Writes structured fields with optional source and entry timestamp overrides.
     ///
-    /// Entry realtime and monotonic overrides use the same monotonic clamping
-    /// rules as [`Log::write_entry_with_timestamps`].
+    /// Entry monotonic timestamp is required. Entry realtime and monotonic
+    /// overrides use the same clamping rules as
+    /// [`Log::write_entry_with_timestamps`].
     pub fn write_fields_with_timestamps(
         &mut self,
         fields: &[StructuredField<'_>],
@@ -412,6 +410,7 @@ impl Log {
         if fields.is_empty() {
             return Err(WriterError::EmptyEntry);
         }
+        Self::require_entry_monotonic(&timestamps)?;
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
         self.prepare_append_for_realtime(entry_realtime)?;
@@ -785,7 +784,7 @@ impl Log {
     ///
     /// ```no_run
     /// use serde::Serialize;
-    /// use journal_log_writer::{Log, Config, RotationPolicy, RetentionPolicy};
+    /// use journal_log_writer::{Config, EntryTimestamps, Log, RotationPolicy, RetentionPolicy};
     /// use journal_registry::Origin;
     /// use std::path::Path;
     ///
@@ -804,11 +803,12 @@ impl Log {
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let origin = Origin {
-    ///     machine_id: None,
+    ///     machine_id: Some("00112233445566778899aabbccddeeff".parse()?),
     ///     namespace: None,
     ///     source: journal_registry::Source::System,
     /// };
-    /// let config = Config::new(origin, RotationPolicy::default(), RetentionPolicy::default());
+    /// let config = Config::new(origin, RotationPolicy::default(), RetentionPolicy::default())
+    ///     .with_boot_id("ffeeddccbbaa99887766554433221100".parse()?);
     /// let mut log = Log::new(Path::new("/tmp/test-journal"), config)?;
     ///
     /// let entry = LogEntry {
@@ -825,12 +825,29 @@ impl Log {
     /// // LEVEL=INFO
     /// // USER_ID=42
     /// // USER_NAME=alice
-    /// log.write_structured(&entry)?;
+    /// let timestamps = EntryTimestamps::default()
+    ///     .with_entry_realtime_usec(1_700_000_000_000_000)
+    ///     .with_entry_monotonic_usec(1);
+    /// log.write_structured_with_timestamps(&entry, timestamps)?;
     /// # Ok(())
     /// # }
     /// ```
     #[cfg(feature = "serde-api")]
+    #[deprecated(
+        since = "0.7.2",
+        note = "use write_structured_with_timestamps and provide an explicit entry monotonic timestamp"
+    )]
     pub fn write_structured<T: serde::Serialize>(&mut self, value: &T) -> Result<()> {
+        self.write_structured_with_timestamps(value, EntryTimestamps::default())
+    }
+
+    /// Writes a journal entry from a serializable value with explicit timestamps.
+    #[cfg(feature = "serde-api")]
+    pub fn write_structured_with_timestamps<T: serde::Serialize>(
+        &mut self,
+        value: &T,
+        timestamps: EntryTimestamps,
+    ) -> Result<()> {
         // Serialize to JSON value
         let json_value = serde_json::to_value(value).map_err(|e| {
             WriterError::Serialization(format!("failed to serialize to JSON: {}", e))
@@ -880,7 +897,7 @@ impl Log {
         // Convert Vec<Vec<u8>> to Vec<&[u8]> for write_entry
         let field_refs: Vec<&[u8]> = fields.iter().map(|f| f.as_slice()).collect();
 
-        self.write_entry(&field_refs, None)
+        self.write_entry_with_timestamps(&field_refs, timestamps)
     }
 }
 

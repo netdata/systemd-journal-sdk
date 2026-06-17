@@ -21,6 +21,8 @@ consumers that need direct access to the same internal layers used by the SDK:
 - `systemd-journal-sdk-core`
 - `systemd-journal-sdk-registry`
 - `systemd-journal-sdk-log-writer`
+- `systemd-journal-sdk-host` (`journal_host`), the optional local-host
+  identity and monotonic helper crate
 - `systemd-journal-sdk-index`
 - `systemd-journal-sdk-engine`
 
@@ -241,10 +243,10 @@ Reader limitations:
 Basic directory writer usage:
 
 ```rust
-use journal::{Config, Log, Origin, RetentionPolicy, RotationPolicy, Source};
+use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
 
 let origin = Origin {
-    machine_id: None,
+    machine_id: Some("00112233445566778899aabbccddeeff".parse()?),
     namespace: None,
     source: Source::System,
 };
@@ -256,16 +258,20 @@ let config = Config::new(
     RetentionPolicy::default()
         .with_number_of_journal_files(10)
         .with_duration_of_journal_files(std::time::Duration::from_secs(7 * 24 * 3600)),
-);
+)
+.with_boot_id("ffeeddccbbaa99887766554433221100".parse()?);
 let mut log = Log::new("/var/log/journal-sdk", config)?;
 
-log.write_entry(
+let timestamps = EntryTimestamps::default()
+    .with_entry_realtime_usec(1_700_000_000_000_000)
+    .with_entry_monotonic_usec(1);
+log.write_entry_with_timestamps(
     &[
         b"MESSAGE=plugin started".as_slice(),
         b"PRIORITY=6".as_slice(),
         b"SYSLOG_IDENTIFIER=example-plugin".as_slice(),
     ],
-    None,
+    timestamps,
 )?;
 log.sync()?;
 log.close()?;
@@ -300,10 +306,9 @@ existing-active reopen and `LogOpenMode::Eager` enforce it during construction,
 while lazy archived-only construction defers enforcement until the first append
 opens the active file, before the first entry is written.
 Use `Config::with_open_mode(LogOpenMode::Eager)` to create/open the active file
-during construction, and `Config::with_identity_mode(LogIdentityMode::Strict)`
-plus `Origin.machine_id` and `Config::with_boot_id()` to require explicit
-identity. `LogIdentityMode::Auto` uses explicit IDs when provided and otherwise
-generates SDK-local IDs; it does not read host identity sources.
+during construction. `LogIdentityMode::Strict` is the default and only
+supported identity mode; callers must provide `Origin.machine_id`,
+`Config::with_boot_id()`, and explicit per-entry monotonic timestamps.
 `Log::configured_directory()`, `Log::journal_directory()`,
 `Log::active_path()`, `Log::machine_id()`, `Log::boot_id()`, and
 `Log::source()` expose the same directory/identity contract as the other SDKs.
@@ -353,12 +358,15 @@ live publication for poll/snapshot consumers. `N > 1` publishes after every
 Binary-safe values:
 
 ```rust
-log.write_entry(
+let timestamps = EntryTimestamps::default()
+    .with_entry_realtime_usec(1_700_000_000_000_001)
+    .with_entry_monotonic_usec(2);
+log.write_entry_with_timestamps(
     &[
         b"MESSAGE=sample with binary payload".as_slice(),
         b"BINARY_PAYLOAD=\x00\x01\x02\xff".as_slice(),
     ],
-    None,
+    timestamps,
 )?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```

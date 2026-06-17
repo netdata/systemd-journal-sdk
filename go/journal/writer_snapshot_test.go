@@ -49,6 +49,15 @@ func testOptions() Options {
 	}
 }
 
+func testEntryOptions(monotonic uint64) EntryOptions {
+	return EntryOptions{
+		RealtimeUsec:     1_700_000_000_000_000 + monotonic,
+		RealtimeUsecSet:  true,
+		MonotonicUsec:    monotonic,
+		MonotonicUsecSet: true,
+	}
+}
+
 func fieldWithTotalPayloadLen(t *testing.T, name string, payloadLen int) Field {
 	t.Helper()
 

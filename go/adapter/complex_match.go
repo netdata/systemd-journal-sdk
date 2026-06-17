@@ -57,12 +57,28 @@ func createComplexMatchFixture() (string, func(), error) {
 }
 
 func writeComplexMatchFixture(path string) error {
-	w, err := journal.Create(path, journal.Options{})
+	machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
 	if err != nil {
 		return err
 	}
-	for _, fields := range complexMatchEntries() {
-		if err := w.Append(fields, journal.EntryOptions{}); err != nil {
+	bootID, err := journal.ParseUUID("ffeeddccbbaa99887766554433221100")
+	if err != nil {
+		return err
+	}
+	w, err := journal.Create(path, journal.Options{
+		MachineID: machineID,
+		BootID:    bootID,
+	})
+	if err != nil {
+		return err
+	}
+	for i, fields := range complexMatchEntries() {
+		if err := w.Append(fields, journal.EntryOptions{
+			RealtimeUsec:     1_700_000_000_000_000 + uint64(i),
+			RealtimeUsecSet:  true,
+			MonotonicUsec:    uint64(i + 1),
+			MonotonicUsecSet: true,
+		}); err != nil {
 			_ = w.Close()
 			return err
 		}

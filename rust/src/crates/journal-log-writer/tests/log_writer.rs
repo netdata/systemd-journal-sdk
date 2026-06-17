@@ -24,8 +24,11 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tempfile::TempDir;
+
+static NEXT_TEST_MONOTONIC: AtomicU64 = AtomicU64::new(1);
 
 /// Helper to create a default test config
 fn test_machine_id() -> uuid::Uuid {
@@ -49,6 +52,15 @@ fn test_config() -> Config {
         RetentionPolicy::default(),
     )
     .with_boot_id(test_boot_id())
+}
+
+fn next_test_timestamps() -> EntryTimestamps {
+    EntryTimestamps::default()
+        .with_entry_monotonic_usec(NEXT_TEST_MONOTONIC.fetch_add(1, Ordering::Relaxed))
+}
+
+fn write_test_entry(log: &mut Log, items: &[&[u8]]) -> Result<(), WriterError> {
+    log.write_entry_with_timestamps(items, next_test_timestamps())
 }
 
 #[test]

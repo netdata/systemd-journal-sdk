@@ -156,24 +156,41 @@ pub(super) fn create_chain(
 }
 
 pub(super) fn resolve_machine_id(config: &Config) -> Result<uuid::Uuid> {
+    #[allow(deprecated)]
     match config.identity_mode {
-        LogIdentityMode::Strict => config.origin.machine_id.ok_or_else(|| {
-            WriterError::MachineId("strict identity requires machine id".to_string())
-        }),
-        LogIdentityMode::Auto => Ok(config.origin.machine_id.unwrap_or_else(uuid::Uuid::new_v4)),
+        LogIdentityMode::Strict => match config.origin.machine_id {
+            Some(machine_id) if !machine_id.is_nil() => Ok(machine_id),
+            _ => Err(WriterError::MachineId("machine id is required".to_string())),
+        },
+        LogIdentityMode::Auto => Err(WriterError::InvalidConfig(
+            "LogIdentityMode::Auto is no longer supported; supply explicit machine id and boot id"
+                .to_string(),
+        )),
     }
 }
 
 pub(super) fn resolve_boot_id(config: &Config) -> Result<uuid::Uuid> {
+    #[allow(deprecated)]
     match config.identity_mode {
-        LogIdentityMode::Strict => config
-            .boot_id
-            .ok_or_else(|| WriterError::MachineId("strict identity requires boot id".to_string())),
-        LogIdentityMode::Auto => Ok(config.boot_id.unwrap_or_else(uuid::Uuid::new_v4)),
+        LogIdentityMode::Strict => match config.boot_id {
+            Some(boot_id) if !boot_id.is_nil() => Ok(boot_id),
+            _ => Err(WriterError::MachineId("boot id is required".to_string())),
+        },
+        LogIdentityMode::Auto => Err(WriterError::InvalidConfig(
+            "LogIdentityMode::Auto is no longer supported; supply explicit machine id and boot id"
+                .to_string(),
+        )),
     }
 }
 
 pub(super) fn validate_config(config: &Config) -> Result<()> {
+    #[allow(deprecated)]
+    if config.identity_mode == LogIdentityMode::Auto {
+        return Err(WriterError::InvalidConfig(
+            "LogIdentityMode::Auto is no longer supported; supply explicit machine id and boot id"
+                .to_string(),
+        ));
+    }
     if config.rotation_policy.size_of_journal_file == Some(0) {
         return Err(WriterError::InvalidConfig(
             "rotation max file size must be greater than 0".to_string(),

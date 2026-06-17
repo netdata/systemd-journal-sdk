@@ -57,12 +57,12 @@ func TestReaderHeaderOnlyOpenSkipsEntryArrayAndKeepsIndexedUnique(t *testing.T) 
 func createReaderMessageJournal(t *testing.T, entries int, fields []Field) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.journal")
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
 	for i := 0; i < entries; i++ {
-		if err := w.Append(fields, EntryOptions{}); err != nil {
+		if err := w.Append(fields, testEntryOptions(uint64(i+1))); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
 	}
@@ -937,13 +937,14 @@ func TestReaderIteration(t *testing.T) {
 func createReaderSequenceJournal(t *testing.T, entries int) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.journal")
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
 	for i := 0; i < entries; i++ {
 		if err := w.Append([]Field{StringField("SEQ", string(rune('0'+i)))}, EntryOptions{
-			RealtimeUsec: uint64(1000 + i),
+			RealtimeUsec:  uint64(1000 + i),
+			MonotonicUsec: uint64(i + 1),
 		}); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
@@ -973,7 +974,7 @@ func TestReaderMatchSameFieldOR(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -988,11 +989,11 @@ func TestReaderMatchSameFieldOR(t *testing.T) {
 		{"delta", "6"},
 	}
 
-	for _, e := range entries {
+	for i, e := range entries {
 		if err := w.Append([]Field{
 			StringField("MESSAGE", e.msg),
 			StringField("PRIORITY", e.pr),
-		}, EntryOptions{}); err != nil {
+		}, testEntryOptions(uint64(i+1))); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
 	}
@@ -1030,7 +1031,7 @@ func TestReaderMatchAND(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -1045,11 +1046,11 @@ func TestReaderMatchAND(t *testing.T) {
 		{"delta", "6"},
 	}
 
-	for _, e := range entries {
+	for i, e := range entries {
 		if err := w.Append([]Field{
 			StringField("MESSAGE", e.msg),
 			StringField("PRIORITY", e.pr),
-		}, EntryOptions{}); err != nil {
+		}, testEntryOptions(uint64(i+1))); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
 	}
@@ -1087,7 +1088,7 @@ func TestReaderMatchDisjunction(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -1102,11 +1103,11 @@ func TestReaderMatchDisjunction(t *testing.T) {
 		{"no", "yes"},
 	}
 
-	for _, e := range entries {
+	for i, e := range entries {
 		if err := w.Append([]Field{
 			StringField("L3", e.l3),
 			StringField("L4", e.l4),
-		}, EntryOptions{}); err != nil {
+		}, testEntryOptions(uint64(i+1))); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
 	}
@@ -1145,7 +1146,7 @@ func TestReaderSystemdComplexMatchExpression(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -1173,8 +1174,8 @@ func TestReaderSystemdComplexMatchExpression(t *testing.T) {
 			StringField("ONE", "one"),
 		},
 	}
-	for _, fields := range entries {
-		if err := w.Append(fields, EntryOptions{}); err != nil {
+	for i, fields := range entries {
+		if err := w.Append(fields, testEntryOptions(uint64(i+1))); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
 	}
@@ -1238,7 +1239,7 @@ func TestReaderBinaryFields(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -1247,7 +1248,7 @@ func TestReaderBinaryFields(t *testing.T) {
 	if err := w.Append([]Field{
 		{Name: "BINARY", Value: binaryValue},
 		{Name: "STRING", Value: []byte("hello")},
-	}, EntryOptions{}); err != nil {
+	}, testEntryOptions(1)); err != nil {
 		t.Fatalf("Append error: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -1372,7 +1373,7 @@ func TestReaderCursor(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -1381,7 +1382,8 @@ func TestReaderCursor(t *testing.T) {
 		if err := w.Append([]Field{
 			StringField("MESSAGE", "msg"),
 		}, EntryOptions{
-			RealtimeUsec: uint64(1000 + i),
+			RealtimeUsec:  uint64(1000 + i),
+			MonotonicUsec: uint64(i + 1),
 		}); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
@@ -1489,12 +1491,12 @@ func TestReaderUniqueFields(t *testing.T) {
 func createReaderPriorityJournal(t *testing.T, priorities []string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.journal")
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
-	for _, p := range priorities {
-		if err := w.Append([]Field{StringField("PRIORITY", p)}, EntryOptions{}); err != nil {
+	for i, p := range priorities {
+		if err := w.Append([]Field{StringField("PRIORITY", p)}, testEntryOptions(uint64(i+1))); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
 	}
@@ -1544,7 +1546,7 @@ func TestReaderEnumerateFields(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -1552,7 +1554,7 @@ func TestReaderEnumerateFields(t *testing.T) {
 	if err := w.Append([]Field{
 		StringField("FIELD_A", "value_a"),
 		StringField("FIELD_B", "value_b"),
-	}, EntryOptions{}); err != nil {
+	}, testEntryOptions(1)); err != nil {
 		t.Fatalf("Append error: %v", err)
 	}
 	if err := w.Close(); err != nil {

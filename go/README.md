@@ -102,10 +102,9 @@ Platform behavior:
 - FreeBSD, macOS, and Windows build the Go SDK without CGO or libsystemd.
   Files generated on those targets are expected to be copied to Linux for stock
   systemd verification when stock tooling is required.
-- `LogIdentityAuto` uses explicit IDs when provided and generates SDK-local
-  IDs for missing values. It does not read host identity files or platform
-  identity services. Callers that need host systemd/journald identity should
-  pass explicit IDs, or use `LogIdentityStrict` to require them.
+- Writers require explicit machine ID, boot ID, and per-entry monotonic
+  timestamps. Callers that need collector-host values can opt into the
+  `journalhost` helper and pass its results to the writer explicitly.
 - Optional writer locking is a separate helper acquired with
   `journal.AcquireWriterLock(path)`. Linux uses procfs boot/process-start
   evidence; FreeBSD and macOS use native boot-time plus conservative process
@@ -120,7 +119,18 @@ Platform behavior:
 Basic usage:
 
 ```go
-w, err := journal.Create("/path/to/plugin.journal", journal.Options{})
+machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
+if err != nil {
+    return err
+}
+bootID, err := journal.ParseUUID("ffeeddccbbaa99887766554433221100")
+if err != nil {
+    return err
+}
+w, err := journal.Create("/path/to/plugin.journal", journal.Options{
+    MachineID: machineID,
+    BootID:    bootID,
+})
 if err != nil {
     return err
 }
@@ -130,7 +140,12 @@ return w.Append([]journal.Field{
     journal.StringField("MESSAGE", "plugin started"),
     journal.StringField("PRIORITY", "6"),
     journal.StringField("SYSLOG_IDENTIFIER", "example-plugin"),
-}, journal.EntryOptions{})
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_000,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    1,
+    MonotonicUsecSet: true,
+})
 ```
 
 `Close()` matches systemd's plain `journal_file_close()` behavior and leaves the
@@ -144,7 +159,12 @@ Binary-safe values:
 err := w.Append([]journal.Field{
     journal.StringField("MESSAGE", "sample with binary payload"),
     {Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 0xff}},
-}, journal.EntryOptions{})
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_001,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    2,
+    MonotonicUsecSet: true,
+})
 ```
 
 Use `Append([]journal.Field{...})` for binary payloads. `AppendMap()` and
@@ -157,7 +177,12 @@ err := w.AppendRaw([][]byte{
     []byte("MESSAGE=prebuilt payload"),
     []byte("_HOSTNAME=synthetic-host"),
     []byte("BINARY_PAYLOAD=\x00\x01\x02\xff"),
-}, journal.EntryOptions{})
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_002,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    3,
+    MonotonicUsecSet: true,
+})
 ```
 
 `AppendRaw()` accepts complete `KEY=value` byte payloads. The first `=` splits
@@ -168,6 +193,8 @@ Live-reader publication:
 
 ```go
 w, err := journal.Create("/path/to/plugin.journal", journal.Options{
+    MachineID: machineID,
+    BootID:    bootID,
     LivePublishEveryEntries: journal.PublishEveryEntries(64),
 })
 ```
@@ -182,7 +209,9 @@ Use `Options.FileMode` when a consumer needs a different mode:
 
 ```go
 w, err := journal.Create("/path/to/private.journal", journal.Options{
-    FileMode: journal.JournalFileMode(0o600),
+    MachineID: machineID,
+    BootID:    bootID,
+    FileMode:  journal.JournalFileMode(0o600),
 })
 ```
 
@@ -219,7 +248,12 @@ defer log.Close()
 return log.Append([]journal.Field{
     journal.StringField("MESSAGE", "plugin started"),
     journal.StringField("PRIORITY", "6"),
-}, journal.EntryOptions{})
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_003,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    4,
+    MonotonicUsecSet: true,
+})
 ```
 
 `NewLog()` stores files below `<directory>/<machine-id>/`. Rotation archives the
@@ -238,9 +272,9 @@ active file. Direct low-level append-open still returns an unsupported error.
 Unset rotation and retention limits are disabled; enabling a limit with zero or
 a negative value makes `NewLog()` fail. `LogOpenEager` creates or opens the
 active file during construction so callers can reject a job before accepting
-input. `LogIdentityAuto` uses explicit IDs when provided and otherwise
-generates SDK-local IDs. `LogIdentityStrict` requires explicit machine and boot
-IDs.
+input. `LogIdentityStrict` is the default and only supported identity mode; it
+requires explicit machine and boot IDs. Per-entry appends require explicit
+monotonic timestamps.
 
 `ConfiguredDirectory()` returns the root passed to `NewLog()`.
 `JournalDirectory()` returns the effective `<directory>/<machine-id>` directory

@@ -57,11 +57,11 @@ pub use facade::{
     SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
 };
 pub use journal_core::error::JournalError;
+use journal_core::file::ExperimentalMmapStrategy;
 pub use journal_core::file::{
     BucketUtilization, Compression, Direction, EntryItemsType, FieldNamePolicy, HashableObject,
     JournalFile, JournalReader, Location, Mmap, WindowManagerStats,
 };
-use journal_core::file::ExperimentalMmapStrategy;
 use journal_core::file::{CurrentRowMetadata, CurrentRowView};
 pub use journal_log_writer::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,

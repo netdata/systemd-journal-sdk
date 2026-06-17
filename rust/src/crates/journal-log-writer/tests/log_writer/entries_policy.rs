@@ -8,12 +8,28 @@ fn test_empty_entry() {
     let mut log = Log::new(dir.path(), config).unwrap();
 
     let entry: [&[u8]; 0] = [];
-    let err = log.write_entry(&entry, None).unwrap_err();
+    let err = write_test_entry(&mut log, &entry).unwrap_err();
     assert!(
         err.to_string().contains("journal entry has no fields"),
         "unexpected empty entry error: {err}"
     );
 
+    assert_eq!(count_journal_files(&dir), 0);
+}
+
+#[test]
+#[allow(deprecated)]
+fn test_write_entry_requires_explicit_monotonic_timestamp() {
+    let dir = TempDir::new().unwrap();
+    let mut log = Log::new(dir.path(), test_config()).unwrap();
+
+    let entry = [b"MESSAGE=missing monotonic" as &[u8]];
+    let err = log.write_entry(&entry, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("entry monotonic timestamp is required"),
+        "unexpected missing monotonic error: {err}"
+    );
     assert_eq!(count_journal_files(&dir), 0);
 }
 
@@ -31,7 +47,7 @@ fn test_boot_id_injection() {
 
     // Write a single entry
     let entry = [b"MESSAGE=Test entry" as &[u8], b"PRIORITY=6"];
-    log.write_entry(&entry, None).unwrap();
+    write_test_entry(&mut log, &entry).unwrap();
     log.sync().unwrap();
 
     // Find the created journal file
@@ -88,7 +104,7 @@ fn test_write_uses_machine_id_subdirectory() {
     let mut log = Log::new(&target_dir, test_config()).unwrap();
 
     let entry = [b"MESSAGE=machine id suffix" as &[u8], b"PRIORITY=6"];
-    log.write_entry(&entry, None).unwrap();
+    write_test_entry(&mut log, &entry).unwrap();
     log.sync().unwrap();
 
     let root_files: Vec<_> = fs::read_dir(&target_dir)
@@ -147,10 +163,10 @@ fn test_entry_realtime_override_is_clamped_monotonic() {
     let mut log = Log::new(dir.path(), config).unwrap();
 
     let first_entry = [b"MESSAGE=first" as &[u8], b"PRIORITY=6"];
-    log.write_entry(&first_entry, None).unwrap();
+    write_test_entry(&mut log, &first_entry).unwrap();
 
     let second_entry = [b"MESSAGE=second" as &[u8], b"PRIORITY=6"];
-    let ts = EntryTimestamps::default().with_entry_realtime_usec(0);
+    let ts = next_test_timestamps().with_entry_realtime_usec(0);
     log.write_entry_with_timestamps(&second_entry, ts).unwrap();
     log.sync().unwrap();
 
@@ -191,7 +207,7 @@ fn test_entry_monotonic_override_is_clamped_monotonic() {
     let mut log = Log::new(dir.path(), config).unwrap();
 
     let first_entry = [b"MESSAGE=mono-first" as &[u8], b"PRIORITY=6"];
-    log.write_entry(&first_entry, None).unwrap();
+    write_test_entry(&mut log, &first_entry).unwrap();
 
     let second_entry = [b"MESSAGE=mono-second" as &[u8], b"PRIORITY=6"];
     let ts = EntryTimestamps::default().with_entry_monotonic_usec(0);
@@ -236,7 +252,7 @@ fn test_source_timestamp_is_preserved_with_entry_override() {
 
     let source_ts = 123_456_u64;
     let entry = [b"MESSAGE=source-ts" as &[u8], b"PRIORITY=6"];
-    let ts = EntryTimestamps::default()
+    let ts = next_test_timestamps()
         .with_entry_realtime_usec(1)
         .with_source_realtime_usec(source_ts);
     log.write_entry_with_timestamps(&entry, ts).unwrap();

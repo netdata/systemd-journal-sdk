@@ -204,7 +204,8 @@ func TestJournalctlListBoots(t *testing.T) {
 		if err := w.Append([]Field{
 			StringField("MESSAGE", "boot-entry"),
 		}, EntryOptions{
-			RealtimeUsec: uint64(1000 + i),
+			RealtimeUsec:  uint64(1000 + i),
+			MonotonicUsec: uint64(i + 1),
 		}); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}
@@ -233,7 +234,7 @@ func TestJournalctlOutputModes(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -244,7 +245,8 @@ func TestJournalctlOutputModes(t *testing.T) {
 		StringField("_HOSTNAME", "testhost"),
 		StringField("_MACHINE_ID", "abc123def456"),
 	}, EntryOptions{
-		RealtimeUsec: 1_700_001_000_000_000,
+		RealtimeUsec:  1_700_001_000_000_000,
+		MonotonicUsec: 1,
 	}); err != nil {
 		t.Fatalf("Append error: %v", err)
 	}
@@ -280,7 +282,7 @@ func TestJournalctlDaemonUnsupported(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}

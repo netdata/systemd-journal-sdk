@@ -146,7 +146,11 @@ language implementation, with a one-twentieth rotation step by default.
 ## Identity And Locking
 
 Core writers do not discover host identity. Pass machine ID, boot ID, and
-timestamps explicitly when stable identity matters.
+generated-entry monotonic timestamps explicitly. The optional host identity
+helper is for integrations that intentionally want local-host values. In Go it
+lives in `github.com/netdata/systemd-journal-sdk/go/journalhost`; in Rust it is
+the `systemd-journal-sdk-host` crate with lib name `journal_host`. Callers
+still pass the returned values to the writer.
 
 Core writers also do not lock. The journal file contract is one writer per
 file, but systemd does not define a portable journal-file lock protocol. The

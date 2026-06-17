@@ -21,14 +21,18 @@ pub enum LogOpenMode {
 /// Controls how missing machine and boot identities are handled.
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub enum LogIdentityMode {
-    /// Use explicit IDs when provided, otherwise generate SDK-local IDs.
+    /// Legacy mode retained only so older callers receive a clear error.
     ///
-    /// This mode does not probe host identity. Callers that need the current
-    /// host's systemd/journald identity must call an optional identity helper
-    /// explicitly and pass the IDs into the config.
-    #[default]
+    /// The writer no longer generates SDK-local machine or boot IDs. Callers
+    /// must provide explicit IDs or call the optional host helper and pass the
+    /// returned values into the config.
+    #[deprecated(
+        since = "0.7.2",
+        note = "use LogIdentityMode::Strict and supply explicit IDs"
+    )]
     Auto,
     /// Require explicit machine ID and boot ID in the config.
+    #[default]
     Strict,
 }
 
@@ -154,7 +158,7 @@ impl Config {
             compression_threshold: DEFAULT_COMPRESS_THRESHOLD,
             compact: false,
             open_mode: LogOpenMode::Lazy,
-            identity_mode: LogIdentityMode::Auto,
+            identity_mode: LogIdentityMode::Strict,
             boot_id: None,
             strict_systemd_naming: false,
             live_publish_every_entries: 1,

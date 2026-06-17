@@ -4,17 +4,37 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"time"
 )
 
 const defaultJournalFileMode os.FileMode = 0o640
 
-func normalizeOptions(opts Options) Options {
+// ErrMissingMachineID is returned by Create/NewLog when the caller does not
+// provide a non-zero Options.MachineID. The strict writer contract requires an
+// explicit machine ID anchor.
+var ErrMissingMachineID = fmt.Errorf("journal: machine id is required")
+
+// ErrMissingBootID is returned by Create/NewLog when the caller does not
+// provide a non-zero Options.BootID. The strict writer contract requires an
+// explicit default boot ID anchor.
+var ErrMissingBootID = fmt.Errorf("journal: boot id is required")
+
+// validateStrictIdentity returns an error if the supplied Options struct
+// lacks a non-zero machine_id or boot_id. The strict writer contract enforces
+// explicit caller-supplied anchors for both fields. SDK-generated random IDs
+// are no longer accepted as a default fallback.
+func validateStrictIdentity(opts Options) error {
 	if isZeroUUID(opts.MachineID) {
-		opts.MachineID = mustRandomUUID()
+		return ErrMissingMachineID
 	}
 	if isZeroUUID(opts.BootID) {
-		opts.BootID = mustRandomUUID()
+		return ErrMissingBootID
+	}
+	return nil
+}
+
+func normalizeOptions(opts Options) (Options, error) {
+	if err := validateStrictIdentity(opts); err != nil {
+		return opts, err
 	}
 	if isZeroUUID(opts.SeqnumID) {
 		opts.SeqnumID = mustRandomUUID()
@@ -43,7 +63,7 @@ func normalizeOptions(opts Options) Options {
 	if opts.FileMode == nil {
 		opts.FileMode = JournalFileMode(defaultJournalFileMode)
 	}
-	return opts
+	return opts, nil
 }
 
 func normalizeOpenOptions(opts Options) Options {
@@ -85,14 +105,6 @@ func mustRandomUUID() UUID {
 
 func isZeroUUID(id UUID) bool {
 	return id == UUID{}
-}
-
-func startTimeForTailMonotonic(now time.Time, tailUsec uint64) time.Time {
-	const maxDurationUsec = uint64(1<<63-1) / uint64(time.Microsecond)
-	if tailUsec > maxDurationUsec {
-		tailUsec = maxDurationUsec
-	}
-	return now.Add(-time.Duration(tailUsec) * time.Microsecond)
 }
 
 func (w *Writer) initialize(opts Options) error {

@@ -491,6 +491,7 @@ impl JournalWriter {
         self.ensure_keyed_append(journal_file)?;
         let entry_seqnum = self.entry_seqnum_for_options(options)?;
         let entry_boot_id = options.boot_id.unwrap_or(self.boot_id);
+        let monotonic = self.clamp_same_boot_monotonic(journal_file, entry_boot_id, monotonic)?;
         let xor_hash = self.prepare_entry_items(journal_file, fields, realtime, options)?;
         let entry_offset = self.write_entry_object(
             journal_file,
@@ -526,6 +527,25 @@ impl JournalWriter {
             return Err(JournalError::InvalidField);
         }
         Ok(entry_seqnum)
+    }
+
+    fn clamp_same_boot_monotonic(
+        &self,
+        journal_file: &JournalFile<MmapMut>,
+        entry_boot_id: uuid::Uuid,
+        monotonic: u64,
+    ) -> Result<u64> {
+        let header = journal_file.journal_header_ref();
+        if header.n_entries == 0
+            || header.tail_entry_boot_id != *entry_boot_id.as_bytes()
+            || monotonic > header.tail_entry_monotonic
+        {
+            return Ok(monotonic);
+        }
+        header
+            .tail_entry_monotonic
+            .checked_add(1)
+            .ok_or(JournalError::InvalidField)
     }
 
     fn prepare_entry_items<'a>(

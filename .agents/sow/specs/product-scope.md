@@ -63,6 +63,21 @@ wiki publication workflow.
 - Systemd/journald compatibility is a policy/API layer above the core writer.
   It may require caller-provided machine and boot IDs, but it must not silently
   discover host identity.
+- The strict writer contract below is enforced by every product writer:
+  - `_MACHINE_ID` and the default `_BOOT_ID` must be explicit caller
+    inputs to every direct-file or directory writer construction.
+  - Every appended entry's `__MONOTONIC_TIMESTAMP` must be an explicit
+    caller input or an explicit helper return value.
+  - Explicit zero monotonic remains valid only through the language's
+    idiomatic "set" representation; omitted monotonic fails before
+    entry mutation.
+  - SDK writers do not silently fall back to generated machine IDs, boot
+    IDs, or monotonic timestamps.
+  - Opening an existing non-empty file may continue from the file's
+    on-disk tail boot ID; that is file state, not host discovery.
+  - File ID, seqnum ID, and generated sequence numbers may remain
+    SDK-local defaults because they are not the three event
+    identity/time anchors.
 - Automatic machine/boot identity discovery is an optional helper service. A
   caller must explicitly invoke the helper and pass the result to the SDK.
 - Cooperating-writer locking is an optional helper/wrapper service, independent
@@ -95,12 +110,13 @@ wiki publication workflow.
 - FreeBSD and macOS Rust builds use monotonic timestamps and the same core
   file-format reader/writer paths. Optional identity and writer-lock helpers
   are separate from the core file-format writer.
-- Windows Rust builds use Windows unbiased interrupt time for generated
-  monotonic timestamps when the caller does not provide explicit timestamps.
-  Optional identity and writer-lock helpers are separate from the core
-  file-format writer. Directory fsync and SIGBUS handling are no-ops on
-  Windows because those Unix durability/fault mechanisms do not have the same
-  portable API surface.
+- Windows Rust builds use the same strict core file-format writer contract:
+  callers provide generated-entry monotonic timestamps explicitly. The optional
+  `journal_host` helper uses Windows unbiased interrupt time when callers
+  intentionally want local-host helper timestamps. Optional identity and
+  writer-lock helpers are separate from the core file-format writer. Directory
+  fsync and SIGBUS handling are no-ops on Windows because those Unix
+  durability/fault mechanisms do not have the same portable API surface.
 - Non-Linux Rust target checks prove compilation only unless a SOW records
   runtime evidence from that operating system. Files generated on non-Linux
   targets still require Linux stock `journalctl --verify --file` and
@@ -325,13 +341,14 @@ Current shared writer layout contract:
   is greater than or equal to the threshold. The Go zero-value options struct
   treats `CompressThresholdBytes == 0` as unset so `Options{}` still uses the
   systemd default.
-- Timestamp policy follows the Netdata vendored writer split. Low-level
-  single-file writers preserve explicit caller-provided realtime and monotonic
-  timestamps without rejecting or clamping, so callers can deliberately create
-  byte-exact or corrupt-test files and are responsible for same-boot monotonic
-  validity. High-level Rust and Go `Log` writers clamp
-  non-progressing entry realtime and same-boot monotonic overrides, including
-  explicit zero monotonic overrides, forward so ingestion outputs remain
+- Timestamp policy follows the Netdata vendored writer split. Rust and Go
+  writer append surfaces require caller-provided generated-entry monotonic
+  timestamps; core writers and high-level `Log` writers do not synthesize a
+  boot-monotonic value when the caller omits one. Low-level single-file writers
+  preserve explicit caller-provided realtime and monotonic timestamps for
+  byte-exact regeneration and corrupt-test files. High-level Rust and Go `Log`
+  writers clamp non-progressing entry realtime and same-boot monotonic values,
+  including explicit zero monotonic values, forward so ingestion outputs remain
   stock-verifiable. On reopen, high-level writers seed the monotonic clamp
   floor from the persisted chain tail only when the tail entry boot ID matches
   the current writer boot ID.
@@ -370,10 +387,11 @@ Current Go writer feature slice:
 - high-level Go directory writer construction supports lazy open by default and
   eager active-file open through `LogOpenEager`, so integrations can validate
   file creation/open and writer options before accepting work;
-- high-level Go identity handling uses explicit IDs when provided and otherwise
-  generates SDK-local IDs by default. `LogIdentityStrict` requires explicit
-  machine and boot IDs. Host identity discovery belongs to optional helpers
-  that callers invoke explicitly;
+- high-level Go identity handling is strict for the journal anchors owned by
+  this project: callers provide machine ID, boot ID, and generated-entry
+  monotonic timestamps explicitly, or they explicitly call the optional host
+  helper and pass its values to the writer. Host identity discovery belongs to
+  optional helpers that callers invoke explicitly;
 - high-level Go path accessors expose the configured root, effective
   machine-id journal directory, exact active path after file creation, machine
   ID, boot ID, and source prefix;
@@ -443,9 +461,73 @@ Current shared high-level directory writer API slice:
   header can still be read, move the old active file to a collision-safe
   disposed `*.journal~` name, and create a fresh active file. Low-level direct
   writer opens still return controlled unsupported errors.
-- Rust and Go expose a strict identity mode requiring
-  explicit machine ID and boot ID; default identity mode uses explicit IDs when
-  provided, otherwise generates SDK-local IDs without probing host identity.
+- Rust and Go require explicit machine ID, boot ID, and generated-entry
+  monotonic timestamps for normal writer/log appends. Optional host helpers may
+  produce local-host values, but callers still pass those values explicitly to
+  the writer; core writers do not generate SDK-local identity/time anchors and
+  do not probe host identity.
+- The strict writer contract for `_MACHINE_ID`, `_BOOT_ID`, and the
+  generated-entry `__MONOTONIC_TIMESTAMP` is enforced by `journal.Create` /
+  `journal.Log` in Go and by `journal_log_writer::Log` in Rust. Rust
+  `JournalFileOptions::new` remains an explicit low-level constructor for
+  caller-provided file identities and exact-regeneration paths; it does not
+  discover or synthesize host identity. Missing or nil high-level log identity
+  anchors and missing generated-entry monotonic timestamps are rejected before
+  entry mutation. `LogOpenMode::Eager` may create an empty active file at
+  construction time after explicit identity validation; it still cannot append
+  an entry without explicit monotonic metadata. `LogIdentityAuto` and the Go
+  writer-start-relative monotonic fallback are removed; the Rust log-writer
+  `monotonic_now()` fallback is removed from the default append path. The
+  `file_id`, `seqnum_id`, generated sequence number, and realtime commit
+  timestamp defaults may remain because they are not the three event
+  identity/time anchors owned by this contract.
+- A separate optional host helper API is the only sanctioned way for callers
+  to obtain local-host machine ID, boot ID, and a boot-anchored monotonic
+  timestamp source. The Go helper is `go/journalhost`; the Rust helper is the
+  `systemd-journal-sdk-host` workspace crate (lib name `journal_host`). The
+  helper is opt-in; core writer and reader code does not import the helper
+  package. Core Rust crate `journal-common` does not import host identity
+  discovery; the previous `journal-common::system` host-identity module was
+  removed. `journal_common::time::monotonic_now` remains a generic explicit
+  utility, but core and log-writer append paths do not use it to fill missing
+  entry monotonic timestamps.
+- Per-platform host-helper source matrix (native APIs only; no subprocess, no
+  CGO):
+  - Linux: machine ID `/etc/machine-id` then `/var/lib/dbus/machine-id`;
+    boot ID `/proc/sys/kernel/random/boot_id`; monotonic
+    `clock_gettime(CLOCK_MONOTONIC)`.
+  - FreeBSD 13+: machine ID `kern.hostuuid` sysctl (validate and reject
+    all-zero jail sentinel); boot ID native `kern.boot_id`; monotonic
+    `clock_gettime(CLOCK_UPTIME)`. FreeBSD 12 or environments where
+    `kern.boot_id` is unavailable fall back to the state-backed synthesis
+    path below.
+  - macOS: machine ID native `gethostuuid(3)`; boot ID native
+    `kern.bootsessionuuid` sysctl; monotonic `clock_gettime(CLOCK_UPTIME_RAW)`
+    or equivalent.
+  - Windows: machine ID `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`
+    registry or documented SMBIOS UUID fallback; boot ID state-backed
+    synthesis; per-entry monotonic `QueryUnbiasedInterruptTime`; state-file
+    boot marker `GetTickCount64`.
+- The state-backed boot-ID synthesis file is the primary Windows boot-ID
+  source and the FreeBSD fallback when `kern.boot_id` is unavailable. The
+  state file contains exactly two ASCII lines:
+  `last_estimated_boottime=<decimal unix microseconds>` and
+  `last_boot_id=<32 lowercase hex UUID bytes>`. Initialization takes an
+  exclusive lock; the helper serializes cross-process read/write. Same-boot
+  reads do not rewrite the file. New-boot detection is
+  `estimated_boottime > last_estimated_boottime + 30s`. Corrupt state is
+  preserved as `.corrupt` when safe, a fresh UUID is generated, and a clean
+  state file is written when possible. Any state open, lock, read, parse,
+  copy, write, fsync, rename, or permission failure generates a fresh
+  boot ID for this provider instance, continues without hard failure, and
+  exposes degraded diagnostics. New Unix state files are created with
+  `0600` permissions unless the caller provisions the path.
+- The host helper must distinguish three boot-ID source classes in its
+  diagnostics: `Native` (kernel/native boot ID), `StateBacked` (synthesized
+  boot ID from a state file with healthy state), and `Degraded` (synthesized
+  boot ID from a state file or fallback path where state failed or native
+  discovery failed). Degraded boot IDs are still valid 128-bit UUIDs but
+  the helper does not claim cross-process same-boot stability for them.
 - Rust and Go expose configured-root, effective machine-id
   journal directory, active path, machine ID, boot ID, and source-prefix
   accessors on the high-level directory writer.
@@ -462,9 +544,10 @@ Current shared high-level directory writer API slice:
   decisions. Missing artifacts should be reported by returning zero; unexpected
   provider errors abort retention where the API can surface the error.
 - Rust and Go high-level append paths support source realtime
-  injection through `_SOURCE_REALTIME_TIMESTAMP` and clamp non-progressing
-  realtime / monotonic overrides forward to preserve strict journal ordering,
-  including explicit zero monotonic overrides.
+  injection through `_SOURCE_REALTIME_TIMESTAMP`, require explicit generated
+  monotonic timestamps, and clamp non-progressing realtime / monotonic values
+  forward to preserve strict journal ordering, including explicit zero
+  monotonic values.
 - Rust and Go reject explicitly enabled zero policy limits in
   the newer optional-policy API surface.
 

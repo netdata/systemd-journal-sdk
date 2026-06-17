@@ -48,7 +48,7 @@ func TestWriterSyncCloseAndClosedAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := w.Append([]Field{StringField("MESSAGE", "sync")}, EntryOptions{}); err != nil {
+	if err := w.Append([]Field{StringField("MESSAGE", "sync")}, testEntryOptions(1)); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
 	if err := w.Sync(); err != nil {
@@ -60,7 +60,7 @@ func TestWriterSyncCloseAndClosedAppend(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("second Close() error = %v", err)
 	}
-	if err := w.Append([]Field{StringField("MESSAGE", "after close")}, EntryOptions{}); !errors.Is(err, errWriterClosed) {
+	if err := w.Append([]Field{StringField("MESSAGE", "after close")}, testEntryOptions(1)); !errors.Is(err, errWriterClosed) {
 		t.Fatalf("Append(after Close) error = %v, want errWriterClosed", err)
 	}
 	if err := w.Sync(); !errors.Is(err, errWriterClosed) {
@@ -74,12 +74,12 @@ func TestAppendMapUsesDeterministicOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := w.AppendMap(map[string]string{
+	if err := w.AppendMapWithOptions(map[string]string{
 		"SYSLOG_IDENTIFIER": "go-test",
 		"PRIORITY":          "6",
 		"MESSAGE":           "ordered",
-	}); err != nil {
-		t.Fatalf("AppendMap() error = %v", err)
+	}, testEntryOptions(1)); err != nil {
+		t.Fatalf("AppendMapWithOptions() error = %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)

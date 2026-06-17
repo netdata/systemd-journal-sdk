@@ -37,8 +37,8 @@ func createMessageJournal(t *testing.T, path string, rows []messageRow) {
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
-	for _, row := range rows {
-		if err := w.Append([]Field{StringField("MESSAGE", row.message)}, EntryOptions{RealtimeUsec: row.realtime}); err != nil {
+	for i, row := range rows {
+		if err := w.Append([]Field{StringField("MESSAGE", row.message)}, EntryOptions{RealtimeUsec: row.realtime, MonotonicUsec: uint64(i + 1)}); err != nil {
 			t.Fatalf("Append %q error: %v", row.message, err)
 		}
 	}
@@ -152,7 +152,7 @@ func TestSdJournalQueryUniqueBinaryValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
-	if err := w.Append([]Field{{Name: "BINARY", Value: []byte{0x00, 0xff}}}, EntryOptions{}); err != nil {
+	if err := w.Append([]Field{{Name: "BINARY", Value: []byte{0x00, 0xff}}}, testEntryOptions(1)); err != nil {
 		t.Fatalf("Append binary error: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -520,7 +520,7 @@ func TestDirectoryReaderPreviousBeforeRealtimeRange(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create %s error: %v", tc.message, err)
 		}
-		if err := w.Append([]Field{StringField("MESSAGE", tc.message)}, EntryOptions{RealtimeUsec: tc.realtime}); err != nil {
+		if err := w.Append([]Field{StringField("MESSAGE", tc.message)}, EntryOptions{RealtimeUsec: tc.realtime, MonotonicUsec: tc.realtime}); err != nil {
 			t.Fatalf("Append %s error: %v", tc.message, err)
 		}
 		if err := w.Close(); err != nil {

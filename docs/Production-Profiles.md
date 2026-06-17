@@ -25,7 +25,7 @@ Avoid:
 
 - converting structured data to raw `KEY=value` payloads;
 - doing producer-specific field remapping inside SDK calls;
-- relying on core writers to discover host identity;
+- relying on core writers to discover or synthesize identity/time anchors;
 - treating live publication cadence as durability.
 
 ## Stock systemd Compatibility Writer

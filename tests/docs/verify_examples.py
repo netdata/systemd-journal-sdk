@@ -102,7 +102,18 @@ PRELUDES: dict[tuple[str, str], str] = {
     ),
     ("go", "open-writer"): textwrap.dedent(
         """\
-        w, err := journal.Create("/var/log/journal-sdk/example.journal", journal.Options{})
+        machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
+        if err != nil {
+            return err
+        }
+        bootID, err := journal.ParseUUID("ffeeddccbbaa99887766554433221100")
+        if err != nil {
+            return err
+        }
+        w, err := journal.Create("/var/log/journal-sdk/example.journal", journal.Options{
+            MachineID: machineID,
+            BootID:    bootID,
+        })
         if err != nil {
             return err
         }

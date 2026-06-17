@@ -99,7 +99,9 @@ func TestNetdataCollectBootFirstRealtimeUsesBootIndex(t *testing.T) {
 	bootA := UUID{0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf}
 	bootB := UUID{0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf}
 	path := filepath.Join(t.TempDir(), "boots.journal")
-	w, err := Create(path, Options{BootID: bootA})
+	opts := testOptions()
+	opts.BootID = bootA
+	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -141,7 +143,9 @@ func TestNetdataCollectBootFirstRealtimeSkipsUnneededAndKeepsZeroRealtime(t *tes
 	bootA := UUID{0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf}
 	bootB := UUID{0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf}
 	path := filepath.Join(t.TempDir(), "boot-edge.journal")
-	w, err := Create(path, Options{BootID: bootA})
+	opts := testOptions()
+	opts.BootID = bootA
+	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1278,7 +1282,7 @@ func writeNetdataTestJournalAt(t *testing.T, path, message string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", filepath.Dir(path), err)
 	}
-	writer, err := Create(path, Options{})
+	writer, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create(%s) error = %v", path, err)
 	}

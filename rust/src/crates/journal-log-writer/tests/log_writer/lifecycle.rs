@@ -11,18 +11,16 @@ fn test_lifecycle_observer_reports_rotation_and_retention_deletion() {
         },
         RotationPolicy::default().with_number_of_entries(1),
         RetentionPolicy::default().with_number_of_journal_files(1),
-    );
+    )
+    .with_boot_id(test_boot_id());
     let observer = Arc::new(RecordingObserver::default());
     let mut log = Log::new(dir.path(), config)
         .expect("create log")
         .with_lifecycle_observer(observer.clone());
 
-    log.write_entry(&[b"MESSAGE=one"], None)
-        .expect("write first entry");
-    log.write_entry(&[b"MESSAGE=two"], None)
-        .expect("write second entry");
-    log.write_entry(&[b"MESSAGE=three"], None)
-        .expect("write third entry");
+    write_test_entry(&mut log, &[b"MESSAGE=one"]).expect("write first entry");
+    write_test_entry(&mut log, &[b"MESSAGE=two"]).expect("write second entry");
+    write_test_entry(&mut log, &[b"MESSAGE=three"]).expect("write third entry");
 
     let events = observer
         .events
@@ -64,7 +62,8 @@ fn test_artifact_sizer_contributes_to_retention_bytes() {
         },
         RotationPolicy::default().with_number_of_entries(1),
         RetentionPolicy::default().with_size_of_journal_files(1),
-    );
+    )
+    .with_boot_id(test_boot_id());
     let observer = Arc::new(RecordingObserver::default());
     let sizer = Arc::new(FixedArtifactSizer::default());
     let mut log = Log::new(dir.path(), config)
@@ -72,10 +71,8 @@ fn test_artifact_sizer_contributes_to_retention_bytes() {
         .with_lifecycle_observer(observer.clone())
         .with_artifact_sizer(sizer.clone());
 
-    log.write_entry(&[b"MESSAGE=artifact-retention-0"], None)
-        .expect("write first entry");
-    log.write_entry(&[b"MESSAGE=artifact-retention-1"], None)
-        .expect("write second entry");
+    write_test_entry(&mut log, &[b"MESSAGE=artifact-retention-0"]).expect("write first entry");
+    write_test_entry(&mut log, &[b"MESSAGE=artifact-retention-1"]).expect("write second entry");
 
     assert!(
         !sizer.calls.lock().expect("lock artifact calls").is_empty(),
@@ -115,16 +112,15 @@ fn test_lifecycle_observer_reports_missing_retention_deletions() {
         },
         RotationPolicy::default().with_number_of_entries(1),
         RetentionPolicy::default().with_number_of_journal_files(1),
-    );
+    )
+    .with_boot_id(test_boot_id());
     let observer = Arc::new(RecordingObserver::default());
     let mut log = Log::new(dir.path(), config)
         .expect("create log")
         .with_lifecycle_observer(observer.clone());
 
-    log.write_entry(&[b"MESSAGE=one"], None)
-        .expect("write first entry");
-    log.write_entry(&[b"MESSAGE=two"], None)
-        .expect("write second entry");
+    write_test_entry(&mut log, &[b"MESSAGE=one"]).expect("write first entry");
+    write_test_entry(&mut log, &[b"MESSAGE=two"]).expect("write second entry");
 
     let archived_path = journal_file_paths(&dir)
         .into_iter()
@@ -132,8 +128,7 @@ fn test_lifecycle_observer_reports_missing_retention_deletions() {
         .expect("archived path after first rotation");
     fs::remove_file(&archived_path).expect("remove archived file before retention");
 
-    log.write_entry(&[b"MESSAGE=three"], None)
-        .expect("write third entry");
+    write_test_entry(&mut log, &[b"MESSAGE=three"]).expect("write third entry");
 
     let events = observer.events.lock().expect("lock observer events");
     let retained = events

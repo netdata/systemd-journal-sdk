@@ -103,7 +103,6 @@ type Writer struct {
 	appendOffset      uint64
 	nextSeqnum        uint64
 	bootID            UUID
-	started           time.Time
 	closed            bool
 	compression       int
 	compressThreshold int
@@ -137,8 +136,15 @@ func validateFileMode(mode *os.FileMode) error {
 }
 
 // Create creates or truncates a journal file.
+//
+// The strict writer contract requires explicit non-zero Options.MachineID and
+// Options.BootID. A zero value in either field returns ErrMissingMachineID or
+// ErrMissingBootID before any file mutation.
 func Create(path string, opts Options) (*Writer, error) {
-	opts = normalizeOptions(opts)
+	opts, err := normalizeOptions(opts)
+	if err != nil {
+		return nil, err
+	}
 	if !validCompression(opts.Compression) {
 		return nil, fmt.Errorf("unsupported journal compression: %d", opts.Compression)
 	}
@@ -159,7 +165,7 @@ func Create(path string, opts Options) (*Writer, error) {
 	}
 
 	w := &Writer{
-		file: f, path: path, bootID: opts.BootID, started: time.Now(),
+		file: f, path: path, bootID: opts.BootID,
 		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes, compact: opts.Compact,
 		livePublishEveryEntries: livePublishEveryEntries(opts),
 		fieldNamePolicy:         opts.FieldNamePolicy,
@@ -179,10 +185,22 @@ func Open(path string) (*Writer, error) {
 
 // OpenWithOptions opens a journal file created by this package for appending,
 // using options that affect future appends.
+//
+// The strict writer contract does not require an explicit machine ID or boot
+// ID at open time. On-disk tail state supplies them when the file has
+// entries. For files without a tail boot ID, callers must supply an explicit
+// non-zero Options.BootID before the first append; the writer rejects the
+// append with ErrMissingBootID instead of inventing a value.
 func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	opts = normalizeOpenOptions(opts)
 	if err := validateFieldNamePolicy(opts.FieldNamePolicy); err != nil {
 		return nil, err
+	}
+	if !isZeroUUID(opts.MachineID) && isZeroUUID(opts.BootID) {
+		return nil, ErrMissingBootID
+	}
+	if isZeroUUID(opts.MachineID) && !isZeroUUID(opts.BootID) {
+		return nil, ErrMissingMachineID
 	}
 	f, err := openWriterFile(path, false, 0)
 	if err != nil {
@@ -206,7 +224,6 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	}
 
 	header.state = stateOnline
-	now := time.Now()
 	w := &Writer{
 		file:                    f,
 		path:                    path,
@@ -214,7 +231,6 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 		appendOffset:            align8(header.tailObjectOffset + tail.size),
 		nextSeqnum:              header.tailEntrySeqnum + 1,
 		bootID:                  header.tailEntryBootID,
-		started:                 startTimeForTailMonotonic(now, header.tailEntryMonotonic),
 		compression:             appendHeaderCompression(header),
 		compressThreshold:       defaultCompressThreshold,
 		compact:                 header.isCompact(),
@@ -233,8 +249,8 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	if isZeroUUID(w.bootID) {
 		if !isZeroUUID(opts.BootID) {
 			w.bootID = opts.BootID
-		} else {
-			w.bootID = header.fileID
+		} else if w.header.nEntries > 0 {
+			return nil, fmt.Errorf("%w: cannot open existing file without a tail boot id", ErrMissingBootID)
 		}
 	}
 	if err := w.writeHeader(); err != nil {
@@ -284,7 +300,15 @@ func appendHeaderCompression(header journalHeader) int {
 }
 
 // AppendMap appends a string-valued entry with deterministic field ordering.
+// Under the strict writer contract this compatibility wrapper returns
+// ErrMissingMonotonicUsec; use AppendMapWithOptions for new code.
 func (w *Writer) AppendMap(fields map[string]string) error {
+	return w.AppendMapWithOptions(fields, EntryOptions{})
+}
+
+// AppendMapWithOptions appends a string-valued entry with deterministic field
+// ordering and explicit entry metadata.
+func (w *Writer) AppendMapWithOptions(fields map[string]string, opts EntryOptions) error {
 	keys := make([]string, 0, len(fields))
 	for k := range fields {
 		keys = append(keys, k)
@@ -295,7 +319,7 @@ func (w *Writer) AppendMap(fields map[string]string) error {
 	for _, k := range keys {
 		entry = append(entry, StringField(k, fields[k]))
 	}
-	return w.Append(entry, EntryOptions{})
+	return w.Append(entry, opts)
 }
 
 // Append appends one journal entry.
@@ -371,16 +395,43 @@ func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts Entr
 	return w.publishAfterEntry()
 }
 
+// ErrMissingMonotonicUsec is returned by Append/AppendRaw when the caller
+// does not provide an explicit monotonic timestamp and the writer cannot
+// fall back to a process-relative or wall-clock value. Callers must supply
+// EntryOptions.MonotonicUsec or MonotonicUsecSet=true.
+var ErrMissingMonotonicUsec = fmt.Errorf("journal: monotonic usec is required")
+
+// ErrMonotonicUsecOverflow is returned when the writer cannot clamp a
+// same-boot monotonic timestamp because the existing tail timestamp is already
+// at the maximum uint64 value.
+var ErrMonotonicUsecOverflow = fmt.Errorf("journal: monotonic usec overflow")
+
+func validateEntryMonotonicOptions(opts EntryOptions) error {
+	if opts.MonotonicUsec == 0 && !opts.MonotonicUsecSet {
+		return ErrMissingMonotonicUsec
+	}
+	return nil
+}
+
 func (w *Writer) prepareEntryOptions(opts EntryOptions) (EntryOptions, uint64, error) {
 	now := time.Now()
 	if opts.RealtimeUsec == 0 && !opts.RealtimeUsecSet {
 		opts.RealtimeUsec = uint64(now.UnixMicro())
 	}
-	if opts.MonotonicUsec == 0 && !opts.MonotonicUsecSet {
-		opts.MonotonicUsec = uint64(now.Sub(w.started) / time.Microsecond)
+	if err := validateEntryMonotonicOptions(opts); err != nil {
+		return opts, 0, err
 	}
 	if isZeroUUID(opts.BootID) {
 		opts.BootID = w.bootID
+	}
+	if isZeroUUID(opts.BootID) {
+		return opts, 0, ErrMissingBootID
+	}
+	if opts.BootID == w.header.tailEntryBootID && opts.MonotonicUsec <= w.header.tailEntryMonotonic {
+		if w.header.tailEntryMonotonic == ^uint64(0) {
+			return opts, 0, ErrMonotonicUsecOverflow
+		}
+		opts.MonotonicUsec = w.header.tailEntryMonotonic + 1
 	}
 	entrySeqnum := w.nextSeqnum
 	if opts.Seqnum != 0 {

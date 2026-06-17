@@ -219,34 +219,34 @@ func TestWriterRejectsInvalidEntries(t *testing.T) {
 		}
 	}()
 
-	if err := w.Append(nil, EntryOptions{}); !errors.Is(err, errEntryEmpty) {
+	if err := w.Append(nil, testEntryOptions(1)); !errors.Is(err, errEntryEmpty) {
 		t.Fatalf("Append(nil) error = %v, want errEntryEmpty", err)
 	}
-	if err := w.Append([]Field{StringField("lowercase", "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.Append([]Field{StringField("lowercase", "bad")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("Append(lowercase) error = %v, want errFieldName", err)
 	}
-	if err := w.Append([]Field{StringField("BAD-NAME", "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.Append([]Field{StringField("BAD-NAME", "bad")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("Append(BAD-NAME) error = %v, want errFieldName", err)
 	}
-	if err := w.Append([]Field{StringField("1MESSAGE", "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.Append([]Field{StringField("1MESSAGE", "bad")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("Append(1MESSAGE) error = %v, want errFieldName", err)
 	}
-	if err := w.Append([]Field{StringField(strings.Repeat("A", 65), "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.Append([]Field{StringField(strings.Repeat("A", 65), "bad")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("Append(long field name) error = %v, want errFieldName", err)
 	}
-	if err := w.AppendRaw(nil, EntryOptions{}); !errors.Is(err, errEntryEmpty) {
+	if err := w.AppendRaw(nil, testEntryOptions(1)); !errors.Is(err, errEntryEmpty) {
 		t.Fatalf("AppendRaw(nil) error = %v, want errEntryEmpty", err)
 	}
-	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("AppendRaw(no equals) error = %v, want errFieldName", err)
 	}
-	if err := w.AppendRaw([][]byte{nil}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.AppendRaw([][]byte{nil}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("AppendRaw(empty payload) error = %v, want errFieldName", err)
 	}
-	if err := w.AppendRaw([][]byte{[]byte("=")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.AppendRaw([][]byte{[]byte("=")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("AppendRaw(single equals) error = %v, want errFieldName", err)
 	}
-	if err := w.AppendRaw([][]byte{[]byte("lowercase=bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.AppendRaw([][]byte{[]byte("lowercase=bad")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("AppendRaw(lowercase) error = %v, want errFieldName", err)
 	}
 }
@@ -442,10 +442,10 @@ func TestWriterAppendRawJournalAppPolicyDropsInvalidCallerPayloads(t *testing.T)
 	}, EntryOptions{RealtimeUsec: 1_700_002_112_100_001, MonotonicUsec: 3}); !errors.Is(err, errEntryEmpty) {
 		t.Fatalf("AppendRaw(journal-app drop-only) error = %v, want errEntryEmpty", err)
 	}
-	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("AppendRaw(journal-app malformed payload) error = %v, want errFieldName", err)
 	}
-	if err := w.AppendRaw([][]byte{[]byte("=bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.AppendRaw([][]byte{[]byte("=bad")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("AppendRaw(journal-app empty-name payload) error = %v, want errFieldName", err)
 	}
 	if err := w.Close(); err != nil {
@@ -484,7 +484,7 @@ func TestWriterRawPolicyAllowsStructureOnlyFieldNames(t *testing.T) {
 	}, EntryOptions{RealtimeUsec: 1_700_002_113_000_000, MonotonicUsec: 1}); err != nil {
 		t.Fatalf("Append(raw fields) error = %v", err)
 	}
-	if err := w.Append([]Field{StringField("BAD=NAME", "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.Append([]Field{StringField("BAD=NAME", "bad")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("Append(raw name containing '=') error = %v, want errFieldName", err)
 	}
 	if err := w.Close(); err != nil {
@@ -520,10 +520,10 @@ func TestWriterAppendRawRawPolicyAllowsStructureOnlyPayloadNames(t *testing.T) {
 	}, EntryOptions{RealtimeUsec: 1_700_002_113_100_000, MonotonicUsec: 2}); err != nil {
 		t.Fatalf("AppendRaw(raw payloads) error = %v", err)
 	}
-	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("AppendRaw(no equals) error = %v, want errFieldName", err)
 	}
-	if err := w.AppendRaw([][]byte{[]byte("=bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+	if err := w.AppendRaw([][]byte{[]byte("=bad")}, testEntryOptions(1)); !errors.Is(err, errFieldName) {
 		t.Fatalf("AppendRaw(empty name) error = %v, want errFieldName", err)
 	}
 	if err := w.Close(); err != nil {
@@ -776,11 +776,11 @@ func TestOpenAppendDefaultMonotonicPreservesJournalctlVerify(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if err := w.Append([]Field{StringField("MESSAGE", "first")}, EntryOptions{}); err != nil {
+	if err := w.Append([]Field{StringField("MESSAGE", "first")}, testEntryOptions(101)); err != nil {
 		t.Fatalf("Append(first) error = %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if err := w.Append([]Field{StringField("MESSAGE", "second")}, EntryOptions{}); err != nil {
+	if err := w.Append([]Field{StringField("MESSAGE", "second")}, testEntryOptions(102)); err != nil {
 		t.Fatalf("Append(second) error = %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -792,7 +792,7 @@ func TestOpenAppendDefaultMonotonicPreservesJournalctlVerify(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	time.Sleep(time.Millisecond)
-	if err := w.Append([]Field{StringField("MESSAGE", "third")}, EntryOptions{}); err != nil {
+	if err := w.Append([]Field{StringField("MESSAGE", "third")}, testEntryOptions(103)); err != nil {
 		t.Fatalf("Append(third) error = %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -806,7 +806,7 @@ func TestOpenAppendDefaultMonotonicPreservesJournalctlVerify(t *testing.T) {
 	}
 }
 
-func TestWriterRawBackwardMonotonicPassThroughFailsVerification(t *testing.T) {
+func TestWriterClampsBackwardSameBootMonotonic(t *testing.T) {
 	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "raw-backward-monotonic.journal")
@@ -828,14 +828,31 @@ func TestWriterRawBackwardMonotonicPassThroughFailsVerification(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	err = VerifyFile(path)
-	if err == nil {
-		t.Fatal("VerifyFile() unexpectedly passed for same-boot backward monotonic timestamps")
+	if err := VerifyFile(path); err != nil {
+		t.Fatalf("VerifyFile() error = %v", err)
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "monotonic") {
-		t.Fatalf("VerifyFile() error = %v, want monotonic failure", err)
+	verifyJournalctl(t, path)
+
+	r := mustOpenReaderFile(t, path)
+	defer r.Close()
+	r.SeekHead()
+	if ok, err := r.Step(); err != nil || !ok {
+		t.Fatalf("first Step() = %v, %v", ok, err)
 	}
-	verifyJournalctlFails(t, path, "timestamp out of synchronization")
+	first, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("first GetEntry() error = %v", err)
+	}
+	if ok, err := r.Step(); err != nil || !ok {
+		t.Fatalf("second Step() = %v, %v", ok, err)
+	}
+	second, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("second GetEntry() error = %v", err)
+	}
+	if first.Monotonic != 10 || second.Monotonic != 11 {
+		t.Fatalf("monotonic values = %d, %d; want 10, 11", first.Monotonic, second.Monotonic)
+	}
 }
 
 func TestWriterRawExplicitZeroMonotonicPassThrough(t *testing.T) {

@@ -95,17 +95,25 @@ const (
 	LogOpenEager
 )
 
-// LogIdentityMode controls how missing machine and boot IDs are handled.
+// LogIdentityMode is retained for backward compatibility. The strict writer
+// contract always requires explicit machine ID, boot ID, and generated-entry
+// monotonic timestamps. SDK-generated fallbacks are no longer accepted.
+//
+// LogIdentityStrict is the only supported mode and the zero value. The
+// previous LogIdentityAuto symbol has been retired; callers that used it must
+// supply explicit IDs.
 type LogIdentityMode int
 
 const (
-	// LogIdentityAuto uses explicit IDs when provided and generates SDK-local
-	// IDs for missing values. It does not probe host identity.
-	LogIdentityAuto LogIdentityMode = iota
 	// LogIdentityStrict requires Options.MachineID and Options.BootID to be
-	// provided explicitly.
-	LogIdentityStrict
+	// provided explicitly. This is the default and only supported mode.
+	LogIdentityStrict LogIdentityMode = iota
 )
+
+// ErrUnsupportedLogIdentityMode is returned when a caller supplies any
+// non-strict identity mode. New callers should leave IdentityMode at the zero
+// value (LogIdentityStrict) or remove the field from their LogConfig.
+var ErrUnsupportedLogIdentityMode = fmt.Errorf("journal: only LogIdentityStrict is supported; supply explicit machine and boot id")
 
 // LogLifecycleEventType identifies a high-level journal file lifecycle event.
 type LogLifecycleEventType string
@@ -306,8 +314,8 @@ func validateNewLogConfig(dir string, config LogConfig) error {
 	if config.OpenMode != LogOpenLazy && config.OpenMode != LogOpenEager {
 		return fmt.Errorf("%w: unsupported log open mode %d", errInvalidJournal, config.OpenMode)
 	}
-	if config.IdentityMode != LogIdentityAuto && config.IdentityMode != LogIdentityStrict {
-		return fmt.Errorf("%w: unsupported log identity mode %d", errInvalidJournal, config.IdentityMode)
+	if config.IdentityMode != LogIdentityStrict {
+		return ErrUnsupportedLogIdentityMode
 	}
 	if err := validateFieldNamePolicy(config.Options.FieldNamePolicy); err != nil {
 		return err
@@ -335,9 +343,6 @@ func normalizedLogSource(source string) string {
 }
 
 func validateStrictLogIdentity(config LogConfig) error {
-	if config.IdentityMode != LogIdentityStrict {
-		return nil
-	}
 	if isZeroUUID(config.Options.MachineID) {
 		return fmt.Errorf("%w: strict identity requires machine id", errInvalidJournal)
 	}
@@ -527,6 +532,9 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := validateEntryMonotonicOptions(opts); err != nil {
+		return err
+	}
 	fields = preparedFields
 	opts = l.entryOptionsForAppend(opts)
 	if err := l.enforceRetentionOnOpen(); err != nil {
@@ -562,6 +570,9 @@ func (l *Log) AppendRaw(payloads [][]byte, opts EntryOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := validateEntryMonotonicOptions(opts); err != nil {
+		return err
+	}
 	payloads = preparedPayloads
 	opts = l.entryOptionsForAppend(opts)
 	if err := l.enforceRetentionOnOpen(); err != nil {
@@ -587,6 +598,8 @@ func (l *Log) AppendRaw(payloads [][]byte, opts EntryOptions) error {
 }
 
 // AppendMap appends a string-valued entry through the directory writer.
+// Under the strict writer contract this compatibility wrapper returns
+// ErrMissingMonotonicUsec; use AppendMapWithOptions for new code.
 func (l *Log) AppendMap(fields map[string]string) error {
 	return l.AppendMapWithOptions(fields, EntryOptions{})
 }
@@ -948,10 +961,8 @@ func align8Saturating(v uint64) uint64 {
 }
 
 func normalizeLogOptions(opts Options, mode LogIdentityMode) (Options, error) {
-	if mode == LogIdentityStrict {
-		return normalizeOptions(opts), nil
-	}
-	return normalizeOptions(opts), nil
+	_ = mode
+	return normalizeOptions(opts)
 }
 
 func validateRotationPolicy(policy RotationPolicy) error {

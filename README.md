@@ -36,6 +36,9 @@ explicit accepted reason.
 
 - Core readers and writers operate on explicit caller-provided paths, bytes,
   timestamps, IDs, and options.
+- Writers require explicit machine ID, boot ID, and generated-entry monotonic
+  timestamps; optional host helpers may produce local-host values, but the
+  writer does not choose them implicitly.
 - Writers use journald's `0640` file permission default for newly-created
   journal files and expose explicit per-language overrides for consumers that
   need a different mode. POSIX creation modes remain subject to the caller's
@@ -83,5 +86,7 @@ on the project-prefixed internal packages:
 - `systemd-journal-sdk-core`
 - `systemd-journal-sdk-registry`
 - `systemd-journal-sdk-log-writer`
+- `systemd-journal-sdk-host` (`journal_host`), the optional local-host
+  identity and monotonic helper crate
 - `systemd-journal-sdk-index`
 - `systemd-journal-sdk-engine`

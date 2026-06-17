@@ -24,6 +24,35 @@ pub struct Seconds(pub u32);
 #[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub struct Microseconds(pub u64);
 
+/// Journal entry timestamp overrides used by writer-side APIs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
+pub struct EntryTimestamps {
+    /// Optional source timestamp for `_SOURCE_REALTIME_TIMESTAMP` field injection.
+    pub source_realtime_usec: Option<u64>,
+    /// Optional journal entry realtime timestamp override.
+    pub entry_realtime_usec: Option<u64>,
+    /// Optional journal entry monotonic timestamp override.
+    pub entry_monotonic_usec: Option<u64>,
+}
+
+impl EntryTimestamps {
+    pub fn with_source_realtime_usec(mut self, ts: u64) -> Self {
+        self.source_realtime_usec = Some(ts);
+        self
+    }
+
+    pub fn with_entry_realtime_usec(mut self, ts: u64) -> Self {
+        self.entry_realtime_usec = Some(ts);
+        self
+    }
+
+    pub fn with_entry_monotonic_usec(mut self, ts: u64) -> Self {
+        self.entry_monotonic_usec = Some(ts);
+        self
+    }
+}
+
 impl Seconds {
     /// Create a timestamp from seconds.
     pub fn new(seconds: u32) -> Self {
@@ -286,9 +315,11 @@ impl Default for RealtimeClock {
 /// Gets the current monotonic timestamp in microseconds since boot or system start.
 ///
 /// Unix targets use `CLOCK_MONOTONIC`, which provides a monotonically increasing
-/// timestamp that is not affected by system clock adjustments but does not count
-/// time when the system is suspended. Windows uses unbiased interrupt time,
-/// which also counts only time spent in the working state since system start.
+/// timestamp that is not affected by system clock adjustments. Suspend/sleep
+/// semantics are OS-specific: Linux excludes suspended time, while FreeBSD and
+/// macOS include suspended/asleep time for `CLOCK_MONOTONIC`. Windows uses
+/// unbiased interrupt time, which counts only time spent in the working state
+/// since system start.
 ///
 /// Other non-Unix targets fall back to process-local monotonic elapsed time.
 pub fn monotonic_now() -> std::io::Result<Microseconds> {

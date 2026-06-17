@@ -9,7 +9,7 @@ fn test_write_single_entry() {
 
     let entry = [b"MESSAGE=Hello, World!" as &[u8], b"PRIORITY=6"];
 
-    log.write_entry(&entry, None).unwrap();
+    write_test_entry(&mut log, &entry).unwrap();
     log.sync().unwrap();
 
     // Verify file was created
@@ -27,7 +27,7 @@ fn test_write_multiple_entries() {
     for i in 0..10 {
         let message = format!("MESSAGE=Entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry, None).unwrap();
+        write_test_entry(&mut log, &entry).unwrap();
     }
 
     log.sync().unwrap();
@@ -50,7 +50,7 @@ fn test_rotation_by_entry_count() {
     for i in 0..12 {
         let message = format!("MESSAGE=Entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry, None).unwrap();
+        write_test_entry(&mut log, &entry).unwrap();
     }
 
     log.sync().unwrap();
@@ -76,7 +76,7 @@ fn test_rotation_by_file_size() {
             "x".repeat(1000)
         );
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry, None).unwrap();
+        write_test_entry(&mut log, &entry).unwrap();
     }
 
     log.sync().unwrap();
@@ -264,8 +264,7 @@ fn test_derived_rotation_small_retention_clamps_to_minimum() {
     let config = test_config().with_retention_policy(retention);
 
     let mut log = Log::new(dir.path(), config).unwrap();
-    log.write_entry(&[b"MESSAGE=small retention clamp"], None)
-        .unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=small retention clamp"]).unwrap();
     log.close().unwrap();
 
     let path = journal_file_path(&dir);
@@ -290,8 +289,7 @@ fn test_derived_rotation_compact_max_file_size_clamp() {
         .with_compact(true);
 
     let mut log = Log::new(dir.path(), config).unwrap();
-    log.write_entry(&[b"MESSAGE=compact derived clamp"], None)
-        .unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=compact derived clamp"]).unwrap();
     log.close().unwrap();
 
     let path = journal_file_path(&dir);
@@ -320,8 +318,7 @@ fn test_explicit_rotation_overrides_retention_defaults() {
         .with_retention_policy(retention);
 
     let mut log = Log::new(dir.path(), config).unwrap();
-    log.write_entry(&[b"MESSAGE=explicit rotation override"], None)
-        .unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=explicit rotation override"]).unwrap();
     log.close().unwrap();
 
     let path = journal_file_path(&dir);
@@ -355,7 +352,7 @@ fn test_compact_rotation_preserves_compact_format() {
     for i in 0..3 {
         let message = format!("MESSAGE=compact rotated entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry, None).unwrap();
+        write_test_entry(&mut log, &entry).unwrap();
     }
     log.sync().unwrap();
 
@@ -396,7 +393,7 @@ fn test_retention_by_file_count() {
     for i in 0..10 {
         let message = format!("MESSAGE=Entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry, None).unwrap();
+        write_test_entry(&mut log, &entry).unwrap();
     }
 
     log.sync().unwrap();
@@ -416,7 +413,7 @@ fn test_retention_by_file_count_counts_current_file() {
     let mut log = Log::new(dir.path(), config).unwrap();
     for i in 0..3 {
         let message = format!("MESSAGE=current retention {i}");
-        log.write_entry(&[message.as_bytes()], None).unwrap();
+        write_test_entry(&mut log, &[message.as_bytes()]).unwrap();
     }
     log.sync().unwrap();
 
@@ -437,10 +434,8 @@ fn test_strict_systemd_retention_protects_current_file_by_size() {
         .with_retention_policy(RetentionPolicy::default().with_size_of_journal_files(1));
 
     let mut log = Log::new(dir.path(), config).unwrap();
-    log.write_entry(&[b"MESSAGE=strict retention 0"], None)
-        .unwrap();
-    log.write_entry(&[b"MESSAGE=strict retention 1"], None)
-        .unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=strict retention 0"]).unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=strict retention 1"]).unwrap();
     log.sync().unwrap();
 
     let paths = journal_file_paths(&dir);
@@ -617,7 +612,7 @@ fn test_retention_by_total_size() {
     for i in 0..20 {
         let message = format!("MESSAGE=Entry {}", i);
         let entry = [message.as_bytes(), b"PRIORITY=6"];
-        log.write_entry(&entry, None).unwrap();
+        write_test_entry(&mut log, &entry).unwrap();
     }
 
     log.sync().unwrap();
@@ -640,15 +635,9 @@ fn test_enforce_retention_deletes_files_by_age_without_append() {
         test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(1));
 
     let mut first = Log::new(dir.path(), config).unwrap();
-    first
-        .write_entry(&[b"MESSAGE=age retention 0"], None)
-        .unwrap();
-    first
-        .write_entry(&[b"MESSAGE=age retention 1"], None)
-        .unwrap();
-    first
-        .write_entry(&[b"MESSAGE=age retention 2"], None)
-        .unwrap();
+    write_test_entry(&mut first, &[b"MESSAGE=age retention 0"]).unwrap();
+    write_test_entry(&mut first, &[b"MESSAGE=age retention 1"]).unwrap();
+    write_test_entry(&mut first, &[b"MESSAGE=age retention 2"]).unwrap();
     first.close().unwrap();
     assert_eq!(count_journal_files(&dir), 3);
     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -678,12 +667,8 @@ fn test_lazy_retention_runs_on_first_open() {
         test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(1));
 
     let mut first = Log::new(dir.path(), config).unwrap();
-    first
-        .write_entry(&[b"MESSAGE=construction retention 0"], None)
-        .unwrap();
-    first
-        .write_entry(&[b"MESSAGE=construction retention 1"], None)
-        .unwrap();
+    write_test_entry(&mut first, &[b"MESSAGE=construction retention 0"]).unwrap();
+    write_test_entry(&mut first, &[b"MESSAGE=construction retention 1"]).unwrap();
     first.close().unwrap();
     let before = journal_file_paths(&dir);
     assert_eq!(before.len(), 2);
@@ -699,15 +684,14 @@ fn test_lazy_retention_runs_on_first_open() {
         "lazy construction must not enforce retention before the writer opens"
     );
 
-    retained
-        .write_entry(
-            &[
-                b"MESSAGE=construction retention open",
-                b"TEST_ID=rust-retention-on-open",
-            ],
-            None,
-        )
-        .unwrap();
+    write_test_entry(
+        &mut retained,
+        &[
+            b"MESSAGE=construction retention open",
+            b"TEST_ID=rust-retention-on-open",
+        ],
+    )
+    .unwrap();
     let active_path = PathBuf::from(retained.active_file().expect("active after append").path());
     assert_eq!(
         journal_file_paths(&dir),
@@ -757,7 +741,7 @@ fn test_eager_retention_runs_on_open_for_all_policies() {
         let mut first = Log::new(dir.path(), config).unwrap();
         for i in 0..3 {
             let message = format!("MESSAGE=open retention {name} {i}");
-            first.write_entry(&[message.as_bytes()], None).unwrap();
+            write_test_entry(&mut first, &[message.as_bytes()]).unwrap();
         }
         first.close().unwrap();
         assert_eq!(count_journal_files(&dir), 3);
@@ -818,12 +802,8 @@ fn test_enforce_retention_protects_active_file_by_age() {
         test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(1));
 
     let mut first = Log::new(dir.path(), config).unwrap();
-    first
-        .write_entry(&[b"MESSAGE=age active retention 0"], None)
-        .unwrap();
-    first
-        .write_entry(&[b"MESSAGE=age active retention 1"], None)
-        .unwrap();
+    write_test_entry(&mut first, &[b"MESSAGE=age active retention 0"]).unwrap();
+    write_test_entry(&mut first, &[b"MESSAGE=age active retention 1"]).unwrap();
     first.close().unwrap();
     assert_eq!(count_journal_files(&dir), 2);
     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -833,9 +813,7 @@ fn test_enforce_retention_protects_active_file_by_age() {
             .with_duration_of_journal_files(std::time::Duration::from_micros(1)),
     );
     let mut retained = Log::new(dir.path(), retained_config).unwrap();
-    retained
-        .write_entry(&[b"MESSAGE=age protected active"], None)
-        .unwrap();
+    write_test_entry(&mut retained, &[b"MESSAGE=age protected active"]).unwrap();
     let active_path = retained
         .active_file()
         .expect("active file after append")

@@ -458,6 +458,60 @@ fn entry_seqnum_override_preserves_gaps() {
 }
 
 #[test]
+fn same_boot_monotonic_is_clamped_by_low_level_writer() {
+    let dir = TempDir::new().expect("create temp dir");
+    let journal_dir = dir.path().join("journals");
+    std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+    let path = journal_dir.join("system.journal");
+    let repo_file =
+        crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+    let boot_id = test_uuid(4);
+    let mut journal_file = JournalFile::create(
+        &repo_file,
+        JournalFileOptions::new(test_uuid(1), boot_id, test_uuid(3)),
+    )
+    .expect("create journal");
+    let mut writer = JournalWriter::new(&mut journal_file, 1, boot_id).expect("create writer");
+
+    writer
+        .add_entry_fields_with_options(
+            &mut journal_file,
+            [EntryField::raw(b"MESSAGE=first")],
+            1_700_000_060_000_000,
+            10,
+            EntryWriteOptions::default(),
+        )
+        .expect("write first entry");
+    writer
+        .add_entry_fields_with_options(
+            &mut journal_file,
+            [EntryField::raw(b"MESSAGE=second")],
+            1_700_000_060_000_001,
+            5,
+            EntryWriteOptions::default(),
+        )
+        .expect("write clamped entry");
+
+    let mut entry_offsets = Vec::new();
+    journal_file
+        .entry_offsets(&mut entry_offsets)
+        .expect("collect entry offsets");
+    let monotonic_values = entry_offsets
+        .iter()
+        .map(|offset| {
+            journal_file
+                .entry_ref(*offset)
+                .expect("entry ref")
+                .header
+                .monotonic
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(monotonic_values, vec![10, 11]);
+    assert_eq!(journal_file.journal_header_ref().tail_entry_monotonic, 11);
+}
+
+#[test]
 fn entry_boot_id_override_preserves_multiboot_ordering() {
     if !journalctl_available() {
         eprintln!("journalctl not available; skipping multiboot stock verify");

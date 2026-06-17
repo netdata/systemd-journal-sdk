@@ -22,6 +22,11 @@ journal = { package = "systemd-journal-sdk", version = "0.7.2" }
 journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.7.2" }
 ```
 
+Callers that intentionally want local-host identity can also depend on
+`systemd-journal-sdk-host` and import its `journal_host` lib. Core writers never
+import or call that helper automatically; callers pass helper-returned values to
+the writer explicitly.
+
 ## Read One File
 
 Use `FileReader` when the caller owns ordering and reads one journal file.
@@ -222,12 +227,12 @@ Use `Log` for production ingestion directories.
 
 <!-- verify-example: lang=rust id=rust-write-directory -->
 ```rust
-use journal::{Config, Log, Origin, RetentionPolicy, RotationPolicy, Source};
+use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
 use std::path::Path;
 use std::time::Duration;
 
 let origin = Origin {
-    machine_id: None,
+    machine_id: Some("00112233445566778899aabbccddeeff".parse()?),
     namespace: None,
     source: Source::System,
 };
@@ -241,17 +246,21 @@ let config = Config::new(
         .with_number_of_journal_files(8)
         .with_duration_of_journal_files(Duration::from_secs(7 * 24 * 3600)),
 )
+.with_boot_id("ffeeddccbbaa99887766554433221100".parse()?)
 .with_compact(true)
 .with_live_publish_every_entries(64);
 
 let mut log = Log::new(Path::new("/var/log/journal-sdk"), config)?;
-log.write_entry(
+let timestamps = EntryTimestamps::default()
+    .with_entry_realtime_usec(1_700_000_000_000_000)
+    .with_entry_monotonic_usec(1);
+log.write_entry_with_timestamps(
     &[
         b"MESSAGE=plugin started".as_slice(),
         b"PRIORITY=6".as_slice(),
         b"SYSLOG_IDENTIFIER=example-plugin".as_slice(),
     ],
-    None,
+    timestamps,
 )?;
 log.sync()?;
 log.close()?;
@@ -270,12 +279,12 @@ split.
 
 <!-- verify-example: lang=rust id=rust-write-structured-fields -->
 ```rust
-use journal::{Config, Log, Origin, RetentionPolicy, RotationPolicy, Source};
+use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
 use journal_log_writer::StructuredField;
 use std::path::Path;
 
 let origin = Origin {
-    machine_id: None,
+    machine_id: Some("00112233445566778899aabbccddeeff".parse()?),
     namespace: None,
     source: Source::System,
 };
@@ -284,7 +293,8 @@ let config = Config::new(
     origin,
     RotationPolicy::default(),
     RetentionPolicy::default(),
-);
+)
+.with_boot_id("ffeeddccbbaa99887766554433221100".parse()?);
 
 let mut log = Log::new(Path::new("/var/log/journal-sdk"), config)?;
 let fields = [
@@ -292,7 +302,10 @@ let fields = [
     StructuredField::new(b"PRIORITY", b"6"),
     StructuredField::new(b"BINARY_PAYLOAD", b"\x00\x01\x02\xff"),
 ];
-log.write_fields(&fields, None)?;
+let timestamps = EntryTimestamps::default()
+    .with_entry_realtime_usec(1_700_000_000_000_001)
+    .with_entry_monotonic_usec(2);
+log.write_fields_with_timestamps(&fields, timestamps)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -305,7 +318,7 @@ This avoids constructing `KEY=value` bytes only to split them again.
 use journal::{Config, FieldNamePolicy, Origin, RetentionPolicy, RotationPolicy, Source};
 
 let origin = Origin {
-    machine_id: None,
+    machine_id: Some("00112233445566778899aabbccddeeff".parse()?),
     namespace: None,
     source: Source::System,
 };
@@ -314,7 +327,9 @@ let config = Config::new(
     RotationPolicy::default(),
     RetentionPolicy::default(),
 )
+.with_boot_id("ffeeddccbbaa99887766554433221100".parse()?)
 .with_field_name_policy(FieldNamePolicy::Journald);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Use:

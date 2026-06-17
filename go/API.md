@@ -20,7 +20,6 @@ should require a new minor release tag and an explicit SOW decision:
 - `journal.Options`
 - `journal.PublishEveryEntries`
 - `journal.LogOpenLazy` and `journal.LogOpenEager`
-- `journal.LogIdentityAuto` and `journal.LogIdentityStrict`
 - `journal.RotationPolicy` and `journal.RetentionPolicy` builder methods
 - `journal.EntryOptions`
 - `journal.Field` and `journal.StringField`
@@ -49,7 +48,13 @@ should require a new minor release tag and an explicit SOW decision:
 - lifecycle event type and reason constants
 - exported sentinel errors
 
-Future `v0.1.x` changes should be additive where practical.
+SOW-0115 intentionally removes the previous generated identity/time fallback
+contract. Writer integrations now provide machine ID, boot ID, and
+generated-entry monotonic timestamps explicitly, or explicitly call an optional
+host helper and pass those values to the writer.
+
+Future `v0.x` changes should be additive where practical, except where an
+accepted SOW records a breaking cleanup before `v1.0`.
 
 ## Reader Facade Contract
 
@@ -190,16 +195,14 @@ chain state, but creates a new active file on first append.
 `LogOpenEager` creates or opens the active journal file during `NewLog`, proving
 file creation/open and configured writer options before callers accept work.
 
-`LogIdentityAuto` is the default. It uses explicit IDs when provided and
-generates SDK-local IDs for missing values. It does not read host identity
-files or platform identity services.
+Writer identity is strict. Callers provide `Options.MachineID` and
+`Options.BootID` explicitly, and append calls provide generated-entry
+monotonic timestamps explicitly through `EntryOptions`.
 
-`LogIdentityStrict` requires `Options.MachineID` and `Options.BootID` to be
-provided explicitly.
-
-Callers that need a host's systemd/journald identity must obtain it explicitly,
-for example through an opt-in identity helper, and pass `Options.MachineID` and
-`Options.BootID`. Use `LogIdentityStrict` to make missing IDs an error.
+Callers that need a host's systemd/journald identity must obtain it through an
+opt-in identity helper and pass the returned values to the writer. The writer
+does not read host identity files, platform identity services, or SDK-local
+identity fallbacks.
 
 ## Live Publication Cadence
 

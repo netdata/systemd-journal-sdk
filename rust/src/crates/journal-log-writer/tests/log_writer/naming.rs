@@ -5,8 +5,7 @@ fn test_default_active_filename_uses_netdata_chain_naming() {
     let dir = TempDir::new().unwrap();
     let mut log = Log::new(dir.path(), test_config()).unwrap();
 
-    log.write_entry(&[b"MESSAGE=default chain naming"], None)
-        .unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=default chain naming"]).unwrap();
 
     let active = log.active_file().expect("active file after write");
     let name = Path::new(active.path())
@@ -47,6 +46,54 @@ fn test_open_identity_accessors_and_created_lifecycle_event() {
     .with_identity_mode(LogIdentityMode::Strict);
     let err = match Log::new(dir.path(), strict_missing_boot) {
         Ok(_) => panic!("expected strict identity failure without boot id"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, WriterError::MachineId(_)));
+
+    let strict_missing_machine = Config::new(
+        Origin {
+            machine_id: None,
+            namespace: None,
+            source: journal_registry::Source::System,
+        },
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    )
+    .with_boot_id(boot_id);
+    let err = match Log::new(dir.path(), strict_missing_machine) {
+        Ok(_) => panic!("expected strict identity failure without machine id"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, WriterError::MachineId(_)));
+
+    let strict_nil_machine = Config::new(
+        Origin {
+            machine_id: Some(uuid::Uuid::nil()),
+            namespace: None,
+            source: journal_registry::Source::System,
+        },
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    )
+    .with_boot_id(boot_id);
+    let err = match Log::new(dir.path(), strict_nil_machine) {
+        Ok(_) => panic!("expected strict identity failure with nil machine id"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, WriterError::MachineId(_)));
+
+    let strict_nil_boot = Config::new(
+        Origin {
+            machine_id: Some(machine_id),
+            namespace: None,
+            source: journal_registry::Source::System,
+        },
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    )
+    .with_boot_id(uuid::Uuid::nil());
+    let err = match Log::new(dir.path(), strict_nil_boot) {
+        Ok(_) => panic!("expected strict identity failure with nil boot id"),
         Err(err) => err,
     };
     assert!(matches!(err, WriterError::MachineId(_)));
@@ -133,13 +180,13 @@ fn test_default_chain_reopen_preserves_sequence_identity() {
     let dir = TempDir::new().unwrap();
     {
         let mut log = Log::new(dir.path(), test_config()).unwrap();
-        log.write_entry(&[b"MESSAGE=chain reopen 0"], None).unwrap();
-        log.write_entry(&[b"MESSAGE=chain reopen 1"], None).unwrap();
+        write_test_entry(&mut log, &[b"MESSAGE=chain reopen 0"]).unwrap();
+        write_test_entry(&mut log, &[b"MESSAGE=chain reopen 1"]).unwrap();
         log.sync().unwrap();
     }
     {
         let mut log = Log::new(dir.path(), test_config()).unwrap();
-        log.write_entry(&[b"MESSAGE=chain reopen 2"], None).unwrap();
+        write_test_entry(&mut log, &[b"MESSAGE=chain reopen 2"]).unwrap();
         log.sync().unwrap();
     }
 
@@ -257,8 +304,8 @@ fn test_default_chain_discards_empty_online_file_and_continues_sequence() {
     let dir = TempDir::new().unwrap();
     {
         let mut log = Log::new(dir.path(), test_config()).unwrap();
-        log.write_entry(&[b"MESSAGE=empty reopen 0"], None).unwrap();
-        log.write_entry(&[b"MESSAGE=empty reopen 1"], None).unwrap();
+        write_test_entry(&mut log, &[b"MESSAGE=empty reopen 0"]).unwrap();
+        write_test_entry(&mut log, &[b"MESSAGE=empty reopen 1"]).unwrap();
         log.close().unwrap();
     }
 
@@ -287,7 +334,7 @@ fn test_default_chain_discards_empty_online_file_and_continues_sequence() {
 
     {
         let mut log = Log::new(dir.path(), test_config()).unwrap();
-        log.write_entry(&[b"MESSAGE=empty reopen 2"], None).unwrap();
+        write_test_entry(&mut log, &[b"MESSAGE=empty reopen 2"]).unwrap();
         log.close().unwrap();
     }
 
@@ -314,8 +361,7 @@ fn test_strict_systemd_naming_uses_system_journal_active() {
     let config = test_config().with_strict_systemd_naming(true);
     let mut log = Log::new(dir.path(), config).unwrap();
 
-    log.write_entry(&[b"MESSAGE=strict systemd naming"], None)
-        .unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=strict systemd naming"]).unwrap();
 
     let active = log.active_file().expect("active file after write");
     let name = Path::new(active.path())
@@ -518,7 +564,7 @@ fn test_default_chain_tail_ignores_lower_strict_system_journal() {
 fn test_custom_source_naming_is_honored_in_default_and_strict_modes() {
     let dir = TempDir::new().unwrap();
     let origin = Origin {
-        machine_id: None,
+        machine_id: Some(test_machine_id()),
         namespace: None,
         source: journal_registry::Source::Unknown("custom-source".to_string()),
     };
@@ -528,11 +574,11 @@ fn test_custom_source_naming_is_honored_in_default_and_strict_modes() {
             origin.clone(),
             RotationPolicy::default(),
             RetentionPolicy::default(),
-        ),
+        )
+        .with_boot_id(test_boot_id()),
     )
     .unwrap();
-    log.write_entry(&[b"MESSAGE=custom default source"], None)
-        .unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=custom default source"]).unwrap();
     let active = log.active_file().expect("active default file");
     let name = Path::new(active.path())
         .file_name()
@@ -551,12 +597,11 @@ fn test_custom_source_naming_is_honored_in_default_and_strict_modes() {
             RotationPolicy::default(),
             RetentionPolicy::default(),
         )
+        .with_boot_id(test_boot_id())
         .with_strict_systemd_naming(true),
     )
     .unwrap();
-    strict_log
-        .write_entry(&[b"MESSAGE=custom strict source"], None)
-        .unwrap();
+    write_test_entry(&mut strict_log, &[b"MESSAGE=custom strict source"]).unwrap();
     let active = strict_log.active_file().expect("active strict file");
     let name = Path::new(active.path())
         .file_name()

@@ -28,7 +28,7 @@ func createDirectoryReaderJournals(t *testing.T, files int, entriesPerFile int) 
 	}
 	for i := 0; i < files; i++ {
 		path := filepath.Join(dir, "system@abc123-00000001-0000000"+string(rune('0'+i))+".journal")
-		w, err := Create(path, Options{})
+		w, err := Create(path, testOptions())
 		if err != nil {
 			t.Fatalf("Create error: %v", err)
 		}
@@ -36,7 +36,7 @@ func createDirectoryReaderJournals(t *testing.T, files int, entriesPerFile int) 
 			if err := w.Append([]Field{
 				StringField("INDEX", string(rune('0'+i))),
 				StringField("PRIORITY", "6"),
-			}, EntryOptions{RealtimeUsec: uint64(1000 + i*10 + j)}); err != nil {
+			}, EntryOptions{RealtimeUsec: uint64(1000 + i*10 + j), MonotonicUsec: uint64(i*entriesPerFile + j + 1)}); err != nil {
 				t.Fatalf("Append error: %v", err)
 			}
 		}
@@ -125,7 +125,8 @@ func TestDirectoryReaderSequentialFastPathOrdersNonOverlappingFiles(t *testing.T
 		}
 		for i, message := range tc.messages {
 			if err := w.Append([]Field{StringField("MESSAGE", message)}, EntryOptions{
-				RealtimeUsec: tc.realtime + uint64(i),
+				RealtimeUsec:  tc.realtime + uint64(i),
+				MonotonicUsec: uint64(i + 1),
 			}); err != nil {
 				t.Fatalf("Append(%s) error = %v", message, err)
 			}

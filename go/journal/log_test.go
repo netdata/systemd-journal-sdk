@@ -134,6 +134,26 @@ func TestLogAppendRejectsEmptyEntryWithoutCreatingFile(t *testing.T) {
 	}
 }
 
+func TestLogAppendRejectsMissingMonotonicWithoutCreatingFile(t *testing.T) {
+	log, dir := newTestLog(t, LogConfig{
+		Options: testOptions(),
+		Source:  "system",
+	})
+
+	if err := log.Append([]Field{StringField("MESSAGE", "missing monotonic")}, EntryOptions{}); !errors.Is(err, ErrMissingMonotonicUsec) {
+		t.Fatalf("Append(missing monotonic) error = %v, want ErrMissingMonotonicUsec", err)
+	}
+	if err := log.AppendRaw([][]byte{[]byte("MESSAGE=missing monotonic")}, EntryOptions{}); !errors.Is(err, ErrMissingMonotonicUsec) {
+		t.Fatalf("AppendRaw(missing monotonic) error = %v, want ErrMissingMonotonicUsec", err)
+	}
+	if files := journalFiles(t, dir); len(files) != 0 {
+		t.Fatalf("journal files after missing monotonic append = %d, want 0; files=%v", len(files), files)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestAlign8SaturatingDoesNotWrap(t *testing.T) {
 	if got, want := align8Saturating(^uint64(0)), ^uint64(0)&^uint64(7); got != want {
 		t.Fatalf("align8Saturating(max) = %d, want %d", got, want)

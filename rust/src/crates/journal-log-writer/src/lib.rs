@@ -6,7 +6,7 @@
 //! ## Usage
 //!
 //! ```no_run
-//! use journal_log_writer::{Log, Config, RotationPolicy, RetentionPolicy};
+//! use journal_log_writer::{Config, EntryTimestamps, Log, RotationPolicy, RetentionPolicy};
 //! use journal_registry::Origin;
 //! use std::path::Path;
 //!
@@ -19,12 +19,13 @@
 //!     .with_number_of_journal_files(10); // Keep 10 files max
 //!
 //! let origin = Origin {
-//!     machine_id: None,
+//!     machine_id: Some("00112233445566778899aabbccddeeff".parse()?),
 //!     namespace: None,
 //!     source: journal_registry::Source::System,
 //! };
 //!
-//! let config = Config::new(origin, rotation, retention);
+//! let config = Config::new(origin, rotation, retention)
+//!     .with_boot_id("ffeeddccbbaa99887766554433221100".parse()?);
 //!
 //! // Create a log writer
 //! let mut log = Log::new(Path::new("/var/log/myapp"), config)?;
@@ -34,7 +35,10 @@
 //!     b"MESSAGE=Hello, journal!" as &[u8],
 //!     b"PRIORITY=6",
 //! ];
-//! log.write_entry(&entry, None)?;
+//! let timestamps = EntryTimestamps::default()
+//!     .with_entry_realtime_usec(1_700_000_000_000_000)
+//!     .with_entry_monotonic_usec(1);
+//! log.write_entry_with_timestamps(&entry, timestamps)?;
 //! log.sync()?;
 //! # Ok(())
 //! # }

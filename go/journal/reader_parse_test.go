@@ -59,7 +59,7 @@ func TestUnsupportedDaemonCommands(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestReaderRealtimeUsec(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
-	w, err := Create(path, Options{})
+	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -95,7 +95,8 @@ func TestReaderRealtimeUsec(t *testing.T) {
 		if err := w.Append([]Field{
 			StringField("MESSAGE", "msg"),
 		}, EntryOptions{
-			RealtimeUsec: realtimeBase + uint64(i),
+			RealtimeUsec:  realtimeBase + uint64(i),
+			MonotonicUsec: uint64(i + 1),
 		}); err != nil {
 			t.Fatalf("Append error: %v", err)
 		}

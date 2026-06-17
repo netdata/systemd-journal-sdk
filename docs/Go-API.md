@@ -17,6 +17,11 @@ Import the journal package:
 import "github.com/netdata/systemd-journal-sdk/go/journal"
 ```
 
+Callers that intentionally want local-host identity can also import the
+optional helper package `github.com/netdata/systemd-journal-sdk/go/journalhost`
+and pass its returned values to the writer explicitly. Core writers never
+import or call that helper automatically.
+
 The examples focus on SDK calls. Add ordinary Go standard-library imports such
 as `bytes`, `encoding/json`, `fmt`, and `time` when a snippet uses them.
 
@@ -257,7 +262,18 @@ Use direct-file writing when the caller owns the file lifecycle.
 
 <!-- verify-example: lang=go id=go-write-one-file -->
 ```go
-w, err := journal.Create("/var/log/journal-sdk/example.journal", journal.Options{})
+machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
+if err != nil {
+    return err
+}
+bootID, err := journal.ParseUUID("ffeeddccbbaa99887766554433221100")
+if err != nil {
+    return err
+}
+w, err := journal.Create("/var/log/journal-sdk/example.journal", journal.Options{
+    MachineID: machineID,
+    BootID:    bootID,
+})
 if err != nil {
     return err
 }
@@ -267,7 +283,12 @@ return w.Append([]journal.Field{
     journal.StringField("MESSAGE", "plugin started"),
     journal.StringField("PRIORITY", "6"),
     journal.StringField("SYSLOG_IDENTIFIER", "example-plugin"),
-}, journal.EntryOptions{})
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_000,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    1,
+    MonotonicUsecSet: true,
+})
 ```
 
 `Append` is the structured hot path for producers that already have field names
@@ -282,7 +303,12 @@ The snippet continues from an open writer `w`.
 if err := w.Append([]journal.Field{
     journal.StringField("MESSAGE", "sample with binary payload"),
     {Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 0xff}},
-}, journal.EntryOptions{}); err != nil {
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_001,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    2,
+    MonotonicUsecSet: true,
+}); err != nil {
     return err
 }
 ```
@@ -300,7 +326,12 @@ if err := w.AppendRaw([][]byte{
     []byte("MESSAGE=prebuilt payload"),
     []byte("_HOSTNAME=synthetic-host"),
     []byte("BINARY_PAYLOAD=\x00\x01\x02\xff"),
-}, journal.EntryOptions{}); err != nil {
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_002,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    3,
+    MonotonicUsecSet: true,
+}); err != nil {
     return err
 }
 ```
@@ -348,7 +379,12 @@ defer log.Close()
 return log.Append([]journal.Field{
     journal.StringField("MESSAGE", "plugin started"),
     journal.StringField("PRIORITY", "6"),
-}, journal.EntryOptions{})
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_003,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    4,
+    MonotonicUsecSet: true,
+})
 ```
 
 `NewLog` stores files below `<directory>/<machine-id>/`. The active filename
@@ -359,7 +395,17 @@ consumer needs `<source>.journal` active naming.
 
 <!-- verify-example: lang=go id=go-field-name-policy -->
 ```go
+machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
+if err != nil {
+    return err
+}
+bootID, err := journal.ParseUUID("ffeeddccbbaa99887766554433221100")
+if err != nil {
+    return err
+}
 w, err := journal.Create("/tmp/example.journal", journal.Options{
+    MachineID:       machineID,
+    BootID:          bootID,
     FieldNamePolicy: journal.FieldNamePolicyJournald,
 })
 if err != nil {

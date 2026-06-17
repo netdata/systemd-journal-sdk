@@ -72,7 +72,18 @@ synthetic fields, and close it.
 
 <!-- verify-example: lang=go id=go-write-three-entries -->
 ```go
-w, err := journal.Create("/var/log/journal-sdk/example.journal", journal.Options{})
+machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
+if err != nil {
+    return err
+}
+bootID, err := journal.ParseUUID("ffeeddccbbaa99887766554433221100")
+if err != nil {
+    return err
+}
+w, err := journal.Create("/var/log/journal-sdk/example.journal", journal.Options{
+    MachineID: machineID,
+    BootID:    bootID,
+})
 if err != nil {
     return err
 }
@@ -82,7 +93,12 @@ for i := 0; i < 3; i++ {
         journal.StringField("MESSAGE", fmt.Sprintf("hello-%d", i)),
         journal.StringField("PRIORITY", "6"),
         journal.StringField("SYSLOG_IDENTIFIER", "demo-agent"),
-    }, journal.EntryOptions{})
+    }, journal.EntryOptions{
+        RealtimeUsec:     1_700_000_000_000_000 + uint64(i),
+        RealtimeUsecSet:  true,
+        MonotonicUsec:    uint64(i + 1),
+        MonotonicUsecSet: true,
+    })
     if err != nil {
         return err
     }
@@ -102,7 +118,12 @@ if err := w.Append([]journal.Field{
     journal.StringField("MESSAGE", "writer prelude worked"),
     journal.StringField("PRIORITY", "6"),
     journal.StringField("SYSLOG_IDENTIFIER", "web-server"),
-}, journal.EntryOptions{}); err != nil {
+}, journal.EntryOptions{
+    RealtimeUsec:     1_700_000_000_000_010,
+    RealtimeUsecSet:  true,
+    MonotonicUsec:    10,
+    MonotonicUsecSet: true,
+}); err != nil {
     return err
 }
 ```
