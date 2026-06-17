@@ -47,10 +47,15 @@ Last updated: 2026-06-17
   anchors, with separate optional helper packages (`go/journalhost` and
   `systemd-journal-sdk-host` / `journal_host`) for local-host Linux, FreeBSD,
   macOS, and Windows values. Validation included Go full suite, Go
-  FreeBSD/macOS/Windows helper compile checks, Rust host/log/core tests, Rust
-  Windows host-helper compile, docs validation, 31/31 verified examples,
-  runtime purity, `git diff --check`, and SOW audit. Completed-implementation
-  reviews ran three rounds: real blockers were fixed, five final reviewers
+  FreeBSD/macOS/Windows helper compile checks, native Go helper plus
+  writer/readback smoke on Windows 11/macOS/FreeBSD 14.1, native C probes for
+  the Rust helper OS APIs on Windows 11/macOS/FreeBSD 14.1, Rust host/log/core
+  tests, Rust Windows host-helper compile, docs validation, 31/31 verified
+  examples, runtime purity, `git diff --check`, and SOW audit. Native
+  non-Linux Rust runtime smoke remains blocked by missing remote Rust
+  toolchains / local Windows linker pieces and is recorded in the SOW.
+  Completed-implementation reviews ran three rounds: real blockers were fixed,
+  five final reviewers
   voted READY TO IMPLEMENT, and the remaining minimax run timed out after a
   partial no-blocker/READY transcript. SOW-0118 tracks release and Netdata
   integration planning.

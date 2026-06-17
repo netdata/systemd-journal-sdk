@@ -679,10 +679,20 @@ Post-round-2-fix local implementation validation on 2026-06-17:
 - Runtime purity: `python3 -m unittest tests.runtime_purity.test_core_runtime_purity` passed.
 - Whitespace: `git diff --check` passed.
 
-Runtime evidence gaps:
+Post-close native runtime validation on 2026-06-17:
 
+- Go local-host helper plus writer/readback smoke passed on Windows 11 over SSH with `MSYSTEM=MSYS`. The temporary cross-compiled Go smoke called `journalhost.Load`, used `MachineGuid`, state-backed boot ID, and `QueryUnbiasedInterruptTime`, verified strictly increasing monotonic values, created a journal with the provider identity, appended one entry with `EntryOptions()`, and read the entry back. Durable artifacts do not record the raw machine ID or boot ID.
+- Go local-host helper plus writer/readback smoke passed on macOS over SSH. The temporary cross-compiled Go smoke called `journalhost.Load`, used `gethostuuid`, native `kern.bootsessionuuid`, and `CLOCK_UPTIME_RAW`, verified strictly increasing monotonic values, created a journal with the provider identity, appended one entry with `EntryOptions()`, and read the entry back. Durable artifacts do not record the raw machine ID or boot ID.
+- Go local-host helper plus writer/readback smoke passed on FreeBSD 14.1 over SSH. The temporary cross-compiled Go smoke called `journalhost.Load`, used `kern.hostuuid`, native 16-byte `kern.boot_id`, and `CLOCK_UPTIME`, verified strictly increasing monotonic values, created a journal with the provider identity, appended one entry with `EntryOptions()`, and read the entry back. Durable artifacts do not record the raw machine ID or boot ID.
+- Cross-compiled Go `journalhost` package test binaries passed on Windows 11, macOS, and FreeBSD 14.1 over SSH.
+- Native C probes compiled and ran on Windows 11, macOS, and FreeBSD 14.1 to validate the platform APIs used by the Rust helper code: Windows registry `MachineGuid`, `QueryUnbiasedInterruptTime`, and `GetTickCount64`; macOS `gethostuuid`, `kern.bootsessionuuid`, and `CLOCK_UPTIME_RAW`; FreeBSD `kern.hostuuid`, 16-byte non-zero `kern.boot_id`, and `CLOCK_UPTIME`.
+- Rust local-host helper smoke passed on Linux by compiling a temporary repository-local binary under `.local/` and calling `journal_host::load`.
+
+Remaining runtime evidence gaps:
+
+- Native Rust helper runtime tests were not run on Windows, macOS, or FreeBSD because the remote Windows host has Go but no `rustc`/`cargo`, the remote macOS and FreeBSD hosts have no Go/Rust toolchains in `PATH`, and installing toolchains on those hosts was not performed as part of this post-close validation.
 - Rust FreeBSD/macOS compile checks were not run because `rustup target list --installed` only reports `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-gnu`.
-- Native FreeBSD, macOS, and Windows runtime smoke tests were not run in this Linux repository environment. Current evidence for those platforms is source-level implementation, deterministic injected state tests, Go non-Linux compile checks, and Rust Windows compile check.
+- Rust Windows executable cross-linking was attempted with a temporary `.local/` smoke binary. It did not complete because the local toolchain lacks MinGW CRT/linker components (`x86_64-w64-mingw32-gcc` / CRT libraries). Existing Rust evidence remains Linux runtime tests plus `cargo check -p systemd-journal-sdk-host --target x86_64-pc-windows-gnu`.
 
 External review status:
 
@@ -694,7 +704,7 @@ Closeout validation gate:
 
 - Acceptance criteria evidence: Rust and Go writers now require explicit machine ID, boot ID, and generated-entry monotonic timestamp inputs; optional helper packages are separate (`go/journalhost`, `systemd-journal-sdk-host` / `journal_host`); state-backed Windows and FreeBSD fallback behavior is deterministic and degraded on failure; docs/specs describe caller-owned identity selection; runtime-purity tests verify core paths do not import helpers.
 - Tests or equivalent validation: Go full suite, Go helper FreeBSD/macOS/Windows compile checks, Rust host/log/core tests, Rust host Windows compile check, docs validation, verified examples, runtime purity, `git diff --check`, and SOW audit passed as recorded above.
-- Real-use evidence: repository-local verified examples passed 31/31; non-Linux native runtime smoke remains an acknowledged environment gap, mitigated by deterministic tests and cross-compilation checks.
+- Real-use evidence: repository-local verified examples passed 31/31; Go native host-helper plus writer/readback smoke passed on Windows 11, macOS, and FreeBSD 14.1; native C probes confirmed the Rust helper's OS API sources on Windows 11, macOS, and FreeBSD 14.1. Native non-Linux Rust runtime smoke remains an acknowledged toolchain gap.
 - Reviewer findings: three completed-implementation review rounds were run; all real blockers were fixed. Final completed verdicts were READY TO IMPLEMENT, except one minimax timeout with partial READY/no-blocker transcript.
 - Same-failure scan: searches for removed fallback names and helper imports found only expected historical SOW discussion, lock-helper code, or helper internals; no core reader/writer path imports `journalhost`, `journal_host`, or `systemd-journal-sdk-host`.
 - Sensitive data gate: `.agents/sow/audit.sh` passed and reported no sensitive-data patterns in durable artifacts. Durable tests/docs use synthetic identifiers.
