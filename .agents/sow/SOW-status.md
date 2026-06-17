@@ -50,10 +50,12 @@ Last updated: 2026-06-17
   FreeBSD/macOS/Windows helper compile checks, native Go helper plus
   writer/readback smoke on Windows 11/macOS/FreeBSD 14.1, native C probes for
   the Rust helper OS APIs on Windows 11/macOS/FreeBSD 14.1, Rust host/log/core
-  tests, Rust Windows host-helper compile, docs validation, 31/31 verified
-  examples, runtime purity, `git diff --check`, and SOW audit. Native
-  non-Linux Rust runtime smoke remains blocked by missing remote Rust
-  toolchains / local Windows linker pieces and is recorded in the SOW.
+  tests, native Rust host-helper and log-writer tests on Windows
+  11/macOS/FreeBSD 14.1, native Rust helper plus writer/readback smoke on
+  Windows 11/macOS/FreeBSD 14.1, Rust Windows host-helper compile, docs
+  validation, 31/31 verified examples, runtime purity, `git diff --check`, and
+  SOW audit. Windows Rust testing required forcing C compilation/linking to
+  `/mingw64/bin/gcc.exe`; the earlier MSYS/Cygwin GCC path failed in `zstd-sys`.
   Completed-implementation reviews ran three rounds: real blockers were fixed,
   five final reviewers
   voted READY TO IMPLEMENT, and the remaining minimax run timed out after a
