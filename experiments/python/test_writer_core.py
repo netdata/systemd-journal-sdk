@@ -297,7 +297,7 @@ def test_writer_head_seqnum_zero_defaults_to_one():
         reader.close()
 
 
-def test_writer_raw_backward_monotonic_pass_through_fails_verification():
+def test_writer_raw_backward_monotonic_legacy_verification_failure():
     from journal import VerificationError, verify_file
 
     with tempfile.TemporaryDirectory() as td:
@@ -647,5 +647,4 @@ def test_xz_and_lz4_data_object_parse():
         buf[DATA_OBJECT_HEADER_SIZE:] = compressed
         parsed = parse_data_object(buf, 0)
         assert parsed == {'name': b'MESSAGE', 'value': payload.split(b'=', 1)[1]}
-
 

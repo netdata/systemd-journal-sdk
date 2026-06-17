@@ -18,7 +18,7 @@ alias it as `journal` in Cargo dependencies to keep the existing
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.6.4" }
+journal = { package = "systemd-journal-sdk", version = "0.7.3" }
 ```
 
 The Rust workspace also publishes lower-level project-prefixed packages for
@@ -28,6 +28,7 @@ Netdata Rust integrations:
 - `systemd-journal-sdk-common`
 - `systemd-journal-sdk-core`
 - `systemd-journal-sdk-registry`
+- `systemd-journal-sdk-host`
 - `systemd-journal-sdk-log-writer`
 - `systemd-journal-sdk-index`
 - `systemd-journal-sdk-engine`

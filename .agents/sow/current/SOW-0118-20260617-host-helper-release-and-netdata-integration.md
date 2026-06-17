@@ -215,6 +215,8 @@ Failure handling:
 - Updated `project-release-tagging` so the Rust publish order includes `systemd-journal-sdk-host`.
 - Added the Rust host helper crate to the published-package docs table and dependency example.
 - Fixed a stale Rust facade test expectation: the low-level writer now clamps same-boot backwards monotonic timestamps, so the test now asserts clamping to `last + 1` and successful verification.
+- Ran read-only release reviewers: `glm`, `minimax`, `mimo`, `kimi`, `qwen`, and `deepseek` all voted `READY TO RELEASE` with no blockers.
+- Fixed non-blocking reviewer cleanup: product-scope now shows `0.7.3`, lists `systemd-journal-sdk-host`, and a retired Python experiment test no longer carries the active Rust stale test name.
 
 ## Validation
 
@@ -243,30 +245,36 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Pending release reviewer gate.
+- `glm`: `READY TO RELEASE`; no blockers. Non-blocking notes: patch-level release contains 0.x breaking strict-writer changes by design; `go 1.26` was pre-existing; `LogIdentityMode::Auto` wording is acceptable.
+- `minimax`: `READY TO RELEASE`; no blockers. Non-blocking notes: final SOW closeout gates are expected to remain pending before publication; host publish order is safe.
+- `qwen`: `READY TO RELEASE`; no blockers. Non-blocking notes: product-scope spec had stale `0.6.4` and omitted `systemd-journal-sdk-host`; fixed in this SOW.
+- `kimi`: `READY TO RELEASE`; no blockers. Non-blocking notes: retired Python experiment carried the old stale Rust test name; renamed. `journal-common` dry-run passed; downstream crate dry-runs are expected to fail before `0.7.3` dependencies are published. Rust `journal-host` unsafe blocks are expected platform FFI and documented.
+- `deepseek`: `READY TO RELEASE`; no blockers. Non-blocking notes: SOW final gates remain pending until publication and Netdata inspection; host crate dry-run failure before `common` publication is expected.
+- `mimo`: `READY TO RELEASE`; no blockers. Non-blocking notes: final SOW gates are pending by design; `go 1.26` is pre-existing; optional writer-lock helper `/proc` reads are opt-in and excluded from core reader/writer runtime paths by the runtime-purity contract.
 
 Same-failure scan:
 
 - Version-reference scan found no stale `0.7.2` install snippets in `README.md`, `rust/README.md`, `docs/`, or `rust/Cargo.toml`.
 - Same-failure evidence for the Rust monotonic test: `journal-core` already has `same_boot_monotonic_is_clamped_by_low_level_writer`, and the facade test now matches that contract.
+- Reviewer same-failure cleanup: `.agents/sow/specs/product-scope.md` was checked for stale `0.6.4` release examples and missing `systemd-journal-sdk-host`; both were fixed.
 
 Sensitive data gate:
 
-- Pending final scan. No raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details are needed for this SOW.
+- Reviewer and audit scans found no raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details. Final scan still runs before close.
 
 Artifact maintenance gate:
 
 - AGENTS.md: pending final assessment.
 - Runtime project skills: `project-release-tagging` updated to include `systemd-journal-sdk-host` in the Rust publish order.
-- Specs: pending final assessment.
-- End-user/operator docs: pending install-version updates.
+- Specs: product scope updated to include `systemd-journal-sdk-host` and current `0.7.3` package example.
+- End-user/operator docs: install-version snippets updated to `0.7.3`; final publication evidence still pending.
 - End-user/operator skills: pending final assessment.
 - SOW lifecycle: moved from pending to current; final close requires `Status: completed` and movement to `.agents/sow/done/`.
 - SOW-status.md: updated for current in-progress state.
 
 Specs update:
 
-- Pending final assessment.
+- `.agents/sow/specs/product-scope.md` updated for the new host helper crate and current release example.
 
 Project skills update:
 
@@ -274,7 +282,7 @@ Project skills update:
 
 End-user/operator docs update:
 
-- Pending install-version updates.
+- `README.md`, `rust/README.md`, and `docs/` install snippets updated to `0.7.3`.
 
 End-user/operator skills update:
 
