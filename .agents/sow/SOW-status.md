@@ -7,10 +7,6 @@ Last updated: 2026-06-17
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0118 - Host Helper Release And Netdata Integration Planning:
-  in-progress. Release `0.7.3` with the SOW-0115 Rust/Go strict writer and
-  optional host-helper surfaces, then inspect Netdata Rust NetFlow and Go SNMP
-  traps consumers read-only and record the integration plan.
 
 ## Pending
 
@@ -41,6 +37,15 @@ Last updated: 2026-06-17
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0118 - Host Helper Release And Netdata Integration Planning: completed.
+  Rust crates were published to crates.io at `0.7.3`, `master` was pushed
+  through release commit `165a7a60e59ccbfa24315fa52c1cdebd2bae534e`, and
+  annotated tags `v0.7.3` plus `go/v0.7.3` were pushed; both peel to the same
+  release commit. Go module lookup resolved
+  `github.com/netdata/systemd-journal-sdk/go v0.7.3`, crates.io search showed
+  all eight Rust packages at `0.7.3`, and read-only Netdata inspection of
+  `ktsaou/netdata @ d2d17893342f` recorded the required Rust NetFlow and Go
+  SNMP traps integration plan. No Netdata files were modified in this SDK SOW.
 - SOW-0115 - Portable writer identity & monotonic helpers: completed. Rust and
   Go now enforce a strict OS-agnostic writer contract where `_MACHINE_ID`,
   `_BOOT_ID`, and generated-entry `__MONOTONIC_TIMESTAMP` are caller-provided

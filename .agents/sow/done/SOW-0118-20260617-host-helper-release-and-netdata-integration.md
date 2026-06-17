@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: release `0.7.3` preparation in progress; Netdata integration inspection follows after the SDK release.
+Sub-state: SDK `0.7.3` released; read-only Netdata integration plan recorded.
 
 ## Requirements
 
@@ -37,7 +37,7 @@ Unknowns:
 
 ### Acceptance Criteria
 
-- Execute or explicitly defer the SDK `0.7.3` release containing SOW-0115.
+- Execute the SDK `0.7.3` release containing SOW-0115.
 - Produce a concrete Netdata integration plan for Rust NetFlow and Go SNMP traps, with no writes outside this repository unless the user starts a Netdata-repo SOW.
 - Record any required Netdata-repo follow-up with exact files/surfaces after read-only inspection.
 
@@ -48,12 +48,19 @@ Sources checked:
 - SOW-0115 outcome and follow-up mapping.
 - Existing pending release/integration SOW list.
 
-Current state:
+Initial state:
 
 - SOW-0115 is completed and committed.
-- The local branch is ahead of `origin/master` with SOW-0115 implementation and validation commits that must be included in the `0.7.3` release.
 - Local and remote `v0.7.3` / `go/v0.7.3` tags do not exist as of the initial check.
 - The Rust workspace now includes a publishable `systemd-journal-sdk-host` crate; the project release skill's publish order must include it before publication.
+
+Final state:
+
+- Rust crates were published to crates.io at `0.7.3`, including the new `systemd-journal-sdk-host` crate.
+- `master` was pushed through release commit `165a7a60e59ccbfa24315fa52c1cdebd2bae534e`.
+- Annotated tags `v0.7.3` and `go/v0.7.3` were pushed and both peel to the release commit.
+- The Go module resolves as `github.com/netdata/systemd-journal-sdk/go v0.7.3`.
+- Netdata integration was inspected read-only and recorded below; no files outside this repository were changed.
 
 Risks:
 
@@ -217,12 +224,99 @@ Failure handling:
 - Fixed a stale Rust facade test expectation: the low-level writer now clamps same-boot backwards monotonic timestamps, so the test now asserts clamping to `last + 1` and successful verification.
 - Ran read-only release reviewers: `glm`, `minimax`, `mimo`, `kimi`, `qwen`, and `deepseek` all voted `READY TO RELEASE` with no blockers.
 - Fixed non-blocking reviewer cleanup: product-scope now shows `0.7.3`, lists `systemd-journal-sdk-host`, and a retired Python experiment test no longer carries the active Rust stale test name.
+- Published Rust crates in dependency order after dry-runs: `systemd-journal-sdk-common`, `systemd-journal-sdk-registry`, `systemd-journal-sdk-core`, `systemd-journal-sdk-host`, `systemd-journal-sdk-log-writer`, `systemd-journal-sdk-index`, `systemd-journal-sdk-engine`, and `systemd-journal-sdk`.
+- Pushed `master`, created and pushed annotated release tags `v0.7.3` and `go/v0.7.3`, and verified that both tags peel to release commit `165a7a60e59ccbfa24315fa52c1cdebd2bae534e`.
+- Verified crates.io visibility for all eight Rust packages at `0.7.3`.
+- Verified Go module visibility with `go list -m github.com/netdata/systemd-journal-sdk/go@v0.7.3`.
+- Inspected the Netdata repository read-only at `ktsaou/netdata @ d2d17893342f` and recorded the required Rust NetFlow and Go SNMP traps integration plan below.
+
+## Netdata Integration Plan
+
+Scope:
+
+- Evidence comes from read-only inspection of `ktsaou/netdata @ d2d17893342f`.
+- This SDK SOW did not modify Netdata files. Actual Netdata changes belong in a Netdata-repository work item.
+
+### Rust NetFlow
+
+Evidence:
+
+- `src/crates/netflow-plugin/Cargo.toml:27-32` pins six SDK Rust crates at `0.7.1` and does not depend on `systemd-journal-sdk-host`.
+- `src/crates/Cargo.lock:4285-4400` locks the SDK crates at `0.7.1`.
+- `src/crates/netflow-plugin/src/ingest.rs:18` and `src/crates/netflow-plugin/src/query.rs:14` import `journal_common::load_machine_id`.
+- In SDK `0.7.3`, `rust/src/crates/journal-common/src/lib.rs:10` no longer exports host identity loading; `rust/src/crates/journal-host/src/lib.rs:149-207` exposes the optional host provider API.
+- `src/crates/netflow-plugin/src/ingest/service/init.rs:25`, `:31-35`, and `:54-58` load only machine ID and create writer config without a boot ID.
+- SDK strict writer config carries `boot_id` and defaults strict identity mode in `rust/src/crates/journal-log-writer/src/log/config.rs:107-167`; `with_boot_id` is available at `:207-210`.
+- SDK strict writer validation requires a boot ID in `rust/src/crates/journal-log-writer/src/log/helpers.rs:172-178`.
+- `src/crates/netflow-plugin/src/ingest/service/runtime.rs:206-208`, `src/crates/netflow-plugin/src/ingest/tier_commit.rs:505-507`, and `src/crates/netflow-plugin/src/ingest_resource_bench_tests.rs:1059-1061` build entry timestamps without `entry_monotonic_usec`.
+- SDK `EntryTimestamps` supports `with_entry_monotonic_usec` in `rust/src/crates/journal-common/src/time.rs:30-53`, and log writes require it in `rust/src/crates/journal-log-writer/src/log/mod.rs:202-231` and `:328-337`.
+- `src/crates/netflow-plugin/src/ingest_test_support.rs:104-128` and `src/crates/netflow-plugin/src/ingest/tier_commit.rs:627-640` contain test/support writer setup that will need synthetic machine/boot IDs or injected helper values.
+
+Recommended NetFlow change, classification: long-term-best.
+
+- Bump the six existing SDK Rust crate dependencies to `0.7.3`.
+- Add `journal-host = { package = "systemd-journal-sdk-host", version = "0.7.3" }`.
+- Replace `journal_common::load_machine_id` usage with a small NetFlow-owned wrapper around `journal_host::load(...)`.
+- Load the host provider once during ingest service initialization and reuse it for writer config and generated entry timestamps.
+- Set writer `Origin.machine_id` from `provider.machine_id()` and writer config `.with_boot_id(provider.boot_id())`.
+- Add `with_entry_monotonic_usec(provider.monotonic_usec())` on raw and materialized tier writes.
+- Keep tests host-independent by using synthetic machine IDs, boot IDs, and deterministic monotonic counters unless a test explicitly targets the optional host helper.
+
+Risks and implications:
+
+- This is not a dependency-only bump. NetFlow must stop importing host helpers from `journal-common`, must provide `_BOOT_ID`, and must provide per-entry monotonic timestamps.
+- The local host identity is appropriate for NetFlow's local Netdata journal files. Remote flow source identity should remain represented by NetFlow payload fields, not by journal `_MACHINE_ID` / `_BOOT_ID`.
+- Tier workers need access to the same helper or to a small monotonic-source abstraction so all generated entries use one boot-anchored, strictly increasing source.
+
+Validation for the Netdata work item:
+
+- From Netdata `src/crates`: `cargo check --locked -p netflow-plugin`.
+- Run targeted NetFlow ingest/query tests if their local dependencies are available.
+- Search for stale Rust SDK usage: `systemd-journal-sdk.*0.7.1`, `journal_common::load_machine_id`, missing `with_boot_id`, and missing `with_entry_monotonic_usec`.
+
+### Go SNMP Traps
+
+Evidence:
+
+- `src/go/go.mod:87` pins `github.com/netdata/systemd-journal-sdk/go v0.7.1`; `src/go/go.sum:325-326` contains the matching checksums.
+- `src/go/plugin/go.d/collector/snmp_traps/journal_writer.go:15` imports only `github.com/netdata/systemd-journal-sdk/go/journal`.
+- `src/go/plugin/go.d/collector/snmp_traps/journal_writer.go:90` manually reads `/etc/machine-id`, and `:94` manually reads `/proc/sys/kernel/random/boot_id`.
+- `src/go/plugin/go.d/collector/snmp_traps/journal_writer.go:99-112` builds strict writer options with machine and boot IDs, and `:127-144` implements Linux-only UUID file loading.
+- `src/go/plugin/go.d/collector/snmp_traps/journal_writer.go:182-185` and `:209-212` already pass realtime and monotonic timestamps to the SDK writer.
+- `src/go/plugin/go.d/collector/snmp_traps/monotonic_linux.go:13-18` uses Linux `CLOCK_MONOTONIC`.
+- `src/go/plugin/go.d/collector/snmp_traps/monotonic_fallback.go:28-31` uses process-relative time on non-Linux, which is not boot-anchored.
+- SDK Go host helper is the optional package documented at `docs/Go-API.md:21-24`; `go/journalhost/load.go:42-45` exposes `Load`.
+- SDK platform helpers implement Windows state-backed identity and `QueryUnbiasedInterruptTime` in `go/journalhost/load_windows.go:23-65`, FreeBSD native `kern.hostuuid` / `kern.boot_id` / `CLOCK_UPTIME` in `go/journalhost/load_freebsd.go:12-116`, and macOS native `gethostuuid` / `kern.bootsessionuuid` / `CLOCK_UPTIME_RAW` in `go/journalhost/load_darwin.go:14-90`.
+- `src/go/plugin/go.d/collector/snmp_traps/journal_sdk_test.go:25-30` currently gates SDK writer tests behind a Linux helper requirement.
+
+Recommended SNMP traps change, classification: long-term-best.
+
+- Bump the Go module to `github.com/netdata/systemd-journal-sdk/go v0.7.3` and refresh `go.sum`.
+- Import `github.com/netdata/systemd-journal-sdk/go/journalhost`.
+- Replace manual `/etc/machine-id` and `/proc/sys/kernel/random/boot_id` reads with `journalhost.Load(...)`.
+- Use `provider.MachineID()` and `provider.BootID()` in `journal.Options`.
+- Replace the Linux-only and process-relative monotonic helpers with the provider's `MonotonicUsec()` path, preferably through a small SNMP traps-owned monotonic source so tests can inject deterministic values.
+- For Windows services, prefer a Netdata-owned writable state directory in `journalhost.LoadOptions` once the Netdata Windows runtime path is confirmed; otherwise the SDK default uses the user's local app data path.
+- Keep tests OS-neutral where possible by injecting synthetic provider values. Keep `journalctl` interoperability tests Linux-gated when they call system tooling.
+
+Risks and implications:
+
+- The existing non-Linux fallback is not suitable for journal-compatible boot-anchored monotonic timestamps.
+- SNMP trap payloads describe remote devices, but these journal writer anchors identify the local journal file producer. Remote device identity should remain explicit trap fields unless a separate Netdata product decision changes that semantics.
+- Windows state-file location needs a Netdata-owned service-writable path to avoid surprises under service accounts.
+
+Validation for the Netdata work item:
+
+- From Netdata `src/go`: `go test ./plugin/go.d/collector/snmp_traps/...`.
+- Search for stale Go SDK usage: `github.com/netdata/systemd-journal-sdk/go v0.7.1`, `/proc/sys/kernel/random/boot_id`, `/etc/machine-id`, `loadJournalUUID`, and process-relative monotonic fallback use.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Release preparation complete for `0.7.3`; publication and Netdata integration plan are still pending.
+- SDK `0.7.3` release executed: Rust crates were published, `master` was pushed, and annotated tags `v0.7.3` plus `go/v0.7.3` were pushed.
+- Netdata Rust NetFlow and Go SNMP traps integration plan is recorded above with read-only repository evidence.
+- No files outside this repository were modified.
 
 Tests or equivalent validation:
 
@@ -238,10 +332,16 @@ Tests or equivalent validation:
 - `python3 tests/docs/check_wiki_docs.py`: passed, `validated 15 wiki markdown files`.
 - `python3 tests/docs/verify_examples.py`: passed, `31 of 31` verified examples.
 - `.agents/sow/audit.sh`: passed, `SOW initialization complete and clean`.
+- Rust crate dry-runs and publishes completed in dependency order for all eight `0.7.3` crates.
 
 Real-use evidence:
 
-- Pending crates.io publication, Git tag verification, Go module lookup, and read-only Netdata inspection.
+- Remote release tags:
+  - `refs/tags/v0.7.3^{}` peels to `165a7a60e59ccbfa24315fa52c1cdebd2bae534e`.
+  - `refs/tags/go/v0.7.3^{}` peels to `165a7a60e59ccbfa24315fa52c1cdebd2bae534e`.
+- Go module lookup passed: `github.com/netdata/systemd-journal-sdk/go v0.7.3`.
+- `cargo search systemd-journal-sdk --limit 10` showed all eight Rust packages at `0.7.3`: `systemd-journal-sdk`, `systemd-journal-sdk-common`, `systemd-journal-sdk-core`, `systemd-journal-sdk-log-writer`, `systemd-journal-sdk-index`, `systemd-journal-sdk-engine`, `systemd-journal-sdk-host`, and `systemd-journal-sdk-registry`.
+- Read-only Netdata inspection was performed against `ktsaou/netdata @ d2d17893342f`; repo-relative evidence is recorded in the integration plan.
 
 Reviewer findings:
 
@@ -257,20 +357,23 @@ Same-failure scan:
 - Version-reference scan found no stale `0.7.2` install snippets in `README.md`, `rust/README.md`, `docs/`, or `rust/Cargo.toml`.
 - Same-failure evidence for the Rust monotonic test: `journal-core` already has `same_boot_monotonic_is_clamped_by_low_level_writer`, and the facade test now matches that contract.
 - Reviewer same-failure cleanup: `.agents/sow/specs/product-scope.md` was checked for stale `0.6.4` release examples and missing `systemd-journal-sdk-host`; both were fixed.
+- Release tag scan confirmed no pre-existing local or remote `v0.7.3` or `go/v0.7.3` tags before creation.
+- Netdata stale-reference scans identified the remaining downstream `0.7.1` Rust and Go dependency pins, plus Linux-only/manual host identity paths; those are mapped to the Netdata integration plan above.
 
 Sensitive data gate:
 
-- Reviewer and audit scans found no raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details. Final scan still runs before close.
+- Reviewer and audit scans found no raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details.
+- The Netdata inspection used source file paths and code structure only; no production data or trap/flow payloads were copied.
 
 Artifact maintenance gate:
 
-- AGENTS.md: pending final assessment.
+- AGENTS.md: no change needed; release and repository-boundary rules already covered this workflow.
 - Runtime project skills: `project-release-tagging` updated to include `systemd-journal-sdk-host` in the Rust publish order.
 - Specs: product scope updated to include `systemd-journal-sdk-host` and current `0.7.3` package example.
-- End-user/operator docs: install-version snippets updated to `0.7.3`; final publication evidence still pending.
-- End-user/operator skills: pending final assessment.
-- SOW lifecycle: moved from pending to current; final close requires `Status: completed` and movement to `.agents/sow/done/`.
-- SOW-status.md: updated for current in-progress state.
+- End-user/operator docs: install-version snippets updated to `0.7.3`.
+- End-user/operator skills: none exist in this repository, so no update was needed.
+- SOW lifecycle: status is `completed`; file moves to `.agents/sow/done/` during closeout.
+- SOW-status.md: updated for completed release state.
 
 Specs update:
 
@@ -286,27 +389,36 @@ End-user/operator docs update:
 
 End-user/operator skills update:
 
-- Pending final assessment.
+- No end-user/operator skills exist in this repository.
 
 Lessons:
 
-- Pending.
+- Dependent Rust crate dry-runs can fail until already-published `0.7.3` dependencies are visible on crates.io; publish and validate one crate at a time in dependency order.
+- Adding an optional helper crate changes the release process even when core writer/readers are unchanged; release instructions must list every publishable crate explicitly.
+- Netdata consumption of this SDK release is not a dependency-only bump because strict writer mode now requires caller-supplied boot IDs and per-entry monotonic timestamps.
 
 Follow-up mapping:
 
-- Pending Netdata integration-plan outcome.
+- Netdata integration is mapped to the Netdata repository work item that bumps Rust NetFlow and Go SNMP traps to SDK `0.7.3`.
+- No additional SDK follow-up SOW is required from this release unless Netdata implementation discovers an SDK defect.
 
 ## Outcome
 
-Pending.
+Completed.
+
+- SDK `0.7.3` is released for Rust and Go.
+- Rust crates are visible on crates.io.
+- Root and Go submodule release tags are pushed and verified.
+- Netdata integration work is planned with exact Rust NetFlow and Go SNMP traps files/surfaces.
 
 ## Lessons Extracted
 
-Pending.
+- Keep the release skill's publish order synchronized with workspace membership before starting release validation.
+- Treat downstream strict-writer adoption as API migration work: callers must own machine ID, boot ID, and generated-entry monotonic timestamp decisions.
 
 ## Followup
 
-Pending.
+- Netdata repository follow-up: bump SDK dependencies to `0.7.3`, adopt `journal-host` / `journalhost`, and update NetFlow/SNMP traps tests and validation as described in the Netdata integration plan.
 
 ## Regression Log
 
