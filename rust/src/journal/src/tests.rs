@@ -218,41 +218,8 @@ fn write_facade_single_message_journal(path: &Path, message: &[u8], realtime: u6
     journal_file.sync().expect("sync journal");
 }
 
-fn journalctl_verify_fails_if_available(path: &Path, expected_text: &str) {
-    let available = std::process::Command::new("journalctl")
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
-    if !available {
-        return;
-    }
-
-    let output = std::process::Command::new("journalctl")
-        .arg("--verify")
-        .arg("--file")
-        .arg(path)
-        .output()
-        .expect("run journalctl --verify");
-    assert!(
-        !output.status.success(),
-        "journalctl --verify unexpectedly passed for {}",
-        path.display()
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-    .to_lowercase();
-    assert!(
-        combined.contains(&expected_text.to_lowercase()),
-        "journalctl --verify output missing {expected_text:?}: {combined}"
-    );
-}
-
 #[test]
-fn raw_writer_backward_monotonic_pass_through_fails_verification() {
+fn raw_writer_backward_monotonic_is_clamped_and_verifies() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("journals/raw-backward-monotonic.journal");
     let (mut journal_file, mut writer) = create_facade_test_writer(&path);
@@ -274,14 +241,18 @@ fn raw_writer_backward_monotonic_pass_through_fails_verification() {
         .expect("write second entry");
     journal_file.sync().expect("sync journal");
 
-    let err = verify_file(&path)
-        .expect_err("expected same-boot backward monotonic timestamps to fail verification");
-    let msg = err.to_string().to_lowercase();
-    assert!(
-        msg.contains("monotonic"),
-        "expected monotonic verification failure, got: {err}"
-    );
-    journalctl_verify_fails_if_available(&path, "timestamp out of synchronization");
+    verify_file(&path).expect("clamped same-boot monotonic timestamps should verify");
+
+    let mut journal =
+        SdJournalOpenFiles(&[path.to_str().expect("utf8 path")], 0).expect("open files");
+    assert_eq!(SdJournalNext(&mut journal).expect("first entry"), 1);
+    let (first_monotonic, _boot_id) =
+        SdJournalGetMonotonicUsec(&mut journal).expect("first monotonic");
+    assert_eq!(first_monotonic, 10);
+    assert_eq!(SdJournalNext(&mut journal).expect("second entry"), 1);
+    let (second_monotonic, _boot_id) =
+        SdJournalGetMonotonicUsec(&mut journal).expect("second monotonic");
+    assert_eq!(second_monotonic, 11);
 }
 
 #[test]

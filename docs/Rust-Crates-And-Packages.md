@@ -6,7 +6,7 @@ Use `systemd-journal-sdk` for normal Rust integrations:
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.7.2" }
+journal = { package = "systemd-journal-sdk", version = "0.7.3" }
 ```
 
 The alias keeps source imports in the form:
@@ -28,6 +28,7 @@ these surfaces.
 | `systemd-journal-sdk-registry` | Journal repository path and naming helpers. | Rare. Use when building custom directory managers. |
 | `systemd-journal-sdk-core` | Low-level journal file parser, mmap access, writer, verifier, compression, FSS primitives. | Direct-file readers/writers and maximum control. |
 | `systemd-journal-sdk-log-writer` | High-level directory writer with rotation and retention. | Use for production log ingestion directories. |
+| `systemd-journal-sdk-host` | Optional local-host machine ID, boot ID, and monotonic timestamp helpers. | Use only when the event source is intentionally the local host. |
 | `systemd-journal-sdk-index` | Index/filter structures used by query engines. | Specialized query/index consumers. |
 | `systemd-journal-sdk-engine` | Higher-level query/index engine building blocks. | Specialized query engines. |
 
@@ -45,6 +46,8 @@ these surfaces.
   `journal::DirectoryReader`.
 - Netdata-shaped logs function: depend on `systemd-journal-sdk` and use
   `journal::netdata`.
+- Local-host identity helper: depend on `systemd-journal-sdk-host` and import
+  `journal_host`, then pass returned values to the writer explicitly.
 
 Avoid depending directly on internal packages only to save compile time. That
 creates a tighter coupling to internal layering without improving runtime

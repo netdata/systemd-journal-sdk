@@ -7,6 +7,10 @@ Last updated: 2026-06-17
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0118 - Host Helper Release And Netdata Integration Planning:
+  in-progress. Release `0.7.3` with the SOW-0115 Rust/Go strict writer and
+  optional host-helper surfaces, then inspect Netdata Rust NetFlow and Go SNMP
+  traps consumers read-only and record the integration plan.
 
 ## Pending
 
@@ -35,10 +39,6 @@ Last updated: 2026-06-17
 - SOW-0098 - Rust Legacy Core Duplication Debt: open. Follow-up from SOW-0096
   to analyze and reduce real Rust `jf`/`journal-core` duplication only where
   shared primitives preserve historical compatibility and reader performance.
-- SOW-0118 - Host Helper Release And Netdata Integration Planning: open.
-  Follow-up from SOW-0115 to release the SDK version containing the Rust/Go
-  strict writer and optional host-helper work, then plan Netdata-side adoption
-  for Rust NetFlow and Go SNMP traps with read-only Netdata inspection first.
 ## Recently Closed Or Completed
 
 - SOW-0115 - Portable writer identity & monotonic helpers: completed. Rust and

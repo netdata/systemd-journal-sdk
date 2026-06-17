@@ -31,11 +31,12 @@ Use this skill when:
 - Rust crates.io publication uses project-prefixed package names. The public
   SDK package is `systemd-journal-sdk`; lower-level packages are
   `systemd-journal-sdk-common`, `systemd-journal-sdk-registry`,
-  `systemd-journal-sdk-core`, `systemd-journal-sdk-log-writer`,
-  `systemd-journal-sdk-index`, and `systemd-journal-sdk-engine`.
+  `systemd-journal-sdk-core`, `systemd-journal-sdk-host`,
+  `systemd-journal-sdk-log-writer`, `systemd-journal-sdk-index`, and
+  `systemd-journal-sdk-engine`.
 - Rust crates must be publish-dry-run and published in dependency order:
-  common, registry, core, log-writer, index, engine, public SDK. If a SOW
-  changes dependencies, update the order in that SOW and this skill.
+  common, registry, core, host, log-writer, index, engine, public SDK. If a
+  SOW changes dependencies, update the order in that SOW and this skill.
 - Go's module reference defines this rule: if a module is defined in a
   repository subdirectory, the semantic version tag name is prefixed with the
   module subdirectory followed by `/`.
@@ -105,6 +106,7 @@ Before publishing Rust crates:
    cargo publish --manifest-path rust/src/crates/journal-common/Cargo.toml --dry-run
    cargo publish --manifest-path rust/src/crates/journal-registry/Cargo.toml --dry-run
    cargo publish --manifest-path rust/src/crates/journal-core/Cargo.toml --dry-run
+   cargo publish --manifest-path rust/src/crates/journal-host/Cargo.toml --dry-run
    cargo publish --manifest-path rust/src/crates/journal-log-writer/Cargo.toml --dry-run
    cargo publish --manifest-path rust/src/crates/journal-index/Cargo.toml --dry-run
    cargo publish --manifest-path rust/src/crates/journal-engine/Cargo.toml --dry-run
