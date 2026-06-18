@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = REPO_ROOT.parent
 PYTHON_ROOT = REPO_ROOT / 'python'
 sys.path.insert(0, str(PYTHON_ROOT))
 VALID_FSS_VERIFICATION_KEY = 'c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900'
@@ -293,6 +294,7 @@ __all__ = (
     'PYTHON_ROOT',
     'Path',
     'REPO_ROOT',
+    'REPOSITORY_ROOT',
     'STATE_ARCHIVED',
     'SdJournalEnumerateAvailableData',
     'SdJournalEnumerateAvailableUnique',

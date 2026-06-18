@@ -166,7 +166,7 @@ class MarkerParsingTests(unittest.TestCase):
         )
         with self._tmp_md("bid.md", body) as path:
             with self.assertRaises(ve.HarnessError):
-                ve.extract_examples(page=path) if False else ve.extract_examples(path)
+                ve.extract_examples(path)
 
     @staticmethod
     def _duplicate_page() -> str:
@@ -444,13 +444,12 @@ class GoDirectiveTests(unittest.TestCase):
             if line.startswith("go ") or line == "go":
                 parts = line.split(None, 1)
                 if len(parts) == 2 and parts[1]:
-                    token = parts[1]
-                    comment = token.find("//")
+                    directive = parts[1]
+                    comment = directive.find("//")
                     if comment != -1:
-                        token = token[:comment]
-                    return token.strip()
+                        directive = directive[:comment]
+                    return directive.strip()
         self.fail("go/go.mod has no go directive (test fixture broken)")
-        return ""  # unreachable
 
     def test_read_go_directive_matches_go_mod(self):
         expected = self._expected_directive()
@@ -631,7 +630,6 @@ class RustEditionTests(unittest.TestCase):
                 if value.startswith('"') and value.endswith('"'):
                     return value[1:-1]
         self.fail("rust/Cargo.toml has no edition under [workspace.package] (test fixture broken)")
-        return ""  # unreachable
 
     def test_read_rust_edition_matches_workspace(self):
         expected = self._expected_edition()

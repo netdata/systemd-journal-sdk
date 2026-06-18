@@ -836,38 +836,11 @@ fn hmac_object(
     update_hmac_range(hm, source, offset, OBJECT_HEADER_SIZE)?;
 
     match typ {
-        OBJECT_TYPE_DATA => {
-            update_hmac_range(hm, source, offset + 16, 8)?;
-            let payload_offset = if is_compact {
-                COMPACT_DATA_OBJECT_HEADER_SIZE
-            } else {
-                DATA_OBJECT_HEADER_SIZE
-            };
-            if size > payload_offset {
-                update_hmac_range(hm, source, offset + payload_offset, size - payload_offset)?;
-            }
-        }
+        OBJECT_TYPE_DATA => hmac_data_object(hm, source, offset, size, is_compact)?,
         OBJECT_TYPE_FIELD => {
-            update_hmac_range(hm, source, offset + 16, 8)?;
-            if size > FIELD_OBJECT_HEADER_SIZE {
-                update_hmac_range(
-                    hm,
-                    source,
-                    offset + FIELD_OBJECT_HEADER_SIZE,
-                    size - FIELD_OBJECT_HEADER_SIZE,
-                )?;
-            }
+            hmac_payload_after_hash(hm, source, offset, size, FIELD_OBJECT_HEADER_SIZE)?
         }
-        OBJECT_TYPE_ENTRY => {
-            if size > OBJECT_HEADER_SIZE {
-                update_hmac_range(
-                    hm,
-                    source,
-                    offset + OBJECT_HEADER_SIZE,
-                    size - OBJECT_HEADER_SIZE,
-                )?;
-            }
-        }
+        OBJECT_TYPE_ENTRY => hmac_payload_after_header(hm, source, offset, size)?,
         OBJECT_TYPE_DATA_HASH_TABLE | OBJECT_TYPE_FIELD_HASH_TABLE | OBJECT_TYPE_ENTRY_ARRAY => {}
         OBJECT_TYPE_TAG => {
             update_hmac_range(hm, source, offset + OBJECT_HEADER_SIZE, 16)?;
@@ -875,6 +848,52 @@ fn hmac_object(
         _ => {}
     }
     Ok(())
+}
+
+fn hmac_data_object(
+    hm: &mut impl hmac::Mac,
+    source: &dyn ByteSource,
+    offset: u64,
+    size: u64,
+    is_compact: bool,
+) -> Result<()> {
+    let payload_offset = if is_compact {
+        COMPACT_DATA_OBJECT_HEADER_SIZE
+    } else {
+        DATA_OBJECT_HEADER_SIZE
+    };
+    hmac_payload_after_hash(hm, source, offset, size, payload_offset)
+}
+
+fn hmac_payload_after_hash(
+    hm: &mut impl hmac::Mac,
+    source: &dyn ByteSource,
+    offset: u64,
+    size: u64,
+    payload_offset: u64,
+) -> Result<()> {
+    update_hmac_range(hm, source, offset + 16, 8)?;
+    if size <= payload_offset {
+        return Ok(());
+    }
+    update_hmac_range(hm, source, offset + payload_offset, size - payload_offset)
+}
+
+fn hmac_payload_after_header(
+    hm: &mut impl hmac::Mac,
+    source: &dyn ByteSource,
+    offset: u64,
+    size: u64,
+) -> Result<()> {
+    if size <= OBJECT_HEADER_SIZE {
+        return Ok(());
+    }
+    update_hmac_range(
+        hm,
+        source,
+        offset + OBJECT_HEADER_SIZE,
+        size - OBJECT_HEADER_SIZE,
+    )
 }
 
 fn update_hmac_range(

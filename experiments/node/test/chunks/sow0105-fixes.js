@@ -31,6 +31,16 @@ import {
 import { ExplorerAnchorKind } from '../../src/lib/explorer.js';
 import * as actualModule from '../../src/index.js';
 
+const EXACT_NUM = (value) => Number.parseInt(value, 10);
+const BASE_REALTIME_USEC = 1_700_000_000_000_000n;
+const WINDOW_AFTER = EXACT_NUM('100000000');
+const WINDOW_BEFORE = EXACT_NUM('200000000');
+const WINDOW_ANCHOR_BEFORE = EXACT_NUM('50000000');
+const WINDOW_ANCHOR_INSIDE = EXACT_NUM('150000000');
+const WINDOW_ANCHOR_AFTER = EXACT_NUM('250000000');
+const REQUEST_AFTER = EXACT_NUM('1699999999');
+const REQUEST_BEFORE = EXACT_NUM('1700001000');
+
 // ---------------------------------------------------------------------------
 // Fix 1: control threaded — cancellation during mid-file scan
 // ---------------------------------------------------------------------------
@@ -54,7 +64,7 @@ function buildLargeJournal(dir) {
         { name: 'PRIORITY', value: enc(String(5 + (i % 3))) },
         { name: '_HOSTNAME', value: enc(`host-${String(i % 5)}`) },
       ],
-      { realtimeUsec: BigInt(1700000000_000000 + i * 10_000) },
+      { realtimeUsec: BASE_REALTIME_USEC + BigInt(i) * 10_000n },
     );
   }
   writer.close();
@@ -555,7 +565,7 @@ function testAnchorOutsideWindowReset() {
 
   // Anchor BEFORE the window → reset to Auto + Backward.
   const beforeWindow = NetdataRequest.parse(
-    { anchor: 50000000, after: 100000000, before: 200000000 },
+    { anchor: WINDOW_ANCHOR_BEFORE, after: WINDOW_AFTER, before: WINDOW_BEFORE },
     config,
   );
   assert.equal(beforeWindow.anchor.kind, ExplorerAnchorKind.Auto,
@@ -565,7 +575,7 @@ function testAnchorOutsideWindowReset() {
 
   // Anchor AFTER the window → reset to Auto + Backward.
   const afterWindow = NetdataRequest.parse(
-    { anchor: 250000000, after: 100000000, before: 200000000 },
+    { anchor: WINDOW_ANCHOR_AFTER, after: WINDOW_AFTER, before: WINDOW_BEFORE },
     config,
   );
   assert.equal(afterWindow.anchor.kind, ExplorerAnchorKind.Auto,
@@ -575,7 +585,7 @@ function testAnchorOutsideWindowReset() {
 
   // Anchor INSIDE the window → keep anchor and direction.
   const insideWindow = NetdataRequest.parse(
-    { anchor: 150000000, after: 100000000, before: 200000000, direction: 'forward' },
+    { anchor: WINDOW_ANCHOR_INSIDE, after: WINDOW_AFTER, before: WINDOW_BEFORE, direction: 'forward' },
     config,
   );
   assert.equal(insideWindow.anchor.kind, ExplorerAnchorKind.Realtime,
@@ -585,7 +595,7 @@ function testAnchorOutsideWindowReset() {
 
   // No anchor → Auto (default).
   const noAnchor = NetdataRequest.parse(
-    { after: 100000000, before: 200000000 },
+    { after: WINDOW_AFTER, before: WINDOW_BEFORE },
     config,
   );
   assert.equal(noAnchor.anchor.kind, ExplorerAnchorKind.Auto,
@@ -593,7 +603,7 @@ function testAnchorOutsideWindowReset() {
 
   // Zero anchor → Auto (treated as missing).
   const zeroAnchor = NetdataRequest.parse(
-    { anchor: 0, after: 100000000, before: 200000000 },
+    { anchor: 0, after: WINDOW_AFTER, before: WINDOW_BEFORE },
     config,
   );
   assert.equal(zeroAnchor.anchor.kind, ExplorerAnchorKind.Auto,
@@ -602,7 +612,7 @@ function testAnchorOutsideWindowReset() {
   // Tail anchor → keeps realtime, forces Backward (even if inside window).
   // tail requires data_only + if_modified_since set.
   const tailAnchor = NetdataRequest.parse(
-    { anchor: 150000000, after: 100000000, before: 200000000,
+    { anchor: WINDOW_ANCHOR_INSIDE, after: WINDOW_AFTER, before: WINDOW_BEFORE,
       data_only: true, if_modified_since: 1, tail: true, direction: 'forward' },
     config,
   );
@@ -620,7 +630,7 @@ function testAnchorOutsideWindowReset() {
 
 function testDataOnlyStopWhenRowsFull() {
   const config = NetdataFunctionConfig.systemdJournal();
-  const win = { after: 100000000, before: 200000000 };
+  const win = { after: WINDOW_AFTER, before: WINDOW_BEFORE };
 
   // data_only, no tail, no delta -> early-stop enabled.
   const plainDataOnly = NetdataRequest.parse({ ...win, data_only: true }, config);
@@ -645,7 +655,7 @@ function testDataOnlyStopWhenRowsFull() {
 
   // data_only + tail -> tail anchor already bounds the window; no early-stop.
   const tail = NetdataRequest.parse(
-    { anchor: 150000000, ...win, data_only: true, if_modified_since: 1, tail: true },
+    { anchor: WINDOW_ANCHOR_INSIDE, ...win, data_only: true, if_modified_since: 1, tail: true },
     config);
   q = _requestToExplorerQuery(tail, 1, null);
   assert.equal(q.stopWhenRowsFull, false,
@@ -683,7 +693,7 @@ function testPriorityFacetSortsNumerically() {
 
     const fn = NetdataJournalFunction.systemdJournal();
     const resp = fn.runDirectoryRequestJson(tmp, {
-      after: 1699999999, before: 1700001000, last: 50, facets: ['PRIORITY'],
+      after: REQUEST_AFTER, before: REQUEST_BEFORE, last: 50, facets: ['PRIORITY'],
     });
     const pri = (resp.facets || []).find(f => (f.id || f.name) === 'PRIORITY');
     assert.ok(pri, 'PRIORITY facet present');
@@ -723,7 +733,7 @@ function testFtsQueryIsApplied() {
 
     const fn = NetdataJournalFunction.systemdJournal();
     const resp = fn.runDirectoryRequestJson(tmp, {
-      after: 1699999999, before: 1700001000, last: 50, data_only: false,
+      after: REQUEST_AFTER, before: REQUEST_BEFORE, last: 50, data_only: false,
       query: 'Linux|Machine|!RTPROP', facets: ['PRIORITY'],
     });
     const cols = resp.columns || {};

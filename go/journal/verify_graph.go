@@ -541,16 +541,43 @@ func (v *graphVerifier) parseField(offset uint64, obj objectHeader) error {
 }
 
 func (v *graphVerifier) parseEntry(offset uint64, obj objectHeader) (graphEntryObject, error) {
-	itemSize := uint64(regularEntryItemSize)
+	itemSize := v.entryItemSize()
+	if err := validateEntryObjectLayout(offset, obj.size, itemSize); err != nil {
+		return graphEntryObject{}, err
+	}
+	entry, err := v.readEntryHeader(offset)
+	if err != nil {
+		return graphEntryObject{}, err
+	}
+	if err := validateGraphEntryHeader(offset, entry); err != nil {
+		return graphEntryObject{}, err
+	}
+	entry.items, err = v.readEntryItems(offset, obj.size, itemSize)
+	if err != nil {
+		return graphEntryObject{}, err
+	}
+	v.entryObjects[offset] = entry
+	return entry, nil
+}
+
+func (v *graphVerifier) entryItemSize() uint64 {
 	if v.compacted {
-		itemSize = compactEntryItemSize
+		return compactEntryItemSize
 	}
-	if obj.size < entryObjectHeaderSize {
-		return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d is too small", offset)
+	return uint64(regularEntryItemSize)
+}
+
+func validateEntryObjectLayout(offset, size, itemSize uint64) error {
+	if size < entryObjectHeaderSize {
+		return fmt.Errorf("ENTRY object at offset %d is too small", offset)
 	}
-	if (obj.size-entryObjectHeaderSize)%itemSize != 0 {
-		return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d has unaligned items", offset)
+	if (size-entryObjectHeaderSize)%itemSize != 0 {
+		return fmt.Errorf("ENTRY object at offset %d has unaligned items", offset)
 	}
+	return nil
+}
+
+func (v *graphVerifier) readEntryHeader(offset uint64) (graphEntryObject, error) {
 	seqnum, err := verifySourceU64(v.source, offset+16)
 	if err != nil {
 		return graphEntryObject{}, err
@@ -567,46 +594,46 @@ func (v *graphVerifier) parseEntry(offset uint64, obj objectHeader) (graphEntryO
 	if err != nil {
 		return graphEntryObject{}, err
 	}
-	entry := graphEntryObject{
-		seqnum:    seqnum,
-		realtime:  realtime,
-		monotonic: monotonic,
-		bootID:    bootID,
-	}
+	return graphEntryObject{seqnum: seqnum, realtime: realtime, monotonic: monotonic, bootID: bootID}, nil
+}
+
+func validateGraphEntryHeader(offset uint64, entry graphEntryObject) error {
 	if entry.seqnum == 0 {
-		return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d has zero seqnum", offset)
+		return fmt.Errorf("ENTRY object at offset %d has zero seqnum", offset)
 	}
 	if entry.realtime == 0 {
-		return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d has zero realtime", offset)
+		return fmt.Errorf("ENTRY object at offset %d has zero realtime", offset)
 	}
-	for itemOffset := offset + entryObjectHeaderSize; itemOffset < offset+obj.size; itemOffset += itemSize {
-		var item uint64
-		if v.compacted {
-			value, err := verifySourceU32(v.source, itemOffset)
-			if err != nil {
-				return graphEntryObject{}, err
-			}
-			item = uint64(value)
-		} else {
-			value, err := verifySourceU64(v.source, itemOffset)
-			if err != nil {
-				return graphEntryObject{}, err
-			}
-			item = value
+	return nil
+}
+
+func (v *graphVerifier) readEntryItems(offset, size, itemSize uint64) ([]uint64, error) {
+	items := make([]uint64, 0, (size-entryObjectHeaderSize)/itemSize)
+	for itemOffset := offset + entryObjectHeaderSize; itemOffset < offset+size; itemOffset += itemSize {
+		item, err := v.readEntryItem(itemOffset)
+		if err != nil {
+			return nil, err
 		}
 		if item == 0 {
-			return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d has zero item", offset)
+			return nil, fmt.Errorf("ENTRY object at offset %d has zero item", offset)
 		}
 		if err := v.validOffset(item, fmt.Sprintf("ENTRY %d item", offset)); err != nil {
-			return graphEntryObject{}, err
+			return nil, err
 		}
-		entry.items = append(entry.items, item)
+		items = append(items, item)
 	}
-	if len(entry.items) == 0 {
-		return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d has no items", offset)
+	if len(items) == 0 {
+		return nil, fmt.Errorf("ENTRY object at offset %d has no items", offset)
 	}
-	v.entryObjects[offset] = entry
-	return entry, nil
+	return items, nil
+}
+
+func (v *graphVerifier) readEntryItem(itemOffset uint64) (uint64, error) {
+	if v.compacted {
+		value, err := verifySourceU32(v.source, itemOffset)
+		return uint64(value), err
+	}
+	return verifySourceU64(v.source, itemOffset)
 }
 
 func (v *graphVerifier) parseHashTable(offset uint64, obj objectHeader) error {
@@ -849,32 +876,39 @@ func (v *graphVerifier) validateDataHashTable() error {
 		if err != nil {
 			return err
 		}
-		last := uint64(0)
-		seen := make(map[uint64]struct{})
-		for current != 0 {
-			if _, ok := seen[current]; ok {
-				return fmt.Errorf("data hash chain cycle")
-			}
-			seen[current] = struct{}{}
-			obj, ok := v.dataObjects[current]
-			if !ok {
-				return fmt.Errorf("data hash chain references missing DATA")
-			}
-			if obj.hash%bucketCount != bucketIndex {
-				return fmt.Errorf("data hash bucket mismatch")
-			}
-			if err := v.validateDataEntryArray(current, obj); err != nil {
-				return err
-			}
-			if obj.nextHashOffset != 0 && obj.nextHashOffset <= current {
-				return fmt.Errorf("data hash chain points backwards")
-			}
-			last = current
-			current = obj.nextHashOffset
+		if err := v.validateDataHashBucket(bucketIndex, bucketCount, current, tail); err != nil {
+			return err
 		}
-		if last != tail {
-			return fmt.Errorf("data hash bucket tail mismatch")
+	}
+	return nil
+}
+
+func (v *graphVerifier) validateDataHashBucket(bucketIndex, bucketCount, current, tail uint64) error {
+	last := uint64(0)
+	seen := make(map[uint64]struct{})
+	for current != 0 {
+		if _, ok := seen[current]; ok {
+			return fmt.Errorf("data hash chain cycle")
 		}
+		seen[current] = struct{}{}
+		obj, ok := v.dataObjects[current]
+		if !ok {
+			return fmt.Errorf("data hash chain references missing DATA")
+		}
+		if obj.hash%bucketCount != bucketIndex {
+			return fmt.Errorf("data hash bucket mismatch")
+		}
+		if err := v.validateDataEntryArray(current, obj); err != nil {
+			return err
+		}
+		if obj.nextHashOffset != 0 && obj.nextHashOffset <= current {
+			return fmt.Errorf("data hash chain points backwards")
+		}
+		last = current
+		current = obj.nextHashOffset
+	}
+	if last != tail {
+		return fmt.Errorf("data hash bucket tail mismatch")
 	}
 	return nil
 }

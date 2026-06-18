@@ -75,5 +75,6 @@ fn load_native_boot_id() -> io::Result<Uuid> {
 
 fn effective_uid() -> u32 {
     // SAFETY: geteuid has no preconditions and returns the current effective UID.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     unsafe { libc::geteuid() }
 }

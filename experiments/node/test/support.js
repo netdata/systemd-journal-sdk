@@ -88,6 +88,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
 const repoRoot = resolve(packageRoot, '..');
+const repositoryRoot = resolve(repoRoot, '..');
 const validFSSVerificationKey = 'c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900';
 
 function listJavaScriptFiles(dir, out = []) {
@@ -351,6 +352,7 @@ export {
   here,
   packageRoot,
   repoRoot,
+  repositoryRoot,
   validFSSVerificationKey,
   listJavaScriptFiles,
   run,

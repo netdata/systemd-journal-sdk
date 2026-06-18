@@ -11,7 +11,7 @@
 
 import math
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field as dataclass_field, replace
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Set
 
@@ -127,7 +127,7 @@ class ExplorerFilter:
     """Explorer filter on a field with one or more values (OR semantics)."""
 
     field: bytes
-    values: List[bytes] = field(default_factory=list)
+    values: List[bytes] = dataclass_field(default_factory=list)
 
     @staticmethod
     def new(field, values):
@@ -144,7 +144,7 @@ class ExplorerFtsPattern:
     advancing past each match. Empty value never matches.
     """
 
-    parts: List[bytes] = field(default_factory=list)
+    parts: List[bytes] = dataclass_field(default_factory=list)
     negative: bool = False
 
     @staticmethod
@@ -228,7 +228,7 @@ class ExplorerRow:
 
     realtime_usec: int
     cursor: str
-    payloads: List[bytes] = field(default_factory=list)
+    payloads: List[bytes] = dataclass_field(default_factory=list)
 
 
 @dataclass
@@ -237,7 +237,7 @@ class ExplorerHistogramBucket:
 
     start_realtime_usec: int
     end_realtime_usec: int
-    values: Dict[bytes, int] = field(default_factory=dict)
+    values: Dict[bytes, int] = dataclass_field(default_factory=dict)
 
 
 @dataclass
@@ -245,7 +245,7 @@ class ExplorerHistogram:
     """Histogram over a single field. Rust (L266-270)."""
 
     field: bytes
-    buckets: List[ExplorerHistogramBucket] = field(default_factory=list)
+    buckets: List[ExplorerHistogramBucket] = dataclass_field(default_factory=list)
 
 
 @dataclass
@@ -254,19 +254,19 @@ class ExplorerComparison:
 
     traversal_duration: float = 0.0
     index_duration: float = 0.0
-    traversal_stats: ExplorerStats = field(default_factory=ExplorerStats)
-    index_stats: ExplorerStats = field(default_factory=ExplorerStats)
+    traversal_stats: ExplorerStats = dataclass_field(default_factory=ExplorerStats)
+    index_stats: ExplorerStats = dataclass_field(default_factory=ExplorerStats)
 
 
 @dataclass
 class ExplorerResult:
     """Explorer query result. Rust (L280-288)."""
 
-    rows: List[ExplorerRow] = field(default_factory=list)
-    facets: Dict[bytes, Dict[bytes, int]] = field(default_factory=dict)
+    rows: List[ExplorerRow] = dataclass_field(default_factory=list)
+    facets: Dict[bytes, Dict[bytes, int]] = dataclass_field(default_factory=dict)
     histogram: Optional[ExplorerHistogram] = None
-    column_fields: Set[bytes] = field(default_factory=set)
-    stats: ExplorerStats = field(default_factory=ExplorerStats)
+    column_fields: Set[bytes] = dataclass_field(default_factory=set)
+    stats: ExplorerStats = dataclass_field(default_factory=ExplorerStats)
     comparison: Optional[ExplorerComparison] = None
 
 
@@ -274,7 +274,7 @@ class ExplorerResult:
 class ExplorerProgress:
     """Explorer progress callback payload. Rust (L296-300)."""
 
-    stats: ExplorerStats = field(default_factory=ExplorerStats)
+    stats: ExplorerStats = dataclass_field(default_factory=ExplorerStats)
     elapsed: float = 0.0
 
 
@@ -291,18 +291,18 @@ class ExplorerQuery:
 
     after_realtime_usec: Optional[int] = None
     before_realtime_usec: Optional[int] = None
-    anchor: ExplorerAnchor = field(default_factory=ExplorerAnchor.auto)
+    anchor: ExplorerAnchor = dataclass_field(default_factory=ExplorerAnchor.auto)
     direction: Direction = Direction.FORWARD
     limit: int = 200
-    filters: List[ExplorerFilter] = field(default_factory=list)
-    facets: List[bytes] = field(default_factory=list)
+    filters: List[ExplorerFilter] = dataclass_field(default_factory=list)
+    facets: List[bytes] = dataclass_field(default_factory=list)
     histogram: Optional[bytes] = None
     histogram_after_realtime_usec: Optional[int] = None
     histogram_before_realtime_usec: Optional[int] = None
     histogram_target_buckets: int = DEFAULT_HISTOGRAM_TARGET_BUCKETS
-    fts_terms: List[ExplorerFtsPattern] = field(default_factory=list)
-    fts_patterns: List[bytes] = field(default_factory=list)
-    fts_negative_patterns: List[bytes] = field(default_factory=list)
+    fts_terms: List[ExplorerFtsPattern] = dataclass_field(default_factory=list)
+    fts_patterns: List[bytes] = dataclass_field(default_factory=list)
+    fts_negative_patterns: List[bytes] = dataclass_field(default_factory=list)
     field_mode: ExplorerFieldMode = ExplorerFieldMode.FIRST_VALUE
     exclude_facet_field_filters: bool = True
     use_source_realtime: bool = True
@@ -367,10 +367,10 @@ class ExplorerControl:
     sampling: object = None
     progress_interval: float = EXPLORER_PROGRESS_INTERVAL_MS / 1000.0
     stop_reason: Optional[ExplorerStopReason] = None
-    _started: float = field(default_factory=time.monotonic, init=False, repr=False)
-    _last_progress: float = field(default_factory=time.monotonic, init=False, repr=False)
+    _started: float = dataclass_field(default_factory=time.monotonic, init=False, repr=False)
+    _last_progress: float = dataclass_field(default_factory=time.monotonic, init=False, repr=False)
     _next_check_rows: int = EXPLORER_CONTROL_CHECK_EVERY_ROWS
-    _stopped: bool = field(default=False, init=False, repr=False)
+    _stopped: bool = dataclass_field(default=False, init=False, repr=False)
 
     def set_deadline(self, deadline):
         self.deadline = deadline
@@ -1509,9 +1509,8 @@ def _scan_row_data(reader, query, accumulator, row_id, apply, stats, needs_fts):
         class_value = accumulator.offset_cache.lookup(data_offset)
         if class_value is None:
             stats.data_cache_misses += 1
-            try:
-                payload = reader._read_data_payload_at(data_offset)
-            except Exception:
+            payload = _try_read_data_payload(reader, data_offset)
+            if payload is None:
                 continue
             stats.data_payloads_loaded += 1
             if reader._data_object_was_compressed(data_offset):
@@ -1571,6 +1570,13 @@ def _scan_row_data(reader, query, accumulator, row_id, apply, stats, needs_fts):
         elif class_value >= _OFFSET_CLASS_VALUE_BASE:
             _handle_value_class(accumulator, class_value - _OFFSET_CLASS_VALUE_BASE, row_id, query, apply, stats)
     return fts_matches, fts_negative
+
+
+def _try_read_data_payload(reader, data_offset):
+    try:
+        return reader._read_data_payload_at(data_offset)
+    except Exception:
+        return None
 
 
 def _handle_value_class(accumulator, value_index, row_id, query, apply, stats):
@@ -1778,7 +1784,6 @@ def _scan_explorer_combined(reader, query, accumulator, result, include_facets, 
     """Mirror Rust scan_explorer_combined (L1902-1981)."""
 
     _seek_for_explorer(reader, query)
-    use_first_value = query.field_mode == ExplorerFieldMode.FIRST_VALUE
     needs_fts = _query_has_fts(query)
     include_main = _query_needs_main_pass(query)
     sampling = _sampling_state_for_combined(query, result, control)

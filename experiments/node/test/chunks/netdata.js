@@ -32,6 +32,10 @@ import {
 } from '../../src/lib/netdata.js';
 import { Writer } from '../../src/lib/writer.js';
 
+const EXACT_NUM = (value) => Number.parseInt(value, 10);
+const BOOT_FIRST_REALTIME_USEC = EXACT_NUM('1700000000000000');
+const BASE_USEC = EXACT_NUM('1700000000000000'); // 2023-11-14T22:13:20Z
+
 function testConstants() {
   assert.equal(NETDATA_SOURCE_TYPE_ALL, 1);
   assert.equal(NETDATA_SOURCE_TYPE_LOCAL_ALL, 2);
@@ -148,7 +152,7 @@ function testProfileTransformations() {
 
   // _BOOT_ID - with registered boot
   const ctxWithBoot = new DisplayContext();
-  ctxWithBoot.registerBootFirstRealtime(bootId, 1700000000000000);
+  ctxWithBoot.registerBootFirstRealtime(bootId, BOOT_FIRST_REALTIME_USEC);
   const bootDataResult = stdProfile.fieldDisplayValue(ctxWithBoot, DisplayScope.Data, '_BOOT_ID', enc(bootId));
   assert.ok(bootDataResult.startsWith(bootId + ' ('), `boot data result: ${bootDataResult}`);
   assert.ok(bootDataResult.endsWith('  '), 'boot data result must end with two spaces');
@@ -205,8 +209,6 @@ function testFacetOptionName() {
 // ---------------------------------------------------------------------------
 // Source summary bounds tests (SOW-0105 comparator fix 1)
 // ---------------------------------------------------------------------------
-
-const BASE_USEC = 1_700_000_000_000_000; // 2023-11-14T22:13:20Z
 
 function makeJournalFile(dir, machineId, count, realtimeOffset, stepUsec) {
   const sub = join(dir, machineId);

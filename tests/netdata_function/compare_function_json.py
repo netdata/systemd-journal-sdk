@@ -127,21 +127,21 @@ def parse_source_info_string(info: str) -> dict[str, Any] | None:
     }
 
 
-def _parse_covering_token(token: str) -> tuple[Any, ...]:
-    if token == "off":
+def _parse_covering_token(raw: str) -> tuple[Any, ...]:
+    if raw == "off":
         return ("off",)
-    seconds = _parse_duration_seconds(token)
+    seconds = _parse_duration_seconds(raw)
     if seconds is None:
-        return ("raw", token)
+        return ("raw", raw)
     return ("seconds", seconds)
 
 
-def _parse_last_entry_token(token: str | None) -> tuple[Any, ...]:
-    if token is None or token == "unknown":
+def _parse_last_entry_token(raw: str | None) -> tuple[Any, ...]:
+    if raw is None or raw == "unknown":
         return ("unknown",)
-    seconds = _parse_rfc3339_utc_seconds(token)
+    seconds = _parse_rfc3339_utc_seconds(raw)
     if seconds is None:
-        return ("raw", token)
+        return ("raw", raw)
     return ("seconds", seconds)
 
 
@@ -542,16 +542,10 @@ def _options_equal_with_info_skew(
 ) -> bool:
     if left_option == right_option:
         return True
-    if not isinstance(left_option, dict) or not isinstance(right_option, dict):
+    info_pair = _matching_option_info_pair(left_option, right_option)
+    if info_pair is None:
         return False
-    left_info = left_option.get("info")
-    right_info = right_option.get("info")
-    if not (isinstance(left_info, str) and isinstance(right_info, str)):
-        return False
-    left_other = {key: value for key, value in left_option.items() if key != "info"}
-    right_other = {key: value for key, value in right_option.items() if key != "info"}
-    if left_other != right_other:
-        return False
+    left_info, right_info = info_pair
     equal, diagnostic = source_info_equal_with_skew(left_info, right_info)
     if not equal:
         return False
@@ -566,6 +560,20 @@ def _options_equal_with_info_skew(
             }
         )
     return True
+
+
+def _matching_option_info_pair(left_option: Any, right_option: Any) -> tuple[str, str] | None:
+    if not isinstance(left_option, dict) or not isinstance(right_option, dict):
+        return None
+    left_info = left_option.get("info")
+    right_info = right_option.get("info")
+    if not (isinstance(left_info, str) and isinstance(right_info, str)):
+        return None
+    left_other = {key: value for key, value in left_option.items() if key != "info"}
+    right_other = {key: value for key, value in right_option.items() if key != "info"}
+    if left_other != right_other:
+        return None
+    return left_info, right_info
 
 
 def _strip_required_params_option_info(
@@ -617,42 +625,47 @@ def _required_params_option_info_pairs(
     if not isinstance(left, list) or not isinstance(right, list):
         return pairs
     for param_index, (left_param, right_param) in enumerate(zip(left, right)):
-        if not isinstance(left_param, dict) or not isinstance(right_param, dict):
-            continue
-        left_options = left_param.get("options")
-        right_options = right_param.get("options")
-        if not isinstance(left_options, list) or not isinstance(right_options, list):
-            continue
-        for left_index, left_option in enumerate(left_options):
-            if not isinstance(left_option, dict):
-                continue
-            left_id = left_option.get("id")
-            left_info = left_option.get("info")
-            if not (isinstance(left_id, str) and isinstance(left_info, str)):
-                continue
-            right_match_index = -1
-            for right_index, right_option in enumerate(right_options):
-                if not isinstance(right_option, dict):
-                    continue
-                if right_option.get("id") == left_id:
-                    right_match_index = right_index
-                    break
-            if right_match_index < 0:
-                continue
-            right_option = right_options[right_match_index]
-            if not isinstance(right_option, dict):
-                continue
-            right_info = right_option.get("info")
-            if not isinstance(right_info, str):
-                continue
-            path = (
-                f"$.required_params[{param_index}]"
-                f".options[{left_index}]"
-            )
-            pairs.append(
-                (path, left_id, left_info, right_info, param_index, left_index)
-            )
+        pairs.extend(_required_param_option_info_pairs(param_index, left_param, right_param))
     return pairs
+
+
+def _required_param_option_info_pairs(
+    param_index: int, left_param: Any, right_param: Any
+) -> list[tuple[str, str, str, str, int, int]]:
+    if not isinstance(left_param, dict) or not isinstance(right_param, dict):
+        return []
+    left_options = left_param.get("options")
+    right_options = right_param.get("options")
+    if not isinstance(left_options, list) or not isinstance(right_options, list):
+        return []
+    right_by_id = {
+        option.get("id"): option
+        for option in right_options
+        if isinstance(option, dict) and isinstance(option.get("id"), str)
+    }
+    return [
+        pair
+        for left_index, left_option in enumerate(left_options)
+        for pair in [_required_param_option_info_pair(param_index, left_index, left_option, right_by_id)]
+        if pair is not None
+    ]
+
+
+def _required_param_option_info_pair(
+    param_index: int, left_index: int, left_option: Any, right_by_id: dict[Any, Any]
+) -> tuple[str, str, str, str, int, int] | None:
+    if not isinstance(left_option, dict):
+        return None
+    left_id = left_option.get("id")
+    left_info = left_option.get("info")
+    right_option = right_by_id.get(left_id)
+    if not (isinstance(left_id, str) and isinstance(left_info, str) and isinstance(right_option, dict)):
+        return None
+    right_info = right_option.get("info")
+    if not isinstance(right_info, str):
+        return None
+    path = f"$.required_params[{param_index}].options[{left_index}]"
+    return path, left_id, left_info, right_info, param_index, left_index
 
 
 def required_params_info_skew_result(
@@ -912,8 +925,14 @@ def histogram_chart_schema_errors(doc: dict[str, Any]) -> list[str]:
             errors.append(f"histogram.chart.{key}")
     if not isinstance(chart.get("agents"), list):
         errors.append("histogram.chart.agents")
+    errors.extend(histogram_result_schema_errors(chart.get("result")))
+    errors.extend(histogram_db_schema_errors(chart.get("db")))
+    errors.extend(histogram_view_schema_errors(chart.get("view")))
+    return errors
 
-    result = chart.get("result")
+
+def histogram_result_schema_errors(result: Any) -> list[str]:
+    errors: list[str] = []
     if isinstance(result, dict):
         if not isinstance(result.get("labels"), list):
             errors.append("histogram.chart.result.labels")
@@ -921,8 +940,11 @@ def histogram_chart_schema_errors(doc: dict[str, Any]) -> list[str]:
             errors.append("histogram.chart.result.point")
         if not isinstance(result.get("data"), list):
             errors.append("histogram.chart.result.data")
+    return errors
 
-    db = chart.get("db")
+
+def histogram_db_schema_errors(db: Any) -> list[str]:
+    errors: list[str] = []
     if isinstance(db, dict):
         db_dimensions = db.get("dimensions")
         if not isinstance(db_dimensions, dict):
@@ -938,8 +960,11 @@ def histogram_chart_schema_errors(doc: dict[str, Any]) -> list[str]:
             )
         if not isinstance(db.get("per_tier"), list):
             errors.append("histogram.chart.db.per_tier")
+    return errors
 
-    view = chart.get("view")
+
+def histogram_view_schema_errors(view: Any) -> list[str]:
+    errors: list[str] = []
     if isinstance(view, dict):
         view_dimensions = view.get("dimensions")
         if not isinstance(view_dimensions, dict):
@@ -953,7 +978,6 @@ def histogram_chart_schema_errors(doc: dict[str, Any]) -> list[str]:
                 "histogram.chart.view.dimensions.sts",
                 view_dimensions.get("sts"),
             )
-
     return errors
 
 
@@ -1079,84 +1103,66 @@ def value_count(facets: Any) -> int:
     return 0
 
 
-def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
-    if is_function_error(left) or is_function_error(right):
-        left_error = normalize_json(left)
-        right_error = normalize_json(right)
-        ok = left_error == right_error
-        return {
-            "ok": ok,
-            "checks": {"function_error": ok},
-            "content_checks": {"function_error": ok},
-            "diffs": {"function_error": first_difference(left_error, right_error)},
-            "non_content": {},
-            "left": {
-                "top_level_keys": sorted(left),
-                "status": left.get("status"),
-                "errorMessage": left.get("errorMessage"),
-            },
-            "right": {
-                "top_level_keys": sorted(right),
-                "status": right.get("status"),
-                "errorMessage": right.get("errorMessage"),
-            },
-            "ignored_top_level_fields": sorted(VOLATILE_TOP_LEVEL_FIELDS),
-        }
+def _compare_function_error(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    left_error = normalize_json(left)
+    right_error = normalize_json(right)
+    ok = left_error == right_error
+    return {
+        "ok": ok,
+        "checks": {"function_error": ok},
+        "content_checks": {"function_error": ok},
+        "diffs": {"function_error": first_difference(left_error, right_error)},
+        "non_content": {},
+        "left": {
+            "top_level_keys": sorted(left),
+            "status": left.get("status"),
+            "errorMessage": left.get("errorMessage"),
+        },
+        "right": {
+            "top_level_keys": sorted(right),
+            "status": right.get("status"),
+            "errorMessage": right.get("errorMessage"),
+        },
+        "ignored_top_level_fields": sorted(VOLATILE_TOP_LEVEL_FIELDS),
+    }
 
+
+def _normalized_comparison_parts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     data_only = is_data_only(left) or is_data_only(right)
     allowed_columns = None
     if data_only:
-        allowed_columns = columns_with_any_returned_value(
-            left
-        ) | columns_with_any_returned_value(right)
-    left_columns = normalized_columns(left, allowed_columns)
-    right_columns = normalized_columns(right, allowed_columns)
-    left_rows = normalized_rows(left, allowed_columns)
-    right_rows = normalized_rows(right, allowed_columns)
-    left_facets = normalized_facets(left)
-    right_facets = normalized_facets(right)
-    left_histogram = normalized_histogram(left)
-    right_histogram = normalized_histogram(right)
-    left_histogram_schema_errors = histogram_chart_schema_errors(left)
-    right_histogram_schema_errors = histogram_chart_schema_errors(right)
-    left_items = normalized_items(left)
-    right_items = normalized_items(right)
-    left_diagnostic_items = normalized_diagnostic_items(left)
-    right_diagnostic_items = normalized_diagnostic_items(right)
-    left_top_level = normalized_top_level(left)
-    right_top_level = normalized_top_level(right)
-    rows_equal, ignored_message_rows = rows_match_with_known_plugin_message_corruption(
-        left_rows, right_rows
-    )
-    (
-        facets_equal,
-        ignored_selected_facets,
-        info_skew_tolerances,
-    ) = facets_match_with_selected_field_quirk(
-        left, right, left_facets, right_facets
-    )
-    # The source-option `info` string is also exposed under the
-    # top-level `required_params` envelope (e.g. for info responses
-    # listing the available journal sources). Tolerate the same bounded
-    # skew there so the slow peer does not surface a false-positive
-    # top-level mismatch.
+        allowed_columns = columns_with_any_returned_value(left) | columns_with_any_returned_value(right)
+    return {
+        "left_columns": normalized_columns(left, allowed_columns),
+        "right_columns": normalized_columns(right, allowed_columns),
+        "left_rows": normalized_rows(left, allowed_columns),
+        "right_rows": normalized_rows(right, allowed_columns),
+        "left_facets": normalized_facets(left),
+        "right_facets": normalized_facets(right),
+        "left_histogram": normalized_histogram(left),
+        "right_histogram": normalized_histogram(right),
+        "left_histogram_schema_errors": histogram_chart_schema_errors(left),
+        "right_histogram_schema_errors": histogram_chart_schema_errors(right),
+        "left_items": normalized_items(left),
+        "right_items": normalized_items(right),
+        "left_diagnostic_items": normalized_diagnostic_items(left),
+        "right_diagnostic_items": normalized_diagnostic_items(right),
+        "left_top_level": normalized_top_level(left),
+        "right_top_level": normalized_top_level(right),
+    }
+
+
+def _top_level_check(parts: dict[str, Any]) -> tuple[bool, dict[str, Any], dict[str, Any]]:
     required_params_skew = required_params_info_skew_result(
-        left_top_level.get("required_params"),
-        right_top_level.get("required_params"),
+        parts["left_top_level"].get("required_params"),
+        parts["right_top_level"].get("required_params"),
     )
-    # SOW-0104 fix-10: the `_request.after` / `_request.before` echoes
-    # embed parse-time `unix_now_seconds()` by reference design. Two
-    # peers invoked seconds apart legitimately produce different echoes.
-    # Tolerate a bounded skew (<=300s) on those two fields ONLY so a
-    # slow third peer is not a false-positive content mismatch. Other
-    # `_request` fields stay strict. Mirrors the fix-4 source-info
-    # tolerance precedent.
     request_window_skew = request_window_skew_result(
-        left_top_level.get("_request"),
-        right_top_level.get("_request"),
+        parts["left_top_level"].get("_request"),
+        parts["right_top_level"].get("_request"),
     )
-    left_top_level_for_strict = dict(left_top_level)
-    right_top_level_for_strict = dict(right_top_level)
+    left_top_level_for_strict = dict(parts["left_top_level"])
+    right_top_level_for_strict = dict(parts["right_top_level"])
     left_top_level_for_strict["required_params"] = required_params_skew["stripped_left"]
     right_top_level_for_strict["required_params"] = required_params_skew["stripped_right"]
     if isinstance(left_top_level_for_strict.get("_request"), dict) and isinstance(
@@ -1164,31 +1170,68 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     ):
         left_top_level_for_strict["_request"] = request_window_skew["stripped_left"]
         right_top_level_for_strict["_request"] = request_window_skew["stripped_right"]
-    top_level_strict_equal = (
+    return (
         left_top_level_for_strict == right_top_level_for_strict
-    )
-    # If the only difference is in the source-option `info` strings
-    # and the skew tolerance was applied, the strict comparison on
-    # the stripped copies passes. If the skew was rejected, the strict
-    # comparison still fails (because files/size or option identity
-    # differs) and the original-structure first_difference surfaces
-    # the exact option path and both values. Same applies to the
-    # `_request.after` / `_request.before` echoes.
-    top_level_equal = (
-        top_level_strict_equal
         and required_params_skew["equal"]
-        and request_window_skew["equal"]
+        and request_window_skew["equal"],
+        required_params_skew,
+        request_window_skew,
     )
+
+
+def _comparison_diffs(parts: dict[str, Any]) -> dict[str, Any]:
+    left_schema = parts["left_histogram_schema_errors"]
+    right_schema = parts["right_histogram_schema_errors"]
+    return {
+        "top_level": first_difference(parts["left_top_level"], parts["right_top_level"]),
+        "columns": first_difference(parts["left_columns"], parts["right_columns"]),
+        "rows": first_difference(parts["left_rows"], parts["right_rows"]),
+        "facets": first_difference(parts["left_facets"], parts["right_facets"]),
+        "histogram": first_difference(parts["left_histogram"], parts["right_histogram"]),
+        "histogram_schema": {"left": left_schema, "right": right_schema}
+        if left_schema or right_schema else None,
+        "items": first_difference(parts["left_items"], parts["right_items"]),
+        "diagnostic_items": first_difference(parts["left_diagnostic_items"], parts["right_diagnostic_items"]),
+    }
+
+
+def _side_summary(top_level: dict[str, Any], columns: Any, rows: Any, facets: Any, items: Any) -> dict[str, Any]:
+    return {
+        "top_level_keys": sorted(top_level),
+        "columns": len(columns),
+        "rows": len(rows),
+        "facets": len(facets),
+        "facet_values": value_count(facets),
+        "items": items,
+    }
+
+
+def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    if is_function_error(left) or is_function_error(right):
+        return _compare_function_error(left, right)
+
+    parts = _normalized_comparison_parts(left, right)
+    rows_equal, ignored_message_rows = rows_match_with_known_plugin_message_corruption(
+        parts["left_rows"], parts["right_rows"]
+    )
+    (
+        facets_equal,
+        ignored_selected_facets,
+        info_skew_tolerances,
+    ) = facets_match_with_selected_field_quirk(
+        left, right, parts["left_facets"], parts["right_facets"]
+    )
+    top_level_equal, required_params_skew, request_window_skew = _top_level_check(parts)
     checks = {
         "top_level": top_level_equal,
-        "columns": left_columns == right_columns,
+        "columns": parts["left_columns"] == parts["right_columns"],
         "rows": rows_equal,
         "facets": facets_equal,
-        "histogram": left_histogram == right_histogram,
-        "histogram_schema": not left_histogram_schema_errors
-        and not right_histogram_schema_errors,
-        "items": left_items == right_items,
-        "diagnostic_items": left_diagnostic_items == right_diagnostic_items,
+        "histogram": parts["left_histogram"] == parts["right_histogram"],
+        "histogram_schema": not parts["left_histogram_schema_errors"]
+        and not parts["right_histogram_schema_errors"],
+        "items": parts["left_items"] == parts["right_items"],
+        "diagnostic_items": parts["left_diagnostic_items"] == parts["right_diagnostic_items"],
     }
     content_checks = {
         key: value for key, value in checks.items() if key != "diagnostic_items"
@@ -1197,21 +1240,7 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
         "ok": all(content_checks.values()),
         "checks": checks,
         "content_checks": content_checks,
-        "diffs": {
-            "top_level": first_difference(left_top_level, right_top_level),
-            "columns": first_difference(left_columns, right_columns),
-            "rows": first_difference(left_rows, right_rows),
-            "facets": first_difference(left_facets, right_facets),
-            "histogram": first_difference(left_histogram, right_histogram),
-            "histogram_schema": {
-                "left": left_histogram_schema_errors,
-                "right": right_histogram_schema_errors,
-            }
-            if left_histogram_schema_errors or right_histogram_schema_errors
-            else None,
-            "items": first_difference(left_items, right_items),
-            "diagnostic_items": first_difference(left_diagnostic_items, right_diagnostic_items),
-        },
+        "diffs": _comparison_diffs(parts),
         "non_content": {
             "left_empty_unavailable_facet_artifacts": non_content_facet_artifacts(left),
             "right_empty_unavailable_facet_artifacts": non_content_facet_artifacts(right),
@@ -1222,22 +1251,10 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
             "required_params_source_info_skew_tolerances": required_params_skew["tolerances"],
             "request_window_skew_tolerances": request_window_skew["tolerances"],
         },
-        "left": {
-            "top_level_keys": sorted(left_top_level),
-            "columns": len(left_columns),
-            "rows": len(left_rows),
-            "facets": len(left_facets),
-            "facet_values": value_count(left_facets),
-            "items": left_items,
-        },
-        "right": {
-            "top_level_keys": sorted(right_top_level),
-            "columns": len(right_columns),
-            "rows": len(right_rows),
-            "facets": len(right_facets),
-            "facet_values": value_count(right_facets),
-            "items": right_items,
-        },
+        "left": _side_summary(parts["left_top_level"], parts["left_columns"], parts["left_rows"],
+                              parts["left_facets"], parts["left_items"]),
+        "right": _side_summary(parts["right_top_level"], parts["right_columns"], parts["right_rows"],
+                               parts["right_facets"], parts["right_items"]),
         "ignored_top_level_fields": sorted(VOLATILE_TOP_LEVEL_FIELDS),
     }
 

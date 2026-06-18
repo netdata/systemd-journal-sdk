@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-17
+Last updated: 2026-06-18
 
 ## Current
 
@@ -37,6 +37,15 @@ Last updated: 2026-06-17
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0119 - Codacy Severe Findings Except Go Version: completed. All locally
+  actionable Codacy Critical/High findings were fixed or dispositioned except
+  the user-approved Go stdlib SCA cluster tied to `go/go.mod:3`; the Go module
+  directive remains `go 1.26` for Netdata compatibility. Validation passed Go
+  tests, full Rust workspace tests, Python/Node retired-experiment aggregate
+  suites, verified docs examples, targeted Codacy-rule scans, Lizard, Semgrep,
+  formatting, whitespace, SOW audit, and all required Rust/Go reviewer votes
+  from Claude, Codex, glm, minimax, kimi, mimo, deepseek, and qwen returned
+  `PRODUCTION GRADE`.
 - SOW-0118 - Host Helper Release And Netdata Integration Planning: completed.
   Rust crates were published to crates.io at `0.7.3`, `master` was pushed
   through release commit `165a7a60e59ccbfa24315fa52c1cdebd2bae534e`, and

@@ -9,7 +9,7 @@ from test_support import (
     OBJECT_TYPE_TAG,
     PYTHON_ROOT,
     Path,
-    REPO_ROOT,
+    REPOSITORY_ROOT,
     VALID_FSS_VERIFICATION_KEY,
     Writer,
     evolve,
@@ -32,7 +32,7 @@ from test_support import (
 )
 
 def test_fsprg_vectors():
-    vectors_path = REPO_ROOT / 'tests/fss/fixtures/fsprg-vectors-v01.json'
+    vectors_path = REPOSITORY_ROOT / 'tests/fss/fixtures/fsprg-vectors-v01.json'
     data = json.loads(vectors_path.read_text())
     params = data['fsprg_params']
     secpar = params['secpar']
@@ -72,7 +72,7 @@ def test_fsprg_vectors():
 
 
 def test_conformance_manifest():
-    manifest_path = REPO_ROOT / 'tests/conformance/manifests/conformance-v01.json'
+    manifest_path = REPOSITORY_ROOT / 'tests/conformance/manifests/conformance-v01.json'
     manifest = json.loads(manifest_path.read_text())
     expected_skips = set()
     if not zstd_available():
@@ -110,7 +110,7 @@ def test_verify_file_detects_corruption():
     if not zstd_available():
         return
     from journal.verify import verify_file, VerificationError
-    path = REPO_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
+    path = REPOSITORY_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
     try:
         verify_file(str(path))
     except VerificationError as e:
@@ -123,7 +123,7 @@ def test_verify_file_passes_on_valid_fixture():
     if not zstd_available():
         return
     from journal.verify import verify_file
-    path = REPO_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
+    path = REPOSITORY_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
     verify_file(str(path))  # should not raise
 
 
@@ -177,8 +177,8 @@ def test_verify_file_with_key_sealed():
 def test_journalctl_verify():
     if not zstd_available():
         return
-    valid_path = REPO_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
-    corrupt_path = REPO_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
+    valid_path = REPOSITORY_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
+    corrupt_path = REPOSITORY_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
     script = PYTHON_ROOT / 'cmd/journalctl.py'
     _test_journalctl_verify_valid(script, valid_path)
     _test_journalctl_verify_directory(script, valid_path)
@@ -522,4 +522,3 @@ def test_compact_sealed_writer_stock_verify():
         w.close()
         key = _test_verification_key(opts['seal'])
         verify_journal_file_with_key_if_available(path, key, 'journalctl verify compact+sealed')
-

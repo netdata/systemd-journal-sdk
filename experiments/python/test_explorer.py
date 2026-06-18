@@ -24,7 +24,6 @@ from journal import (  # noqa: E402
     EXPLORER_CONTROL_CHECK_EVERY_ROWS,
     EXPLORER_PROGRESS_INTERVAL_MS,
     Direction,
-    ExplorerAnchor,
     ExplorerAnchorKind,
     ExplorerComparison,
     ExplorerControl,
@@ -32,20 +31,14 @@ from journal import (  # noqa: E402
     ExplorerFieldMode,
     ExplorerFilter,
     ExplorerFtsPattern,
-    ExplorerHistogram,
-    ExplorerHistogramBucket,
     ExplorerProgress,
     ExplorerQuery,
-    ExplorerResult,
-    ExplorerRow,
     ExplorerSampling,
-    ExplorerStats,
     ExplorerStopReason,
     ExplorerStrategy,
     ExplorerUnsupported,
     FileReader,
     Writer,
-    Log,
 )
 from journal.explorer import _ExplorerSamplingState, _combined_sampling_decision  # noqa: E402
 

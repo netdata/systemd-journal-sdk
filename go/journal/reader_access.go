@@ -430,20 +430,9 @@ func (a *rollingReaderAccessor) getWindow(offset, size uint64, rowPinned bool) (
 	if !ok {
 		return nil, fmt.Errorf("%w: reader request overflows", errInvalidJournal)
 	}
-	for _, window := range a.windows {
-		windowEnd := window.base + window.size
-		if offset >= window.base && end <= windowEnd {
-			if window.stale && (!rowPinned || !window.rowPinned) {
-				continue
-			}
-			a.clock++
-			window.lastUsed = a.clock
-			if rowPinned {
-				window.rowPinned = true
-			}
-			a.refreshStats()
-			return window, nil
-		}
+	if window := a.findReusableWindow(offset, end, rowPinned); window != nil {
+		a.touchWindow(window, rowPinned)
+		return window, nil
 	}
 
 	if len(a.windows) >= a.maxWindows {
@@ -468,6 +457,29 @@ func (a *rollingReaderAccessor) getWindow(offset, size uint64, rowPinned bool) (
 	a.recordWindowOpen()
 	a.refreshStats()
 	return window, nil
+}
+
+func (a *rollingReaderAccessor) findReusableWindow(offset, end uint64, rowPinned bool) *readerAccessWindow {
+	for _, window := range a.windows {
+		windowEnd := window.base + window.size
+		if offset < window.base || end > windowEnd {
+			continue
+		}
+		if window.stale && (!rowPinned || !window.rowPinned) {
+			continue
+		}
+		return window
+	}
+	return nil
+}
+
+func (a *rollingReaderAccessor) touchWindow(window *readerAccessWindow, rowPinned bool) {
+	a.clock++
+	window.lastUsed = a.clock
+	if rowPinned {
+		window.rowPinned = true
+	}
+	a.refreshStats()
 }
 
 func (a *rollingReaderAccessor) evictOneWindow() error {

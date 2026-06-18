@@ -10,6 +10,8 @@ import { Writer } from '../../src/lib/writer.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const nodeRoot = resolve(here, '..', '..');
 const wrapperPath = resolve(nodeRoot, 'cmd/netdata_function_wrapper.js');
+const BASE_REALTIME_SECONDS = Number.parseInt('1700000000', 10);
+const FAR_FUTURE_SECONDS = Number.parseInt('9999999999', 10);
 
 let tmpDir = null;
 
@@ -33,7 +35,7 @@ function buildJournal(dir) {
     writer.append([
       { name: 'MESSAGE', value: Buffer.from(`wrapper-test-${String(i).padStart(5, '0')}`, 'utf8') },
       { name: 'PRIORITY', value: Buffer.from(String(5 + (i % 3)), 'utf8') },
-    ], { realtimeUsec: (1700000000 + i) * 1_000_000 });
+    ], { realtimeUsec: (BASE_REALTIME_SECONDS + i) * 1_000_000 });
   }
   writer.close();
   return journalDir;
@@ -151,11 +153,11 @@ function testCancelAfterProgress() {
     w2.append([
       { name: 'MESSAGE', value: Buffer.from(`second-file-${String(i).padStart(5, '0')}`, 'utf8') },
       { name: 'PRIORITY', value: Buffer.from(String(5), 'utf8') },
-    ], { realtimeUsec: (1700000000 + 20 + i) * 1_000_000 });
+    ], { realtimeUsec: (BASE_REALTIME_SECONDS + 20 + i) * 1_000_000 });
   }
   w2.close();
 
-  const dataRequest = JSON.stringify({ after: 0, before: 9999999999, data_only: true });
+  const dataRequest = JSON.stringify({ after: 0, before: FAR_FUTURE_SECONDS, data_only: true });
   const result = runWrapper(
     { dir: tmpDir, progressJsonl: progressPath, cancelAfterProgress: 1 },
     dataRequest,

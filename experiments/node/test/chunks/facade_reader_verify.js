@@ -1,7 +1,7 @@
 import * as support from '../support.js';
 
 export async function run() {
-  const { mkdtempSync, rmSync, tmpdir, join, assert, Log, FileReader, SdJournalOpen, SdJournalNext, SdJournalVisitUniqueValues, fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch, verifyFile, VerificationError, safeReadFileSync, safeReaddirSync, packageRoot, repoRoot, listJavaScriptFiles, run, journalFiles, verifyJournalFileIfAvailable, journalctlDirectoryRowsIfAvailable } = support;
+  const { mkdtempSync, rmSync, tmpdir, join, assert, Log, FileReader, SdJournalOpen, SdJournalNext, SdJournalVisitUniqueValues, fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch, verifyFile, VerificationError, safeReadFileSync, safeReaddirSync, packageRoot, repoRoot, repositoryRoot, listJavaScriptFiles, run, journalFiles, verifyJournalFileIfAvailable, journalctlDirectoryRowsIfAvailable } = support;
 
   {
     const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
@@ -436,7 +436,7 @@ export async function run() {
 
   {
     // FSPRG vector tests against committed systemd v260.1 fixture.
-    const vectorsPath = join(repoRoot, 'tests/fss/fixtures/fsprg-vectors-v01.json');
+    const vectorsPath = join(repositoryRoot, 'tests/fss/fixtures/fsprg-vectors-v01.json');
     const vectorsData = JSON.parse(safeReadFileSync(vectorsPath, 'utf8'));
     const secpar = vectorsData.fsprg_params.secpar;
     for (const vec of vectorsData.vectors) {
@@ -522,7 +522,7 @@ export async function run() {
 
   // Verification tests
   {
-    const path = join(repoRoot, 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst');
+    const path = join(repositoryRoot, 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst');
     try {
       verifyFile(path);
       throw new Error('expected VerificationError for truncated zstd frame');
@@ -533,7 +533,7 @@ export async function run() {
   }
 
   {
-    const path = join(repoRoot, 'fixtures/systemd/test-data/no-rtc/system.journal.zst');
+    const path = join(repositoryRoot, 'fixtures/systemd/test-data/no-rtc/system.journal.zst');
     verifyFile(path); // should not throw
   }
 }

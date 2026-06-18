@@ -390,20 +390,9 @@ def run_follow_reader(
         initial_entries=initial_entries,
         append_entries=append_entries,
     )
-    deadline = time.monotonic() + 5.0
-    while not ready_file.exists():
-        if writer_proc.poll() is not None:
-            stdout, stderr = writer_proc.communicate(timeout=1)
-            return [], writer_proc.returncode or 1, (stdout + stderr)[-1000:], []
-        if time.monotonic() > deadline:
-            writer_proc.terminate()
-            try:
-                stdout, stderr = writer_proc.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                writer_proc.kill()
-                stdout, stderr = writer_proc.communicate(timeout=2)
-            return [], 1, ("go live fixture writer did not become ready\n" + stdout + stderr)[-1000:], []
-        time.sleep(0.05)
+    ready_error = wait_for_writer_ready(writer_proc, ready_file)
+    if ready_error is not None:
+        return [], ready_error[0], ready_error[1], []
     cmd = reader_command(
         reader,
         tools,
@@ -422,43 +411,57 @@ def run_follow_reader(
         stderr=subprocess.PIPE,
     )
     try:
-        try:
-            writer_stdout, writer_stderr = writer_proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            writer_proc.terminate()
-            try:
-                writer_stdout, writer_stderr = writer_proc.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                writer_proc.kill()
-                writer_stdout, writer_stderr = writer_proc.communicate(timeout=2)
+        writer_stdout, writer_stderr = communicate_or_stop(writer_proc, timeout=10, stop_timeout=2)
         time.sleep(0.7)
         proc.terminate()
-        try:
-            stdout, stderr = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout, stderr = proc.communicate(timeout=5)
+        stdout, stderr = communicate_or_kill(proc, timeout=5)
     finally:
-        if writer_proc.poll() is None:
-            writer_proc.terminate()
-            try:
-                writer_proc.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                writer_proc.kill()
-                writer_proc.communicate(timeout=2)
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate(timeout=2)
+        stop_process_if_running(writer_proc)
+        stop_process_if_running(proc)
 
     actual = parse_messages(stdout)
     expected = case["expected"]
     if writer_proc.returncode != 0:
         return actual, writer_proc.returncode or 1, (writer_stdout + writer_stderr + stderr)[-1000:], cmd
     return actual, 0 if actual == expected else proc.returncode or 1, stderr, cmd
+
+
+def wait_for_writer_ready(writer_proc: subprocess.Popen[str], ready_file: Path) -> tuple[int, str] | None:
+    deadline = time.monotonic() + 5.0
+    while not ready_file.exists():
+        if writer_proc.poll() is not None:
+            stdout, stderr = writer_proc.communicate(timeout=1)
+            return writer_proc.returncode or 1, (stdout + stderr)[-1000:]
+        if time.monotonic() > deadline:
+            stdout, stderr = terminate_or_kill(writer_proc, timeout=2)
+            return 1, ("go live fixture writer did not become ready\n" + stdout + stderr)[-1000:]
+        time.sleep(0.05)
+    return None
+
+
+def communicate_or_kill(proc: subprocess.Popen[str], timeout: float) -> tuple[str, str]:
+    try:
+        return proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return proc.communicate(timeout=timeout)
+
+
+def terminate_or_kill(proc: subprocess.Popen[str], timeout: float) -> tuple[str, str]:
+    proc.terminate()
+    return communicate_or_kill(proc, timeout)
+
+
+def communicate_or_stop(proc: subprocess.Popen[str], *, timeout: float, stop_timeout: float) -> tuple[str, str]:
+    try:
+        return proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return terminate_or_kill(proc, stop_timeout)
+
+
+def stop_process_if_running(proc: subprocess.Popen[str] | None) -> None:
+    if proc is not None and proc.poll() is None:
+        terminate_or_kill(proc, timeout=2)
 
 
 def main() -> int:

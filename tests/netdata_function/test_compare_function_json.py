@@ -42,6 +42,7 @@ def function_doc(
                 "order": 2,
             }
         )
+    histogram = histogram_doc(histogram_value) if include_histogram else None
     return {
         "status": status,
         "type": "table",
@@ -60,80 +61,7 @@ def function_doc(
                 "options": options,
             }
         ],
-        "histogram": (
-            {
-                "id": "PRIORITY",
-                "name": "PRIORITY",
-                "chart": {
-                    "summary": {
-                        "nodes": [],
-                        "contexts": [],
-                        "instances": [],
-                        "dimensions": [],
-                        "labels": [],
-                        "alerts": [],
-                    },
-                    "totals": {"nodes": {"sl": 1, "qr": 1}},
-                    "result": {
-                        "labels": ["time", "info"],
-                        "point": {"value": 0, "arp": 1, "pa": 2},
-                        "data": [[1000, [histogram_value, 0, 0]]],
-                    },
-                    "db": {
-                        "tiers": 1,
-                        "update_every": 5,
-                        "units": "events",
-                        "dimensions": {
-                            "ids": ["DwMLdkCaS0P"],
-                            "names": ["info"],
-                            "units": ["events"],
-                            "sts": {
-                                "min": [histogram_value],
-                                "max": [histogram_value],
-                                "avg": [histogram_value],
-                                "arp": [0],
-                                "con": [100],
-                            },
-                        },
-                        "per_tier": [
-                            {
-                                "tier": 0,
-                                "queries": 1,
-                                "points": 1,
-                                "update_every": 5,
-                            }
-                        ],
-                    },
-                    "view": {
-                        "title": "Events Distribution by PRIORITY",
-                        "update_every": 5,
-                        "after": 1,
-                        "before": 2,
-                        "units": "events",
-                        "chart_type": "stackedBar",
-                        "dimensions": {
-                            "grouped_by": ["dimension"],
-                            "ids": ["DwMLdkCaS0P"],
-                            "names": ["info"],
-                            "colors": [None],
-                            "units": ["events"],
-                            "sts": {
-                                "min": [histogram_value],
-                                "max": [histogram_value],
-                                "avg": [histogram_value],
-                                "arp": [0],
-                                "con": [100],
-                            },
-                        },
-                        "min": histogram_value,
-                        "max": histogram_value,
-                    },
-                    "agents": [],
-                },
-            }
-            if include_histogram
-            else None
-        ),
+        "histogram": histogram,
         "items": {
             "matched": 1,
             "returned": 1,
@@ -145,6 +73,85 @@ def function_doc(
             "evaluated": evaluated,
         },
         "expires": 123,
+    }
+
+
+def histogram_dimension_stats(histogram_value: int) -> dict:
+    return {
+        "min": [histogram_value],
+        "max": [histogram_value],
+        "avg": [histogram_value],
+        "arp": [0],
+        "con": [100],
+    }
+
+
+def histogram_doc(histogram_value: int) -> dict:
+    return {
+        "id": "PRIORITY",
+        "name": "PRIORITY",
+        "chart": {
+            "summary": {
+                "nodes": [],
+                "contexts": [],
+                "instances": [],
+                "dimensions": [],
+                "labels": [],
+                "alerts": [],
+            },
+            "totals": {"nodes": {"sl": 1, "qr": 1}},
+            "result": {
+                "labels": ["time", "info"],
+                "point": {"value": 0, "arp": 1, "pa": 2},
+                "data": [[1000, [histogram_value, 0, 0]]],
+            },
+            "db": histogram_db_doc(histogram_value),
+            "view": histogram_view_doc(histogram_value),
+            "agents": [],
+        },
+    }
+
+
+def histogram_db_doc(histogram_value: int) -> dict:
+    return {
+        "tiers": 1,
+        "update_every": 5,
+        "units": "events",
+        "dimensions": {
+            "ids": ["DwMLdkCaS0P"],
+            "names": ["info"],
+            "units": ["events"],
+            "sts": histogram_dimension_stats(histogram_value),
+        },
+        "per_tier": [
+            {
+                "tier": 0,
+                "queries": 1,
+                "points": 1,
+                "update_every": 5,
+            }
+        ],
+    }
+
+
+def histogram_view_doc(histogram_value: int) -> dict:
+    return {
+        "title": "Events Distribution by PRIORITY",
+        "update_every": 5,
+        "after": 1,
+        "before": 2,
+        "units": "events",
+        "chart_type": "stackedBar",
+        "dimensions": {
+            "grouped_by": ["dimension"],
+            "ids": ["DwMLdkCaS0P"],
+            "names": ["info"],
+            "colors": [None],
+            "units": ["events"],
+            "sts": histogram_dimension_stats(histogram_value),
+        },
+        "min": histogram_value,
+        "max": histogram_value,
     }
 
 

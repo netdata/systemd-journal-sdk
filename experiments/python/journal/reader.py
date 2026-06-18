@@ -710,6 +710,13 @@ class FileReader:
 
     def _read_data_payload(self, offset, row_lifetime):
         payload_offset = self._data_payload_offset_value
+        obj_flags, payload_size, payload_offset_abs = self._data_payload_bounds(offset, payload_offset)
+        if obj_flags == 0:
+            return self._payload_view(payload_offset_abs, payload_size, row_lifetime)
+        payload = self._accessor.temp_view(payload_offset_abs, payload_size)
+        return self._decompress_data_payload(obj_flags, payload, row_lifetime)
+
+    def _data_payload_bounds(self, offset, payload_offset):
         if self._visible_size() < offset + payload_offset:
             raise ValueError('buffer too small for data object')
         obj_type = self._u8(offset)
@@ -721,13 +728,14 @@ class FileReader:
             raise ValueError(f'data object too small: {obj_size}')
         if offset + obj_size > self._visible_size():
             raise ValueError(f'data object exceeds buffer at offset {offset}')
-        payload_size = obj_size - payload_offset
-        payload_offset_abs = offset + payload_offset
-        if obj_flags == 0:
-            if row_lifetime:
-                return self._accessor.row_view(payload_offset_abs, payload_size)
-            return self._accessor.temp_view(payload_offset_abs, payload_size)
-        payload = self._accessor.temp_view(payload_offset_abs, payload_size)
+        return obj_flags, obj_size - payload_offset, offset + payload_offset
+
+    def _payload_view(self, payload_offset_abs, payload_size, row_lifetime):
+        if row_lifetime:
+            return self._accessor.row_view(payload_offset_abs, payload_size)
+        return self._accessor.temp_view(payload_offset_abs, payload_size)
+
+    def _decompress_data_payload(self, obj_flags, payload, row_lifetime):
         unsupported = obj_flags & ~(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD)
         if unsupported != 0:
             raise ValueError(f'unsupported DATA object flags: 0x{obj_flags:x}')

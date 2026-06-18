@@ -51,6 +51,7 @@ fn load_machine_id() -> io::Result<Uuid> {
     };
     // SAFETY: bytes is a valid 16-byte output buffer and timeout is valid for
     // the duration of the call.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe { libc::gethostuuid(bytes.as_mut_ptr(), &timeout) };
     if rc != 0 {
         return Err(io::Error::last_os_error());

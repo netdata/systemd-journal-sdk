@@ -552,21 +552,7 @@ func (r netdataRequest) toExplorerQuery(matchedFiles uint64, header *journalHead
 	tailAnchor := r.Tail && r.Anchor.Kind == ExplorerAnchorRealtime
 	backwardPageAnchor := r.DataOnly && !tailAnchor && r.Direction == DirectionBackward && r.Anchor.Kind == ExplorerAnchorRealtime
 	query := DefaultExplorerQuery()
-	if tailAnchor {
-		query.AfterRealtimeUsec = tailAfterRealtimeBound(r.AfterRealtimeUsec, r.Anchor)
-	} else {
-		query.AfterRealtimeUsec = r.AfterRealtimeUsec
-	}
-	if backwardPageAnchor {
-		query.BeforeRealtimeUsec = beforeRealtimeBoundExcludingAnchor(r.BeforeRealtimeUsec, r.Anchor)
-	} else {
-		query.BeforeRealtimeUsec = r.BeforeRealtimeUsec
-	}
-	if tailAnchor || backwardPageAnchor {
-		query.Anchor = DefaultExplorerAnchor()
-	} else {
-		query.Anchor = r.Anchor
-	}
+	r.applyExplorerBounds(&query, tailAnchor, backwardPageAnchor)
 	query.Direction = r.Direction
 	query.Limit = r.Limit
 	query.Filters = cloneExplorerFilters(r.Filters)
@@ -591,6 +577,21 @@ func (r netdataRequest) toExplorerQuery(matchedFiles uint64, header *journalHead
 	query.Sampling = r.explorerSampling(analysisEnabled, matchedFiles, header, query.AfterRealtimeUsec, query.BeforeRealtimeUsec)
 	query.DebugCollectColumnFieldsByRowTraversal = false
 	return query
+}
+
+func (r netdataRequest) applyExplorerBounds(query *ExplorerQuery, tailAnchor, backwardPageAnchor bool) {
+	query.AfterRealtimeUsec = r.AfterRealtimeUsec
+	if tailAnchor {
+		query.AfterRealtimeUsec = tailAfterRealtimeBound(r.AfterRealtimeUsec, r.Anchor)
+	}
+	query.BeforeRealtimeUsec = r.BeforeRealtimeUsec
+	if backwardPageAnchor {
+		query.BeforeRealtimeUsec = beforeRealtimeBoundExcludingAnchor(r.BeforeRealtimeUsec, r.Anchor)
+	}
+	query.Anchor = r.Anchor
+	if tailAnchor || backwardPageAnchor {
+		query.Anchor = DefaultExplorerAnchor()
+	}
 }
 
 func tailAfterRealtimeBound(after *uint64, anchor ExplorerAnchor) *uint64 {
@@ -1647,62 +1648,108 @@ type netdataHistogramChartMetadata struct {
 	Points       uint64
 }
 
+type histogramChartVectors struct {
+	IDs               []any
+	Names             []any
+	Colors            []any
+	Units             []any
+	MinValues         []any
+	MaxValues         []any
+	AvgValues         []any
+	ArpValues         []any
+	ConValues         []any
+	SummaryDimensions []any
+	Labels            []any
+	Min               uint64
+	Max               uint64
+	Points            uint64
+	Total             uint64
+}
+
 func (f NetdataJournalFunction) histogramChartMetadata(context *DisplayContext, field string, bucketValues []map[string]uint64, actualSet map[string]struct{}, dimensions []string) netdataHistogramChartMetadata {
-	ids := make([]any, 0, len(dimensions))
-	names := make([]any, 0, len(dimensions))
-	colors := make([]any, 0, len(dimensions))
-	units := make([]any, 0, len(dimensions))
-	minValues := make([]any, 0, len(dimensions))
-	maxValues := make([]any, 0, len(dimensions))
-	avgValues := make([]any, 0, len(dimensions))
-	arpValues := make([]any, 0, len(dimensions))
-	conValues := make([]any, 0, len(dimensions))
-	summaryDimensions := make([]any, 0, len(dimensions))
-	labels := make([]any, 0, len(dimensions)+1)
-	labels = append(labels, "time")
-
-	var total uint64
-	for _, value := range dimensions {
-		for _, bucket := range bucketValues {
-			total += bucket[value]
-		}
+	vectors := f.histogramChartVectors(context, field, bucketValues, actualSet, dimensions)
+	stats := map[string]any{
+		"min": vectors.MinValues,
+		"max": vectors.MaxValues,
+		"avg": vectors.AvgValues,
+		"arp": vectors.ArpValues,
+		"con": vectors.ConValues,
 	}
+	summaryStats := map[string]any{
+		"min": vectors.Min,
+		"max": vectors.Max,
+		"avg": histogramAverage(vectors.Total, vectors.Points),
+		"con": 100.0,
+	}
+	summary := map[string]any{
+		"nodes": []any{histogramSummaryNode(len(dimensions), vectors.Points, summaryStats)},
+		"contexts": []any{
+			histogramSummaryContext(len(dimensions), vectors.Points, summaryStats),
+		},
+		"instances": []any{
+			histogramSummaryInstance(len(dimensions), vectors.Points, summaryStats),
+		},
+		"dimensions": vectors.SummaryDimensions,
+		"labels":     []any{},
+		"alerts":     []any{},
+	}
+	totals := histogramChartTotals(len(dimensions))
 
-	minValue := uint64(0)
-	maxValue := uint64(0)
-	var pointCount uint64
-	var priority uint64
-	for _, value := range dimensions {
+	return netdataHistogramChartMetadata{
+		IDs:          vectors.IDs,
+		Names:        vectors.Names,
+		Colors:       vectors.Colors,
+		Units:        vectors.Units,
+		Stats:        stats,
+		Summary:      summary,
+		Totals:       totals,
+		ResultLabels: vectors.Labels,
+		Min:          vectors.Min,
+		Max:          vectors.Max,
+		Points:       vectors.Points,
+	}
+}
+
+func (f NetdataJournalFunction) histogramChartVectors(context *DisplayContext, field string, bucketValues []map[string]uint64, actualSet map[string]struct{}, dimensions []string) histogramChartVectors {
+	vectors := histogramChartVectors{
+		IDs:               make([]any, 0, len(dimensions)),
+		Names:             make([]any, 0, len(dimensions)),
+		Colors:            make([]any, 0, len(dimensions)),
+		Units:             make([]any, 0, len(dimensions)),
+		MinValues:         make([]any, 0, len(dimensions)),
+		MaxValues:         make([]any, 0, len(dimensions)),
+		AvgValues:         make([]any, 0, len(dimensions)),
+		ArpValues:         make([]any, 0, len(dimensions)),
+		ConValues:         make([]any, 0, len(dimensions)),
+		SummaryDimensions: make([]any, 0, len(dimensions)),
+		Labels:            []any{"time"},
+		Total:             histogramTotal(bucketValues, dimensions),
+	}
+	for priority, value := range dimensions {
 		display := displayValueString(f.Profile.FieldDisplayValue(context, DisplayScopeHistogram, field, []byte(value)))
-		ids = append(ids, value)
-		names = append(names, display)
-		colors = append(colors, nil)
-		units = append(units, "events")
-		labels = append(labels, display)
+		vectors.IDs = append(vectors.IDs, value)
+		vectors.Names = append(vectors.Names, display)
+		vectors.Colors = append(vectors.Colors, nil)
+		vectors.Units = append(vectors.Units, "events")
+		vectors.Labels = append(vectors.Labels, display)
 
 		dimensionMin, dimensionMax, dimensionSum, actual := histogramDimensionStats(bucketValues, actualSet, value)
 		dimensionAverage := 0.0
 		if actual && len(bucketValues) > 0 {
 			dimensionAverage = float64(dimensionSum) / float64(len(bucketValues))
-			if pointCount == 0 || dimensionMin < minValue {
-				minValue = dimensionMin
-			}
-			if dimensionMax > maxValue {
-				maxValue = dimensionMax
-			}
-			pointCount += uint64(len(bucketValues))
+			vectors.mergeActualDimension(dimensionMin, dimensionMax, uint64(len(bucketValues)))
 		}
 		contribution := 0.0
-		if total > 0 {
-			contribution = float64(dimensionSum) * 100.0 / float64(total)
+		if vectors.Total > 0 {
+			contribution = float64(dimensionSum) * 100.0 / float64(vectors.Total)
 		}
 
-		minValues = append(minValues, dimensionMin)
-		maxValues = append(maxValues, dimensionMax)
-		avgValues = append(avgValues, dimensionAverage)
-		arpValues = append(arpValues, uint64(0))
-		conValues = append(conValues, contribution)
-		summaryDimensions = append(summaryDimensions, map[string]any{
+		vectors.MinValues = append(vectors.MinValues, dimensionMin)
+		vectors.MaxValues = append(vectors.MaxValues, dimensionMax)
+		vectors.AvgValues = append(vectors.AvgValues, dimensionAverage)
+		vectors.ArpValues = append(vectors.ArpValues, uint64(0))
+		vectors.ConValues = append(vectors.ConValues, contribution)
+		vectors.SummaryDimensions = append(vectors.SummaryDimensions, map[string]any{
 			"id": value,
 			"nm": display,
 			"ds": map[string]any{"sl": boolToUint64(actual), "qr": boolToUint64(actual)},
@@ -1712,58 +1759,42 @@ func (f NetdataJournalFunction) histogramChartMetadata(context *DisplayContext, 
 				"avg": dimensionAverage,
 				"con": contribution,
 			},
-			"pri": priority,
+			"pri": uint64(priority),
 		})
-		priority++
 	}
+	return vectors
+}
 
-	stats := map[string]any{
-		"min": minValues,
-		"max": maxValues,
-		"avg": avgValues,
-		"arp": arpValues,
-		"con": conValues,
+func histogramTotal(bucketValues []map[string]uint64, dimensions []string) uint64 {
+	var total uint64
+	for _, value := range dimensions {
+		for _, bucket := range bucketValues {
+			total += bucket[value]
+		}
 	}
-	summaryStats := map[string]any{
-		"min": minValue,
-		"max": maxValue,
-		"avg": histogramAverage(total, pointCount),
-		"con": 100.0,
+	return total
+}
+
+func (vectors *histogramChartVectors) mergeActualDimension(dimensionMin, dimensionMax, points uint64) {
+	if vectors.Points == 0 || dimensionMin < vectors.Min {
+		vectors.Min = dimensionMin
 	}
-	summary := map[string]any{
-		"nodes": []any{histogramSummaryNode(len(dimensions), pointCount, summaryStats)},
-		"contexts": []any{
-			histogramSummaryContext(len(dimensions), pointCount, summaryStats),
-		},
-		"instances": []any{
-			histogramSummaryInstance(len(dimensions), pointCount, summaryStats),
-		},
-		"dimensions": summaryDimensions,
-		"labels":     []any{},
-		"alerts":     []any{},
+	if dimensionMax > vectors.Max {
+		vectors.Max = dimensionMax
 	}
+	vectors.Points += points
+}
+
+func histogramChartTotals(dimensions int) map[string]any {
 	totals := map[string]any{
 		"nodes": map[string]any{"sl": 1, "qr": 1},
 	}
-	if len(dimensions) > 0 {
+	if dimensions > 0 {
 		totals["contexts"] = map[string]any{"sl": 1, "qr": 1}
 		totals["instances"] = map[string]any{"sl": 1, "qr": 1}
-		totals["dimensions"] = map[string]any{"sl": uint64(len(dimensions)), "qr": uint64(len(dimensions))}
+		totals["dimensions"] = map[string]any{"sl": uint64(dimensions), "qr": uint64(dimensions)}
 	}
-
-	return netdataHistogramChartMetadata{
-		IDs:          ids,
-		Names:        names,
-		Colors:       colors,
-		Units:        units,
-		Stats:        stats,
-		Summary:      summary,
-		Totals:       totals,
-		ResultLabels: labels,
-		Min:          minValue,
-		Max:          maxValue,
-		Points:       pointCount,
-	}
+	return totals
 }
 
 func histogramDimensionStats(bucketValues []map[string]uint64, actualSet map[string]struct{}, value string) (uint64, uint64, uint64, bool) {

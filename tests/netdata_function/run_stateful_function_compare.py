@@ -523,7 +523,7 @@ def make_static_fixture(
     }
 
 
-def main() -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--sdk",
@@ -604,8 +604,10 @@ def main() -> int:
             "without --make-static-fixture)."
         ),
     )
-    args = parser.parse_args()
+    return parser
 
+
+def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.make_static_fixture is None and (not args.sdk or not args.plugin):
         # Default mode requires both --sdk and --plugin. The
         # --make-static-fixture mode is independent: it does not
@@ -614,51 +616,8 @@ def main() -> int:
         parser.error(
             "--sdk and --plugin are required (or pass --make-static-fixture)"
         )
-
-    # SOW-0104 fix-10: when --make-static-fixture is given, generate
-    # the frozen fresh-data fixture and write a report describing
-    # it; do NOT run the sequences. The default behavior (no flag)
-    # is unchanged: the runner expects --dir to point at an existing
-    # directory and runs the sequences against it.
     if args.make_static_fixture is not None:
-        try:
-            fixture = make_static_fixture(
-                args.make_static_fixture,
-                row_count=int(args.static_fixture_row_count),
-            )
-        except FileExistsError as err:
-            out_path = args.out if args.out is not None else (
-                args.make_static_fixture / "fixture-report.json"
-            )
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "static_fixture_error": str(err),
-                        "make_static_fixture": str(args.make_static_fixture),
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            return 1
-        report = {
-            "generated": True,
-            "static_fixture": fixture,
-            "make_static_fixture": str(args.make_static_fixture),
-        }
-        out_path = args.out if args.out is not None else (
-            args.make_static_fixture / "fixture-report.json"
-        )
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        return 0
-
+        return
     if args.sdk is None or args.plugin is None:
         parser.error(
             "--sdk and --plugin are required when --make-static-fixture is not set"
@@ -666,6 +625,47 @@ def main() -> int:
     if args.out is None:
         parser.error("--out is required when --make-static-fixture is not set")
 
+
+def static_fixture_report_path(args: argparse.Namespace) -> Path:
+    if args.out is not None:
+        return args.out
+    return args.make_static_fixture / "fixture-report.json"
+
+
+def write_json_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def run_static_fixture_mode(args: argparse.Namespace) -> int:
+    out_path = static_fixture_report_path(args)
+    try:
+        fixture = make_static_fixture(
+            args.make_static_fixture,
+            row_count=int(args.static_fixture_row_count),
+        )
+    except FileExistsError as err:
+        write_json_report(
+            out_path,
+            {
+                "ok": False,
+                "static_fixture_error": str(err),
+                "make_static_fixture": str(args.make_static_fixture),
+            },
+        )
+        return 1
+    write_json_report(
+        out_path,
+        {
+            "generated": True,
+            "static_fixture": fixture,
+            "make_static_fixture": str(args.make_static_fixture),
+        },
+    )
+    return 0
+
+
+def run_sequence_report(args: argparse.Namespace) -> dict[str, Any]:
     config = CommandConfig(
         sdk=args.sdk,
         plugin=args.plugin,
@@ -698,8 +698,19 @@ def main() -> int:
             sequence_report = {"sequence": name, "ok": False, "error": str(err)}
         report["sequences"].append(sequence_report)
     report["ok"] = ok and all(sequence.get("ok") for sequence in report["sequences"])
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
+
+
+def main() -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    validate_args(parser, args)
+    # SOW-0104 fix-10: static-fixture mode generates the frozen fresh-data
+    # fixture and writes a report; it does not invoke the SDK/plugin binaries.
+    if args.make_static_fixture is not None:
+        return run_static_fixture_mode(args)
+    report = run_sequence_report(args)
+    write_json_report(args.out, report)
     return 0 if report["ok"] else 1
 
 

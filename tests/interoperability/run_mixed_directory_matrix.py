@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Iterable
 
 from go_fixture_writer import write_journal_file
-from journal_structure import inspect_journal_structure
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"

@@ -15,7 +15,6 @@ import os
 import shutil
 import statistics
 import subprocess  # nosec B404
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path

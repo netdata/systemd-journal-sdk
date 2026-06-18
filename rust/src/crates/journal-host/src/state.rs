@@ -289,6 +289,7 @@ fn create_private_lock_file(path: &Path) -> io::Result<File> {
 fn lock_file(file: &File) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     // SAFETY: flock operates on a valid file descriptor owned by `file`.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if rc != 0 {
         return Err(io::Error::last_os_error());
@@ -300,6 +301,7 @@ fn lock_file(file: &File) -> io::Result<()> {
 fn unlock_file(file: &File) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     // SAFETY: flock operates on a valid file descriptor owned by `file`.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
     if rc != 0 {
         return Err(io::Error::last_os_error());
@@ -314,6 +316,7 @@ fn lock_file(file: &File) -> io::Result<()> {
     use windows_sys::Win32::System::IO::OVERLAPPED;
     let mut overlapped = OVERLAPPED::default();
     // SAFETY: LockFileEx receives a valid file handle and stack OVERLAPPED.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let ok = unsafe {
         LockFileEx(
             file.as_raw_handle(),
@@ -337,6 +340,7 @@ fn unlock_file(file: &File) -> io::Result<()> {
     use windows_sys::Win32::System::IO::OVERLAPPED;
     let mut overlapped = OVERLAPPED::default();
     // SAFETY: UnlockFileEx receives a valid file handle and stack OVERLAPPED.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let ok = unsafe { UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut overlapped) };
     if ok == 0 {
         return Err(io::Error::last_os_error());

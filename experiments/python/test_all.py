@@ -120,7 +120,7 @@ from test_writer_core import (
     test_writer_head_seqnum_zero_defaults_to_one,
     test_writer_initial_arena_covers_large_hash_tables,
     test_writer_lock_portable_owner_without_proc,
-    test_writer_raw_backward_monotonic_pass_through_fails_verification,
+    test_writer_raw_backward_monotonic_legacy_verification_failure,
     test_writer_raw_explicit_zero_monotonic_pass_through,
     test_writer_reader_and_binary_export,
     test_xz_and_lz4_data_object_parse,
@@ -139,7 +139,7 @@ def main():
     test_reader_accepts_historical_unkeyed_lz4_header()
     test_writer_reader_and_binary_export()
     test_writer_head_seqnum_zero_defaults_to_one()
-    test_writer_raw_backward_monotonic_pass_through_fails_verification()
+    test_writer_raw_backward_monotonic_legacy_verification_failure()
     test_writer_raw_explicit_zero_monotonic_pass_through()
     test_compression_threshold_systemd_policy()
     test_compact_writer_reader_and_stock_verify()

@@ -77,6 +77,8 @@ VERIFY_REPLACEMENTS = (
     "<FIXTURES>/basic/dir",
     "<SCRATCH>/tmp-example.journal",
 )
+FIXTURES_MARKER = "<FIXTURES>"
+SCRATCH_MARKER = "<SCRATCH>"
 
 GO_IMPORT_PREFIXES = (
     ("journal.", "journal", "github.com/netdata/systemd-journal-sdk/go/journal"),
@@ -244,6 +246,128 @@ def _find_fenced_block_at(lines: list[str], start: int) -> tuple[str, int] | Non
     return None
 
 
+def _skip_fenced_block(lines: list[str], start: int) -> int | None:
+    open_match = FENCE_OPEN_RE.match(lines[start])
+    if not open_match:
+        return None
+    fence_char = open_match.group("fence")[0]
+    fence_len = len(open_match.group("fence"))
+    close_re = re.compile(rf"^(\s*)({re.escape(fence_char)}{{{fence_len},}})\s*$")
+    i = start + 1
+    while i < len(lines):
+        if close_re.match(lines[i]):
+            return i + 1
+        i += 1
+    return len(lines)
+
+
+def _next_nonblank(lines: list[str], start: int) -> int:
+    while start < len(lines) and lines[start].strip() == "":
+        start += 1
+    return start
+
+
+def _page_label(markdown_path: Path) -> str:
+    try:
+        return str(markdown_path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(markdown_path)
+
+
+def _validate_example_identity(
+    markdown_path: Path,
+    marker_line: int,
+    attrs: dict[str, str],
+    lang: str,
+    local_seen: dict[str, int],
+    seen_ids: dict[str, str],
+) -> str:
+    for required_key in ("lang", "id"):
+        if required_key not in attrs:
+            raise HarnessError(
+                f"{markdown_path}:{marker_line + 1}: verify marker missing required {required_key!r} attribute"
+            )
+    if attrs["lang"] != lang:
+        raise HarnessError(
+            f"{markdown_path}:{marker_line + 1}: marker lang {attrs['lang']!r} "
+            f"does not match fence lang {lang!r}"
+        )
+    ex_id = attrs["id"]
+    if not ID_SLUG_RE.match(ex_id):
+        raise HarnessError(
+            f"{markdown_path}:{marker_line + 1}: verify marker id {ex_id!r} must match [a-z0-9-]+"
+        )
+    if ex_id in local_seen:
+        raise HarnessError(
+            f"{markdown_path}:{marker_line + 1}: duplicate verify marker id {ex_id!r}"
+        )
+    if ex_id in seen_ids:
+        raise HarnessError(
+            f"{markdown_path}:{marker_line + 1}: duplicate verify marker id {ex_id!r} "
+            f"(first seen at {seen_ids[ex_id]})"
+        )
+    local_seen[ex_id] = marker_line + 1
+    seen_ids[ex_id] = f"{markdown_path}:{marker_line + 1}"
+    return ex_id
+
+
+def _validate_example_mode(markdown_path: Path, marker_line: int, mode: str) -> None:
+    if mode not in ("run", "build"):
+        raise HarnessError(
+            f"{markdown_path}:{marker_line + 1}: verify marker mode {mode!r} must be 'run' or 'build'"
+        )
+
+
+def _validate_example_prelude(markdown_path: Path, marker_line: int, lang: str, prelude_name: str | None) -> None:
+    if prelude_name is not None and (lang, prelude_name) not in PRELUDES:
+        raise HarnessError(
+            f"{markdown_path}:{marker_line + 1}: unknown prelude {prelude_name!r} for lang {lang!r}"
+        )
+
+
+def _extract_verify_example(
+    markdown_path: Path,
+    lines: list[str],
+    marker_line: int,
+    attrs: dict[str, str],
+    local_seen: dict[str, int],
+    seen_ids: dict[str, str],
+) -> tuple[dict[str, Any], int]:
+    fence_start = _next_nonblank(lines, marker_line + 1)
+    fence = _find_fenced_block_at(lines, fence_start)
+    if fence is None:
+        raise HarnessError(
+            f"{markdown_path}:{marker_line + 1}: verify marker is not followed by a fenced code block"
+        )
+    info_text, fence_end = fence
+    lang_token = info_text.strip().split()
+    if not lang_token:
+        raise HarnessError(
+            f"{markdown_path}:{fence_start + 1}: verify marker is followed by a fence without an info string"
+        )
+    lang = lang_token[0].lower()
+    if lang not in SUPPORTED_LANGS:
+        raise HarnessError(
+            f"{markdown_path}:{fence_start + 1}: verify marker on unsupported lang {lang!r} "
+            f"(supported: {', '.join(SUPPORTED_LANGS)})"
+        )
+    ex_id = _validate_example_identity(markdown_path, marker_line, attrs, lang, local_seen, seen_ids)
+    mode = attrs.get("mode", "run")
+    _validate_example_mode(markdown_path, marker_line, mode)
+    fixture = attrs.get("fixture", "basic")
+    prelude_name = attrs.get("prelude")
+    _validate_example_prelude(markdown_path, marker_line, lang, prelude_name)
+    return {
+        "page": _page_label(markdown_path),
+        "lang": lang,
+        "id": ex_id,
+        "mode": mode,
+        "fixture": fixture,
+        "prelude": prelude_name,
+        "body": "\n".join(lines[fence_start + 1:fence_end]),
+    }, fence_end + 1
+
+
 def extract_examples(
     markdown_path: Path,
     seen_ids: dict[str, str] | None = None,
@@ -269,103 +393,18 @@ def extract_examples(
     local_seen: dict[str, int] = {}
 
     i = 0
-    in_fence = False
-    fence_char = ""
-    fence_len = 0
     while i < len(lines):
-        if in_fence:
-            close = re.match(rf"^(\s*)({re.escape(fence_char)}{{{fence_len},}})\s*$", lines[i])
-            if close:
-                in_fence = False
-            i += 1
-            continue
-        open_match = FENCE_OPEN_RE.match(lines[i])
-        if open_match:
-            in_fence = True
-            fence_char = open_match.group("fence")[0]
-            fence_len = len(open_match.group("fence"))
-            i += 1
+        next_i = _skip_fenced_block(lines, i)
+        if next_i is not None:
+            i = next_i
             continue
         marker = parse_marker(lines[i])
-        if marker is None:
+        if marker is None or marker[0] != KIND_VERIFY:
             i += 1
             continue
-        kind, attrs, _reason = marker
-        if kind != KIND_VERIFY:
-            i += 1
-            continue
-        j = i + 1
-        while j < len(lines) and lines[j].strip() == "":
-            j += 1
-        fence = _find_fenced_block_at(lines, j)
-        if fence is None:
-            raise HarnessError(
-                f"{markdown_path}:{i + 1}: verify marker is not followed by a fenced code block"
-            )
-        info_text, fence_end = fence
-        lang_token = info_text.strip().split()
-        if not lang_token:
-            raise HarnessError(
-                f"{markdown_path}:{j + 1}: verify marker is followed by a fence without an info string"
-            )
-        lang = lang_token[0].lower()
-        if lang not in SUPPORTED_LANGS:
-            raise HarnessError(
-                f"{markdown_path}:{j + 1}: verify marker on unsupported lang {lang!r} "
-                f"(supported: {', '.join(SUPPORTED_LANGS)})"
-            )
-        for required_key in ("lang", "id"):
-            if required_key not in attrs:
-                raise HarnessError(
-                    f"{markdown_path}:{i + 1}: verify marker missing required {required_key!r} attribute"
-                )
-        if attrs["lang"] != lang:
-            raise HarnessError(
-                f"{markdown_path}:{i + 1}: marker lang {attrs['lang']!r} "
-                f"does not match fence lang {lang!r}"
-            )
-        ex_id = attrs["id"]
-        if not ID_SLUG_RE.match(ex_id):
-            raise HarnessError(
-                f"{markdown_path}:{i + 1}: verify marker id {ex_id!r} must match [a-z0-9-]+"
-            )
-        if ex_id in local_seen:
-            raise HarnessError(
-                f"{markdown_path}:{i + 1}: duplicate verify marker id {ex_id!r}"
-            )
-        if ex_id in seen_ids:
-            raise HarnessError(
-                f"{markdown_path}:{i + 1}: duplicate verify marker id {ex_id!r} "
-                f"(first seen at {seen_ids[ex_id]})"
-            )
-        local_seen[ex_id] = i + 1
-        seen_ids[ex_id] = f"{markdown_path}:{i + 1}"
-        mode = attrs.get("mode", "run")
-        if mode not in ("run", "build"):
-            raise HarnessError(
-                f"{markdown_path}:{i + 1}: verify marker mode {mode!r} must be 'run' or 'build'"
-            )
-        fixture = attrs.get("fixture", "basic")
-        prelude_name = attrs.get("prelude")
-        if prelude_name is not None and (lang, prelude_name) not in PRELUDES:
-            raise HarnessError(
-                f"{markdown_path}:{i + 1}: unknown prelude {prelude_name!r} for lang {lang!r}"
-            )
-        body = "\n".join(lines[j + 1:fence_end])
-        try:
-            page_rel = str(markdown_path.relative_to(REPO_ROOT))
-        except ValueError:
-            page_rel = str(markdown_path)
-        examples.append({
-            "page": page_rel,
-            "lang": lang,
-            "id": ex_id,
-            "mode": mode,
-            "fixture": fixture,
-            "prelude": prelude_name,
-            "body": body,
-        })
-        i = fence_end + 1
+        _kind, attrs, _reason = marker
+        example, i = _extract_verify_example(markdown_path, lines, i, attrs, local_seen, seen_ids)
+        examples.append(example)
 
     return examples
 
@@ -387,25 +426,19 @@ def discover_examples(docs_dir: Path) -> list[dict[str, Any]]:
 
 def apply_path_substitution(text: str, scratch_dir: Path, fixture_dir: Path) -> str:
     """Apply the documented literal substitutions to ``text`` in order."""
-    scratch_token = "<SCRATCH>"
-    fixtures_token = "<FIXTURES>"
     fixtures_path = str(fixture_dir)
     scratch_path = str(scratch_dir)
     replacements = list(VERIFY_REPLACEMENTS)
-    values = {
-        "<FIXTURES>": fixtures_path,
-        "<SCRATCH>": scratch_path,
-    }
     out = text
     for prefix, replacement in zip(VERIFY_PREFIXES, replacements):
         final = replacement
-        if fixtures_token in final:
-            final = final.replace(fixtures_token, fixtures_path)
-        if scratch_token in final:
-            final = final.replace(scratch_token, scratch_path)
+        if FIXTURES_MARKER in final:
+            final = final.replace(FIXTURES_MARKER, fixtures_path)
+        if SCRATCH_MARKER in final:
+            final = final.replace(SCRATCH_MARKER, scratch_path)
         out = out.replace(prefix, final)
-    out = out.replace(fixtures_token, fixtures_path)
-    out = out.replace(scratch_token, scratch_path)
+    out = out.replace(FIXTURES_MARKER, fixtures_path)
+    out = out.replace(SCRATCH_MARKER, scratch_path)
     return out
 
 
@@ -556,6 +589,36 @@ def wrap_go_example(body: str, prelude_body: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _read_text_for_harness(path: Path, label: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HarnessError(f"cannot read {label}: {path} is not readable ({exc})")
+
+
+def _workspace_package_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    in_workspace_package = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            in_workspace_package = (line == "[workspace.package]")
+            continue
+        if in_workspace_package:
+            lines.append(line)
+    return lines
+
+
+def _parse_quoted_toml_value(value: str) -> str | None:
+    value = value.strip()
+    for quote in ('"', "'"):
+        if value.startswith(quote) and value.endswith(quote) and len(value) >= 2:
+            return value[1:-1]
+    return None
+
+
 def _read_rust_edition(cargo_path: Path = REPO_ROOT / "rust" / "Cargo.toml") -> str:
     """Return the ``edition`` value from the ``[workspace.package]`` section.
 
@@ -565,31 +628,13 @@ def _read_rust_edition(cargo_path: Path = REPO_ROOT / "rust" / "Cargo.toml") -> 
     workspace bumps it. Raises ``HarnessError`` if the file is missing or the
     ``[workspace.package]`` section does not declare an ``edition = "..."``.
     """
-    try:
-        text = cargo_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise HarnessError(
-            f"cannot read rust edition: {cargo_path} is not readable ({exc})"
-        )
-    in_workspace_package = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("["):
-            in_workspace_package = (line == "[workspace.package]")
-            continue
-        if not in_workspace_package:
-            continue
-        if line.startswith("edition"):
-            parts = line.split("=", 1)
-            if len(parts) != 2:
-                continue
-            value = parts[1].strip()
-            if value.startswith('"') and value.endswith('"') and len(value) >= 2:
-                return value[1:-1]
-            if "'" in value and value.startswith("'") and value.endswith("'") and len(value) >= 2:
-                return value[1:-1]
+    text = _read_text_for_harness(cargo_path, "rust edition")
+    for line in _workspace_package_lines(text):
+        key, separator, raw_value = line.partition("=")
+        if separator and key.strip() == "edition":
+            value = _parse_quoted_toml_value(raw_value)
+            if value is not None:
+                return value
     raise HarnessError(
         f"cannot find an 'edition = \"...\"' entry under [workspace.package] in {cargo_path}"
     )
@@ -1033,121 +1078,100 @@ def _resolve_per_example_paths(examples: list[dict[str, Any]], fixtures_dir: Pat
         ex["_scratch_dir"] = str(scratch_root / ex["id"])
 
 
+def _example_record(ex: dict[str, Any], status: str, duration_ms: int, detail: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": ex["id"],
+        "page": ex["page"],
+        "lang": ex["lang"],
+        "mode": ex["mode"],
+        "fixture": ex["fixture"],
+        "status": status,
+        "duration_ms": duration_ms,
+        "detail": detail,
+    }
+
+
+def _build_failure_records(examples: list[dict[str, Any]], outcome: dict[str, Any]) -> list[dict[str, Any]]:
+    detail = {
+        "phase": "build",
+        "returncode": outcome["returncode"],
+        "stdout": outcome["stdout"],
+        "stderr": outcome["stderr"],
+    }
+    return [_example_record(ex, "fail", 0, detail) for ex in examples]
+
+
+def _run_success_records(
+    examples: list[dict[str, Any]],
+    *,
+    build_dir: Path,
+    cache_dir: Path,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for ex in examples:
+        if ex["mode"] == "build":
+            records.append(_example_record(ex, "pass", 0, {"phase": "build", "note": "compile-only"}))
+            continue
+        run_record = _run_example(ex, build_dir=build_dir, cache_dir=cache_dir, timeout=timeout)
+        records.append(_example_record(ex, run_record["status"], run_record["duration_ms"], run_record["detail"]))
+    return records
+
+
+def _build_examples_for_language(
+    lang: str,
+    examples: list[dict[str, Any]],
+    build_dir: Path,
+    cache_dir: Path,
+    env: dict[str, str],
+    timeout: float,
+) -> dict[str, Any]:
+    if lang == "rust":
+        return _build_rust(build_dir, cache_dir, env, timeout=timeout)
+    return _build_go(build_dir, cache_dir, env, timeout=timeout, go_examples=examples)
+
+
+def _run_language_examples(
+    lang: str,
+    examples: list[dict[str, Any]],
+    *,
+    build_dir: Path,
+    cache_dir: Path,
+    env: dict[str, str],
+    timeout: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    info(f"building {len(examples)} {lang} example(s) into {build_dir}")
+    outcome = _build_examples_for_language(lang, examples, build_dir, cache_dir, env, timeout * 4)
+    build_record = {
+        "phase": f"{lang}-build",
+        "returncode": outcome["returncode"],
+        "stdout": outcome["stdout"],
+        "stderr": outcome["stderr"],
+        "duration_ms": outcome["duration_ms"],
+    }
+    if outcome["returncode"] != 0:
+        return _build_failure_records(examples, outcome), build_record
+    return _run_success_records(examples, build_dir=build_dir, cache_dir=cache_dir, timeout=timeout), build_record
+
+
 def _run_examples(examples: list[dict[str, Any]], *, rust_dir: Path, go_dir: Path,
                   timeout: float, env: dict[str, str], cache_dir: Path) -> list[dict[str, Any]]:
-    rust_examples = [ex for ex in examples if ex["lang"] == "rust"]
-    go_examples = [ex for ex in examples if ex["lang"] == "go"]
-
     records: list[dict[str, Any]] = []
     build_records: list[dict[str, Any]] = []
-
-    if rust_examples:
-        info(f"building {len(rust_examples)} rust example(s) into {rust_dir}")
-        outcome = _build_rust(rust_dir, cache_dir, env, timeout=timeout * 4)
-        build_records.append({
-            "phase": "rust-build",
-            "returncode": outcome["returncode"],
-            "stdout": outcome["stdout"],
-            "stderr": outcome["stderr"],
-            "duration_ms": outcome["duration_ms"],
-        })
-        if outcome["returncode"] != 0:
-            for ex in rust_examples:
-                records.append({
-                    "id": ex["id"],
-                    "page": ex["page"],
-                    "lang": ex["lang"],
-                    "mode": ex["mode"],
-                    "fixture": ex["fixture"],
-                    "status": "fail",
-                    "duration_ms": 0,
-                    "detail": {
-                        "phase": "build",
-                        "returncode": outcome["returncode"],
-                        "stdout": outcome["stdout"],
-                        "stderr": outcome["stderr"],
-                    },
-                })
-        else:
-            for ex in rust_examples:
-                if ex["mode"] == "build":
-                    records.append({
-                        "id": ex["id"],
-                        "page": ex["page"],
-                        "lang": ex["lang"],
-                        "mode": ex["mode"],
-                        "fixture": ex["fixture"],
-                        "status": "pass",
-                        "duration_ms": 0,
-                        "detail": {"phase": "build", "note": "compile-only"},
-                    })
-                    continue
-                run_record = _run_example(ex, build_dir=rust_dir, cache_dir=cache_dir, timeout=timeout)
-                records.append({
-                    "id": ex["id"],
-                    "page": ex["page"],
-                    "lang": ex["lang"],
-                    "mode": ex["mode"],
-                    "fixture": ex["fixture"],
-                    "status": run_record["status"],
-                    "duration_ms": run_record["duration_ms"],
-                    "detail": run_record["detail"],
-                })
-
-    if go_examples:
-        info(f"building {len(go_examples)} go example(s) into {go_dir}")
-        outcome = _build_go(go_dir, cache_dir, env, timeout=timeout * 4,
-                            go_examples=go_examples)
-        build_records.append({
-            "phase": "go-build",
-            "returncode": outcome["returncode"],
-            "stdout": outcome["stdout"],
-            "stderr": outcome["stderr"],
-            "duration_ms": outcome["duration_ms"],
-        })
-        if outcome["returncode"] != 0:
-            for ex in go_examples:
-                records.append({
-                    "id": ex["id"],
-                    "page": ex["page"],
-                    "lang": ex["lang"],
-                    "mode": ex["mode"],
-                    "fixture": ex["fixture"],
-                    "status": "fail",
-                    "duration_ms": 0,
-                    "detail": {
-                        "phase": "build",
-                        "returncode": outcome["returncode"],
-                        "stdout": outcome["stdout"],
-                        "stderr": outcome["stderr"],
-                    },
-                })
-        else:
-            for ex in go_examples:
-                if ex["mode"] == "build":
-                    records.append({
-                        "id": ex["id"],
-                        "page": ex["page"],
-                        "lang": ex["lang"],
-                        "mode": ex["mode"],
-                        "fixture": ex["fixture"],
-                        "status": "pass",
-                        "duration_ms": 0,
-                        "detail": {"phase": "build", "note": "compile-only"},
-                    })
-                    continue
-                run_record = _run_example(ex, build_dir=go_dir, cache_dir=cache_dir, timeout=timeout)
-                records.append({
-                    "id": ex["id"],
-                    "page": ex["page"],
-                    "lang": ex["lang"],
-                    "mode": ex["mode"],
-                    "fixture": ex["fixture"],
-                    "status": run_record["status"],
-                    "duration_ms": run_record["duration_ms"],
-                    "detail": run_record["detail"],
-                })
-
+    for lang, build_dir in (("rust", rust_dir), ("go", go_dir)):
+        lang_examples = [ex for ex in examples if ex["lang"] == lang]
+        if not lang_examples:
+            continue
+        lang_records, build_record = _run_language_examples(
+            lang,
+            lang_examples,
+            build_dir=build_dir,
+            cache_dir=cache_dir,
+            env=env,
+            timeout=timeout,
+        )
+        records.extend(lang_records)
+        build_records.append(build_record)
     return records + ([{"_build": r} for r in build_records])
 
 
@@ -1161,6 +1185,11 @@ def _print_summary(records: list[dict[str, Any]]) -> None:
     if not example_records:
         print("verify_examples: no examples to summarize", file=sys.stderr)
         return
+    _print_summary_table(example_records)
+    _print_failure_details([r for r in example_records if r["status"] != "pass"])
+
+
+def _print_summary_table(example_records: list[dict[str, Any]]) -> None:
     header = ("ID", "LANG", "MODE", "STATUS", "DURATION_MS", "PAGE")
     rows = [header]
     for rec in sorted(example_records, key=lambda r: r["id"]):
@@ -1178,20 +1207,23 @@ def _print_summary(records: list[dict[str, Any]]) -> None:
     print(sep)
     for row in rows[1:]:
         print("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
-    failing = [r for r in example_records if r["status"] != "pass"]
-    if failing:
-        print("", file=sys.stderr)
-        for rec in failing:
-            print(f"--- failing example: {rec['id']} ({rec['lang']} {rec['mode']}) ---", file=sys.stderr)
-            detail = rec["detail"]
-            if "returncode" in detail:
-                print(f"returncode: {detail['returncode']}", file=sys.stderr)
-            if detail.get("stdout"):
-                print("stdout:", file=sys.stderr)
-                print(textwrap.indent(detail["stdout"], "  "), file=sys.stderr)
-            if detail.get("stderr"):
-                print("stderr:", file=sys.stderr)
-                print(textwrap.indent(detail["stderr"], "  "), file=sys.stderr)
+
+
+def _print_failure_details(failing: list[dict[str, Any]]) -> None:
+    if not failing:
+        return
+    print("", file=sys.stderr)
+    for rec in failing:
+        print(f"--- failing example: {rec['id']} ({rec['lang']} {rec['mode']}) ---", file=sys.stderr)
+        detail = rec["detail"]
+        if "returncode" in detail:
+            print(f"returncode: {detail['returncode']}", file=sys.stderr)
+        if detail.get("stdout"):
+            print("stdout:", file=sys.stderr)
+            print(textwrap.indent(detail["stdout"], "  "), file=sys.stderr)
+        if detail.get("stderr"):
+            print("stderr:", file=sys.stderr)
+            print(textwrap.indent(detail["stderr"], "  "), file=sys.stderr)
 
 
 def _filter_examples(examples: list[dict[str, Any]], *, only: str | None, lang: str | None) -> list[dict[str, Any]]:
@@ -1219,10 +1251,9 @@ def main(argv: list[str] | None = None) -> int:
         return _main_impl(argv)
     except HarnessError as exc:
         die(str(exc))
-    return 0  # unreachable: die() raises SystemExit
 
 
-def _main_impl(argv: list[str] | None) -> int:
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--docs-dir", default=str(REPO_ROOT / "docs"),
                         help="wiki markdown directory to scan (default: docs/)")
@@ -1236,29 +1267,15 @@ def _main_impl(argv: list[str] | None) -> int:
                              "only scratch dirs are recreated per run)")
     parser.add_argument("--timeout", type=float, default=60.0,
                         help="per-example timeout in seconds (default: 60)")
-    args = parser.parse_args(argv)
+    return parser
 
-    docs_dir = Path(args.docs_dir).resolve()
-    if not docs_dir.is_dir():
-        die(f"docs dir does not exist: {docs_dir}")
 
-    examples = discover_examples(docs_dir)
-    selected = _filter_examples(examples, only=args.only, lang=args.lang)
-    if args.list:
-        _print_listing(selected)
-        print(f"verify_examples: discovered {len(examples)} example(s); selected {len(selected)}", file=sys.stderr)
-        return 0
-
-    if not selected:
-        print(f"verify_examples: zero verified examples found in {docs_dir}", file=sys.stderr)
-        return 0
-
+def _prepare_example_workspace(selected: list[dict[str, Any]]) -> tuple[Path, Path, Path]:
     fixtures_dir = WORK_ROOT / "fixtures"
     scratch_root = WORK_ROOT / "scratch"
     cache_dir = WORK_ROOT / "caches"
     rust_dir = WORK_ROOT / "rust-src"
     go_dir = WORK_ROOT / "go-src"
-    manifest_path = WORK_ROOT / "manifest.json"
 
     rmtree(scratch_root)
     scratch_root.mkdir(parents=True, exist_ok=True)
@@ -1276,19 +1293,13 @@ def _main_impl(argv: list[str] | None) -> int:
         generate_rust_project(rust_selected, rust_dir)
     if go_selected:
         generate_go_project(go_selected, go_dir)
+    return cache_dir, rust_dir, go_dir
 
-    records = _run_examples(
-        selected,
-        rust_dir=rust_dir,
-        go_dir=go_dir,
-        timeout=args.timeout,
-        env={},
-        cache_dir=cache_dir,
-    )
+
+def _write_manifest(examples: list[dict[str, Any]], selected: list[dict[str, Any]],
+                    records: list[dict[str, Any]], manifest_path: Path) -> dict[str, Any]:
     example_records = [r for r in records if "id" in r]
-    build_records = [r for r in records if "_build" in r]
-    build_records = [r["_build"] for r in build_records]
-
+    build_records = [r["_build"] for r in records if "_build" in r]
     failing = [r for r in example_records if r["status"] != "pass"]
     summary = {
         "discovered": len(examples),
@@ -1299,13 +1310,48 @@ def _main_impl(argv: list[str] | None) -> int:
     }
     manifest = {"summary": summary, "examples": example_records}
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return summary
+
+
+def _main_impl(argv: list[str] | None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+
+    docs_dir = Path(args.docs_dir).resolve()
+    if not docs_dir.is_dir():
+        die(f"docs dir does not exist: {docs_dir}")
+
+    examples = discover_examples(docs_dir)
+    selected = _filter_examples(examples, only=args.only, lang=args.lang)
+    if args.list:
+        _print_listing(selected)
+        print(f"verify_examples: discovered {len(examples)} example(s); selected {len(selected)}", file=sys.stderr)
+        return 0
+
+    if not selected:
+        print(f"verify_examples: zero verified examples found in {docs_dir}", file=sys.stderr)
+        return 0
+
+    manifest_path = WORK_ROOT / "manifest.json"
+    cache_dir, rust_dir, go_dir = _prepare_example_workspace(selected)
+
+    records = _run_examples(
+        selected,
+        rust_dir=rust_dir,
+        go_dir=go_dir,
+        timeout=args.timeout,
+        env={},
+        cache_dir=cache_dir,
+    )
+    example_records = [r for r in records if "id" in r]
+    summary = _write_manifest(examples, selected, records, manifest_path)
 
     _print_summary(example_records)
     print(f"verify_examples: passed {summary['passed']} of {summary['selected']}; "
           f"failed {summary['failed']}; manifest: {manifest_path.relative_to(REPO_ROOT)}",
           file=sys.stderr)
 
-    if failing:
+    if summary["failed"]:
         return 1
     return 0
 

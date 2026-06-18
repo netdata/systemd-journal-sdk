@@ -273,11 +273,13 @@ pub(crate) fn uuid_compact(id: Uuid) -> String {
 pub(crate) fn clock_gettime_usec(clock_id: libc::clockid_t) -> io::Result<u64> {
     let mut ts = std::mem::MaybeUninit::<libc::timespec>::uninit();
     // SAFETY: `ts` points to valid storage for clock_gettime to initialize.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe { libc::clock_gettime(clock_id, ts.as_mut_ptr()) };
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: clock_gettime succeeded and initialized the whole timespec.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let ts = unsafe { ts.assume_init() };
     let sec = u64::try_from(ts.tv_sec).map_err(|_| {
         io::Error::new(
@@ -310,6 +312,7 @@ pub(crate) fn sysctl_raw(name: &str) -> io::Result<Vec<u8>> {
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let mut len = 0usize;
     // SAFETY: the name is NUL-terminated and len points to valid storage.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe {
         libc::sysctlbyname(
             name.as_ptr(),
@@ -324,6 +327,7 @@ pub(crate) fn sysctl_raw(name: &str) -> io::Result<Vec<u8>> {
     }
     let mut buf = vec![0u8; len];
     // SAFETY: the output buffer is valid for len bytes and sysctl writes into it.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe {
         libc::sysctlbyname(
             name.as_ptr(),

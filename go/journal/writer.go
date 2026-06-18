@@ -193,33 +193,49 @@ func Open(path string) (*Writer, error) {
 // append with ErrMissingBootID instead of inventing a value.
 func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	opts = normalizeOpenOptions(opts)
-	if err := validateFieldNamePolicy(opts.FieldNamePolicy); err != nil {
+	if err := validateOpenOptions(opts); err != nil {
 		return nil, err
-	}
-	if !isZeroUUID(opts.MachineID) && isZeroUUID(opts.BootID) {
-		return nil, ErrMissingBootID
-	}
-	if isZeroUUID(opts.MachineID) && !isZeroUUID(opts.BootID) {
-		return nil, ErrMissingMachineID
 	}
 	f, err := openWriterFile(path, false, 0)
 	if err != nil {
 		return nil, err
 	}
-
-	header, err := readAppendHeader(f)
+	w, err := newAppendWriter(path, f, opts)
 	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}
+	return w, nil
+}
+
+func validateOpenOptions(opts Options) error {
+	if err := validateFieldNamePolicy(opts.FieldNamePolicy); err != nil {
+		return err
+	}
+	if !isZeroUUID(opts.MachineID) && isZeroUUID(opts.BootID) {
+		return ErrMissingBootID
+	}
+	if isZeroUUID(opts.MachineID) && !isZeroUUID(opts.BootID) {
+		return ErrMissingMachineID
+	}
+	return nil
+}
+
+func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
+	header, err := readAppendHeader(f)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateAppendHeader(header); err != nil {
-		_ = f.Close()
 		return nil, err
 	}
 
 	tail, err := readObjectHeaderAt(f, header.tailObjectOffset)
 	if err != nil {
-		_ = f.Close()
+		return nil, err
+	}
+	fileSize, err := appendArenaFileSize(header)
+	if err != nil {
 		return nil, err
 	}
 
@@ -237,28 +253,40 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 		livePublishEveryEntries: livePublishEveryEntries(opts),
 		fieldNamePolicy:         opts.FieldNamePolicy,
 	}
-	fileSize, ok := checkedAdd(header.headerSize, header.arenaSize)
-	if !ok {
-		_ = f.Close()
-		return nil, errInvalidJournal
-	}
 	if err := w.mapArena(fileSize); err != nil {
-		_ = f.Close()
 		return nil, err
 	}
-	if isZeroUUID(w.bootID) {
-		if !isZeroUUID(opts.BootID) {
-			w.bootID = opts.BootID
-		} else if w.header.nEntries > 0 {
-			return nil, fmt.Errorf("%w: cannot open existing file without a tail boot id", ErrMissingBootID)
-		}
+	if err := w.applyAppendBootID(opts); err != nil {
+		_ = w.closeArena()
+		return nil, err
 	}
 	if err := w.writeHeader(); err != nil {
 		_ = w.closeArena()
-		_ = f.Close()
 		return nil, err
 	}
 	return w, nil
+}
+
+func appendArenaFileSize(header journalHeader) (uint64, error) {
+	fileSize, ok := checkedAdd(header.headerSize, header.arenaSize)
+	if !ok {
+		return 0, errInvalidJournal
+	}
+	return fileSize, nil
+}
+
+func (w *Writer) applyAppendBootID(opts Options) error {
+	if !isZeroUUID(w.bootID) {
+		return nil
+	}
+	if !isZeroUUID(opts.BootID) {
+		w.bootID = opts.BootID
+		return nil
+	}
+	if w.header.nEntries > 0 {
+		return fmt.Errorf("%w: cannot open existing file without a tail boot id", ErrMissingBootID)
+	}
+	return nil
 }
 
 func readAppendHeader(f *os.File) (journalHeader, error) {

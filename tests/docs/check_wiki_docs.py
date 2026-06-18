@@ -240,9 +240,6 @@ def check_verified_example_markers(
     """
     fence_open_re = _GRAMMAR["FENCE_OPEN_RE"]
     supported_langs = _GRAMMAR["SUPPORTED_LANGS"]
-    id_slug_re = _GRAMMAR["ID_SLUG_RE"]
-    kind_verify = _GRAMMAR["KIND_VERIFY"]
-    kind_illustrative = _GRAMMAR["KIND_ILLUSTRATIVE"]
 
     for path in paths:
         rel = _rel_label(path)
@@ -251,14 +248,6 @@ def check_verified_example_markers(
 
         for idx, kind, payload in _iter_fence_aware(lines, fence_open_re):
             if kind == "marker":
-                marker_kind, _attrs, _reason = payload
-                if marker_kind == kind_verify:
-                    # Errors specific to verify-example markers without a
-                    # following supported-language fence are deferred until
-                    # the next non-blank line is known: if it is a supported
-                    # fence opener, the marker is fine; if not, it is an
-                    # error.
-                    pass
                 continue
 
             info_text, _fence_char, _fence_len = payload
@@ -271,37 +260,47 @@ def check_verified_example_markers(
                     f"{rel}:{idx + 1}: {lang} fenced code block is not preceded by "
                     f"a verify-example or illustrative-only marker"
                 )
-            marker_line, marker_kind, attrs = preceding
-            if marker_kind == kind_illustrative:
-                # Illustrative markers are allowed before any supported
-                # language fence without further attribute validation. The
-                # marker itself does not carry an id and is not part of the
-                # verify-example uniqueness set.
-                continue
-            # marker_kind == kind_verify
-            for required_key in ("lang", "id"):
-                if required_key not in attrs:
-                    fail(
-                        f"{rel}:{marker_line + 1}: verify-example marker is missing "
-                        f"required {required_key!r} attribute"
-                    )
-            if attrs.get("lang") != lang:
-                fail(
-                    f"{rel}:{marker_line + 1}: verify-example lang {attrs.get('lang')!r} "
-                    f"does not match fence lang {lang!r}"
-                )
-            ex_id = attrs.get("id", "")
-            if not id_slug_re.match(ex_id):
-                fail(
-                    f"{rel}:{marker_line + 1}: verify-example id {ex_id!r} "
-                    f"must match [a-z0-9-]+"
-                )
-            if ex_id in seen_ids:
-                fail(
-                    f"{rel}:{marker_line + 1}: duplicate verify-example id {ex_id!r} "
-                    f"(first seen at {seen_ids[ex_id]})"
-                )
-            seen_ids[ex_id] = f"{rel}:{marker_line + 1}"
+            _check_supported_fence_marker(rel, lang, preceding, seen_ids)
+
+
+def _check_supported_fence_marker(
+    rel: str,
+    lang: str,
+    marker: tuple[int, str, dict[str, str]],
+    seen_ids: dict[str, str],
+) -> None:
+    id_slug_re = _GRAMMAR["ID_SLUG_RE"]
+    kind_verify = _GRAMMAR["KIND_VERIFY"]
+    kind_illustrative = _GRAMMAR["KIND_ILLUSTRATIVE"]
+    marker_line, marker_kind, attrs = marker
+    if marker_kind == kind_illustrative:
+        # Illustrative markers are allowed before any supported language fence.
+        return
+    if marker_kind != kind_verify:
+        return
+    for required_key in ("lang", "id"):
+        if required_key not in attrs:
+            fail(
+                f"{rel}:{marker_line + 1}: verify-example marker is missing "
+                f"required {required_key!r} attribute"
+            )
+    if attrs.get("lang") != lang:
+        fail(
+            f"{rel}:{marker_line + 1}: verify-example lang {attrs.get('lang')!r} "
+            f"does not match fence lang {lang!r}"
+        )
+    ex_id = attrs.get("id", "")
+    if not id_slug_re.match(ex_id):
+        fail(
+            f"{rel}:{marker_line + 1}: verify-example id {ex_id!r} "
+            f"must match [a-z0-9-]+"
+        )
+    if ex_id in seen_ids:
+        fail(
+            f"{rel}:{marker_line + 1}: duplicate verify-example id {ex_id!r} "
+            f"(first seen at {seen_ids[ex_id]})"
+        )
+    seen_ids[ex_id] = f"{rel}:{marker_line + 1}"
 
 
 def check_verify_example_markers_followed_by_fence(

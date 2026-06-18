@@ -1,6 +1,6 @@
 import * as support from '../support.js';
 
-const { mkdtempSync, rmSync, tmpdir, join, relative, spawnSync, zstdCompressSync, assert, Writer, DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE, INCOMPATIBLE_COMPACT, OBJECT_TYPE_DATA, OBJECT_TYPE_TAG, parseObjectHeader, decompressZstSync, verifyFileWithKey, VerificationError, SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS, safeExistsSync, safeMkdirSync, safeReadFileSync, safeStatSync, safeSymlinkSync, safeWriteFileSync, packageRoot, repoRoot, validFSSVerificationKey, run: runCommand, verifyJournalFileWithKeyIfAvailable, verifyJournalFileWithKeyFailsIfAvailable } = support;
+const { mkdtempSync, rmSync, tmpdir, join, relative, spawnSync, zstdCompressSync, assert, Writer, DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE, INCOMPATIBLE_COMPACT, OBJECT_TYPE_DATA, OBJECT_TYPE_TAG, parseObjectHeader, decompressZstSync, verifyFileWithKey, VerificationError, SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS, safeExistsSync, safeMkdirSync, safeReadFileSync, safeStatSync, safeSymlinkSync, safeWriteFileSync, packageRoot, repoRoot, repositoryRoot, validFSSVerificationKey, run: runCommand, verifyJournalFileWithKeyIfAvailable, verifyJournalFileWithKeyFailsIfAvailable } = support;
 
 function runJournalctl(args) {
   return spawnSync(process.execPath, [join(packageRoot, 'cmd/journalctl/index.js'), ...args], { encoding: 'utf8' });
@@ -92,8 +92,8 @@ function verifyJournalctlSealedWrongKey() {
 }
 
 function verifyJournalctlCommandBehavior() {
-  const validPath = join(repoRoot, 'fixtures/systemd/test-data/no-rtc/system.journal.zst');
-  const corruptPath = join(repoRoot, 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst');
+  const validPath = join(repositoryRoot, 'fixtures/systemd/test-data/no-rtc/system.journal.zst');
+  const corruptPath = join(repositoryRoot, 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst');
 
   assertCommandPass(runJournalctl(['--verify', '--file', validPath]), '--verify valid file');
   assertCommandPass(runJournalctl(['--verify-only', '--file', validPath]), '--verify-only valid file');
@@ -429,7 +429,7 @@ export async function run() {
     }
   }
 
-  const manifestPath = join(repoRoot, 'tests/conformance/manifests/conformance-v01.json');
+  const manifestPath = join(repositoryRoot, 'tests/conformance/manifests/conformance-v01.json');
   if (!safeExistsSync(manifestPath)) {
     throw new Error(`missing conformance manifest: ${manifestPath}`);
   }

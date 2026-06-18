@@ -836,23 +836,23 @@ func TestWriterClampsBackwardSameBootMonotonic(t *testing.T) {
 	r := mustOpenReaderFile(t, path)
 	defer r.Close()
 	r.SeekHead()
-	if ok, err := r.Step(); err != nil || !ok {
-		t.Fatalf("first Step() = %v, %v", ok, err)
-	}
-	first, err := r.GetEntry()
-	if err != nil {
-		t.Fatalf("first GetEntry() error = %v", err)
-	}
-	if ok, err := r.Step(); err != nil || !ok {
-		t.Fatalf("second Step() = %v, %v", ok, err)
-	}
-	second, err := r.GetEntry()
-	if err != nil {
-		t.Fatalf("second GetEntry() error = %v", err)
-	}
+	first := mustStepEntry(t, r, "first")
+	second := mustStepEntry(t, r, "second")
 	if first.Monotonic != 10 || second.Monotonic != 11 {
 		t.Fatalf("monotonic values = %d, %d; want 10, 11", first.Monotonic, second.Monotonic)
 	}
+}
+
+func mustStepEntry(t *testing.T, r *Reader, label string) *Entry {
+	t.Helper()
+	if ok, err := r.Step(); err != nil || !ok {
+		t.Fatalf("%s Step() = %v, %v", label, ok, err)
+	}
+	entry, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("%s GetEntry() error = %v", label, err)
+	}
+	return entry
 }
 
 func TestWriterRawExplicitZeroMonotonicPassThrough(t *testing.T) {

@@ -54,7 +54,7 @@ fn load_machine_id() -> io::Result<Uuid> {
     let mut key: HKEY = std::ptr::null_mut();
     // SAFETY: subkey is NUL-terminated and key points to valid storage.
     let status =
-        unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_READ, &mut key) };
+        unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_READ, &mut key) }; // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     if status != ERROR_SUCCESS {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
@@ -64,6 +64,7 @@ fn load_machine_id() -> io::Result<Uuid> {
     let mut buffer = [0u16; 128];
     let mut byte_len = (buffer.len() * std::mem::size_of::<u16>()) as u32;
     // SAFETY: key is open, name is NUL-terminated, and the output buffer is valid.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let status = unsafe {
         RegQueryValueExW(
             key,
@@ -97,6 +98,7 @@ fn load_machine_id() -> io::Result<Uuid> {
 fn query_unbiased_interrupt_time_usec() -> io::Result<u64> {
     let mut ticks_100ns = 0u64;
     // SAFETY: the pointer is valid for the duration of the call.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let ok = unsafe { QueryUnbiasedInterruptTime(&mut ticks_100ns) };
     if ok == 0 {
         return Err(io::Error::last_os_error());
@@ -106,6 +108,7 @@ fn query_unbiased_interrupt_time_usec() -> io::Result<u64> {
 
 fn get_tick_count64_usec() -> u64 {
     // SAFETY: GetTickCount64 has no preconditions.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     unsafe { GetTickCount64() }.saturating_mul(1_000)
 }
 
@@ -126,6 +129,7 @@ struct RegKeyGuard(HKEY);
 impl Drop for RegKeyGuard {
     fn drop(&mut self) {
         // SAFETY: this guard owns the registry handle returned by RegOpenKeyExW.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             RegCloseKey(self.0);
         }

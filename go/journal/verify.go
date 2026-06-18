@@ -715,41 +715,42 @@ func hmacObject(hm hash.Hash, source verifyByteSource, offset uint64, typ uint8,
 
 	switch typ {
 	case objectTypeData:
-		if err := updateHMACRange(hm, source, offset+16, 8); err != nil {
-			return err
-		}
-		payloadOffset := uint64(dataObjectHeaderSize)
-		if isCompact {
-			payloadOffset = uint64(compactDataObjectHeaderSize)
-		}
-		if size > payloadOffset {
-			if err := updateHMACRange(hm, source, offset+payloadOffset, size-payloadOffset); err != nil {
-				return err
-			}
-		}
+		return hmacDataObject(hm, source, offset, size, isCompact)
 	case objectTypeField:
-		if err := updateHMACRange(hm, source, offset+16, 8); err != nil {
-			return err
-		}
-		if size > uint64(fieldObjectHeaderSize) {
-			if err := updateHMACRange(hm, source, offset+uint64(fieldObjectHeaderSize), size-uint64(fieldObjectHeaderSize)); err != nil {
-				return err
-			}
-		}
+		return hmacPayloadAfterHash(hm, source, offset, size, uint64(fieldObjectHeaderSize))
 	case objectTypeEntry:
-		if size > objectHeaderSize {
-			if err := updateHMACRange(hm, source, offset+objectHeaderSize, size-objectHeaderSize); err != nil {
-				return err
-			}
-		}
+		return hmacPayloadAfterHeader(hm, source, offset, size)
 	case objectTypeDataHashTable, objectTypeFieldHashTable, objectTypeEntryArray:
 		// nothing beyond header
 	case objectTypeTag:
-		if err := updateHMACRange(hm, source, offset+objectHeaderSize, 16); err != nil {
-			return err
-		}
+		return updateHMACRange(hm, source, offset+objectHeaderSize, 16)
 	}
 	return nil
+}
+
+func hmacDataObject(hm hash.Hash, source verifyByteSource, offset, size uint64, isCompact bool) error {
+	payloadOffset := uint64(dataObjectHeaderSize)
+	if isCompact {
+		payloadOffset = uint64(compactDataObjectHeaderSize)
+	}
+	return hmacPayloadAfterHash(hm, source, offset, size, payloadOffset)
+}
+
+func hmacPayloadAfterHash(hm hash.Hash, source verifyByteSource, offset, size, payloadOffset uint64) error {
+	if err := updateHMACRange(hm, source, offset+16, 8); err != nil {
+		return err
+	}
+	if size <= payloadOffset {
+		return nil
+	}
+	return updateHMACRange(hm, source, offset+payloadOffset, size-payloadOffset)
+}
+
+func hmacPayloadAfterHeader(hm hash.Hash, source verifyByteSource, offset, size uint64) error {
+	if size <= objectHeaderSize {
+		return nil
+	}
+	return updateHMACRange(hm, source, offset+objectHeaderSize, size-objectHeaderSize)
 }
 
 func updateHMACRange(hm hash.Hash, source verifyByteSource, offset, size uint64) error {
