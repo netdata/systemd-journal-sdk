@@ -1804,7 +1804,11 @@ def _scan_explorer_main(reader, query, accumulator, result, control):
     row_id = 0
     rows_seen = 0
     apply = _ScanApplyDeferred(deferred=[])
-    missing = accumulator.required_identity_count if use_first_value else 0
+    early_stop = (
+        use_first_value,
+        needs_fts,
+        accumulator.required_identity_count if use_first_value else 0,
+    )
     while True:
         commit_realtime, rows_seen = _next_explorer_scan_candidate(
             reader, query, control, result.stats, rows_seen
@@ -1825,9 +1829,7 @@ def _scan_explorer_main(reader, query, accumulator, result, control):
             commit_realtime,
             fts_match,
             fts_negative,
-            use_first_value,
-            needs_fts,
-            missing,
+            early_stop,
         )
         if should_stop:
             break
@@ -1845,9 +1847,7 @@ def _handle_main_scanned_row(
     commit_realtime,
     fts_match,
     fts_negative,
-    use_first_value,
-    needs_fts,
-    missing,
+    early_stop,
 ):
     source_realtime = _pick_source_realtime(apply.deferred)
     effective = _effective_realtime_for_stats(result.stats, source_realtime, commit_realtime)
@@ -1858,7 +1858,7 @@ def _handle_main_scanned_row(
     _apply_deferred_values(accumulator, apply.deferred, value_realtime, result.stats)
     accumulator.finish_histogram_row(row_id, effective, result.stats)
     _append_main_row_if_needed(reader, query, result, effective)
-    _record_main_early_stop_opportunity(result.stats, use_first_value, needs_fts, missing, apply)
+    _record_main_early_stop_opportunity(result.stats, early_stop, apply)
     return stop_after_matched or _should_stop_when_rows_full(
         query, result.rows, effective, result.stats.rows_matched
     )
@@ -1890,7 +1890,8 @@ def _append_main_row_if_needed(reader, query, result, effective):
         result.rows.append(_current_explorer_row(reader, effective, result.stats, expand=True))
 
 
-def _record_main_early_stop_opportunity(stats, use_first_value, needs_fts, missing, apply):
+def _record_main_early_stop_opportunity(stats, early_stop, apply):
+    use_first_value, needs_fts, missing = early_stop
     if use_first_value and not needs_fts and missing == 0 and not apply.deferred:
         stats.early_stop_opportunities += 1
         stats.early_stops += 1

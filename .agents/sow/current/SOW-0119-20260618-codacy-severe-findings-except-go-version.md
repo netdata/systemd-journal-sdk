@@ -293,6 +293,11 @@ Failure handling:
   commit `e17f694254559ad9456335c898063e75be00fb13` reported 62 total issues.
 - Classified the remaining rows as 23 accepted `go/go.mod` SCA findings and 39
   non-Go findings to fix or explicitly disposition.
+- Pushed repair commit `0e243494aa6c8240b402bc38ea73b08cdc6f5924`; Codacy
+  reanalysis reduced the count to 24 and exposed one remaining non-Go Lizard
+  parameter-count row in `experiments/python/journal/explorer.py`.
+- Folded the Python Explorer main-row early-stop flags into one tuple so
+  `_handle_main_scanned_row` stays under the Codacy/Lizard 12-parameter limit.
 
 ## Validation
 
@@ -340,6 +345,9 @@ Regression repair validation on 2026-06-19:
 - `git diff -- go/go.mod` is empty; `go/go.mod:3` remains `go 1.26`.
 - `lizard -C 12 experiments/python/journal/explorer.py
   experiments/python/test_all.py` passed with zero threshold warnings.
+- After Codacy reported one remaining parameter-count row,
+  `lizard -C 12 -a 12 experiments/python/journal/explorer.py
+  experiments/python/test_all.py` passed with zero threshold warnings.
 - `bandit -q -r tests/docs/verify_examples.py
   tests/docs/test_verify_examples.py` passed.
 - `pylint --disable=all --enable=C0200,W0107
@@ -356,6 +364,9 @@ Regression repair validation on 2026-06-19:
 - `.local/python-test-venv/bin/python experiments/python/test_all.py` passed.
 - `.local/python-test-venv/bin/python -m unittest discover -s
   experiments/python -p 'test*.py'` passed, 240 tests.
+- After the parameter-count cleanup, `.local/python-test-venv/bin/python -m
+  unittest discover -s experiments/python -p 'test*.py'` passed again, 240
+  tests.
 - `.local/python-test-venv/bin/python -m unittest discover -s tests -p
   'test*.py'` passed, 11 tests.
 - `python3 tests/docs/verify_examples.py --timeout 60` passed, 31/31 verified
