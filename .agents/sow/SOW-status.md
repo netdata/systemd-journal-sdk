@@ -7,6 +7,9 @@ Last updated: 2026-06-19
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0120 - v0.7.4 Release And Netdata SOW Update: in progress. Preparing the
+  next SDK patch release after Rust/Go changes landed beyond `v0.7.3`, then
+  updating the active Netdata host-helper SOW to point at the latest release.
 
 ## Pending
 

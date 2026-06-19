@@ -8,6 +8,10 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
+- `SOW-0120-20260619-v0-7-4-release-and-netdata-sow-update.md` - in progress.
+  Preparing the next SDK patch release after Rust/Go changes landed beyond
+  `v0.7.3`, then updating the active Netdata host-helper SOW to point at the
+  latest release.
 
 ## Pending
 

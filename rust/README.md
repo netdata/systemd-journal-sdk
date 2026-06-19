@@ -11,7 +11,7 @@ alias if existing code should import it as `journal`:
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.7.3" }
+journal = { package = "systemd-journal-sdk", version = "0.7.4" }
 ```
 
 The workspace also publishes project-prefixed lower-level packages for
