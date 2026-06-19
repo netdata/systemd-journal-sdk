@@ -13,7 +13,6 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -198,20 +197,20 @@ class PathSubstitutionTests(unittest.TestCase):
         text = (
             "see /var/log/journal/example/system.journal and "
             "/var/log/journal-sdk/example.journal plus /var/log/journal-sdk and "
-            "/var/log/journal and /tmp/example.journal"
+            f"/var/log/journal and {ve.TMP_EXAMPLE_JOURNAL}"
         )
         out = ve.apply_path_substitution(
             text,
-            scratch_dir=Path("/tmp/scratch"),
-            fixture_dir=Path("/tmp/fixtures"),
+            scratch_dir=Path("/example/scratch"),
+            fixture_dir=Path("/example/fixtures"),
         )
-        self.assertIn("/tmp/fixtures/basic/file/system.journal", out)
-        self.assertIn("/tmp/scratch/example.journal", out)
-        self.assertIn("/tmp/scratch", out)
-        self.assertIn("/tmp/fixtures/basic/dir", out)
-        self.assertIn("/tmp/scratch/tmp-example.journal", out)
+        self.assertIn("/example/fixtures/basic/file/system.journal", out)
+        self.assertIn("/example/scratch/example.journal", out)
+        self.assertIn("/example/scratch", out)
+        self.assertIn("/example/fixtures/basic/dir", out)
+        self.assertIn("/example/scratch/tmp-example.journal", out)
         self.assertNotIn("/var/log/journal", out)
-        self.assertNotIn("/tmp/example.journal", out)
+        self.assertNotIn(ve.TMP_EXAMPLE_JOURNAL, out)
 
     def test_replacement_uses_passed_paths(self):
         out = ve.apply_path_substitution(
@@ -236,13 +235,13 @@ class PathSubstitutionTests(unittest.TestCase):
         """
         prefixes = ve.VERIFY_PREFIXES
         self.assertGreater(len(prefixes), 1)
-        for i in range(len(prefixes)):
-            for j in range(i + 1, len(prefixes)):
+        for i, prefix in enumerate(prefixes):
+            for j, later_prefix in enumerate(prefixes[i + 1:], start=i + 1):
                 self.assertFalse(
-                    prefixes[j].startswith(prefixes[i]),
+                    later_prefix.startswith(prefix),
                     msg=(
-                        f"VERIFY_PREFIXES[{i}]={prefixes[i]!r} is a proper prefix of "
-                        f"VERIFY_PREFIXES[{j}]={prefixes[j]!r}; reorder so the longer "
+                        f"VERIFY_PREFIXES[{i}]={prefix!r} is a proper prefix of "
+                        f"VERIFY_PREFIXES[{j}]={later_prefix!r}; reorder so the longer "
                         f"path comes first or apply_path_substitution will shadow it."
                     ),
                 )
@@ -558,7 +557,7 @@ class BuildTimeoutTests(unittest.TestCase):
             tmp = Path(td)
 
             def raise_timeout(*args, **kwargs):
-                raise subprocess.TimeoutExpired(cmd=["cargo", "build"], timeout=1.0)
+                raise ve.subprocess.TimeoutExpired(cmd=["cargo", "build"], timeout=1.0)
 
             original = ve.run_subprocess
             ve.run_subprocess = raise_timeout
@@ -583,7 +582,7 @@ class BuildTimeoutTests(unittest.TestCase):
             tmp = Path(td)
 
             def raise_timeout(*args, **kwargs):
-                raise subprocess.TimeoutExpired(cmd=["go", "build"], timeout=1.0)
+                raise ve.subprocess.TimeoutExpired(cmd=["go", "build"], timeout=1.0)
 
             original = ve.run_subprocess
             ve.run_subprocess = raise_timeout

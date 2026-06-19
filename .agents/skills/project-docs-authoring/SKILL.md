@@ -45,10 +45,11 @@ Do not use this skill for `documentation/` (internal notes, not published).
   `/var/log/journal-sdk/example.journal` (per-example scratch),
   `/tmp/example.journal` (scratch).
 - Rust examples are rustdoc-shaped: top-level `?` is allowed and hidden
-  lines start with `# ` (kept in compiled code, hidden in rendered docs); a
-  final `# Ok::<(), Box<dyn std::error::Error>>(())` line marks Result-main
-  wrapping. Go examples are function-body fragments that may `return err`;
-  the harness wraps them in `func run() error`.
+  lines start with the `#` marker followed by one space (kept in compiled code,
+  hidden in rendered docs); a final
+  `# Ok::<(), Box<dyn std::error::Error>>(())` line marks Result-main wrapping.
+  Go examples are function-body fragments that may `return err`; the harness
+  wraps them in `func run() error`.
 - Examples must be standalone-compilable after wrapping: in Go, do not bind
   variables that are never used, and do not re-declare prelude variables
   with `:=` (use `if err := ...; err != nil` forms).

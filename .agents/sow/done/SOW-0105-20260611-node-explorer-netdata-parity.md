@@ -438,7 +438,6 @@ Failure handling:
     for threshold/conditional features; the Python twins are tracked in
     SOW-0107 for the user's decision on depth.
 
-
 ## Validation
 
 Acceptance criteria evidence:

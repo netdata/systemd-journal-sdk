@@ -512,31 +512,42 @@ class _ExplorerSamplingState:
             return _SamplingDecision("full", sampled=False)
 
         slot = self._slot_for_realtime(realtime_usec)
-        if (
+        if self._should_sample_row(slot, realtime_usec, seqnum):
+            return self._record_sampled_row(slot)
+        return self._record_unsampled_row(slot, realtime_usec, seqnum)
+
+    def _should_sample_row(self, slot, realtime_usec, seqnum):
+        if self._below_sampling_floor(slot):
+            return True
+        if self._needs_sampling_recalibration():
+            self._recalibrate(realtime_usec, seqnum)
+            return True
+        if self.per_file_skipped >= self.per_file_every:
+            self.per_file_skipped = 0
+            return True
+        self.per_file_skipped += 1
+        return False
+
+    def _below_sampling_floor(self, slot):
+        return (
             self.sampled < self.enable_after_samples
             or self.per_file_sampled < self.per_file_enable_after_samples
             or self.per_slot_sampled[slot] < self.per_slot_enable_after_samples
-        ):
-            should_sample = True
-        elif (
+        )
+
+    def _needs_sampling_recalibration(self):
+        return (
             self.per_file_recalibrate >= EXPLORER_SAMPLING_RECALIBRATE_ROWS
             or self.per_file_every == 0
-        ):
-            self._recalibrate(realtime_usec, seqnum)
-            should_sample = True
-        elif self.per_file_skipped >= self.per_file_every:
-            self.per_file_skipped = 0
-            should_sample = True
-        else:
-            self.per_file_skipped += 1
-            should_sample = False
+        )
 
-        if should_sample:
-            self.sampled += 1
-            self.per_file_sampled += 1
-            self.per_slot_sampled[slot] += 1
-            return _SamplingDecision("full", sampled=True)
+    def _record_sampled_row(self, slot):
+        self.sampled += 1
+        self.per_file_sampled += 1
+        self.per_slot_sampled[slot] += 1
+        return _SamplingDecision("full", sampled=True)
 
+    def _record_unsampled_row(self, slot, realtime_usec, seqnum):
         self.per_file_recalibrate += 1
         self.per_file_unsampled += 1
         self.per_slot_unsampled[slot] += 1
@@ -753,21 +764,37 @@ def _ascii_eq(a, b):
 
 
 def _validate_query(query):
+    _validate_realtime_bounds(query)
+    _validate_filter_fields(query)
+    _validate_requested_fields(query)
+    _validate_unique_facets(query)
+
+
+def _validate_realtime_bounds(query):
     if (
         query.after_realtime_usec is not None
         and query.before_realtime_usec is not None
         and query.after_realtime_usec > query.before_realtime_usec
     ):
         raise ExplorerError('after_realtime_usec must be <= before_realtime_usec')
+
+
+def _validate_filter_fields(query):
     for f in query.filters:
         if not f.field or b'=' in f.field:
             raise ExplorerError('filter field must be non-empty and must not contain \'=\'')
+
+
+def _validate_requested_fields(query):
     for f in query.facets:
         if not f or b'=' in f:
             raise ExplorerError('facet and histogram fields must be non-empty and must not contain \'=\'')
     if query.histogram is not None:
         if not query.histogram or b'=' in query.histogram:
             raise ExplorerError('facet and histogram fields must be non-empty and must not contain \'=\'')
+
+
+def _validate_unique_facets(query):
     seen = set()
     for f in query.facets:
         if f in seen:
@@ -1505,71 +1532,96 @@ def _scan_row_data(reader, query, accumulator, row_id, apply, stats, needs_fts):
     fts_matches = False
     fts_negative = False
     for data_offset in reader._current_entry_data_offsets():
-        stats.data_refs_seen += 1
-        class_value = accumulator.offset_cache.lookup(data_offset)
-        if class_value is None:
-            stats.data_cache_misses += 1
-            payload = _try_read_data_payload(reader, data_offset)
-            if payload is None:
-                continue
-            stats.data_payloads_loaded += 1
-            if reader._data_object_was_compressed(data_offset):
-                stats.payloads_decompressed += 1
-            split = _split_payload(payload)
-            if split is None:
-                if needs_fts:
-                    stats.fts_scans += 1
-                    pos, neg = _match_fts_query(payload, query)
-                    if neg:
-                        class_value = _OFFSET_CLASS_FTS_NEGATIVE
-                        fts_negative = True
-                    elif pos:
-                        class_value = _OFFSET_CLASS_FTS_MATCH
-                        fts_matches = True
-                    else:
-                        class_value = _OFFSET_CLASS_IRRELEVANT
-                else:
-                    class_value = _OFFSET_CLASS_IRRELEVANT
-                accumulator.offset_cache.insert(data_offset, class_value)
-                stats.data_objects_classified += 1
-                continue
-            field, value = split
-            if needs_fts:
-                stats.fts_scans += 1
-                pos, neg = _match_fts_query(value, query)
-            else:
-                pos, neg = False, False
-            if neg:
-                class_value = _OFFSET_CLASS_FTS_NEGATIVE
-                fts_negative = True
-            elif field in accumulator.field_lookup:
-                field_index = accumulator.field_lookup[field]
-                value_index = accumulator.add_value(field_index, value, pos)
-                class_value = _OFFSET_CLASS_VALUE_BASE + value_index
-            elif pos:
-                class_value = _OFFSET_CLASS_FTS_MATCH
-                fts_matches = True
-            else:
-                class_value = _OFFSET_CLASS_IRRELEVANT
-            accumulator.offset_cache.insert(data_offset, class_value)
-            stats.data_objects_classified += 1
-            if pos:
-                fts_matches = True
-            if neg:
-                fts_negative = True
-            if class_value >= _OFFSET_CLASS_VALUE_BASE:
-                _handle_value_class(accumulator, class_value - _OFFSET_CLASS_VALUE_BASE, row_id, query, apply, stats)
-            continue
-        stats.data_cache_hits += 1
-        if class_value == _OFFSET_CLASS_IRRELEVANT:
-            stats.data_refs_skipped += 1
-        elif class_value == _OFFSET_CLASS_FTS_NEGATIVE:
-            fts_negative = True
-        elif class_value == _OFFSET_CLASS_FTS_MATCH:
-            fts_matches = True
-        elif class_value >= _OFFSET_CLASS_VALUE_BASE:
-            _handle_value_class(accumulator, class_value - _OFFSET_CLASS_VALUE_BASE, row_id, query, apply, stats)
+        fts_match, fts_neg = _scan_row_data_offset(
+            reader, query, accumulator, row_id, apply, stats, needs_fts, data_offset
+        )
+        fts_matches = fts_matches or fts_match
+        fts_negative = fts_negative or fts_neg
     return fts_matches, fts_negative
+
+
+def _scan_row_data_offset(reader, query, accumulator, row_id, apply, stats, needs_fts, data_offset):
+    stats.data_refs_seen += 1
+    class_value = accumulator.offset_cache.lookup(data_offset)
+    if class_value is None:
+        return _scan_uncached_row_data_offset(
+            reader, query, accumulator, row_id, apply, stats, needs_fts, data_offset
+        )
+    stats.data_cache_hits += 1
+    return _apply_cached_offset_class(accumulator, class_value, row_id, query, apply, stats)
+
+
+def _scan_uncached_row_data_offset(
+    reader, query, accumulator, row_id, apply, stats, needs_fts, data_offset
+):
+    stats.data_cache_misses += 1
+    payload = _try_read_data_payload(reader, data_offset)
+    if payload is None:
+        return False, False
+    stats.data_payloads_loaded += 1
+    if reader._data_object_was_compressed(data_offset):
+        stats.payloads_decompressed += 1
+    class_value, fts_match, fts_negative = _classify_row_payload(
+        accumulator, query, payload, needs_fts, stats
+    )
+    accumulator.offset_cache.insert(data_offset, class_value)
+    stats.data_objects_classified += 1
+    if class_value >= _OFFSET_CLASS_VALUE_BASE:
+        _handle_value_class(
+            accumulator, class_value - _OFFSET_CLASS_VALUE_BASE, row_id, query, apply, stats
+        )
+    return fts_match, fts_negative
+
+
+def _classify_row_payload(accumulator, query, payload, needs_fts, stats):
+    split = _split_payload(payload)
+    if split is None:
+        return _classify_unsplit_payload(query, payload, needs_fts, stats)
+    field, value = split
+    pos, neg = _match_value_for_fts(query, value, needs_fts, stats)
+    if neg:
+        return _OFFSET_CLASS_FTS_NEGATIVE, False, True
+    if field in accumulator.field_lookup:
+        field_index = accumulator.field_lookup[field]
+        value_index = accumulator.add_value(field_index, value, pos)
+        return _OFFSET_CLASS_VALUE_BASE + value_index, pos, False
+    if pos:
+        return _OFFSET_CLASS_FTS_MATCH, True, False
+    return _OFFSET_CLASS_IRRELEVANT, False, False
+
+
+def _classify_unsplit_payload(query, payload, needs_fts, stats):
+    if not needs_fts:
+        return _OFFSET_CLASS_IRRELEVANT, False, False
+    stats.fts_scans += 1
+    pos, neg = _match_fts_query(payload, query)
+    if neg:
+        return _OFFSET_CLASS_FTS_NEGATIVE, False, True
+    if pos:
+        return _OFFSET_CLASS_FTS_MATCH, True, False
+    return _OFFSET_CLASS_IRRELEVANT, False, False
+
+
+def _match_value_for_fts(query, value, needs_fts, stats):
+    if not needs_fts:
+        return False, False
+    stats.fts_scans += 1
+    return _match_fts_query(value, query)
+
+
+def _apply_cached_offset_class(accumulator, class_value, row_id, query, apply, stats):
+    if class_value == _OFFSET_CLASS_IRRELEVANT:
+        stats.data_refs_skipped += 1
+        return False, False
+    if class_value == _OFFSET_CLASS_FTS_NEGATIVE:
+        return False, True
+    if class_value == _OFFSET_CLASS_FTS_MATCH:
+        return True, False
+    if class_value >= _OFFSET_CLASS_VALUE_BASE:
+        _handle_value_class(
+            accumulator, class_value - _OFFSET_CLASS_VALUE_BASE, row_id, query, apply, stats
+        )
+    return False, False
 
 
 def _try_read_data_payload(reader, data_offset):
@@ -1607,11 +1659,9 @@ def _handle_value_class(accumulator, value_index, row_id, query, apply, stats):
     apply.deferred.append((value_index, accumulator.value_source_realtime[value_index]))
 
 
-@dataclass
+@dataclass(frozen=True)
 class _ScanApplyImmediate:
     """Rust `ScanApply::Immediate` analogue: apply the value inline."""
-
-    pass
 
 
 @dataclass
@@ -1728,6 +1778,23 @@ def _build_combined_accumulator(query, facet_indices, histogram):
     return acc
 
 
+def _next_explorer_scan_candidate(reader, query, control, stats, rows_seen):
+    while True:
+        if not _step_explorer(reader, query.direction):
+            return None, rows_seen
+        rows_seen += 1
+        if control is not None and control.should_stop_after_rows(rows_seen, stats):
+            return None, rows_seen
+        commit_realtime = reader.get_realtime_usec()
+        if _stop_by_commit_time(query, commit_realtime):
+            return None, rows_seen
+        if _skip_by_commit_time(query, commit_realtime):
+            continue
+        if not _reader_filter_matches(reader):
+            continue
+        return commit_realtime, rows_seen
+
+
 def _scan_explorer_main(reader, query, accumulator, result, control):
     """Mirror Rust scan_explorer_main (L1841-1900)."""
 
@@ -1739,45 +1806,94 @@ def _scan_explorer_main(reader, query, accumulator, result, control):
     apply = _ScanApplyDeferred(deferred=[])
     missing = accumulator.required_identity_count if use_first_value else 0
     while True:
-        if not _step_explorer(reader, query.direction):
+        commit_realtime, rows_seen = _next_explorer_scan_candidate(
+            reader, query, control, result.stats, rows_seen
+        )
+        if commit_realtime is None:
             break
-        rows_seen += 1
-        if control is not None and control.should_stop_after_rows(rows_seen, result.stats):
-            break
-        commit_realtime = reader.get_realtime_usec()
-        if _stop_by_commit_time(query, commit_realtime):
-            break
-        if _skip_by_commit_time(query, commit_realtime):
-            continue
-        if not _reader_filter_matches(reader):
-            continue
         apply.deferred.clear()
         row_id += 1
         fts_match, fts_negative = _scan_row_data(reader, query, accumulator, row_id, apply, result.stats, needs_fts)
-        source_realtime = _pick_source_realtime(apply.deferred)
-        effective = _effective_realtime_from_scan(source_realtime, commit_realtime)
-        _record_source_realtime_delta(result.stats, source_realtime, commit_realtime)
-        if not _timestamp_in_range(query, effective):
-            continue
-        if _row_rejected_by_fts(query, fts_match, fts_negative):
-            continue
-        _record_last_realtime(result.stats, commit_realtime)
-        result.stats.rows_matched += 1
-        stop_after_matched = False
-        if control is not None:
-            stop_after_matched = control.emit_matched_row(effective, result.stats.rows_matched)
-        value_realtime = effective if query.histogram is not None else None
-        for value_index, _ in apply.deferred:
-            accumulator.apply_value(value_index, value_realtime, result.stats)
-        accumulator.finish_histogram_row(row_id, effective, result.stats)
-        if _row_within_anchor(query, effective) and len(result.rows) < query.limit:
-            result.rows.append(_current_explorer_row(reader, effective, result.stats, expand=True))
-        if stop_after_matched or _should_stop_when_rows_full(query, result.rows, effective, result.stats.rows_matched):
+        should_stop = _handle_main_scanned_row(
+            reader,
+            query,
+            accumulator,
+            result,
+            control,
+            row_id,
+            apply,
+            commit_realtime,
+            fts_match,
+            fts_negative,
+            use_first_value,
+            needs_fts,
+            missing,
+        )
+        if should_stop:
             break
-        if use_first_value and not needs_fts and missing == 0 and not apply.deferred:
-            result.stats.early_stop_opportunities += 1
-            result.stats.early_stops += 1
     result.stats.rows_returned = len(result.rows)
+
+
+def _handle_main_scanned_row(
+    reader,
+    query,
+    accumulator,
+    result,
+    control,
+    row_id,
+    apply,
+    commit_realtime,
+    fts_match,
+    fts_negative,
+    use_first_value,
+    needs_fts,
+    missing,
+):
+    source_realtime = _pick_source_realtime(apply.deferred)
+    effective = _effective_realtime_for_stats(result.stats, source_realtime, commit_realtime)
+    if _main_scanned_row_rejected(query, effective, fts_match, fts_negative):
+        return False
+    stop_after_matched = _record_main_match(result.stats, control, commit_realtime, effective)
+    value_realtime = effective if query.histogram is not None else None
+    _apply_deferred_values(accumulator, apply.deferred, value_realtime, result.stats)
+    accumulator.finish_histogram_row(row_id, effective, result.stats)
+    _append_main_row_if_needed(reader, query, result, effective)
+    _record_main_early_stop_opportunity(result.stats, use_first_value, needs_fts, missing, apply)
+    return stop_after_matched or _should_stop_when_rows_full(
+        query, result.rows, effective, result.stats.rows_matched
+    )
+
+
+def _effective_realtime_for_stats(stats, source_realtime, commit_realtime):
+    effective = _effective_realtime_from_scan(source_realtime, commit_realtime)
+    _record_source_realtime_delta(stats, source_realtime, commit_realtime)
+    return effective
+
+
+def _main_scanned_row_rejected(query, effective, fts_match, fts_negative):
+    return (
+        not _timestamp_in_range(query, effective)
+        or _row_rejected_by_fts(query, fts_match, fts_negative)
+    )
+
+
+def _record_main_match(stats, control, commit_realtime, effective):
+    _record_last_realtime(stats, commit_realtime)
+    stats.rows_matched += 1
+    if control is None:
+        return False
+    return control.emit_matched_row(effective, stats.rows_matched)
+
+
+def _append_main_row_if_needed(reader, query, result, effective):
+    if _row_within_anchor(query, effective) and len(result.rows) < query.limit:
+        result.rows.append(_current_explorer_row(reader, effective, result.stats, expand=True))
+
+
+def _record_main_early_stop_opportunity(stats, use_first_value, needs_fts, missing, apply):
+    if use_first_value and not needs_fts and missing == 0 and not apply.deferred:
+        stats.early_stop_opportunities += 1
+        stats.early_stops += 1
 
 
 def _scan_explorer_combined(reader, query, accumulator, result, include_facets, control):
@@ -1791,68 +1907,108 @@ def _scan_explorer_combined(reader, query, accumulator, result, include_facets, 
     rows_seen = 0
     apply = _ScanApplyDeferred(deferred=[])
     while True:
-        if not _step_explorer(reader, query.direction):
+        commit_realtime, rows_seen = _next_explorer_scan_candidate(
+            reader, query, control, result.stats, rows_seen
+        )
+        if commit_realtime is None:
             break
-        rows_seen += 1
-        if control is not None and control.should_stop_after_rows(rows_seen, result.stats):
-            break
-        commit_realtime = reader.get_realtime_usec()
-        if _stop_by_commit_time(query, commit_realtime):
-            break
-        if _skip_by_commit_time(query, commit_realtime):
-            continue
-        if not _reader_filter_matches(reader):
-            continue
-        decision = _combined_sampling_decision(
+        action = _combined_sampling_action(
             query,
             result.rows,
             commit_realtime,
             _reader_current_entry_seqnum(reader),
             sampling,
             control,
+            include_main,
+            include_facets,
+            result,
         )
-        if decision is not None:
-            action = _apply_combined_sampling_decision(
-                decision, include_main, include_facets, result, commit_realtime
-            )
-            if action == "skip":
-                continue
-            if action == "stop":
-                break
+        if action == "skip":
+            continue
+        if action == "stop":
+            break
         apply.deferred.clear()
         row_id += 1
         fts_match, fts_negative = _scan_row_data(reader, query, accumulator, row_id, apply, result.stats, needs_fts)
-        source_realtime = _pick_source_realtime(apply.deferred)
-        effective = _effective_realtime_from_scan(source_realtime, commit_realtime)
-        _record_source_realtime_delta(result.stats, source_realtime, commit_realtime)
-        if not _timestamp_in_range(query, effective):
-            continue
-        if _row_rejected_by_fts(query, fts_match, fts_negative):
-            continue
-        _record_last_realtime(result.stats, commit_realtime)
-        stop_after_matched = False
-        if _query_needs_main_pass(query):
-            result.stats.rows_matched += 1
-            if control is not None:
-                stop_after_matched = control.emit_matched_row(effective, result.stats.rows_matched)
-        if include_facets:
-            result.stats.facet_rows_matched += 1
-        value_realtime = effective if query.histogram is not None else None
-        for value_index, _ in apply.deferred:
-            accumulator.apply_value(value_index, value_realtime, result.stats)
-        if query.histogram is not None:
-            accumulator.finish_histogram_row(row_id, effective, result.stats)
-        if include_facets:
-            accumulator.finish_facet_row(row_id, result.stats)
-        if (
-            _query_needs_main_pass(query)
-            and _row_within_anchor(query, effective)
-            and len(result.rows) < query.limit
+        if _handle_combined_scanned_row(
+            reader,
+            query,
+            accumulator,
+            result,
+            control,
+            row_id,
+            apply,
+            commit_realtime,
+            fts_match,
+            fts_negative,
+            include_main,
+            include_facets,
         ):
-            result.rows.append(_current_explorer_row(reader, effective, result.stats, expand=True))
-        if stop_after_matched or _should_stop_when_rows_full(query, result.rows, effective, result.stats.rows_matched):
             break
     result.stats.rows_returned = len(result.rows)
+
+
+def _combined_sampling_action(
+    query, rows, commit_realtime, seqnum, sampling, control, include_main, include_facets, result
+):
+    decision = _combined_sampling_decision(query, rows, commit_realtime, seqnum, sampling, control)
+    if decision is None:
+        return "scan"
+    return _apply_combined_sampling_decision(
+        decision, include_main, include_facets, result, commit_realtime
+    )
+
+
+def _handle_combined_scanned_row(
+    reader,
+    query,
+    accumulator,
+    result,
+    control,
+    row_id,
+    apply,
+    commit_realtime,
+    fts_match,
+    fts_negative,
+    include_main,
+    include_facets,
+):
+    source_realtime = _pick_source_realtime(apply.deferred)
+    effective = _effective_realtime_from_scan(source_realtime, commit_realtime)
+    _record_source_realtime_delta(result.stats, source_realtime, commit_realtime)
+    if not _timestamp_in_range(query, effective):
+        return False
+    if _row_rejected_by_fts(query, fts_match, fts_negative):
+        return False
+    _record_last_realtime(result.stats, commit_realtime)
+    stop_after_matched = _record_combined_match(result.stats, include_main, include_facets, control, effective)
+    value_realtime = effective if query.histogram is not None else None
+    _apply_deferred_values(accumulator, apply.deferred, value_realtime, result.stats)
+    if query.histogram is not None:
+        accumulator.finish_histogram_row(row_id, effective, result.stats)
+    if include_facets:
+        accumulator.finish_facet_row(row_id, result.stats)
+    if include_main and _row_within_anchor(query, effective) and len(result.rows) < query.limit:
+        result.rows.append(_current_explorer_row(reader, effective, result.stats, expand=True))
+    return stop_after_matched or _should_stop_when_rows_full(
+        query, result.rows, effective, result.stats.rows_matched
+    )
+
+
+def _record_combined_match(stats, include_main, include_facets, control, effective):
+    stop_after_matched = False
+    if include_main:
+        stats.rows_matched += 1
+        if control is not None:
+            stop_after_matched = control.emit_matched_row(effective, stats.rows_matched)
+    if include_facets:
+        stats.facet_rows_matched += 1
+    return stop_after_matched
+
+
+def _apply_deferred_values(accumulator, deferred, value_realtime, stats):
+    for value_index, _ in deferred:
+        accumulator.apply_value(value_index, value_realtime, stats)
 
 
 def _sampling_state_for_combined(query, result, control):
@@ -1935,51 +2091,60 @@ def _scan_explorer_facet(reader, query, accumulator, stats, control):
 
     _seek_for_explorer(reader, query)
     needs_fts = _query_has_fts(query)
+    row_id = 0
+    rows_seen = 0
+    apply = _facet_apply_mode(query, needs_fts)
+    while True:
+        commit_realtime, rows_seen = _next_explorer_scan_candidate(
+            reader, query, control, stats, rows_seen
+        )
+        if commit_realtime is None:
+            break
+        _clear_deferred_apply(apply)
+        row_id += 1
+        fts_match, fts_negative = _scan_row_data(reader, query, accumulator, row_id, apply, stats, needs_fts)
+        _handle_facet_scanned_row(
+            query, accumulator, stats, row_id, apply, commit_realtime, fts_match, fts_negative
+        )
+
+
+def _facet_apply_mode(query, needs_fts):
     defer_apply = (
         query.after_realtime_usec is not None
         or query.before_realtime_usec is not None
         or needs_fts
     )
-    row_id = 0
-    rows_seen = 0
-    apply = (
-        _ScanApplyDeferred(deferred=[])
-        if defer_apply
-        else _SCAN_APPLY_IMMEDIATE
-    )
-    while True:
-        if not _step_explorer(reader, query.direction):
-            break
-        rows_seen += 1
-        if control is not None and control.should_stop_after_rows(rows_seen, stats):
-            break
-        commit_realtime = reader.get_realtime_usec()
-        if _stop_by_commit_time(query, commit_realtime):
-            break
-        if _skip_by_commit_time(query, commit_realtime):
-            continue
-        if not _reader_filter_matches(reader):
-            continue
-        if isinstance(apply, _ScanApplyDeferred):
-            apply.deferred.clear()
-        row_id += 1
-        fts_match, fts_negative = _scan_row_data(reader, query, accumulator, row_id, apply, stats, needs_fts)
-        if isinstance(apply, _ScanApplyDeferred):
-            source_realtime = _pick_source_realtime(apply.deferred)
-        else:
-            source_realtime = None
-        effective = _effective_realtime_from_scan(source_realtime, commit_realtime)
-        _record_source_realtime_delta(stats, source_realtime, commit_realtime)
-        if not _timestamp_in_range(query, effective):
-            continue
-        if _row_rejected_by_fts(query, fts_match, fts_negative):
-            continue
-        _record_last_realtime(stats, commit_realtime)
-        stats.facet_rows_matched += 1
-        if isinstance(apply, _ScanApplyDeferred):
-            for value_index, _ in apply.deferred:
-                accumulator.apply_value(value_index, None, stats)
-        accumulator.finish_facet_row(row_id, stats)
+    if defer_apply:
+        return _ScanApplyDeferred(deferred=[])
+    return _SCAN_APPLY_IMMEDIATE
+
+
+def _clear_deferred_apply(apply):
+    if isinstance(apply, _ScanApplyDeferred):
+        apply.deferred.clear()
+
+
+def _source_realtime_from_apply(apply):
+    if isinstance(apply, _ScanApplyDeferred):
+        return _pick_source_realtime(apply.deferred)
+    return None
+
+
+def _handle_facet_scanned_row(
+    query, accumulator, stats, row_id, apply, commit_realtime, fts_match, fts_negative
+):
+    source_realtime = _source_realtime_from_apply(apply)
+    effective = _effective_realtime_from_scan(source_realtime, commit_realtime)
+    _record_source_realtime_delta(stats, source_realtime, commit_realtime)
+    if not _timestamp_in_range(query, effective):
+        return
+    if _row_rejected_by_fts(query, fts_match, fts_negative):
+        return
+    _record_last_realtime(stats, commit_realtime)
+    stats.facet_rows_matched += 1
+    if isinstance(apply, _ScanApplyDeferred):
+        _apply_deferred_values(accumulator, apply.deferred, None, stats)
+    accumulator.finish_facet_row(row_id, stats)
 
 
 # ----------------------------------------------------------------------------
@@ -2069,13 +2234,27 @@ def _indexed_candidate_set(reader, query, excluded_field):
     offsets; the caller walks it according to `query.direction`.
     """
 
-    has_active_filter = any(
+    if not _indexed_candidate_scan_required(query, excluded_field):
+        return list(reader._entry_offsets)
+    return _collect_index_candidates_by_scan(reader, query, excluded_field)
+
+
+def _indexed_candidate_scan_required(query, excluded_field):
+    return (
+        _query_has_active_index_filter(query, excluded_field)
+        or query.after_realtime_usec is not None
+        or query.before_realtime_usec is not None
+    )
+
+
+def _query_has_active_index_filter(query, excluded_field):
+    return any(
         (excluded_field is None or f.field != excluded_field) and f.values
         for f in query.filters
     )
-    has_time_bound = query.after_realtime_usec is not None or query.before_realtime_usec is not None
-    if not has_active_filter and not has_time_bound:
-        return list(reader._entry_offsets)
+
+
+def _collect_index_candidates_by_scan(reader, query, excluded_field):
     _configure_filters(reader, query, excluded_field)
     _seek_for_explorer(reader, query)
     offsets = []
@@ -2104,31 +2283,46 @@ def _indexed_collect_rows(reader, query, result, candidates, control):
         entry_offset: index for index, entry_offset in enumerate(reader._entry_offsets)
     }
     for entry_offset in candidates:
-        if control is not None and control._stopped:
-            break
-        index = index_by_offset.get(entry_offset)
-        if index is None:
-            continue
-        reader._position_at_index(index, query.direction)
-        commit_realtime = reader.get_realtime_usec()
-        if _stop_by_commit_time(query, commit_realtime):
+        action = _indexed_collect_row_candidate(
+            reader, query, result, index_by_offset, entry_offset, control
+        )
+        if action == "return":
             return
-        if _skip_by_commit_time(query, commit_realtime):
-            continue
-        if not _timestamp_in_range(query, commit_realtime):
-            continue
-        _record_last_realtime(result.stats, commit_realtime)
-        result.stats.rows_matched += 1
-        if control is not None and control.emit_matched_row(commit_realtime, result.stats.rows_matched):
+        if action == "break":
             break
-        if _row_within_anchor(query, commit_realtime) and len(result.rows) < query.limit:
-            result.rows.append(_current_explorer_row(reader, commit_realtime, result.stats, expand=True))
     if query.direction == Direction.BACKWARD:
         result.rows.sort(key=lambda r: r.realtime_usec, reverse=True)
     else:
         result.rows.sort(key=lambda r: r.realtime_usec)
     if len(result.rows) > query.limit:
         result.rows = result.rows[:query.limit]
+
+
+def _indexed_collect_row_candidate(reader, query, result, index_by_offset, entry_offset, control):
+    if control is not None and control._stopped:
+        return "break"
+    index = index_by_offset.get(entry_offset)
+    if index is None:
+        return "continue"
+    reader._position_at_index(index, query.direction)
+    commit_realtime = reader.get_realtime_usec()
+    if _stop_by_commit_time(query, commit_realtime):
+        return "return"
+    if _skip_by_commit_time(query, commit_realtime):
+        return "continue"
+    if not _timestamp_in_range(query, commit_realtime):
+        return "continue"
+    _record_last_realtime(result.stats, commit_realtime)
+    result.stats.rows_matched += 1
+    if _indexed_control_stops_row(control, commit_realtime, result.stats.rows_matched):
+        return "break"
+    if _row_within_anchor(query, commit_realtime) and len(result.rows) < query.limit:
+        result.rows.append(_current_explorer_row(reader, commit_realtime, result.stats, expand=True))
+    return "continue"
+
+
+def _indexed_control_stops_row(control, commit_realtime, rows_matched):
+    return control is not None and control.emit_matched_row(commit_realtime, rows_matched)
 
 
 def _indexed_collect_facets(reader, query, result, candidates, control):
@@ -2208,51 +2402,97 @@ def _indexed_count_histogram(reader, field, candidates, result, query, control):
         width = 1
     bucket_count = len(histogram.buckets)
     rows_with_field = set()
+    _indexed_count_histogram_field_values(
+        reader, field, candidates, result, query, control, rows_with_field,
+        histogram_start, width, bucket_count,
+    )
+    _indexed_count_histogram_unset_rows(
+        reader, candidates, result, query, rows_with_field, histogram_start, width, bucket_count
+    )
+
+
+def _indexed_count_histogram_field_values(
+    reader,
+    field,
+    candidates,
+    result,
+    query,
+    control,
+    rows_with_field,
+    histogram_start,
+    width,
+    bucket_count,
+):
     field_offset = reader._find_field_head_data_offset(field)
     while field_offset:
         if control is not None and control._stopped:
             break
-        try:
-            data_header = reader._read_data_header_at(field_offset)
-            payload = reader._read_data_payload_at(field_offset)
-        except Exception:
+        field_offset = _indexed_count_histogram_data_object(
+            reader, field, field_offset, candidates, result, query, rows_with_field,
+            histogram_start, width, bucket_count,
+        )
+        if field_offset is None:
             break
-        result.stats.data_objects_classified += 1
-        result.stats.data_payloads_loaded += 1
-        if reader._data_object_was_compressed(field_offset):
-            result.stats.payloads_decompressed += 1
-        split = _split_payload(payload)
-        if split is None or split[0] != field:
-            field_offset = data_header['next_field_offset']
-            continue
-        value = split[1]
-        for entry_offset in _data_entry_offsets(reader, data_header):
-            result.stats.data_refs_seen += 1
-            if entry_offset not in candidates:
-                continue
+
+
+def _indexed_count_histogram_data_object(
+    reader,
+    field,
+    field_offset,
+    candidates,
+    result,
+    query,
+    rows_with_field,
+    histogram_start,
+    width,
+    bucket_count,
+):
+    try:
+        data_header = reader._read_data_header_at(field_offset)
+        payload = reader._read_data_payload_at(field_offset)
+    except Exception:
+        return None
+    result.stats.data_objects_classified += 1
+    result.stats.data_payloads_loaded += 1
+    if reader._data_object_was_compressed(field_offset):
+        result.stats.payloads_decompressed += 1
+    split = _split_payload(payload)
+    if split is None or split[0] != field:
+        return data_header['next_field_offset']
+    value = split[1]
+    for entry_offset in _data_entry_offsets(reader, data_header):
+        result.stats.data_refs_seen += 1
+        if entry_offset in candidates:
             rows_with_field.add(entry_offset)
-            commit_realtime = reader._entry_realtime_at_offset(entry_offset)
-            if not _timestamp_in_range(query, commit_realtime):
-                continue
-            idx = _histogram_bucket_index_from_bounds(commit_realtime, histogram_start, width, bucket_count)
-            if idx is None:
-                continue
-            bucket = histogram.buckets[idx]
-            _increment_counter(bucket.values, value, 1)
-            result.stats.histogram_updates += 1
-        field_offset = data_header['next_field_offset']
+            _add_indexed_histogram_value(
+                reader, result, query, entry_offset, value, histogram_start, width, bucket_count
+            )
+    return data_header['next_field_offset']
+
+
+def _indexed_count_histogram_unset_rows(
+    reader, candidates, result, query, rows_with_field, histogram_start, width, bucket_count
+):
     for entry_offset in candidates:
         if entry_offset in rows_with_field:
             continue
-        commit_realtime = reader._entry_realtime_at_offset(entry_offset)
-        if not _timestamp_in_range(query, commit_realtime):
-            continue
-        idx = _histogram_bucket_index_from_bounds(commit_realtime, histogram_start, width, bucket_count)
-        if idx is None:
-            continue
-        bucket = histogram.buckets[idx]
-        _increment_counter(bucket.values, UNSET_VALUE, 1)
-        result.stats.histogram_updates += 1
+        _add_indexed_histogram_value(
+            reader, result, query, entry_offset, UNSET_VALUE, histogram_start, width, bucket_count
+        )
+
+
+def _add_indexed_histogram_value(
+    reader, result, query, entry_offset, value, histogram_start, width, bucket_count
+):
+    commit_realtime = reader._entry_realtime_at_offset(entry_offset)
+    if not _timestamp_in_range(query, commit_realtime):
+        return
+    idx = _histogram_bucket_index_from_bounds(commit_realtime, histogram_start, width, bucket_count)
+    if idx is None:
+        return
+    bucket = result.histogram.buckets[idx]
+    _increment_counter(bucket.values, value, 1)
+    result.stats.histogram_updates += 1
 
 
 def _data_entry_offsets(reader, data_header):
@@ -2312,17 +2552,7 @@ def _explore_files(readers, query, strategy, control):
     facet/histogram values (with sums).
     """
 
-    if control is not None:
-        _validate_no_debug_column_collection(query)
-    else:
-        _validate_no_debug_column_collection(query)
-    if strategy == ExplorerStrategy.COMPARE:
-        raise ExplorerError(
-            'Compare strategy requires a single-file reader; the directory reader '
-            'does not support logical-equality verification across files.'
-        )
-    if strategy == ExplorerStrategy.INDEX:
-        _validate_indexed_query(query)
+    _validate_explore_files_strategy(query, strategy)
     rows = []
     merged_facets = {}
     merged_histogram = None
@@ -2335,26 +2565,55 @@ def _explore_files(readers, query, strategy, control):
         if sub is None:
             continue
         rows.extend(sub.rows)
-        for field, values in sub.facets.items():
-            dest = merged_facets.setdefault(field, {})
-            for value, count in values.items():
-                _increment_counter(dest, value, count)
-        if sub.histogram is not None:
-            if merged_histogram is None:
-                merged_histogram = ExplorerHistogram(field=sub.histogram.field, buckets=[
-                    ExplorerHistogramBucket(
-                        start_realtime_usec=b.start_realtime_usec,
-                        end_realtime_usec=b.end_realtime_usec,
-                    )
-                    for b in sub.histogram.buckets
-                ])
-            for bucket_idx, sub_bucket in enumerate(sub.histogram.buckets):
-                if bucket_idx >= len(merged_histogram.buckets):
-                    break
-                for value, count in sub_bucket.values.items():
-                    _increment_counter(merged_histogram.buckets[bucket_idx].values, value, count)
+        _merge_explorer_facets(merged_facets, sub.facets)
+        merged_histogram = _merge_explorer_histogram(merged_histogram, sub.histogram)
         column_fields.update(sub.column_fields)
         last_stats = sub.stats
+    return _finish_explore_files_result(rows, merged_facets, merged_histogram, column_fields, last_stats, query)
+
+
+def _validate_explore_files_strategy(query, strategy):
+    _validate_no_debug_column_collection(query)
+    if strategy == ExplorerStrategy.COMPARE:
+        raise ExplorerError(
+            'Compare strategy requires a single-file reader; the directory reader '
+            'does not support logical-equality verification across files.'
+        )
+    if strategy == ExplorerStrategy.INDEX:
+        _validate_indexed_query(query)
+
+
+def _merge_explorer_facets(merged_facets, facets):
+    for field, values in facets.items():
+        dest = merged_facets.setdefault(field, {})
+        for value, count in values.items():
+            _increment_counter(dest, value, count)
+
+
+def _merge_explorer_histogram(merged_histogram, sub_histogram):
+    if sub_histogram is None:
+        return merged_histogram
+    if merged_histogram is None:
+        merged_histogram = ExplorerHistogram(field=sub_histogram.field, buckets=[
+            ExplorerHistogramBucket(
+                start_realtime_usec=b.start_realtime_usec,
+                end_realtime_usec=b.end_realtime_usec,
+            )
+            for b in sub_histogram.buckets
+        ])
+    for bucket_idx, sub_bucket in enumerate(sub_histogram.buckets):
+        if bucket_idx >= len(merged_histogram.buckets):
+            break
+        _merge_histogram_bucket(merged_histogram.buckets[bucket_idx], sub_bucket)
+    return merged_histogram
+
+
+def _merge_histogram_bucket(dest_bucket, source_bucket):
+    for value, count in source_bucket.values.items():
+        _increment_counter(dest_bucket.values, value, count)
+
+
+def _finish_explore_files_result(rows, merged_facets, merged_histogram, column_fields, last_stats, query):
     rows.sort(key=lambda r: r.realtime_usec, reverse=(query.direction == Direction.BACKWARD))
     if query.limit and len(rows) > query.limit:
         rows = rows[:query.limit]

@@ -59,7 +59,7 @@ examples.
 | Porting libsystemd-style code | facade API |
 | Facets, histogram, filters, FTS, returned rows | Explorer API |
 | Netdata-shaped logs function output | Netdata function boundary |
-| Operator or script, no code | [[Journalctl-CLI|journalctl rewrite CLI]] |
+| Operator or script, no code | [[Journalctl-CLI]] |
 | Integrity check | verifier APIs |
 
 Details are in [[API-Overview|API Overview]] and

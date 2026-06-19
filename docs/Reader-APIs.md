@@ -16,7 +16,7 @@ consumer problem and carries a different cost.
 | libsystemd-style port | `SdJournal*` facade | `SdJournalOpen*` functions returning a facade handle | compatibility with existing call shape |
 | facets/histogram/FTS | Explorer | Explorer | log explorer or UI query |
 | Netdata function output | `journal::netdata` | Netdata function API | Netdata request/response shape |
-| stock-like CLI behavior | journalctl rewrite | journalctl rewrite | operator/script use; see [[Journalctl-CLI|Journalctl CLI]] |
+| stock-like CLI behavior | journalctl rewrite | journalctl rewrite | operator/script use; see [[Journalctl-CLI]] |
 | integrity validation | `verify_file` | `VerifyFile` | diagnostics and corpus gates |
 
 ## Data Ownership

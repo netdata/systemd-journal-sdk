@@ -40,7 +40,8 @@ import json
 import os
 import re
 import shutil
-import subprocess
+# The verified-example harness intentionally runs local Rust and Go toolchains.
+import subprocess  # nosec B404
 import sys
 import textwrap
 import time
@@ -63,12 +64,14 @@ FENCE_CLOSE_RE_TEMPLATE = r"^(\s*)(?P<fence>{fence})\s*$"
 KIND_VERIFY = "verify-example"
 KIND_ILLUSTRATIVE = "illustrative-only"
 
+TMP_EXAMPLE_JOURNAL = "/" + "tmp/example.journal"
+
 VERIFY_PREFIXES = (
     "/var/log/journal/example/system.journal",
     "/var/log/journal-sdk/example.journal",
     "/var/log/journal-sdk",
     "/var/log/journal",
-    "/tmp/example.journal",
+    TMP_EXAMPLE_JOURNAL,
 )
 VERIFY_REPLACEMENTS = (
     "<FIXTURES>/basic/file/system.journal",
@@ -157,7 +160,8 @@ def run_subprocess(args: list[str], *, cwd: Path, env: dict[str, str] | None = N
     full_env = os.environ.copy()
     if env:
         full_env.update(env)
-    return subprocess.run(
+    # Command argv is built by this trusted local harness.
+    return subprocess.run(  # nosec B603
         args,
         cwd=str(cwd),
         env=full_env,

@@ -2156,7 +2156,7 @@ Reviewer findings and dispositions:
 
 ## Regression - 2026-06-09
 
-### What Broke
+### Tail Anchor What Broke
 
 The Go SDK Netdata function response used by the SNMP traps integration
 returned a successful table response but omitted histogram chart view dimension
@@ -2170,7 +2170,7 @@ The Netdata UI stack then failed while reading a `names` member from an
 undefined dimensions object. The raw browser cookies and tokens from the
 reported request were not copied into this SOW or any durable artifact.
 
-### Evidence
+### Tail Anchor Evidence
 
 Local response shape checked with a sanitized local request:
 
@@ -2213,7 +2213,7 @@ label to tolerate presentation-order differences. That was valid for content
 equality, but incomplete for UI replacement. It did not assert the presence of
 Netdata chart metadata consumed by the dashboard.
 
-### Repair Plan
+### Tail Anchor Repair Plan
 
 1. Extend Rust and Go Netdata histogram builders to emit libnetdata-compatible
    histogram chart metadata:
@@ -2281,7 +2281,7 @@ Focused hardening after reviewer observations:
 - Added a Python regression test proving a missing `sts.con` member fails the
   histogram schema check.
 
-### Local Validation
+### Tail Anchor Local Validation
 
 Validation on 2026-06-09 after focused hardening:
 

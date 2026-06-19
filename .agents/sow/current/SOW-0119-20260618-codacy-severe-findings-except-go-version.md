@@ -2,11 +2,11 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: local cleanup, validation, and required Rust/Go reviewer gate are
-complete. The Go language directive remains unchanged by explicit user
-decision.
+Sub-state: reopened on 2026-06-19 after Codacy reanalysis of the pushed commit
+reported 62 total issues. The Go language directive remains unchanged by
+explicit user decision.
 
 ## Requirements
 
@@ -287,6 +287,13 @@ Failure handling:
   explicit accepted exception.
 - Ran local validation and external Rust/Go reviewer gate.
 
+### 2026-06-19
+
+- Reopened this SOW as a regression after Codacy Cloud reanalysis of pushed
+  commit `e17f694254559ad9456335c898063e75be00fb13` reported 62 total issues.
+- Classified the remaining rows as 23 accepted `go/go.mod` SCA findings and 39
+  non-Go findings to fix or explicitly disposition.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -327,6 +334,39 @@ Tests or equivalent validation:
   files passed.
 - `git diff --check` passed.
 - `.agents/sow/audit.sh` passed.
+
+Regression repair validation on 2026-06-19:
+
+- `git diff -- go/go.mod` is empty; `go/go.mod:3` remains `go 1.26`.
+- `lizard -C 12 experiments/python/journal/explorer.py
+  experiments/python/test_all.py` passed with zero threshold warnings.
+- `bandit -q -r tests/docs/verify_examples.py
+  tests/docs/test_verify_examples.py` passed.
+- `pylint --disable=all --enable=C0200,W0107
+  tests/docs/test_verify_examples.py experiments/python/journal/explorer.py`
+  passed.
+- `python3 -m py_compile experiments/python/journal/explorer.py
+  experiments/python/test_all.py tests/docs/verify_examples.py
+  tests/docs/test_verify_examples.py` passed.
+- `markdownlint-cli2` with only unrelated default `MD013` and `MD060`
+  disabled passed on the active SOW, status files, touched SOW history files,
+  docs-authoring skill, and touched docs pages.
+- `python3 -m unittest tests.docs.test_verify_examples` passed, 50 tests.
+- `python3 tests/docs/check_wiki_docs.py` passed, 15 wiki markdown files.
+- `.local/python-test-venv/bin/python experiments/python/test_all.py` passed.
+- `.local/python-test-venv/bin/python -m unittest discover -s
+  experiments/python -p 'test*.py'` passed, 240 tests.
+- `.local/python-test-venv/bin/python -m unittest discover -s tests -p
+  'test*.py'` passed, 11 tests.
+- `python3 tests/docs/verify_examples.py --timeout 60` passed, 31/31 verified
+  Rust and Go examples, with Rust/Go caches redirected under `.local/`.
+- `go test ./...` from `go/` passed with repo-local Go caches.
+- `cargo test --workspace --all-targets` from `rust/` passed with repo-local
+  Cargo caches.
+- `git diff --check` passed.
+- No Rust or Go source files were changed by this regression repair, so the
+  user-required Rust/Go external reviewer gate from the original SOW is not
+  rerun for the 2026-06-19 Python/docs-only repair.
 
 Real-use evidence:
 
@@ -444,4 +484,59 @@ can be configured to model the patched toolchain without changing
 
 ## Regression Log
 
-None yet.
+### Regression - 2026-06-19
+
+What broke:
+
+- Codacy Cloud reanalysis of pushed commit
+  `e17f694254559ad9456335c898063e75be00fb13` ended on
+  2026-06-19 with `issuesCount = 62`.
+- The 62 rows are not all severe findings. The remaining total includes 23
+  accepted `go/go.mod` Trivy SCA rows tied to the user-approved `go 1.26`
+  directive and 39 non-Go findings.
+- The severe non-accepted rows are Lizard complexity findings in retired Python
+  experiment files. Lower-severity non-Go rows are Bandit/Pylint findings in
+  docs-example tooling and markdownlint findings in docs/SOW artifacts.
+
+Evidence:
+
+- `.local/sow0119-regression/repository.json`: Codacy repository snapshot for
+  analyzed commit `e17f694254559ad9456335c898063e75be00fb13`.
+- `.local/sow0119-regression/all-issues.json`: 62 total issue rows.
+- `.local/sow0119-regression/severe-issues.json`: 25 Critical/High issue rows,
+  including 14 accepted `go/go.mod` SCA rows and 11 Python Lizard rows.
+- `.local/sow0119-regression/high-findings.json`: 14 High security findings,
+  all tied to `go/go.mod`.
+
+Why previous validation missed it:
+
+- The original closure focused on the initial severe export and local targeted
+  checks. It did not wait for and parse the full post-push Codacy issue export
+  before closing.
+- The retired Python explorer Lizard rows were outside the original locally
+  addressed severe file set and remained visible after reanalysis.
+- The markdownlint and docs-tooling rows are lower severity than the original
+  severe request, but the user now asked about the full 62-issue dashboard
+  count, so they are in regression scope.
+
+Repair plan:
+
+- Keep `go/go.mod` unchanged at `go 1.26`.
+- Fix or explicitly disposition every non-Go issue from the 62-row export.
+- Validate locally with targeted Lizard, Bandit, Pylint, markdown/docs checks,
+  relevant Python tests, `git diff --check`, and SOW audit.
+- Push the repair, trigger Codacy reanalysis, and verify that no non-Go issues
+  remain. The expected remaining dashboard count is the accepted Go SCA cluster
+  unless a separate user decision allows Codacy-side suppression or a Go
+  directive change.
+
+Validation updates needed:
+
+- Record final Codacy reanalysis evidence in `## Validation` before completing
+  this SOW again.
+
+Artifact updates needed:
+
+- Update this SOW and both SOW status indexes.
+- No spec or end-user docs behavior change is expected; docs-table formatting
+  may be corrected only to satisfy markdownlint.
