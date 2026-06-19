@@ -4,10 +4,12 @@
 
 Status: completed
 
-Sub-state: regression repair complete. Codacy reanalysis of pushed commit
-`05340b3e7baa8fe44736e0c4f0bc2bf919df36cd` reports 23 total issues and all
-23 are the accepted `go/go.mod` SCA cluster. The Go language directive remains
-unchanged by explicit user decision.
+Sub-state: regression repair complete. Codacy reanalysis of pushed head commit
+`065cb3111456618c5e1e080c9d90d314ba4b08fb` returns zero issue rows and zero
+finding rows. The repository aggregate still reports `issuesCount = 23`, with
+no pattern rows; the preceding issue export showed the 23 rows were all the
+accepted `go/go.mod` SCA cluster. The Go language directive remains unchanged
+by explicit user decision.
 
 ## Requirements
 
@@ -379,15 +381,25 @@ Regression repair validation on 2026-06-19:
 - No Rust or Go source files were changed by this regression repair, so the
   user-required Rust/Go external reviewer gate from the original SOW is not
   rerun for the 2026-06-19 Python/docs-only repair.
-- Codacy Cloud reanalysis of pushed commit
+- Codacy Cloud reanalysis of pushed repair commit
   `05340b3e7baa8fe44736e0c4f0bc2bf919df36cd` started on
   2026-06-19T03:33:06.909Z and ended on 2026-06-19T03:33:38.679Z with
   `issuesCount = 23`.
-- Final Codacy issue export for that commit contains 23 rows, all in
+- Codacy issue export for that repair commit contains 23 rows, all in
   `go/go.mod`.
-- Final Codacy Critical/High issue export for that commit contains 14 rows, all
+- Codacy Critical/High issue export for that repair commit contains 14 rows, all
   in `go/go.mod`.
-- No non-Go Codacy issues remain in the final remote export.
+- Codacy Cloud reanalysis of pushed closeout head
+  `065cb3111456618c5e1e080c9d90d314ba4b08fb` started on
+  2026-06-19T03:35:41.849Z and ended on 2026-06-19T03:35:42.960Z.
+- On closeout head `065cb3111456618c5e1e080c9d90d314ba4b08fb`,
+  `codacy issues gh netdata systemd-journal-sdk --limit 1000` returns zero
+  rows and `codacy findings gh netdata systemd-journal-sdk` returns zero rows,
+  including zero Critical/High findings.
+- On the same closeout head, `codacy repository` still reports
+  `issuesCount = 23` but returns no `issuesOverview.patterns` rows. This is a
+  Codacy aggregate/row-output inconsistency; the latest row APIs expose no
+  actionable issue or finding rows.
 
 Real-use evidence:
 
@@ -486,11 +498,14 @@ Follow-up mapping:
 ## Outcome
 
 Completed again after regression repair. All non-Go Codacy issues from the
-62-row post-push dashboard were fixed or dispositioned. Final Codacy reanalysis
-reports only the user-approved Go-version/stdlib SCA cluster. All local tests
-and static checks listed above passed. All required Rust/Go reviewers from the
-original Rust/Go change set returned `PRODUCTION GRADE`; no Rust or Go source
-files changed in the 2026-06-19 Python/docs-only regression repair.
+62-row post-push dashboard were fixed or dispositioned. Final closeout-head
+Codacy issue and finding row APIs return zero rows; the repository aggregate
+still reports 23 without pattern rows, after the preceding repair-head export
+showed the only remaining rows were the user-approved Go-version/stdlib SCA
+cluster. All local tests and static checks listed above passed. All required
+Rust/Go reviewers from the original Rust/Go change set returned
+`PRODUCTION GRADE`; no Rust or Go source files changed in the 2026-06-19
+Python/docs-only regression repair.
 
 ## Lessons Extracted
 
