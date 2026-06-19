@@ -2,11 +2,12 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reopened on 2026-06-19 after Codacy reanalysis of the pushed commit
-reported 62 total issues. The Go language directive remains unchanged by
-explicit user decision.
+Sub-state: regression repair complete. Codacy reanalysis of pushed commit
+`05340b3e7baa8fe44736e0c4f0bc2bf919df36cd` reports 23 total issues and all
+23 are the accepted `go/go.mod` SCA cluster. The Go language directive remains
+unchanged by explicit user decision.
 
 ## Requirements
 
@@ -378,6 +379,15 @@ Regression repair validation on 2026-06-19:
 - No Rust or Go source files were changed by this regression repair, so the
   user-required Rust/Go external reviewer gate from the original SOW is not
   rerun for the 2026-06-19 Python/docs-only repair.
+- Codacy Cloud reanalysis of pushed commit
+  `05340b3e7baa8fe44736e0c4f0bc2bf919df36cd` started on
+  2026-06-19T03:33:06.909Z and ended on 2026-06-19T03:33:38.679Z with
+  `issuesCount = 23`.
+- Final Codacy issue export for that commit contains 23 rows, all in
+  `go/go.mod`.
+- Final Codacy Critical/High issue export for that commit contains 14 rows, all
+  in `go/go.mod`.
+- No non-Go Codacy issues remain in the final remote export.
 
 Real-use evidence:
 
@@ -475,10 +485,12 @@ Follow-up mapping:
 
 ## Outcome
 
-Completed. All locally actionable Codacy severe findings were fixed or
-dispositioned except the user-approved Go-version/stdlib SCA cluster. All local
-tests and static checks listed above passed. All required Rust/Go reviewers
-returned `PRODUCTION GRADE`.
+Completed again after regression repair. All non-Go Codacy issues from the
+62-row post-push dashboard were fixed or dispositioned. Final Codacy reanalysis
+reports only the user-approved Go-version/stdlib SCA cluster. All local tests
+and static checks listed above passed. All required Rust/Go reviewers from the
+original Rust/Go change set returned `PRODUCTION GRADE`; no Rust or Go source
+files changed in the 2026-06-19 Python/docs-only regression repair.
 
 ## Lessons Extracted
 
@@ -541,10 +553,9 @@ Repair plan:
   unless a separate user decision allows Codacy-side suppression or a Go
   directive change.
 
-Validation updates needed:
+Validation update:
 
-- Record final Codacy reanalysis evidence in `## Validation` before completing
-  this SOW again.
+- Final Codacy reanalysis evidence is recorded in `## Validation`.
 
 Artifact updates needed:
 

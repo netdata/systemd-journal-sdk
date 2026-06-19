@@ -4,11 +4,6 @@ Last updated: 2026-06-19
 
 ## Current
 
-- SOW-0119 - Codacy Severe Findings Except Go Version: in-progress regression
-  repair. Codacy reanalysis of pushed commit
-  `e17f694254559ad9456335c898063e75be00fb13` reported 62 total issues; 23 are
-  the accepted `go/go.mod` SCA cluster and the remaining non-Go rows are being
-  fixed without changing the Go directive.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -43,6 +38,16 @@ Last updated: 2026-06-19
 
 ## Recently Closed Or Completed
 
+- SOW-0119 - Codacy Severe Findings Except Go Version: completed after
+  regression repair. Codacy reanalysis of pushed commit
+  `05340b3e7baa8fe44736e0c4f0bc2bf919df36cd` reports 23 total issues and all
+  23 are the user-approved `go/go.mod` SCA cluster tied to the unchanged
+  `go 1.26` directive; no non-Go Codacy issues remain. Validation passed
+  targeted Lizard, Bandit, Pylint, markdownlint, docs checks, verified examples,
+  Python retired-experiment suites, full Go tests, full Rust workspace tests,
+  whitespace checks, and SOW audit. The 2026-06-19 regression repair changed no
+  Rust or Go source files, so no new Rust/Go external review was required beyond
+  the original SOW reviewer gate.
 - SOW-0118 - Host Helper Release And Netdata Integration Planning: completed.
   Rust crates were published to crates.io at `0.7.3`, `master` was pushed
   through release commit `165a7a60e59ccbfa24315fa52c1cdebd2bae534e`, and

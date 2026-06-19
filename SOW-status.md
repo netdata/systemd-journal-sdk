@@ -7,7 +7,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0119-20260618-codacy-severe-findings-except-go-version.md` - in-progress regression repair. Codacy reanalysis of pushed commit `e17f694254559ad9456335c898063e75be00fb13` reported 62 total issues; 23 are the accepted `go/go.mod` SCA cluster and the remaining non-Go rows are being fixed without changing the Go directive.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
@@ -23,6 +22,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- `SOW-0119-20260618-codacy-severe-findings-except-go-version.md` - completed after regression repair. Codacy reanalysis of pushed commit `05340b3e7baa8fe44736e0c4f0bc2bf919df36cd` reports 23 total issues, all in `go/go.mod`; no non-Go Codacy issues remain, and the Go directive remains `go 1.26`.
 - `SOW-0117-20260617-v0-7-2-release.md` - completed. Rust crates were published to crates.io at `0.7.2`, `master` was pushed through release commit `400bddde36d1e41a2b17943076752567a0826407`, and annotated tags `v0.7.2` plus `go/v0.7.2` were pushed; both peel to the same release commit. Full Rust/Go tests, wiki validation, verified examples, `git diff --check`, SOW audit, six read-only reviewer votes, crates.io search, and Go module lookup passed.
 - `SOW-0116-20260616-retire-python-node-targets.md` - completed. Python and Node.js tracked implementations were moved under `experiments/` as non-product retired experiments; active product docs, specs, CI, validation defaults, project skills, and pending/current SOW scope now target Rust and Go only. Validation included docs checks, verified examples, runtime purity, Netdata function tests, coverage script checks, SOW audit, `git diff --check`, and end-to-end interoperability matrices for query, compact, compression, mixed-directory, lock, verify, directory, binary, live, and byte identity paths. Final external review returned 6/7 `READY TO COMPLETE`; the remaining reviewer finding was explicit staging of new files, resolved during close.
 - `SOW-0113-20260615-nodejs-optional-native-mmap-reader.md` - closed without implementation on 2026-06-16. Superseded by SOW-0116, which retired the Node.js implementation to `experiments/` and removed it from product SDK scope.
