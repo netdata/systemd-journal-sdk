@@ -2,9 +2,11 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: release planning active; no irreversible publication action taken yet.
+Sub-state: `0.7.4` Rust crates are published, `v0.7.4` and `go/v0.7.4`
+tags are pushed, Go module lookup resolves, and the Netdata integration SOW
+points at the release commit.
 
 ## Requirements
 
@@ -299,6 +301,23 @@ Failure handling:
 - Second full-scope external review round completed after the fix. Claude,
   Codex, glm, minimax, kimi, mimo, deepseek, and qwen all voted
   `PRODUCTION GRADE: YES`.
+- Committed the release gate as
+  `536224b531655d1f5ed80723b1e9de7882e01431` and pushed `master`.
+- Published all eight Rust crates to crates.io at `0.7.4`:
+  `systemd-journal-sdk-common`, `systemd-journal-sdk-registry`,
+  `systemd-journal-sdk-core`, `systemd-journal-sdk-host`,
+  `systemd-journal-sdk-log-writer`, `systemd-journal-sdk-index`,
+  `systemd-journal-sdk-engine`, and `systemd-journal-sdk`.
+- Pushed annotated tags `v0.7.4` and `go/v0.7.4`; both peel to
+  `536224b531655d1f5ed80723b1e9de7882e01431`.
+- Verified Go module lookup resolves
+  `github.com/netdata/systemd-journal-sdk/go v0.7.4`.
+- Updated the Netdata worktree SOW from
+  `.agents/sow/active/SOW-20260618-systemd-journal-sdk-0.7.3-host-helper.md`
+  to
+  `.agents/sow/active/SOW-20260618-systemd-journal-sdk-0.7.4-host-helper.md`,
+  with SDK version references changed to `0.7.4` / `go/v0.7.4` and open-source
+  evidence changed to the release commit above.
 
 ## Validation
 
@@ -313,8 +332,21 @@ Acceptance criteria evidence:
 - `go/go.mod` remains unchanged and keeps its existing Go directive.
 - Pre-publication remote tag check with an explicit SSH config bypass returned
   no `v0.7.4` or `go/v0.7.4` tags.
-- The reviewer gate is satisfied. Rust crate publication, pushed tags, Go
-  module lookup, and Netdata SOW update remain to be executed.
+- The reviewer gate is satisfied: Claude, Codex, glm, minimax, kimi, mimo,
+  deepseek, and qwen all voted `PRODUCTION GRADE: YES`.
+- Rust crates are published to crates.io at `0.7.4`; `cargo info` showed
+  `version: 0.7.4` for all eight packages.
+- Remote tag verification returned:
+  - `refs/tags/v0.7.4^{}` ->
+    `536224b531655d1f5ed80723b1e9de7882e01431`.
+  - `refs/tags/go/v0.7.4^{}` ->
+    `536224b531655d1f5ed80723b1e9de7882e01431`.
+- `go list -m github.com/netdata/systemd-journal-sdk/go@v0.7.4` returned
+  `github.com/netdata/systemd-journal-sdk/go v0.7.4`.
+- Netdata SOW update evidence:
+  `.agents/sow/active/SOW-20260618-systemd-journal-sdk-0.7.4-host-helper.md`
+  now points at SDK `0.7.4`, Go tag `go/v0.7.4`, and release commit
+  `536224b531655d1f5ed80723b1e9de7882e01431`.
 
 Tests or equivalent validation:
 
@@ -325,17 +357,15 @@ Tests or equivalent validation:
 - `python3 tests/docs/check_wiki_docs.py` validated 15 wiki markdown files.
 - `git diff --check` passed.
 - `.agents/sow/audit.sh` passed.
-- `cargo publish --manifest-path src/crates/journal-common/Cargo.toml
-  --dry-run` passed for the first publishable Rust crate.
+- `cargo publish --dry-run` passed for each Rust crate before publication.
 
 Real-use evidence:
 
-- The first publishable Rust package dry-run verified packaging for
-  `systemd-journal-sdk-common v0.7.4`.
-- Dependent Rust package dry-runs intentionally wait until their `0.7.4`
-  dependencies are published and indexed.
-- `go list -m github.com/netdata/systemd-journal-sdk/go@v0.7.4` cannot resolve
-  until the `go/v0.7.4` tag is pushed.
+- crates.io accepted and indexed all eight Rust packages at `0.7.4`.
+- GitHub accepted pushed annotated tags `v0.7.4` and `go/v0.7.4`.
+- Go module resolution succeeded through the pushed `go/v0.7.4` tag.
+- The Netdata SOW no longer contains stale `0.7.3`, `v0.7.3`, `go/v0.7.3`,
+  or prior-release commit references.
 
 Reviewer findings:
 
@@ -359,22 +389,26 @@ Same-failure scan:
 - `rg -n "0\\.7\\.3|v0\\.7\\.3|go/v0\\.7\\.3" README.md rust/README.md docs
   .agents/sow/specs/product-scope.md rust/Cargo.toml rust/Cargo.lock`
   returned no live version-snippet matches after the fix.
+- The same stale-release search against the updated Netdata SOW returned no
+  matches.
 
 Sensitive data gate:
 
-- Pre-publication audit passed. The active SOW cites the Netdata SOW by
-  repository-relative path instead of recording workstation user-name paths.
+- Durable SDK artifacts and the Netdata SOW record only repository-relative
+  paths, public package names, release tags, and commit hashes. No credentials,
+  tokens, customer data, trap payloads, private endpoints, or workstation
+  user-name paths were recorded.
 
 Artifact maintenance gate:
 
-- AGENTS.md: no workflow or responsibility change found so far.
-- Runtime project skills: no release-skill change needed so far.
+- AGENTS.md: no workflow or responsibility change needed.
+- Runtime project skills: no release-skill change needed.
 - Specs: product-scope version examples updated to `0.7.4`.
 - End-user/operator docs: SDK install snippets updated to `0.7.4`.
-- End-user/operator skills: no affected output/reference skills found so far.
-- SOW lifecycle: active SOW remains in progress until publication and Netdata
-  SOW update complete.
-- SOW-status.md: active status updated.
+- End-user/operator skills: no affected output/reference skills found.
+- SOW lifecycle: this SOW is marked `completed` and moved to `done/` with the
+  closure commit.
+- SOW-status.md: canonical and root ledgers updated for completion.
 
 Specs update:
 
@@ -400,20 +434,25 @@ Lessons:
 
 Follow-up mapping:
 
-- Publication, tag verification, Go module lookup, Netdata SOW update, and SOW
-  close remain in this SOW after reviewer approval.
+- No deferred work remains in this SOW. Netdata dependency/code integration
+  remains in the Netdata SOW that now points at `0.7.4`.
 
 ## Outcome
 
-Pending.
+Completed. SDK release `0.7.4` is published for Rust and Go, both release tags
+peel to `536224b531655d1f5ed80723b1e9de7882e01431`, Go module lookup resolves,
+and the Netdata integration SOW points at the latest release.
 
 ## Lessons Extracted
 
-Pending.
+- Version sweeps for release readiness must include root docs, language-specific
+  READMEs, wiki docs, specs, workspace metadata, and lockfiles.
+- Push the release gate commit before publication/tagging so downstream evidence
+  can cite a remote commit that already exists.
 
 ## Followup
 
-None yet.
+None.
 
 ## Regression Log
 

@@ -8,11 +8,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0120-20260619-v0-7-4-release-and-netdata-sow-update.md` - in progress.
-  Preparing the next SDK patch release after Rust/Go changes landed beyond
-  `v0.7.3`, then updating the active Netdata host-helper SOW to point at the
-  latest release.
-
 ## Pending
 
 - `SOW-0115-20260616-portable-writer-identity-helpers.md` - open, blocked-on-user-decisions after repeat external review. Strict OS-agnostic writer contract where `_MACHINE_ID`, `_BOOT_ID`, and generated-entry `__MONOTONIC_TIMESTAMP` are mandatory caller-provided anchors, plus a separate optional Layer-3 helper API/package for local-host values on Linux/FreeBSD/macOS/Windows when that is the caller's intended identity source. User accepted FreeBSD locked state-backed boot-id synthesis under `/var/run` by default with caller path override, Rust/Go product scope after SOW-0116, and hard native-only/no-subprocess policy. Initial external review on 2026-06-16 returned 7/7 NOT READY TO IMPLEMENT votes; repeat review after SOW hardening returned 6/7 NOT READY TO IMPLEMENT votes and 1/7 READY vote before the language-scope reduction. The SOW must resolve non-Linux boot-id strategy, state-file locking/security, Rust helper relocation/clock semantics, and breaking-change migration before implementation.
@@ -26,6 +21,14 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- `SOW-0120-20260619-v0-7-4-release-and-netdata-sow-update.md` - completed.
+  Rust crates were published to crates.io at `0.7.4`, `master` was pushed
+  through release commit `536224b531655d1f5ed80723b1e9de7882e01431`, and
+  annotated tags `v0.7.4` plus `go/v0.7.4` were pushed; both peel to the same
+  release commit. Go module lookup resolved
+  `github.com/netdata/systemd-journal-sdk/go v0.7.4`, all eight Rust crates
+  were visible through `cargo info`, and the Netdata host-helper SOW was
+  updated to point at the release.
 - `SOW-0119-20260618-codacy-severe-findings-except-go-version.md` - completed after regression repair. Codacy reanalysis after the repair reports 23 issue rows, all in `go/go.mod`; the 14 Critical/High rows are also all in `go/go.mod`. These are the accepted SCA cluster, and the Go directive remains `go 1.26`.
 - `SOW-0117-20260617-v0-7-2-release.md` - completed. Rust crates were published to crates.io at `0.7.2`, `master` was pushed through release commit `400bddde36d1e41a2b17943076752567a0826407`, and annotated tags `v0.7.2` plus `go/v0.7.2` were pushed; both peel to the same release commit. Full Rust/Go tests, wiki validation, verified examples, `git diff --check`, SOW audit, six read-only reviewer votes, crates.io search, and Go module lookup passed.
 - `SOW-0116-20260616-retire-python-node-targets.md` - completed. Python and Node.js tracked implementations were moved under `experiments/` as non-product retired experiments; active product docs, specs, CI, validation defaults, project skills, and pending/current SOW scope now target Rust and Go only. Validation included docs checks, verified examples, runtime purity, Netdata function tests, coverage script checks, SOW audit, `git diff --check`, and end-to-end interoperability matrices for query, compact, compression, mixed-directory, lock, verify, directory, binary, live, and byte identity paths. Final external review returned 6/7 `READY TO COMPLETE`; the remaining reviewer finding was explicit staging of new files, resolved during close.

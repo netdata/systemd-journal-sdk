@@ -7,10 +7,6 @@ Last updated: 2026-06-19
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0120 - v0.7.4 Release And Netdata SOW Update: in progress. Preparing the
-  next SDK patch release after Rust/Go changes landed beyond `v0.7.3`, then
-  updating the active Netdata host-helper SOW to point at the latest release.
-
 ## Pending
 
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
@@ -41,6 +37,18 @@ Last updated: 2026-06-19
 
 ## Recently Closed Or Completed
 
+- SOW-0120 - v0.7.4 Release And Netdata SOW Update: completed. Rust crates
+  were published to crates.io at `0.7.4`, `master` was pushed through release
+  commit `536224b531655d1f5ed80723b1e9de7882e01431`, and annotated tags
+  `v0.7.4` plus `go/v0.7.4` were pushed; both peel to the same release
+  commit. Go module lookup resolved
+  `github.com/netdata/systemd-journal-sdk/go v0.7.4`, all eight Rust crates
+  were visible through `cargo info`, and the Netdata host-helper SOW was
+  updated to point at `0.7.4` / `go/v0.7.4` and the release commit. Validation
+  passed Go tests, Rust workspace tests, wiki validation, verified examples,
+  whitespace checks, SOW audit, Rust publish dry-runs, and the user-requested
+  read-only Rust/Go reviewer gate with Claude, Codex, glm, minimax, kimi, mimo,
+  deepseek, and qwen all voting `PRODUCTION GRADE: YES`.
 - SOW-0119 - Codacy Severe Findings Except Go Version: completed after
   regression repair. Codacy reanalysis after the repair reports 23 issue rows,
   all in `go/go.mod`; the 14 Critical/High rows are also all in `go/go.mod`.
