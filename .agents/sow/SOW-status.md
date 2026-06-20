@@ -26,6 +26,11 @@ Last updated: 2026-06-21
 - SOW-0098 - Rust Legacy Core Duplication Debt: open, parked by user decision
   on 2026-06-21. Still valid as Rust quality debt, but live-path work is
   high-risk and not mandatory before integration/release work.
+- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: open.
+  Release-relevant compatibility work for an official portable non-Linux
+  `journalctl` command. Scope is full systemd v260.1 offline/file-backed parity
+  in both Rust and Go first, then an evidence-based ship decision; daemon and
+  host-only operations remain explicitly unsupported.
 
 ## Recently Closed Or Completed
 
