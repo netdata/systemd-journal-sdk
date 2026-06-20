@@ -349,16 +349,37 @@ Failure handling:
 - Activated SOW after user requested completion of SOW-0121 with full
   file-backed operational parity, full command-line understanding, and proper
   unsupported behavior for daemon/host-only features.
+- Added `.agents/sow/specs/journalctl-v260-parity-matrix.md` as the committed
+  implementation contract for official systemd v260.1 command-line surface
+  recognition, file-backed behavior, portable no-ops, and unsupported
+  daemon/host-only behavior.
+- Ran mechanical coverage checks against `systemd/systemd @ c0a5a2516d28`:
+  71 official long options covered, all official short options covered, all 16
+  official output modes covered, and all 20 official actions covered.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Parity matrix created at `.agents/sow/specs/journalctl-v260-parity-matrix.md`.
+- Mechanical matrix coverage against systemd v260.1:
+  - 71 official long options found in `src/journal/journalctl.c` and all are
+    present in the matrix.
+  - Official short option set `DFIMNSTUWabcefghiklmnopqrtux` is fully present in
+    the matrix.
+  - Official output modes `short`, `short-full`, `short-iso`,
+    `short-iso-precise`, `short-precise`, `short-monotonic`, `short-delta`,
+    `short-unix`, `verbose`, `export`, `json`, `json-pretty`, `json-sse`,
+    `json-seq`, `cat`, and `with-unit` are fully present in the matrix.
+  - All 20 `JournalctlAction` enum values are represented by matrix command or
+    parser rows.
+- Rust and Go implementation pending.
 
 Tests or equivalent validation:
 
 - SOW activation only; product validation pending implementation.
+- Matrix coverage checked with read-only Python extraction from the v260.1
+  upstream source and local matrix text.
 
 Real-use evidence:
 
@@ -392,7 +413,9 @@ Artifact maintenance gate:
 
 Specs update:
 
-- Pending implementation.
+- Added `.agents/sow/specs/journalctl-v260-parity-matrix.md` for the active
+  SOW implementation contract. Product-scope update remains pending final
+  shipped behavior and ship recommendation.
 
 Project skills update:
 
