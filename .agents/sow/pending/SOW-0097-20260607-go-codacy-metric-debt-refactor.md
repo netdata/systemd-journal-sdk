@@ -6,9 +6,10 @@ Status: open
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: opened from SOW-0096 Codacy file metrics audit; refreshed on
-2026-06-15 with current local/Codacy evidence and read-only subagent analysis;
-blocked on user priority decision before implementation.
+Sub-state: opened from SOW-0096 Codacy file metrics audit; refreshed again on
+2026-06-21 with current local code evidence, Lizard metrics, and Codacy Cloud
+repository-level evidence. Still open, but narrowed to real Go duplication and
+ownership debt; blocked on user priority decision before implementation.
 
 ## Requirements
 
@@ -28,6 +29,8 @@ refactor decision.
 On 2026-06-15, the user asked to check whether this SOW was still valid, then
 to update it with current evidence, concrete solution candidates, estimated size
 or metric improvement, and refactor risks from a read-only subagent analysis.
+On 2026-06-21, the user asked to refresh SOW-0097 and SOW-0098 again and show
+what remains to be done.
 
 ### Assistant Understanding
 
@@ -38,41 +41,56 @@ Facts:
   is a 2026-06-07 point-in-time snapshot and must not be used as activation
   evidence without refresh.
 - The 2026-06-15 refresh checked Codacy branch `master`, fetched at
-  `2026-06-15T17:28:26.099Z`, with `222` Rust/Go files in the export.
-- Current Go production evidence:
-  - `go/journal/netdata.go`: `4162` lines, local Lizard `247` functions,
-    sum CCN `924`, max CCN `13` at `netdataRequest.toExplorerQuery`
-    (`go/journal/netdata.go:550`), Codacy duplication `0`, grade `C`.
-  - `go/journal/explorer.go`: `2916` lines, local Lizard `186` functions,
-    sum CCN `772`, max CCN `12` at `shouldStopWhenRowsFull`
-    (`go/journal/explorer.go:2662`), Codacy duplication `111`, grade `F`.
-  - `go/cmd/journalctl/main.go`: `1033` lines, local Lizard `62`
-    functions, sum CCN `302`, max CCN `12` at `id128StringValid`
-    (`go/cmd/journalctl/main.go:919`), Codacy duplication `71`, grade `F`.
-  - `go/journal/verify_graph.go`: `1083` lines, local Lizard `46`
-    functions, sum CCN `308`, max CCN `17` at `parseEntry`
-    (`go/journal/verify_graph.go:543`), Codacy duplication `28`, grade `B`.
-  - `go/journal/directory_reader.go`: `980` lines, local Lizard `75`
-    functions, sum CCN `261`, max CCN `12` at `stepMerged`
-    (`go/journal/directory_reader.go:515`), Codacy duplication `101`,
-    grade `F`.
-- Current local evidence invalidates the older statement that no tracked
-  Rust/Go function exceeded local CCN `12`: `toExplorerQuery` is `13` and
-  `parseEntry` is `17`.
+  `2026-06-15T17:28:26.099Z`, with `222` Rust/Go files in the file-metric
+  export. Treat those per-file Codacy grades as a historical baseline, not as
+  current activation evidence.
+- Codacy Cloud repository refresh on 2026-06-21 reports default branch
+  `master`, last analysed commit `c9f5caac804f` with analysis ending
+  `2026-06-19T06:57:32.973Z`, `27` open issue rows, coverage `72%`, complex
+  files `18%`, and duplication `30%`. The current Cloud issue set is unrelated
+  to this refactor SOW: it is the approved Go directive SCA cluster plus
+  markdownlint rows.
+- Current local Go production evidence from 2026-06-21:
+  - `go/journal/netdata.go`: `4193` lines, Lizard `3906` NLOC,
+    `252` functions, average CCN `3.7`.
+  - `go/journal/explorer.go`: `2916` lines, Lizard `2681` NLOC,
+    `186` functions, average CCN `4.2`.
+  - `go/cmd/journalctl/main.go`: `1033` lines, Lizard `945` NLOC,
+    `62` functions, average CCN `4.9`.
+  - `go/journal/verify_graph.go`: `1117` lines, Lizard `1052` NLOC,
+    `53` functions, average CCN `6.0`.
+  - `go/journal/directory_reader.go`: `980` lines, Lizard `865` NLOC,
+    `75` functions, average CCN `3.5`.
+- Current local Lizard evidence invalidates the 2026-06-15 hotspot claim:
+  `netdataRequest.toExplorerQuery` is now CCN `9`
+  (`go/journal/netdata.go:550`), and `graphVerifier.parseEntry` is now CCN
+  `5` (`go/journal/verify_graph.go:543`). No targeted Go file exceeded
+  Lizard's configured local threshold.
+- The current highest local Go function CCNs in the target set are CCN `12`:
+  `matchesSource` (`go/journal/netdata.go:518`),
+  `shouldStopWhenRowsFull` (`go/journal/explorer.go:2662`),
+  `id128StringValid` (`go/cmd/journalctl/main.go:919`),
+  `parseEntryArray` (`go/journal/verify_graph.go:682`),
+  `id128StringValid` (`go/journal/directory_reader.go:195`), and
+  `stepMerged` (`go/journal/directory_reader.go:515`).
 - Concrete true duplication exists in journal file discovery helpers across
   `go/journal/directory_reader.go:133-223` and
   `go/cmd/journalctl/main.go:857-948`, including `isJournalSubdirName`,
   `id128StringValid`, and ASCII hex validation.
+- `go/journal/netdata.go:2435` still has a separate recursive Netdata journal
+  collector. It is behavior-specific and should not be blindly merged with the
+  systemd-style one-level journal directory traversal.
 
 Inferences:
 
-- The Go metric problem remains mostly file-size and responsibility pressure,
-  but it now also includes two function-level complexity hotspots.
+- The Go metric problem remains mostly file-size, responsibility pressure, and
+  true duplicated journal discovery helpers. The earlier function-hotspot claim
+  is stale.
 - The clearest true duplication fix is a shared internal journal filesystem
   helper used by the SDK directory reader and file-backed `journalctl`.
-- Splitting large Go files improves ownership and per-file Codacy metrics, but
-  does not reduce total project complexity unless duplicated logic is removed
-  or high-CCN functions are decomposed.
+- Splitting large Go files may improve ownership and per-file Codacy metrics,
+  but it does not reduce total project complexity unless duplicated logic is
+  removed or specific complex functions are simplified.
 - Explorer and Netdata splits are behavior-sensitive because they sit on recent
   sampling, facet, histogram, and Netdata integration parity work.
 
@@ -82,8 +100,8 @@ Unknowns:
   churn, especially when total complexity is redistributed rather than removed.
 - Whether the shared journal filesystem helper should be exported from
   `go/journal` or remain private under `go/internal/`.
-- Whether `parseEntry` diagnostics must remain byte-for-byte identical when
-  decomposed.
+- Whether any verifier cleanup should target `parseEntryArray` rather than the
+  now-low-CCN `parseEntry`.
 
 ### Acceptance Criteria
 
@@ -100,26 +118,34 @@ Unknowns:
 Sources checked:
 
 - `.agents/sow/specs/codacy-rust-go-metrics-audit.md`.
-- `.local/codacy/file-metrics-rust-go.validation.json` as scratch evidence.
-- `.local/codacy/lizard-rust-go.csv` as scratch local CCN evidence.
 - `.local/codacy-validity/current-file-metrics-rust-go.json` as refreshed
-  2026-06-15 Codacy evidence.
+  2026-06-15 Codacy file-metric baseline evidence.
 - `.local/codacy-validity/lizard-sow-0097-0098.csv` as refreshed 2026-06-15
-  local Lizard evidence.
+  local Lizard baseline evidence.
+- 2026-06-21 current line counts from `wc -l`.
+- 2026-06-21 targeted Lizard run over the Go target files.
+- 2026-06-21 Codacy Cloud repository query for repo-level metrics and issue
+  categories. Raw user/account metadata was not written to durable artifacts.
+- 2026-06-21 `git log --oneline --since=2026-06-15 -- ...` over the Go target
+  files showed commits `e17f694` and `b1f6a36`, so the 2026-06-15 local
+  function metrics needed refresh.
 - Read-only explorer subagent `019ecc60-e6a8-7223-b371-7450e5ac1a5e`
   completed on 2026-06-15 and returned concrete Go refactor candidates,
   estimated metric movement, risks, and validation scope.
 
 Current state:
 
-- Go still has production file ownership pressure in the SDK Explorer,
-  directory reader, verifier, file-backed `journalctl`, and Netdata function
-  wrapper surfaces.
-- The older SOW-0096 statement that no function exceeded max CCN `12` is stale:
-  `go/journal/netdata.go:550` is CCN `13`, and
-  `go/journal/verify_graph.go:543` is CCN `17`.
-- Some duplication is real shared-helper debt, especially directory/subdirectory
-  journal discovery helpers duplicated between SDK and CLI code.
+- Go still has production file ownership pressure in the SDK Explorer, file
+  backed `journalctl`, verifier, directory reader, and Netdata function wrapper
+  surfaces.
+- The 2026-06-15 claim that `toExplorerQuery` and `parseEntry` were CCN `13`
+  and `17` is stale. Current local Lizard reports CCN `9` and `5`.
+- The real actionable duplication remains shared-helper debt: journal filename,
+  one-level machine-id subdirectory traversal, ID128 validation, and ASCII-hex
+  validation duplicated between SDK and CLI code.
+- Large file splits are still possible, but they are readability and ownership
+  work first. They should not be sold as true complexity reduction unless they
+  remove duplication or simplify functions.
 
 Risks:
 
@@ -132,28 +158,31 @@ Risks:
   systemd-style one-level machine-id subdirectory traversal and Netdata's
   recursive depth/dedup/error-accounting scan.
 - Verifier refactoring can change corruption diagnostics or compact-file
-  validation behavior if entry item parsing is not preserved exactly.
+  validation behavior if entry-array parsing is not preserved exactly. Current
+  evidence does not justify treating `parseEntry` itself as the main hotspot.
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: refreshed-needs-user-decision
 
 Problem / root-cause model:
 
 - Codacy file complexity is high because several Go files own large API,
   query, verification, or compatibility surfaces. Current local Lizard evidence
-  also shows two function-level hotspots: `netdataRequest.toExplorerQuery`
-  (`go/journal/netdata.go:550`, CCN `13`) and `graphVerifier.parseEntry`
-  (`go/journal/verify_graph.go:543`, CCN `17`).
+  no longer supports the earlier `toExplorerQuery` / `parseEntry` hotspot
+  claim. The durable reason to keep this SOW open is true duplicated journal
+  discovery helper logic plus large ownership surfaces.
 
 Evidence reviewed:
 
 - `.agents/sow/specs/codacy-rust-go-metrics-audit.md`: historical Go top
   complexity and duplication tables from 2026-06-07.
 - `.local/codacy-validity/current-file-metrics-rust-go.json`: refreshed
-  2026-06-15 Codacy export.
+  2026-06-15 Codacy file-metric baseline export.
 - `.local/codacy-validity/lizard-sow-0097-0098.csv`: refreshed local Lizard
-  function metrics for the target files.
+  function metric baseline for the target files.
+- 2026-06-21 current line counts, current targeted Lizard, and Codacy Cloud
+  repository-level state.
 - Read-only explorer subagent `019ecc60-e6a8-7223-b371-7450e5ac1a5e`.
 
 Affected contracts and surfaces:
@@ -171,7 +200,8 @@ Existing patterns to reuse:
 
 Concrete solution candidates:
 
-1. Long-term-best: shared internal journal filesystem helper.
+1. Long-term-best, recommended next action: shared internal journal filesystem
+   helper.
    - Extract duplicated helpers from `go/journal/directory_reader.go:133-223`
      and `go/cmd/journalctl/main.go:857-948`.
    - Candidate package: `go/internal/journalfs`, unless implementation analysis
@@ -185,6 +215,8 @@ Concrete solution candidates:
    - Estimated improvement: `80-120` duplicated lines centralized; likely
      meaningful duplication drop in `go/journal/directory_reader.go` and
      `go/cmd/journalctl/main.go`; total project complexity mostly unchanged.
+   - Current validity: still valid on 2026-06-21 and the clearest remaining
+     work.
 2. Surgical: split `go/cmd/journalctl/main.go` by CLI responsibility.
    - Candidate slices: flags/dispatch (`109-325`), timestamp parsing
      (`327-499`), boot logic (`501-619`), query/follow output (`621-757`),
@@ -192,6 +224,8 @@ Concrete solution candidates:
    - Estimated improvement: move about `750-900` lines out of `main.go`,
      likely reducing the entry file below `200` lines. True complexity drops
      only when paired with shared-helper extraction.
+   - Current validity: optional. Do this for maintainability if the CLI keeps
+     growing, not as the first Codacy-driven fix.
 3. Surgical: split `go/journal/netdata.go` by Netdata function ownership.
    - Candidate slices: request/query conversion (`416-672`), page window and
      realtime adjustment (`673-965`), file exploration and merge (`966-1323`),
@@ -200,6 +234,8 @@ Concrete solution candidates:
      `3376-4034`).
    - Estimated improvement: move `3000+` lines out of `netdata.go`; strong
      per-file Codacy improvement, but little true total-complexity reduction.
+   - Current validity: defer unless maintainers want clearer Netdata wrapper
+     ownership before integration work.
 4. Surgical only if behavior is unchanged: split `go/journal/explorer.go` by
    Explorer engine layer.
    - Candidate slices: public query/control/result types (`13-403`), sampling
@@ -208,13 +244,16 @@ Concrete solution candidates:
      (`1694-2228`), FTS/time/histogram/compare helpers (`2229-2905`).
    - Estimated improvement: move `2500+` lines out of `explorer.go`; true
      complexity reduction is low unless duplicated logic is also removed.
-5. Long-term-best: verifier parse-entry CCN reduction.
-   - Decompose `go/journal/verify_graph.go:543-610` and share compact versus
-     regular entry item reading with `go/journal/verify_graph.go:655-700`.
-   - Candidate helpers: entry item size, entry header reader, offset item
-     reader, and entry item validator.
-   - Estimated improvement: max CCN for `parseEntry` should fall from `17` to
-     about `7-10`; file-level complexity may not drop much.
+   - Current validity: defer. Explorer is behavior-sensitive and current
+     evidence does not show an urgent function-level hotspot.
+5. Conditional surgical follow-up: verifier entry-array cleanup.
+   - Do not target `parseEntry` as originally written in this SOW; current CCN
+     is `5`.
+   - If verifier readability becomes a priority, inspect `parseEntryArray`
+     (`go/journal/verify_graph.go:682`, CCN `12`) and compact versus regular
+     entry item reading.
+   - Estimated improvement: modest. This is not a first-priority Codacy debt
+     item after the 2026-06-21 refresh.
 
 Risk and blast radius:
 
@@ -232,11 +271,14 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Ask the user to approve the first Go target and priority order.
-2. Prefer true duplication removal first: shared journal filesystem helper.
-3. Split by stable ownership boundaries, not by arbitrary line count.
-4. Decompose high-CCN verifier code only with exact diagnostic/compact-file
-   compatibility tests.
+1. Ask the user to approve whether to implement this now or leave it pending
+   until after Netdata integration work.
+2. If implemented, start with the shared journal filesystem helper because it
+   removes true duplication rather than only redistributing file complexity.
+3. Split by stable ownership boundaries only if the user chooses readability
+   work after the helper extraction.
+4. Treat verifier work as optional and focused on `parseEntryArray`, not the
+   stale `parseEntry` hotspot.
 5. Run Go tests, interoperability smoke, benchmarks where hot paths changed,
    and Codacy metric recheck.
 
@@ -275,7 +317,11 @@ Open decisions:
 
 1. Whether to refactor Go metric debt before Netdata integration or defer it
    until after integration performance gates.
-2. Which Go file group to tackle first.
+2. If this SOW activates, whether the first target is the recommended shared
+   journal filesystem helper.
+3. Whether large Netdata/Explorer/CLI file splits are worth the churn now, given
+   that current evidence shows ownership pressure but not urgent function-level
+   threshold failures.
 
 ## Implications And Decisions
 
@@ -336,18 +382,42 @@ Failure handling:
 - Updated this SOW with current evidence, solution candidates, estimated
   improvement, and risks.
 
+2026-06-21:
+
+- Refreshed this pending SOW again from current local code and Codacy Cloud
+  repository-level state.
+- Corrected stale 2026-06-15 function-hotspot claims: `toExplorerQuery` is CCN
+  `9`, and `parseEntry` is CCN `5`.
+- Narrowed remaining actionable work to duplicated Go journal filesystem helper
+  extraction first, with large file splits and verifier cleanup treated as
+  optional follow-ups.
+
 ## Validation
 
-Pending.
+Refresh validation:
+
+- Current line counts checked for the Go target files.
+- Targeted Lizard run completed for the Go target files; no targeted Go file
+  exceeded Lizard's configured local threshold.
+- Codacy Cloud repository state checked read-only on 2026-06-21.
+- No implementation, source behavior, tests, public docs, specs, or runtime
+  skills changed by this refresh.
 
 ## Outcome
 
-Pending.
+Open. The SOW is still valid, but it is narrower than the 2026-06-15 version.
+The recommended remaining implementation is the shared journal filesystem
+helper extraction. Broad file splitting should wait unless the user chooses a
+readability-maintenance pass.
 
 ## Lessons Extracted
 
-Pending.
+Refresh lesson: point-in-time Codacy/Lizard statements age quickly in this
+repository. Activation must re-run local metrics before treating an old
+function-hotspot list as fact.
 
 ## Followup
 
-Pending.
+If activated, implement SOW-0097 before SOW-0098 only if Go maintainability is
+the priority. Otherwise leave it pending until after the Netdata integration
+SOWs.

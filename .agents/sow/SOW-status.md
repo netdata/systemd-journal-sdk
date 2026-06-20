@@ -5,6 +5,7 @@ Last updated: 2026-06-21
 ## Current
 
 - None.
+
 ## Pending
 
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
@@ -19,13 +20,15 @@ Last updated: 2026-06-21
   and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
-- SOW-0097 - Go Codacy Metric Debt Refactor: open. Follow-up from SOW-0096 to
-  reduce Go production file-size/ownership and duplication metrics only where
-  the refactor improves maintainability without hurting compatibility or
-  performance.
-- SOW-0098 - Rust Legacy Core Duplication Debt: open. Follow-up from SOW-0096
-  to analyze and reduce real Rust `jf`/`journal-core` duplication only where
-  shared primitives preserve historical compatibility and reader performance.
+- SOW-0097 - Go Codacy Metric Debt Refactor: open. Refreshed on 2026-06-21 and
+  narrowed to real duplicated Go journal filesystem helper debt first. Broad
+  Netdata, Explorer, CLI, or verifier splits remain optional readability work
+  and need a user priority decision before implementation.
+- SOW-0098 - Rust Legacy Core Duplication Debt: open. Refreshed on 2026-06-21
+  and still valid, but high-risk for live Rust paths. The first remaining
+  decision is the disposition of uncompiled legacy `journal_file.rs`; offset
+  array, cursor, and filter consolidation should wait for an explicit
+  compatibility/performance priority decision.
 
 ## Recently Closed Or Completed
 

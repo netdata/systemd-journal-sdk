@@ -6,9 +6,11 @@ Status: open
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: opened from SOW-0096 Codacy file metrics audit; refreshed on
-2026-06-15 with current local/Codacy evidence and read-only subagent analysis;
-blocked on user priority decision before implementation.
+Sub-state: opened from SOW-0096 Codacy file metrics audit; refreshed again on
+2026-06-21 with current local code evidence, Lizard metrics, and Codacy Cloud
+repository-level evidence. Still open, but narrowed to a decision on
+uncompiled legacy source plus explicitly high-risk Rust legacy/core
+deduplication; blocked on user priority decision before implementation.
 
 ## Requirements
 
@@ -28,6 +30,8 @@ overlap between legacy `jf` code and `journal-core`.
 On 2026-06-15, the user asked to check whether this SOW was still valid, then
 to update it with current evidence, concrete solution candidates, estimated size
 or metric improvement, and refactor risks from a read-only subagent analysis.
+On 2026-06-21, the user asked to refresh SOW-0097 and SOW-0098 again and show
+what remains to be done.
 
 ### Assistant Understanding
 
@@ -38,23 +42,28 @@ Facts:
   spec is a 2026-06-07 point-in-time snapshot and must not be used as activation
   evidence without refresh.
 - The 2026-06-15 refresh checked Codacy branch `master`, fetched at
-  `2026-06-15T17:28:26.099Z`, with `222` Rust/Go files in the export.
-- Current strongest Rust production duplication targets are:
+  `2026-06-15T17:28:26.099Z`, with `222` Rust/Go files in the file-metric
+  export. Treat those per-file Codacy grades as a historical baseline, not as
+  current activation evidence.
+- Codacy Cloud repository refresh on 2026-06-21 reports default branch
+  `master`, last analysed commit `c9f5caac804f` with analysis ending
+  `2026-06-19T06:57:32.973Z`, `27` open issue rows, coverage `72%`, complex
+  files `18%`, and duplication `30%`. The current Cloud issue set is unrelated
+  to this refactor SOW: it is the approved Go directive SCA cluster plus
+  markdownlint rows.
+- Current local Rust target evidence from 2026-06-21:
   - `rust/src/crates/journal-core/src/file/offset_array.rs`: `912` lines,
-    local Lizard `48` functions, sum CCN `165`, max CCN `11`, Codacy
-    duplication `662`, grade `F`.
+    Lizard `744` NLOC, `48` functions, average CCN `3.4`.
   - `rust/src/crates/jf/journal_file/src/offset_array.rs`: `716` lines,
-    local Lizard `41` functions, sum CCN `132`, max CCN `11`, Codacy
-    duplication `600`, grade `F`.
+    Lizard `573` NLOC, `41` functions, average CCN `3.2`.
   - `rust/src/crates/jf/journal_file/src/journal_file.rs`: `829` lines,
-    local Lizard `40` functions, sum CCN `109`, max CCN `11`, Codacy
-    duplication `410`, grade `F`.
-  - `rust/src/crates/jf/journal_file/src/file.rs`: `912` lines, local Lizard
-    `55` functions, sum CCN `126`, max CCN `10`, Codacy duplication `383`,
-    grade `F`.
-- The old target `rust/src/crates/journal-core/src/file/file.rs` is stale as a
-  duplication target: current Codacy reports duplication `0`, grade `B`, with
-  local Lizard sum CCN `170` and max CCN `11`.
+    Lizard `598` NLOC, `40` functions, average CCN `2.7`.
+  - `rust/src/crates/jf/journal_file/src/file.rs`: `912` lines, Lizard `733`
+    NLOC, `55` functions, average CCN `2.3`.
+  - `rust/src/crates/journal-core/src/file/file.rs`: `1000` lines, Lizard
+    `793` NLOC, `83` functions, average CCN `2.0`.
+- Current local Lizard did not report targeted Rust threshold failures. This
+  SOW is about duplication and ownership risk, not urgent function CCN.
 - The `jf` crate is historically important because it is the compatibility
   layer for a libsystemd-like reader API and historical journal support.
 - `rust/src/crates/jf/journal_file/src/journal_file.rs` appears to be tracked
@@ -65,11 +74,18 @@ Facts:
   `journal_file` crate API directly, and `rust/src/crates/jf/journal_reader_ffi/src/lib.rs:98`
   stores `JournalFile<Mmap>` and `JournalReader`, so live `jf` API shape still
   matters for FFI compatibility.
+- Offset-array duplication is still live and concrete:
+  `Node`, `List`, `Cursor`, and `InlinedCursor` exist in both
+  `rust/src/crates/journal-core/src/file/offset_array.rs` and
+  `rust/src/crates/jf/journal_file/src/offset_array.rs`.
 - Core and legacy filter semantics currently differ on missing matches:
   `rust/src/crates/journal-core/src/file/filter.rs:182` returns
   `FilterExpr::None`, while `rust/src/crates/jf/journal_file/src/filter.rs:340`
   and `rust/src/crates/jf/journal_file/src/filter.rs:352` return
   `JournalError::InvalidOffset`.
+- Smaller duplicated helpers still exist in live code, including
+  `map_hash_table`, `sanitize_header_for_size`, and `BucketUtilization` across
+  the legacy and core `file.rs` implementations.
 
 Inferences:
 
@@ -91,8 +107,8 @@ Unknowns:
 
 - Which duplicated primitives can be safely shared without changing `jf`
   semantics.
-- Whether sharing lower-level primitives affects row-lifetime guarantees,
-  rolling mmap behavior, or historical compatibility.
+- Whether sharing lower-level primitives affects row-lifetime guarantees, mmap
+  behavior, or historical compatibility.
 - Whether the uncompiled `journal_file.rs` file should be deleted, archived in
   SOW evidence, or left until legacy removal work.
 - Whether legacy missing-match filter behavior should remain
@@ -118,24 +134,38 @@ Sources checked:
 - SOW-0086 through SOW-0092 Rust reader performance work.
 - SOW-0027 Netdata reader API and `jf` facade status.
 - `.local/codacy-validity/current-file-metrics-rust-go.json` as refreshed
-  2026-06-15 Codacy evidence.
+  2026-06-15 Codacy file-metric baseline evidence.
 - `.local/codacy-validity/lizard-sow-0097-0098.csv` as refreshed 2026-06-15
-  local Lizard evidence.
+  local Lizard baseline evidence.
+- 2026-06-21 current line counts from `wc -l`.
+- 2026-06-21 targeted Lizard run over the Rust target files.
+- 2026-06-21 Codacy Cloud repository query for repo-level metrics and issue
+  categories. Raw user/account metadata was not written to durable artifacts.
+- 2026-06-21 `git log --oneline --since=2026-06-15 -- ...` over the Rust
+  target files showed no Rust target-file commits after the 2026-06-15 refresh,
+  but the local metrics were rerun anyway.
 - Read-only explorer subagent `019ecc61-3293-7ac1-938d-972a80ae9722`
   completed on 2026-06-15 and returned concrete Rust refactor candidates,
   estimated metric movement, risks, and validation scope.
 
 Current state:
 
-- The largest production duplication is Rust legacy/core overlap.
+- The largest production duplication remains Rust legacy/core overlap.
 - The current Rust reader performance work recently optimized `journal-core`
   hot paths; any deduplication must not undo those guarantees.
-- The highest-value live duplication target is the `offset_array.rs` pair.
+- The highest-value live duplication target is still the `offset_array.rs`
+  pair, but it is high-risk because it sits on reader traversal and cache
+  behavior.
 - `rust/src/crates/jf/journal_file/src/journal_file.rs` appears to be
   uncompiled legacy source and is therefore a possible metric-only cleanup, not
   evidence of live runtime duplication by itself.
 - `rust/src/crates/journal-core/src/file/file.rs` should be removed from this
-  SOW's current first-target list because refreshed Codacy duplication is `0`.
+  SOW's first-target list based on the 2026-06-15 file-metric baseline, where
+  it was no longer a duplication target.
+- The safest first question is the disposition of the uncompiled tracked legacy
+  file. The safest live-code refactor is small pure helper extraction. The
+  highest-impact live-code refactor is offset-array unification, but that should
+  not happen without a full compatibility/performance gate.
 
 Risks:
 
@@ -153,24 +183,27 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: refreshed-needs-user-decision
 
 Problem / root-cause model:
 
 - Codacy duplication is high because legacy `jf` and current `journal-core`
   contain overlapping implementations of journal file/object/offset-array,
-  cursor, and filter mechanics. Current evidence narrows the first live target
-  to offset-array traversal and marks `journal-core/src/file/file.rs` as stale
-  for duplication.
+  cursor, and filter mechanics. Current evidence keeps offset-array traversal
+  as the first live target, keeps `journal_file.rs` as a separate uncompiled
+  source disposition decision, and marks broad `journal-core/src/file/file.rs`
+  work as lower priority.
 
 Evidence reviewed:
 
 - `.agents/sow/specs/codacy-rust-go-metrics-audit.md`: historical Rust top
   duplication table and file-by-file classifications from 2026-06-07.
 - `.local/codacy-validity/current-file-metrics-rust-go.json`: refreshed
-  2026-06-15 Codacy export.
+  2026-06-15 Codacy file-metric baseline export.
 - `.local/codacy-validity/lizard-sow-0097-0098.csv`: refreshed local Lizard
-  function metrics for the target files.
+  function metric baseline for the target files.
+- 2026-06-21 current line counts, current targeted Lizard, and Codacy Cloud
+  repository-level state.
 - Read-only explorer subagent `019ecc61-3293-7ac1-938d-972a80ae9722`.
 
 Affected contracts and surfaces:
@@ -188,7 +221,8 @@ Existing patterns to reuse:
 
 Concrete solution candidates:
 
-1. Surgical decision item: resolve uncompiled legacy `journal_file.rs`.
+1. Surgical decision item, recommended first decision: resolve uncompiled
+   legacy `journal_file.rs`.
    - Scope: `rust/src/crates/jf/journal_file/src/journal_file.rs`.
    - Evidence: `rust/src/crates/jf/journal_file/src/lib.rs:1-35` does not
      declare a `journal_file` module.
@@ -198,6 +232,8 @@ Concrete solution candidates:
    - Estimated improvement if deleted: remove `829` tracked lines, about `410`
      Codacy duplication points, and about `27` clones. This is a metric cleanup
      and dead-source cleanup, not live architecture deduplication.
+   - Current validity: still valid on 2026-06-21. This is the only apparently
+     low-risk cleanup, but deletion still requires explicit user approval.
 2. Surgical: extract small pure file-format helpers before changing behavior.
    - Candidate scopes: `map_hash_table`, `sanitize_header_for_size`,
      `BucketUtilization`, and iterator skeletons shared by
@@ -205,7 +241,10 @@ Concrete solution candidates:
      `rust/src/crates/journal-core/src/file/file.rs`.
    - Estimated improvement: `120-250` lines moved/shared and `80-180`
      duplication points removed. Lower risk, but `journal-core/src/file/file.rs`
-     currently has duplication `0`, so Codacy movement may be limited.
+     had duplication `0` in the 2026-06-15 file-metric baseline, so Codacy
+     movement may be limited.
+   - Current validity: optional low-risk live-code cleanup after the
+     `journal_file.rs` decision.
 3. Long-term-best: unify offset-array traversal as a shared state machine.
    - Scope: `Node`, `List`, `Cursor`, and `InlinedCursor` in
      `rust/src/crates/jf/journal_file/src/offset_array.rs:12-716` and
@@ -216,6 +255,8 @@ Concrete solution candidates:
    - Estimated improvement: `600-800` lines moved/split and `450-650`
      duplication points removed per affected offset-array file. This is the
      biggest live production duplication win.
+   - Current validity: still valid but high-risk. Do only if Rust maintenance
+     debt is a priority before integration/release work.
 4. Conditional surgical follow-up: share cursor stepping after offset-array
    consolidation.
    - Scope: `rust/src/crates/jf/journal_file/src/cursor.rs` and
@@ -224,6 +265,7 @@ Concrete solution candidates:
      location/cursor resolution logic.
    - Estimated improvement: `220-280` lines moved/shared and `220-300`
      duplication points removed.
+   - Current validity: defer until offset-array direction is approved.
 5. Long-term-best: refactor filter builder/evaluator only with an explicit
    compatibility policy.
    - Scope: `rust/src/crates/jf/journal_file/src/filter.rs` and
@@ -232,6 +274,8 @@ Concrete solution candidates:
      adopt core `FilterExpr::None`.
    - Estimated improvement: `180-300` lines moved/shared and `120-220`
      duplication points removed, depending on the chosen compatibility policy.
+   - Current validity: defer until the missing-match compatibility policy is
+     explicitly decided.
 6. Split or defer: shared object layout/parsing.
    - Scope: `rust/src/crates/jf/journal_file/src/object.rs`,
      `rust/src/crates/journal-core/src/file/object.rs`, and related object hash
@@ -240,6 +284,7 @@ Concrete solution candidates:
      duplication points removed, but with high compatibility, compression, and
      dependency-footprint risk. This should be a later phase or separate SOW
      unless the user explicitly chooses a larger architecture cleanup.
+   - Current validity: not recommended as near-term work.
 
 Risk and blast radius:
 
@@ -263,9 +308,10 @@ Implementation plan:
    before Netdata integration.
 2. Ask the user to decide the uncompiled `journal_file.rs` disposition before
    any deletion.
-3. Analyze duplicated code clusters and identify shareable primitives versus
-   intentionally divergent compatibility logic.
-4. Prefer low-risk helper extraction before live hot-path consolidation.
+3. If live-code deduplication is still wanted, prefer small pure-helper
+   extraction before hot-path offset-array consolidation.
+4. Do not unify filter behavior until the missing-match compatibility policy is
+   explicitly decided.
 5. Refactor one cluster at a time with historical fixture and benchmark proof.
 
 Validation plan:
@@ -373,18 +419,44 @@ Failure handling:
 - Updated this SOW with current evidence, solution candidates, estimated
   improvement, and risks.
 
+2026-06-21:
+
+- Refreshed this pending SOW again from current local code and Codacy Cloud
+  repository-level state.
+- Confirmed the SOW remains valid as duplication debt, not as an urgent
+  function-CCN problem.
+- Narrowed remaining work into: first decide the uncompiled
+  `journal_file.rs` disposition; optionally extract small pure helpers; only
+  then consider high-risk offset-array/cursor/filter consolidation.
+
 ## Validation
 
-Pending.
+Refresh validation:
+
+- Current line counts checked for the Rust target files.
+- Targeted Lizard run completed for the Rust target files; no targeted Rust
+  file exceeded Lizard's configured local threshold.
+- Codacy Cloud repository state checked read-only on 2026-06-21.
+- No implementation, deletion, source behavior, tests, public docs, specs, or
+  runtime skills changed by this refresh.
 
 ## Outcome
 
-Pending.
+Open. The SOW is still valid, but it should not be treated as urgent before the
+Netdata integration/release backlog unless Rust maintainability is explicitly
+prioritized. The only low-risk first action is deciding what to do with the
+uncompiled legacy `journal_file.rs`; the main live-code deduplication is
+high-risk and needs a full compatibility/performance gate.
 
 ## Lessons Extracted
 
-Pending.
+Refresh lesson: Rust legacy/core duplication is real, but the cleanup is not
+one kind of work. Dead-source cleanup, pure-helper extraction, offset-array
+unification, and filter semantics each have different risk and need separate
+decisions.
 
 ## Followup
 
-Pending.
+If activated, resolve the uncompiled `journal_file.rs` decision before any
+live-path refactor. Keep offset-array/cursor/filter consolidation pending unless
+the user explicitly prioritizes Rust debt over integration/release work.
