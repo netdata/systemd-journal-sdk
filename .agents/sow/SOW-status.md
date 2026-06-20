@@ -20,15 +20,12 @@ Last updated: 2026-06-21
   and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
-- SOW-0097 - Go Codacy Metric Debt Refactor: open. Refreshed on 2026-06-21 and
-  narrowed to real duplicated Go journal filesystem helper debt first. Broad
-  Netdata, Explorer, CLI, or verifier splits remain optional readability work
-  and need a user priority decision before implementation.
-- SOW-0098 - Rust Legacy Core Duplication Debt: open. Refreshed on 2026-06-21
-  and still valid, but high-risk for live Rust paths. The first remaining
-  decision is the disposition of uncompiled legacy `journal_file.rs`; offset
-  array, cursor, and filter consolidation should wait for an explicit
-  compatibility/performance priority decision.
+- SOW-0097 - Go Codacy Metric Debt Refactor: open, parked by user decision on
+  2026-06-21. Refreshed and narrowed to real duplicated Go journal filesystem
+  helper debt first, but not mandatory before integration/release work.
+- SOW-0098 - Rust Legacy Core Duplication Debt: open, parked by user decision
+  on 2026-06-21. Still valid as Rust quality debt, but live-path work is
+  high-risk and not mandatory before integration/release work.
 
 ## Recently Closed Or Completed
 

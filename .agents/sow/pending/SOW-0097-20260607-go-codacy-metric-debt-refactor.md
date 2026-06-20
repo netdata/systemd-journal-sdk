@@ -9,7 +9,9 @@ Status: open
 Sub-state: opened from SOW-0096 Codacy file metrics audit; refreshed again on
 2026-06-21 with current local code evidence, Lizard metrics, and Codacy Cloud
 repository-level evidence. Still open, but narrowed to real Go duplication and
-ownership debt; blocked on user priority decision before implementation.
+ownership debt. Parked by user decision on 2026-06-21; no implementation is
+planned before the integration/release backlog unless Go maintainability
+pressure returns.
 
 ## Requirements
 
@@ -334,6 +336,15 @@ User decision on 2026-06-15:
 - No implementation, API change, behavior change, or commit was approved by
   this decision.
 
+User decision on 2026-06-21:
+
+- Defer SOW-0097 and SOW-0098.
+- Keep this SOW open in `pending/` as tracked quality debt, but do not treat it
+  as mandatory or active work before SOW-0048, SOW-0049, SOW-0050, and SOW-0066.
+- Revisit only if Go maintainability, Codacy duplication, or repeated edits to
+  the duplicated journal filesystem helper area make the cleanup worth the
+  churn.
+
 ## Plan
 
 1. Decide priority and target file group.
@@ -405,10 +416,10 @@ Refresh validation:
 
 ## Outcome
 
-Open. The SOW is still valid, but it is narrower than the 2026-06-15 version.
-The recommended remaining implementation is the shared journal filesystem
-helper extraction. Broad file splitting should wait unless the user chooses a
-readability-maintenance pass.
+Open and parked by user decision. The SOW is still valid, but it is not
+mandatory work. The recommended remaining implementation, if this is later
+reactivated, is the shared journal filesystem helper extraction. Broad file
+splitting should wait unless the user chooses a readability-maintenance pass.
 
 ## Lessons Extracted
 
@@ -418,6 +429,6 @@ function-hotspot list as fact.
 
 ## Followup
 
-If activated, implement SOW-0097 before SOW-0098 only if Go maintainability is
-the priority. Otherwise leave it pending until after the Netdata integration
-SOWs.
+No follow-up action is planned now. If activated later, implement SOW-0097
+before SOW-0098 only if Go maintainability is the priority. Otherwise leave it
+pending until after the Netdata integration and release SOWs.

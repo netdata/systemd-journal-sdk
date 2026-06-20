@@ -10,7 +10,9 @@ Sub-state: opened from SOW-0096 Codacy file metrics audit; refreshed again on
 2026-06-21 with current local code evidence, Lizard metrics, and Codacy Cloud
 repository-level evidence. Still open, but narrowed to a decision on
 uncompiled legacy source plus explicitly high-risk Rust legacy/core
-deduplication; blocked on user priority decision before implementation.
+deduplication. Parked by user decision on 2026-06-21; no implementation is
+planned before the integration/release backlog unless Rust maintainability debt
+becomes an explicit priority.
 
 ## Requirements
 
@@ -371,6 +373,15 @@ User decision on 2026-06-15:
 - No implementation, deletion, API change, behavior change, or commit was
   approved by this decision.
 
+User decision on 2026-06-21:
+
+- Defer SOW-0097 and SOW-0098.
+- Keep this SOW open in `pending/` as tracked quality debt, but do not treat it
+  as mandatory or active work before SOW-0048, SOW-0049, SOW-0050, and SOW-0066.
+- Revisit only if Rust maintainability becomes an explicit priority, or if the
+  uncompiled legacy `journal_file.rs` file creates real maintenance or scanner
+  friction.
+
 ## Plan
 
 1. Decide priority and safety constraints.
@@ -442,8 +453,9 @@ Refresh validation:
 
 ## Outcome
 
-Open. The SOW is still valid, but it should not be treated as urgent before the
-Netdata integration/release backlog unless Rust maintainability is explicitly
+Open and parked by user decision. The SOW is still valid, but it is not
+mandatory work and should not be treated as urgent before the Netdata
+integration/release backlog unless Rust maintainability is explicitly
 prioritized. The only low-risk first action is deciding what to do with the
 uncompiled legacy `journal_file.rs`; the main live-code deduplication is
 high-risk and needs a full compatibility/performance gate.
@@ -457,6 +469,7 @@ decisions.
 
 ## Followup
 
-If activated, resolve the uncompiled `journal_file.rs` decision before any
-live-path refactor. Keep offset-array/cursor/filter consolidation pending unless
-the user explicitly prioritizes Rust debt over integration/release work.
+No follow-up action is planned now. If activated later, resolve the uncompiled
+`journal_file.rs` decision before any live-path refactor. Keep
+offset-array/cursor/filter consolidation pending unless the user explicitly
+prioritizes Rust debt over integration/release work.
