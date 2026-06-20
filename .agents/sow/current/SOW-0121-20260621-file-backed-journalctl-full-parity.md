@@ -2,11 +2,11 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: opened after user approval on 2026-06-21; pending implementation.
+Sub-state: activated by user goal on 2026-06-21; implementation in progress.
 This SOW is release-relevant for any non-Linux package that claims an official
 portable `journalctl` command.
 
@@ -128,7 +128,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision-before-activation
+Status: satisfied for activation on 2026-06-21.
 
 Problem / root-cause model:
 
@@ -255,8 +255,9 @@ Open-source reference evidence:
 
 Open decisions:
 
-1. Confirm activation timing relative to SOW-0048, SOW-0049, SOW-0050, and
-   SOW-0066.
+1. Activation timing: resolved by user goal on 2026-06-21. SOW-0121 is active
+   before SOW-0048, SOW-0049, SOW-0050, and SOW-0066 because a portable
+   official `journalctl` command is release-relevant compatibility work.
 2. Decide any disputed option/action classifications after the parity matrix is
    drafted.
 3. Decide the shipped command implementation after Rust and Go evidence exists.
@@ -275,6 +276,9 @@ User decision on 2026-06-21:
 - Implement or complete both Rust and Go commands first.
 - Decide which command to ship only after parity, portability, performance,
   size, dependency, and maintainability evidence exists.
+- Activate SOW-0121 and complete everything that can be done toward full
+  file-backed operational parity, full command-line understanding, and proper
+  unsupported messages for impossible daemon/host-only features.
 
 Implications:
 
@@ -303,9 +307,9 @@ Implications:
 
 Implementer:
 
-- Pending user activation. Default project routing applies when activated:
+- Activated by user goal on 2026-06-21. Default project routing applies:
   implementation delegated to `llm-netdata-cloud/minimax-m3-coder` unless the
-  user changes routing.
+  user changes routing or the SOW records a fallback.
 
 Reviewers:
 
@@ -342,6 +346,9 @@ Failure handling:
   file-backed `journalctl` full-parity work.
 - Recorded current-state evidence and official systemd v260.1 source evidence.
 - No source, tests, specs, or docs were changed by this SOW creation.
+- Activated SOW after user requested completion of SOW-0121 with full
+  file-backed operational parity, full command-line understanding, and proper
+  unsupported behavior for daemon/host-only features.
 
 ## Validation
 
@@ -351,7 +358,7 @@ Acceptance criteria evidence:
 
 Tests or equivalent validation:
 
-- SOW creation only; no product tests required yet.
+- SOW activation only; product validation pending implementation.
 
 Real-use evidence:
 
