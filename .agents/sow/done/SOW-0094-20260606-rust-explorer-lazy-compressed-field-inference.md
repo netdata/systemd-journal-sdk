@@ -2,12 +2,12 @@
 
 ## Status
 
-Status: open
+Status: closed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: deferred experiment; do not implement until the Explorer API is
-stabilized and promoted as a key SDK API.
+Sub-state: closed without implementation on 2026-06-21 by user decision. The
+experiment is not important enough to keep in the active backlog.
 
 ## Requirements
 
@@ -20,6 +20,14 @@ semantics and the journal format's row/field ordering contracts.
 This SOW exists for performance completeness. The immediate priority remains
 stabilizing and promoting the Explorer API; this optimization must not distract
 from that work until the API boundary is stable.
+
+2026-06-21 closeout:
+
+- User decision: close this SOW; do not implement the experiment.
+- Reason: the experiment is not important enough for the project backlog.
+- Implication: default Rust Explorer behavior remains unchanged, and future
+  compressed-DATA Explorer optimization would need a new user-approved SOW with
+  fresh evidence.
 
 ### User Request
 
@@ -218,7 +226,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: blocked
+Status: closed without implementation
 
 Problem / root-cause model:
 
@@ -361,12 +369,7 @@ Open-source reference evidence:
 
 Open decisions:
 
-- Implementation is intentionally blocked. The user requested this as a
-  tracked experiment while the project first stabilizes and promotes the
-  Explorer API.
-- Before implementation, decide whether exact first-value support is mandatory
-  for the first prototype or whether the prototype may start as all-values
-  only. The default production Explorer must remain exact.
+- None. The user closed this experiment on 2026-06-21.
 
 ## Implications And Decisions
 
@@ -399,6 +402,7 @@ Open decisions:
    row-local compressed-DATA deferral and `next_field_offset` inference.
 3. Validate exactness before trusting benchmarks.
 4. Keep, restrict, or reject the optimization based on measured evidence.
+5. 2026-06-21 closeout: plan rejected by user decision; do not implement.
 
 ## Delegation Plan
 
@@ -433,6 +437,8 @@ Failure handling:
   option or reject it.
 - If audit or reviewer findings expose hidden behavior changes, keep the SOW
   open until the findings are fixed or the experiment is removed.
+- 2026-06-21: user rejected the experiment before implementation, so no
+  benchmark or reviewer failure handling is needed.
 
 ## Execution Log
 
@@ -445,28 +451,38 @@ Failure handling:
 - Recorded the user requirement to defer compressed DATA, inspect
   `next_field_offset`, and decompress only when still needed.
 
+### 2026-06-21
+
+- User decided to close this SOW because the experiment is not important enough
+  to keep.
+- No code, tests, specs, public docs, or runtime skills changed.
+
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending. This SOW is not implemented.
+- Closed by user decision before implementation. No acceptance criteria were
+  implemented, and no public behavior changed.
 
 Tests or equivalent validation:
 
-- Pending. This SOW is not implemented.
+- Not required; this is a no-code backlog closeout.
+- Closeout validation command: `.agents/sow/audit.sh` passed on 2026-06-21
+  after the SOW move. Audit reported 6 pending SOWs, no current SOWs, 112 done
+  SOWs, clean status/directory consistency, clean sensitive-data guardrail, and
+  final verdict `SOW initialization complete and clean`.
 
 Real-use evidence:
 
-- Pending. This SOW is not implemented.
+- Not applicable; this SOW was closed without implementation.
 
 Reviewer findings:
 
-- Pending. Reviewer pass is required only after this SOW is activated and
-  implemented.
+- Not required; no implementation was performed.
 
 Same-failure scan:
 
-- Pending. No code was changed for this SOW.
+- No code was changed for this SOW.
 
 Sensitive data gate:
 
@@ -482,22 +498,25 @@ Artifact maintenance gate:
 - Specs: no update yet; this is a pending experiment, not accepted behavior.
 - End-user/operator docs: no update yet; no public API changed.
 - End-user/operator skills: no update needed.
-- SOW lifecycle: created under `.agents/sow/pending/` with `Status: open`.
-- SOW-status.md: updated to track this pending experiment.
+- SOW lifecycle: moved from `.agents/sow/pending/` to `.agents/sow/done/` with
+  `Status: closed`.
+- SOW-status.md: updated to remove this pending experiment and record the
+  closeout.
+- SOW status/directory consistency: verified by `.agents/sow/audit.sh` after the
+  move.
 
 Specs update:
 
-- No spec update yet. Update the reader/Explorer performance spec only if this
-  experiment becomes accepted behavior.
+- No spec update needed; no SDK behavior, API, data format, UX rule, business
+  logic, operational guarantee, or known edge case changed.
 
 Project skills update:
 
-- No runtime project skill update yet. Update only if this establishes a
-  reusable Explorer optimization workflow.
+- No runtime project skill update needed; no reusable workflow changed.
 
 End-user/operator docs update:
 
-- No docs update yet. No public API or supported behavior changed.
+- No docs update needed. No public API or supported behavior changed.
 
 End-user/operator skills update:
 
@@ -507,22 +526,29 @@ Lessons:
 
 - The journal DATA/FIELD same-field chain may expose field identity without
   decompression, but only after exactness and locality risks are measured.
+- Not every theoretically valid optimization belongs in the backlog. If priority
+  is low and risk/validation cost is high, closing the SOW is cleaner than
+  carrying a stale experiment.
 
 Follow-up mapping:
 
-- Tracked by this SOW.
+- None. Future work would require a new user-approved SOW with fresh evidence.
 
 ## Outcome
 
-Pending.
+Closed without implementation. The user decided on 2026-06-21 that this
+optimization experiment is not important enough to keep.
 
 ## Lessons Extracted
 
-Pending.
+- Remove low-priority experimental SOWs instead of leaving them as stale backlog
+  items.
+- Keep the existing Rust Explorer behavior unchanged unless fresh evidence later
+  justifies reopening the topic.
 
 ## Followup
 
-None yet.
+None.
 
 ## Regression Log
 

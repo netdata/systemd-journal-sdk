@@ -19,12 +19,6 @@ Last updated: 2026-06-21
   and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
-- SOW-0094 - Rust Explorer Lazy Compressed Field Inference Experiment: open.
-  Deferred Rust Explorer optimization experiment to skip compressed DATA until
-  uncompressed row DATA are examined, infer compressed DATA field identity from
-  cached `next_field_offset` chains when possible, and decompress only when
-  facets or histogram requirements still need it; blocked until SOW-0093
-  stabilizes and promotes the Explorer API.
 - SOW-0097 - Go Codacy Metric Debt Refactor: open. Follow-up from SOW-0096 to
   reduce Go production file-size/ownership and duplication metrics only where
   the refactor improves maintainability without hurting compatibility or
@@ -35,6 +29,10 @@ Last updated: 2026-06-21
 
 ## Recently Closed Or Completed
 
+- SOW-0094 - Rust Explorer Lazy Compressed Field Inference Experiment: closed
+  without implementation by user decision on 2026-06-21. The optimization is not
+  important enough to keep in the active backlog. No SDK behavior, source,
+  tests, specs, public docs, or runtime skills changed.
 - SOW-0009 - Benchmark Profile Optimize: completed. The performance umbrella
   was closed after all linked Rust/Go writer and reader child SOWs completed or
   closed: SOW-0042, SOW-0043, SOW-0044, SOW-0045, SOW-0052, SOW-0056,
