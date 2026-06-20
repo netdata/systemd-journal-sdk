@@ -2,13 +2,12 @@
 
 ## Status
 
-Status: paused
+Status: completed
 
-Sub-state: retained as the umbrella performance program. The writer side is
-split into SOW-0042 after SOW-0037/SOW-0040/SOW-0041. The reader side is split
-into SOW-0044, SOW-0052, and SOW-0060 after SOW-0043 defines the reader
-compatibility target. SOW-0116 retired Python and Node.js as product targets,
-so active performance work now focuses on Rust and Go only.
+Sub-state: completed on 2026-06-21 as an umbrella closeout. Writer and reader
+performance work was split into focused child SOWs, and the linked child SOWs
+are now completed or closed. This closeout only fixes lifecycle and mapping
+records; it changes no SDK behavior.
 
 ## Requirements
 
@@ -46,7 +45,8 @@ Facts:
   SOW-0009 benchmark report.
 - Writer work must not continue using obsolete v0.1.0 root-cause investigation
   as an acceptance criterion.
-- Reader performance work has not started yet.
+- At the 2026-05-28 rescope, reader performance work had not started yet. It
+  later closed through the child SOWs recorded in this closeout.
 
 Inferences:
 
@@ -68,14 +68,14 @@ Unknowns:
 
 - This umbrella SOW remains the performance program index until child SOWs
   close.
-- Writer benchmarking and optimization are tracked by SOW-0042.
+- Writer benchmarking and optimization are tracked by SOW-0042 and SOW-0062.
 - Rust reader baseline/parity and optimization are tracked by SOW-0043,
   SOW-0044, SOW-0052, and SOW-0060.
-- Go reader alignment and optimization are tracked by SOW-0045.
+- Go reader alignment and optimization are tracked by SOW-0045 and SOW-0056.
 - Historical Python/Node reader/writer port work is superseded by SOW-0116 for
   product planning.
-- Netdata integration remains blocked by the relevant child SOWs unless the
-  user explicitly accepts a staged exception.
+- Netdata component integration remains in separate SOWs and requires explicit
+  authorization for any Netdata repository changes.
 - Benchmark reports must record production-relevant settings: file size,
   directory rotation, compact/regular mode, compression, FSS, live publication
   cadence, sync/flush cadence, field count, value cardinality, binary payloads,
@@ -94,12 +94,13 @@ Sources checked:
 
 Current state:
 
-- Writer implementation is substantially improved by `v0.3.0`, based on the
+- Writer implementation was substantially improved by `v0.3.0`, based on the
   user-reported SNMP traps result.
-- Controlled writer certification still needs to happen after writer closure
-  SOWs.
-- Reader optimization has not been started and needs a separate parity baseline
-  first.
+- Controlled writer certification and later absolute writer performance work
+  closed in SOW-0042 and SOW-0062.
+- Reader parity, reader optimization, and the row-scoped current-entry facade
+  lifetime follow-up closed in SOW-0043, SOW-0044, SOW-0045, SOW-0052,
+  SOW-0056, SOW-0060, and SOW-0061.
 
 Risks:
 
@@ -112,7 +113,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: paused umbrella; child SOWs own implementation gates
+Status: satisfied; child SOWs owned implementation gates
 
 Problem / root-cause model:
 
@@ -156,11 +157,12 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Keep this SOW paused as the performance index.
+1. Keep this SOW paused as the performance index until child SOWs close.
 2. Complete writer closure and all-language writer parity SOWs.
 3. Complete SOW-0042 for writer benchmark/certification.
 4. Complete reader parity and reader performance SOWs.
-5. Update this umbrella SOW only when child SOWs change the performance program.
+5. Update this umbrella SOW when child SOWs change the performance program.
+6. Close this umbrella once all linked child SOWs are completed or closed.
 
 Validation plan:
 
@@ -176,9 +178,9 @@ Artifact impact plan:
 - End-user/operator docs: update when public benchmark or integration guidance
   is published.
 - End-user/operator skills: no output/reference skill expected.
-- SOW lifecycle: this remains current/paused until the performance program is
-  fully closed.
-- SOW-status.md: updated by the restructuring commit.
+- SOW lifecycle: this stayed current/paused until the performance program was
+  closed, then moved to `.agents/sow/done/`.
+- SOW-status.md: updated by the restructuring and closeout records.
 
 Open-source reference evidence:
 
@@ -269,15 +271,54 @@ Failure handling:
   SNMP traps ingestion require the fastest possible compatible writers, not
   merely writers that beat systemd.
 
+### 2026-06-21
+
+- Closed this umbrella after verifying the linked child SOWs are completed or
+  closed:
+  - SOW-0042 - Writer Final Certification.
+  - SOW-0043 - Rust Reader Libsystemd/Jf Parity.
+  - SOW-0044 - Rust Reader Hot-Path Optimization.
+  - SOW-0045 - Go Reader Alignment Optimization.
+  - SOW-0052 - Rust Reader Last-Mile Optimization.
+  - SOW-0056 - Go Reader Hot-Path Optimization Phase 2.
+  - SOW-0060 - Rust Reader Absolute Hot-Path Profiling.
+  - SOW-0061 - Cross-Language Row-Scoped Facade Lifetime.
+  - SOW-0062 - Rust And Go Writer Absolute Performance.
+- Recorded SOW-0056 as related completed Go reader performance work because it
+  referenced this umbrella as performance context, even though the older
+  SOW-0009 follow-up list did not name it.
+- No implementation, benchmark, source, spec, or public documentation changed
+  during this closeout.
+
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending child SOW completion.
+- The umbrella requirement that child SOWs own implementation and benchmark
+  closure is satisfied:
+  - SOW-0042 completed writer final certification.
+  - SOW-0062 completed Rust and Go writer absolute performance.
+  - SOW-0043, SOW-0044, SOW-0052, and SOW-0060 completed the Rust reader parity
+    and performance chain named by this SOW.
+  - SOW-0045 and SOW-0056 completed Go reader alignment and follow-on hot-path
+    performance work.
+  - SOW-0061 completed the row-scoped current-entry facade payload lifetime
+    parity follow-up discovered by SOW-0060.
+  - SOW-0116 retired Python and Node.js from product planning, so no remaining
+    Python/Node performance work blocks this Rust/Go umbrella.
+- Netdata component integration remains in SOW-0048, SOW-0049, and SOW-0050.
+  This SDK SOW does not authorize changes outside this repository.
 
 Tests or equivalent validation:
 
-- SOW audit will validate the restructuring.
+- This is a lifecycle-only closeout; no SDK code changed and no SDK test suite
+  was required.
+- Child SOWs record their own benchmark, test, reviewer, and compatibility
+  validation evidence.
+- Closeout validation command: `.agents/sow/audit.sh` passed on 2026-06-21
+  after the SOW move. Audit reported 7 pending SOWs, no current SOWs, 111 done
+  SOWs, clean status/directory consistency, clean sensitive-data guardrail, and
+  final verdict `SOW initialization complete and clean`.
 
 Real-use evidence:
 
@@ -286,11 +327,15 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Pending child SOWs.
+- No external reviewer rerun was required for this lifecycle-only closeout.
+  Implementation and performance child SOWs carried their own reviewer gates.
 
 Same-failure scan:
 
-- Pending child SOWs.
+- Checked direct and reverse SOW-0009 references across `.agents/sow/current`,
+  `.agents/sow/pending`, `.agents/sow/done`, and `.agents/sow/SOW-status.md`.
+- Corrected stale closeout mapping by adding SOW-0060 and SOW-0061, and by
+  recording SOW-0056 as related completed Go reader performance work.
 
 Sensitive data gate:
 
@@ -300,25 +345,33 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed for this rescope.
-- Runtime project skills: no update needed for this rescope.
-- Specs: no behavior change in this rescope.
-- End-user/operator docs: no behavior change in this rescope.
+- AGENTS.md: no update needed; workflow and repository guardrails did not
+  change.
+- Runtime project skills: no update needed; no durable HOW-to workflow changed.
+- Specs: no update needed; no SDK behavior, API, compatibility, or performance
+  contract changed during this closeout.
+- End-user/operator docs: no update needed; no public behavior or install/use
+  guidance changed during this closeout.
 - End-user/operator skills: no output/reference skill affected.
-- SOW lifecycle: child SOWs created by the restructuring commit.
-- SOW-status.md: updated by the restructuring commit.
+- SOW lifecycle: SOW-0009 is marked `completed` and moved from
+  `.agents/sow/current/` to `.agents/sow/done/`.
+- SOW-status.md: updated to remove SOW-0009 from Current and add it to Recently
+  Closed Or Completed.
+- SOW status/directory consistency: verified by `.agents/sow/audit.sh` after the
+  move.
 
 Specs update:
 
-- No spec update needed for the rescope itself.
+- No spec update needed for this closeout; child SOWs already carried any
+  behavior or contract updates they required.
 
 Project skills update:
 
-- No project skill update needed for the rescope itself.
+- No project skill update needed; this closeout exposed no missed workflow rule.
 
 End-user/operator docs update:
 
-- No docs update needed for the rescope itself.
+- No docs update needed; this closeout changes SOW lifecycle state only.
 
 End-user/operator skills update:
 
@@ -328,25 +381,34 @@ Lessons:
 
 - Performance SOWs must be scoped by hot path and contract; a single broad
   benchmark SOW became too easy to misread.
+- Umbrella SOWs should be closed promptly when their child SOWs close, otherwise
+  `current/` overstates active work.
 
 Follow-up mapping:
 
-- Writer certification: SOW-0042.
-- Rust reader parity/performance: SOW-0043, SOW-0044, and SOW-0052.
-- Go reader performance: SOW-0045.
+- Writer certification and absolute performance: SOW-0042 and SOW-0062.
+- Rust reader parity/performance: SOW-0043, SOW-0044, SOW-0052, and SOW-0060.
+- Go reader performance: SOW-0045 and SOW-0056.
+- Row-scoped current-entry facade payload lifetime parity: completed by
+  SOW-0061.
 - Historical Python/Node reader/writer Rust-port work: superseded by SOW-0116
   for product planning.
-- Cross-language row-scoped current-entry facade payload lifetime parity:
-  completed by SOW-0061.
-- Rust and Go writer absolute performance: SOW-0062.
+- Remaining Netdata component integration/release work is tracked outside
+  SOW-0009 by pending SOW-0048, SOW-0049, SOW-0050, and SOW-0066.
+- No new SOW-0009 follow-up is required.
 
 ## Outcome
 
-Pending.
+Completed. SOW-0009 served as the performance umbrella and all linked
+implementation/performance work is now closed through focused child SOWs. This
+closeout changes only SOW lifecycle and mapping records.
 
 ## Lessons Extracted
 
-Pending.
+- Keep performance work split by hot path and contract.
+- Keep umbrella SOW follow-up lists synchronized with later child SOWs.
+- Close umbrella SOWs once child SOWs finish, instead of leaving stale paused
+  state in `current/`.
 
 ## Followup
 
@@ -355,7 +417,12 @@ Pending.
 - SOW-0044 - Rust Reader Hot-Path Optimization.
 - SOW-0045 - Go Reader Alignment Optimization.
 - SOW-0052 - Rust Reader Last-Mile Optimization.
+- SOW-0056 - Go Reader Hot-Path Optimization Phase 2.
+- SOW-0060 - Rust Reader Absolute Hot-Path Profiling.
+- SOW-0061 - Cross-Language Row-Scoped Facade Lifetime.
 - SOW-0062 - Rust And Go Writer Absolute Performance.
+
+All SOW-0009 follow-up items above are completed.
 
 ## Regression Log
 

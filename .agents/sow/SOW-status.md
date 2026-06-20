@@ -1,12 +1,10 @@
 # SOW Status
 
-Last updated: 2026-06-19
+Last updated: 2026-06-21
 
 ## Current
 
-- SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
-  performance work is split into focused child SOWs; this file remains the
-  program index.
+- None.
 ## Pending
 
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
@@ -37,6 +35,13 @@ Last updated: 2026-06-19
 
 ## Recently Closed Or Completed
 
+- SOW-0009 - Benchmark Profile Optimize: completed. The performance umbrella
+  was closed after all linked Rust/Go writer and reader child SOWs completed or
+  closed: SOW-0042, SOW-0043, SOW-0044, SOW-0045, SOW-0052, SOW-0056,
+  SOW-0060, SOW-0061, and SOW-0062. This closeout changed only SOW lifecycle and
+  mapping records; SDK behavior, specs, source, and public docs were unchanged.
+  Remaining Netdata component integration/release work stays tracked by pending
+  SOW-0048, SOW-0049, SOW-0050, and SOW-0066.
 - SOW-0120 - v0.7.4 Release And Netdata SOW Update: completed. Rust crates
   were published to crates.io at `0.7.4`, `master` was pushed through release
   commit `536224b531655d1f5ed80723b1e9de7882e01431`, and annotated tags
