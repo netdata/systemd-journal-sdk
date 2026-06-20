@@ -2,7 +2,8 @@
 """File-backed journalctl query parity matrix.
 
 Generates repo-local fixtures and compares stock journalctl with the Rust and
-Go journalctl rewrites for --since, --until, --boot, and --follow behavior.
+Go journalctl rewrites for --since, --until, --boot, --lines, --reverse,
+--show-cursor, and --follow behavior.
 Runtime artifacts stay under .local/interoperability/.
 """
 
@@ -232,6 +233,7 @@ def parse_messages(output: str) -> list[str]:
 def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
     cases = [
         ("directory-all", "directory", fixtures["directory"], ["TEST_ID=journalctl-query"]),
+        ("directory-reverse", "directory", fixtures["directory"], ["--reverse", "TEST_ID=journalctl-query"]),
         ("directory-since", "directory", fixtures["directory"], ["--since", "@1700004000.000001", "TEST_ID=journalctl-query"]),
         (
             "directory-since-local-fraction",
@@ -260,6 +262,11 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             ["--boot=-1", "--since", "@1700004000.000001", "--until", "@1700004000.001", "TEST_ID=journalctl-query"],
         ),
         ("file-all", "file", fixtures["file"], ["TEST_ID=journalctl-query"]),
+        ("file-reverse", "file", fixtures["file"], ["--reverse", "TEST_ID=journalctl-query"]),
+        ("file-lines-tail", "file", fixtures["file"], ["--lines=2", "TEST_ID=journalctl-query"]),
+        ("file-lines-oldest", "file", fixtures["file"], ["--lines=+2", "TEST_ID=journalctl-query"]),
+        ("file-lines-default", "file", fixtures["file"], ["--lines", "TEST_ID=journalctl-query"]),
+        ("file-show-cursor", "file", fixtures["file"], ["--show-cursor", "TEST_ID=journalctl-query"]),
         ("file-boot-latest", "file", fixtures["file"], ["--boot=0", "TEST_ID=journalctl-query"]),
         ("file-boot-first", "file", fixtures["file"], ["--boot=1", "TEST_ID=journalctl-query"]),
         (
@@ -279,7 +286,9 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             cmd = reader_command(reader, tools, mode, path, args)
             result = run(cmd, timeout=30)
             actual = parse_messages(result.stdout)
-            ok = result.returncode == 0 and actual == expected
+            expect_cursor = "--show-cursor" in args
+            cursor_ok = not expect_cursor or "-- cursor:" in result.stdout
+            ok = result.returncode == 0 and actual == expected and cursor_ok
             results.append(
                 {
                     "test": case_name,
@@ -288,6 +297,8 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
                     "command": " ".join(cmd),
                     "expected": expected,
                     "actual": actual,
+                    "cursor_present": "-- cursor:" in result.stdout,
+                    "cursor_required": expect_cursor,
                     "returncode": result.returncode,
                     "stderr": result.stderr[-1000:],
                 }

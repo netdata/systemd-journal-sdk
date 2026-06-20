@@ -356,6 +356,30 @@ Failure handling:
 - Ran mechanical coverage checks against `systemd/systemd @ c0a5a2516d28`:
   71 official long options covered, all official short options covered, all 16
   official output modes covered, and all 20 official actions covered.
+- Delegated first implementation chunk to the configured implementer model
+  `llm-netdata-cloud/minimax-m3-coder`. The implementer run reached its
+  timeout after adding the initial parser manifest/harness and Rust/Go parser
+  recognition changes.
+- Integrated and corrected the chunk locally:
+  - removed a hardcoded workstation path from the manifest checker;
+  - fixed the Rust parser unit test so it actually passes `journalctl
+    --option[=value]` to clap instead of treating option names as the program
+    name;
+  - aligned Rust `--synchronize-on-exit` with the official v260.1
+    `required_argument` definition;
+  - added shared parser parity checks for all 71 official long options, all 16
+    output modes, and all six parser interaction rules;
+  - added Rust and Go recognition for the full official v260.1 option surface;
+  - added intentional portable-mode unsupported messages for daemon/host-only
+    actions;
+  - implemented low-risk file-backed behavior for `--reverse`, `--show-cursor`,
+    and `--lines`/`--lines=N`/`--lines=+N` in Rust and Go;
+  - extended the journalctl query matrix to compare stock systemd, Rust, and Go
+    for reverse, lines, oldest-lines, no-value lines, and cursor printing.
+- Fixed a real Rust optional-argument parity bug found by the expanded matrix:
+  `--lines TEST_ID=...` must not consume the match as the optional lines
+  argument. Rust now consumes the next token only when it looks like `all`, `N`,
+  or `+N`.
 
 ## Validation
 
@@ -374,16 +398,52 @@ Acceptance criteria evidence:
   - All 20 `JournalctlAction` enum values are represented by matrix command or
     parser rows.
 - Rust and Go implementation pending.
+- Rust and Go full parser recognition is implemented and locally validated.
+- Rust and Go file-backed behavior is partially advanced for `--reverse`,
+  `--show-cursor`, and `--lines` direction/default semantics.
+- Remaining file-backed parity is still pending, including full short-family
+  formatting, verbose/cat/with-unit/JSON variant exact framing,
+  `--output-fields`, cursor seeking/cursor-file mutation, unit/user-unit/
+  identifier/priority/facility/grep/dmesg filters, `--header`, `--disk-usage`,
+  `--list-invocations`, `--new-id128`, `--setup-keys`, and directory vacuum
+  actions where approved by the parity matrix.
 
 Tests or equivalent validation:
 
 - SOW activation only; product validation pending implementation.
 - Matrix coverage checked with read-only Python extraction from the v260.1
   upstream source and local matrix text.
+- `python3 tests/parser-parity/check_v260_manifest.py`: passed; manifest
+  matches systemd v260.1 official long options, short options, output modes,
+  and action enum.
+- `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed; Rust `ok=93 skipped=0
+  failed=0`, Go `ok=93 skipped=0 failed=0`.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed; 24 Rust `journalctl` tests passed.
+- `cd go && GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test ./cmd/journalctl
+  ./journal`: passed in local validation.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)`: `PASS results=69 failures=0`, including the new
+  reverse, lines, oldest-lines, no-value lines, and show-cursor cases.
+- `python3 tests/interoperability/run_directory_matrix.py`: passed against
+  stock `journalctl` from systemd 260 `(260.1-2-manjaro)`: `PASS checks=34`.
+- `python3 tests/interoperability/run_verify_matrix.py`: passed against stock
+  `journalctl` from systemd 260 `(260.1-2-manjaro)`: `PASS results=63
+  failures=0`.
+- `git diff --check`: passed.
+- Sensitive string scan over changed durable artifacts and candidate code:
+  passed.
+- `.agents/sow/audit.sh`: passed.
 
 Real-use evidence:
 
 - Pending implementation.
+- First implementation chunk has no external reviewer findings yet. Per project
+  review cadence, external reviewers remain deferred until complete local
+  implementation and validation for the whole SOW.
 
 Reviewer findings:
 
@@ -419,11 +479,14 @@ Specs update:
 
 Project skills update:
 
-- Pending implementation; update if a durable parity workflow is established.
+- Parser parity workflow added under `tests/parser-parity/`. Project skill
+  update remains pending until the full SOW establishes the durable final
+  workflow and ship contract.
 
 End-user/operator docs update:
 
-- Pending implementation.
+- Pending full implementation. No end-user docs update yet because this chunk
+  is not the final shipped command contract.
 
 End-user/operator skills update:
 
@@ -431,11 +494,16 @@ End-user/operator skills update:
 
 Lessons:
 
-- None yet.
+- Parser tests must distinguish parsing, validation, and dispatch. A test that
+  passes option names as the program name can create false confidence.
+- Optional-argument CLI compatibility must be tested with a following match
+  token. Stock `journalctl --lines FIELD=value` does not consume the match as a
+  lines value.
 
 Follow-up mapping:
 
-- Pending implementation.
+- Remaining parity gaps are tracked inside this active SOW and must not be
+  treated as deferred outside the SOW.
 
 ## Outcome
 

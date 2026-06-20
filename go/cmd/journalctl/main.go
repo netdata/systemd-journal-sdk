@@ -40,8 +40,10 @@ type cliJournal interface {
 	AddDisjunction()
 	AddConjunction()
 	SeekHead() error
+	SeekTail() error
 	SeekRealtimeUsec(uint64) error
 	Next() (int, error)
+	Previous() (int, error)
 	GetEntry() (*journal.Entry, error)
 	SetOutputMode(string)
 	ProcessOutput(*journal.Entry) (string, error)
@@ -76,6 +78,112 @@ type cliFlags struct {
 	verify     *bool
 	verifyOnly *bool
 	verifyKey  *string
+
+	// Parser-recognized v260.1 options. Each long option is registered
+	// with `flag.Var` so the parser accepts it; the runtime dispatch
+	// then either implements the requested behavior or returns a
+	// portable-mode unsupported message. Source-of-truth for the option
+	// list is tests/parser-parity/v260-manifest.json.
+
+	systemFlag      *bool
+	userFlag        *bool
+	machineFlag     *string
+	mergeFlag       *bool
+	rootFlag        *string
+	imageFlag       *string
+	imagePolicyFlag *string
+	namespaceFlag   *string
+
+	cursorFlag            *string
+	afterCursorFlag       *string
+	cursorFileFlag        *string
+	thisBootFlag          *bool
+	unitFlag              multiStringFlag
+	userUnitFlag          multiStringFlag
+	invocationFlag        *string
+	identifierFlag        multiStringFlag
+	excludeIdentifierFlag multiStringFlag
+	priorityFlag          multiStringFlag
+	facilityFlag          multiStringFlag
+	grepFlag              *string
+	caseSensitiveFlag     optionalStringFlag
+	dmesgFlag             *bool
+
+	outputFieldsFlag      *string
+	linesFlag             optionalStringFlag
+	reverseFlag           *bool
+	showCursorFlag        *bool
+	utcFlag               *bool
+	catalogFlag           *bool
+	noHostnameFlag        *bool
+	noFullFlag            *bool
+	fullFlag              *bool
+	allFlag               *bool
+	truncateNewlineFlag   *bool
+	quietFlag             *bool
+	synchronizeOnExitFlag explicitStringFlag
+	noPagerFlag           *bool
+	pagerEndFlag          *bool
+
+	intervalFlag  *string
+	forceFlag     *bool
+	setupKeysFlag *bool
+
+	versionFlag            *bool
+	newID128Flag           *bool
+	listInvocationsFlag    *bool
+	listNamespacesFlag     *bool
+	diskUsageFlag          *bool
+	vacuumSizeFlag         *string
+	vacuumFilesFlag        *string
+	vacuumTimeFlag         *string
+	headerFlag             *bool
+	listCatalogFlag        *bool
+	dumpCatalogFlag        *bool
+	updateCatalogFlag      *bool
+	smartRelinquishVarFlag *bool
+}
+
+// multiStringFlag collects repeated `FIELD` occurrences into a slice while
+// remaining compatible with Go's `flag` package contract.
+type multiStringFlag struct {
+	values []string
+}
+
+func (m *multiStringFlag) String() string {
+	return strings.Join(m.values, ",")
+}
+
+func (m *multiStringFlag) Set(value string) error {
+	m.values = append(m.values, value)
+	return nil
+}
+
+func (m *multiStringFlag) Values() []string {
+	return append([]string(nil), m.values...)
+}
+
+// explicitStringFlag records whether a required string option was supplied
+// and the value as supplied. It does NOT register as a bool flag because
+// `--synchronize-on-exit=true` must be distinguished from
+// `--synchronize-on-exit=false`.
+type explicitStringFlag struct {
+	set   bool
+	value string
+}
+
+func (f *explicitStringFlag) String() string {
+	return f.value
+}
+
+func (f *explicitStringFlag) Set(value string) error {
+	f.set = true
+	f.value = value
+	return nil
+}
+
+func (f *explicitStringFlag) IsBoolFlag() bool {
+	return false
 }
 
 func (f *optionalStringFlag) Set(value string) error {
@@ -120,6 +228,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	if *flags.versionFlag {
+		fmt.Fprintln(stdout, "journalctl (systemd-journal-sdk Go rewrite)")
+		fmt.Fprintln(stdout, "baseline: systemd v260.1 (c0a5a2516d28)")
+		fmt.Fprintln(stdout, "portable file-backed mode")
+		return nil
+	}
+
 	hasVerifyKey := hasStringFlag(args, "verify-key")
 	inputPath, err := flags.inputPath()
 	if err != nil {
@@ -139,6 +254,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if flagWasSet(fs, "tail") {
 			tail = *flags.tail
 		}
+		if flagWasSet(fs, "lines") {
+			limit, err := parseLinesLimitValue(flags.linesFlag.value)
+			if err != nil {
+				return err
+			}
+			if limit.set && !limit.all {
+				tail = limit.count
+			}
+		}
 		return runFollow(inputPath, fs.Args(), flags.boot, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout)
 	}
 
@@ -151,13 +275,39 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	return flags.dispatch(j, sinceUsec, untilUsec, stdout)
 }
 
+type linesLimit struct {
+	set    bool
+	all    bool
+	oldest bool
+	count  int
+}
+
+// parseLinesLimitValue parses a `--lines=[+]N` value. A missing optional
+// argument uses systemd's default count of 10. The `+` prefix means oldest
+// entries, not tail entries.
+func parseLinesLimitValue(value string) (linesLimit, error) {
+	if value == "" {
+		return linesLimit{set: true, count: 10}, nil
+	}
+	if value == "all" {
+		return linesLimit{set: true, all: true}, nil
+	}
+	oldest := strings.HasPrefix(value, "+")
+	stripped := strings.TrimPrefix(value, "+")
+	n, err := strconv.Atoi(stripped)
+	if err != nil {
+		return linesLimit{}, fmt.Errorf("failed to parse --lines value: %s", value)
+	}
+	return linesLimit{set: true, oldest: oldest, count: n}, nil
+}
+
 func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 	fs := flag.NewFlagSet("journalctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	flags := &cliFlags{
 		file:       fs.String("file", "", "journal file"),
 		directory:  fs.String("directory", "", "journal directory"),
-		output:     fs.String("output", "default", "output mode: default, json, export"),
+		output:     fs.String("output", "short", "output mode: short, short-full, short-iso, short-iso-precise, short-precise, short-monotonic, short-delta, short-unix, verbose, export, json, json-pretty, json-sse, json-seq, cat, with-unit"),
 		listBoots:  fs.Bool("list-boots", false, "list boots"),
 		noTail:     fs.Bool("no-tail", false, "show all entries, start from the beginning"),
 		follow:     fs.Bool("follow", false, "follow appended entries"),
@@ -167,22 +317,106 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 		tail:       fs.Int("tail", 0, "show last N entries"),
 		since:      fs.String("since", "", "show entries since timestamp"),
 		until:      fs.String("until", "", "show entries until timestamp"),
-		sync:       fs.Bool("sync", false, "sync journal (unsupported)"),
-		flush:      fs.Bool("flush", false, "flush journal (unsupported)"),
-		rotate:     fs.Bool("rotate", false, "rotate journal (unsupported)"),
-		relinquish: fs.Bool("relinquish-var", false, "relinquish var (unsupported)"),
+		sync:       fs.Bool("sync", false, "sync journal (portable mode does not support this)"),
+		flush:      fs.Bool("flush", false, "flush journal (portable mode does not support this)"),
+		rotate:     fs.Bool("rotate", false, "rotate journal (portable mode does not support this)"),
+		relinquish: fs.Bool("relinquish-var", false, "relinquish var (portable mode does not support this)"),
 		verify:     fs.Bool("verify", false, "verify journal file"),
 		verifyOnly: fs.Bool("verify-only", false, "verify only"),
 		verifyKey:  fs.String("verify-key", "", "FSS verification key"),
+
+		systemFlag:      fs.Bool("system", false, "show the system journal (portable: no-op)"),
+		userFlag:        fs.Bool("user", false, "show the user journal (portable: no-op)"),
+		machineFlag:     fs.String("machine", "", "operate on local container (portable: unsupported)"),
+		mergeFlag:       fs.Bool("merge", false, "merge entries from available journals (portable: no-op)"),
+		rootFlag:        fs.String("root", "", "alternate filesystem root (portable: unsupported)"),
+		imageFlag:       fs.String("image", "", "disk image filesystem root (portable: unsupported)"),
+		imagePolicyFlag: fs.String("image-policy", "", "disk image dissection policy (portable: unsupported)"),
+		namespaceFlag:   fs.String("namespace", "", "journal namespace (portable: unsupported)"),
+
+		cursorFlag:      fs.String("cursor", "", "start at the specified cursor"),
+		afterCursorFlag: fs.String("after-cursor", "", "start after the specified cursor"),
+		cursorFileFlag:  fs.String("cursor-file", "", "use cursor from FILE and update FILE"),
+		thisBootFlag:    fs.Bool("this-boot", false, "deprecated alias for --boot"),
+		invocationFlag:  fs.String("invocation", "", "show logs from the matching invocation ID"),
+		grepFlag:        fs.String("grep", "", "show entries with MESSAGE matching PATTERN"),
+		dmesgFlag:       fs.Bool("dmesg", false, "show kernel message log from the current boot"),
+
+		outputFieldsFlag:    fs.String("output-fields", "", "select fields to print in verbose/export/json modes"),
+		reverseFlag:         fs.Bool("reverse", false, "show newest entries first"),
+		showCursorFlag:      fs.Bool("show-cursor", false, "print the cursor after all entries"),
+		utcFlag:             fs.Bool("utc", false, "express timestamps in UTC"),
+		catalogFlag:         fs.Bool("catalog", false, "add message explanations (portable: no-op)"),
+		noHostnameFlag:      fs.Bool("no-hostname", false, "suppress hostname field"),
+		noFullFlag:          fs.Bool("no-full", false, "ellipsize fields"),
+		fullFlag:            fs.Bool("full", false, "enable full-width output"),
+		allFlag:             fs.Bool("all", false, "show all fields including long/unprintable"),
+		truncateNewlineFlag: fs.Bool("truncate-newline", false, "truncate entries by first newline"),
+		quietFlag:           fs.Bool("quiet", false, "do not show info messages and privilege warning"),
+		noPagerFlag:         fs.Bool("no-pager", false, "do not pipe output into a pager (portable: no-op)"),
+		pagerEndFlag:        fs.Bool("pager-end", false, "immediately jump to the end in the pager"),
+
+		intervalFlag:  fs.String("interval", "", "FSS sealing key change interval"),
+		forceFlag:     fs.Bool("force", false, "override the FSS key pair with --setup-keys"),
+		setupKeysFlag: fs.Bool("setup-keys", false, "generate a new FSS key pair"),
+
+		versionFlag:            fs.Bool("version", false, "show package version"),
+		newID128Flag:           fs.Bool("new-id128", false, "print a new ID128 (deprecated utility action)"),
+		listInvocationsFlag:    fs.Bool("list-invocations", false, "show invocation IDs of specified unit"),
+		listNamespacesFlag:     fs.Bool("list-namespaces", false, "show list of journal namespaces (portable: unsupported)"),
+		diskUsageFlag:          fs.Bool("disk-usage", false, "show total disk usage of all journal files"),
+		vacuumSizeFlag:         fs.String("vacuum-size", "", "reduce disk usage below specified size (portable: maintenance)"),
+		vacuumFilesFlag:        fs.String("vacuum-files", "", "leave only the specified number of journal files (portable: maintenance)"),
+		vacuumTimeFlag:         fs.String("vacuum-time", "", "remove journal files older than specified time (portable: maintenance)"),
+		headerFlag:             fs.Bool("header", false, "show journal header information"),
+		listCatalogFlag:        fs.Bool("list-catalog", false, "show all message IDs in the catalog (portable: unsupported)"),
+		dumpCatalogFlag:        fs.Bool("dump-catalog", false, "show entries in the message catalog (portable: unsupported)"),
+		updateCatalogFlag:      fs.Bool("update-catalog", false, "update the message catalog database (portable: unsupported)"),
+		smartRelinquishVarFlag: fs.Bool("smart-relinquish-var", false, "stop logging to disk with mount inspection (portable: unsupported)"),
 	}
 	fs.Var(&flags.boot, "boot", "boot filter")
 	fs.Var(&flags.boot, "b", "boot filter")
 	fs.StringVar(flags.field, "F", "", "show values for a field")
 	fs.StringVar(flags.since, "S", "", "show entries since timestamp")
 	fs.StringVar(flags.until, "U", "", "show entries until timestamp")
+
+	fs.Var(&flags.unitFlag, "unit", "show logs from the specified unit")
+	fs.Var(&flags.unitFlag, "u", "show logs from the specified unit (short)")
+	fs.Var(&flags.userUnitFlag, "user-unit", "show logs from the specified user unit")
+	fs.Var(&flags.identifierFlag, "identifier", "show entries with the specified syslog identifier")
+	fs.Var(&flags.identifierFlag, "t", "show entries with the specified syslog identifier (short)")
+	fs.Var(&flags.excludeIdentifierFlag, "exclude-identifier", "hide entries with the specified syslog identifier")
+	fs.Var(&flags.excludeIdentifierFlag, "T", "hide entries with the specified syslog identifier (short)")
+	fs.Var(&flags.priorityFlag, "priority", "show entries within the specified priority range")
+	fs.Var(&flags.priorityFlag, "p", "show entries within the specified priority range (short)")
+	fs.Var(&flags.facilityFlag, "facility", "show entries with the specified facilities")
+
+	fs.Var(&flags.linesFlag, "lines", "number of journal entries to show")
+	fs.Var(&flags.linesFlag, "n", "number of journal entries to show (short)")
+	fs.Var(&flags.caseSensitiveFlag, "case-sensitive", "force case sensitive or insensitive matching")
+	fs.Var(&flags.synchronizeOnExitFlag, "synchronize-on-exit", "wait for Journal synchronization before exiting (portable: unsupported)")
+
+	fs.BoolVar(flags.allFlag, "a", false, "show all fields including long/unprintable (short)")
+	fs.BoolVar(flags.follow, "f", false, "follow appended entries (short)")
+	fs.BoolVar(flags.fullFlag, "l", false, "enable full-width output (short)")
+	fs.BoolVar(flags.dmesgFlag, "k", false, "show kernel message log from the current boot (short)")
+	fs.BoolVar(flags.mergeFlag, "m", false, "merge entries from available journals (short)")
+	fs.BoolVar(flags.quietFlag, "q", false, "do not show info messages and privilege warning (short)")
+	fs.BoolVar(flags.reverseFlag, "r", false, "show newest entries first (short)")
+	fs.BoolVar(flags.catalogFlag, "x", false, "add message explanations (short)")
+	fs.BoolVar(flags.pagerEndFlag, "e", false, "immediately jump to the end in the pager (short)")
+	fs.BoolVar(flags.noHostnameFlag, "W", false, "suppress hostname field (short)")
+
+	fs.StringVar(flags.cursorFlag, "c", "", "start at the specified cursor (short)")
+	fs.StringVar(flags.directory, "D", "", "journal directory (short)")
+	fs.StringVar(flags.file, "i", "", "journal file (short)")
+	fs.StringVar(flags.machineFlag, "M", "", "operate on local container (short) (portable: unsupported)")
+	fs.StringVar(flags.output, "o", "short", "change journal output mode (short)")
+	fs.BoolVar(flags.fields, "N", false, "list all field names currently used (short)")
+
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: %s [options]\n", fs.Name())
-		fmt.Fprintf(stderr, "Pure-Go systemd journal reader\n")
+		fmt.Fprintf(stderr, "Pure-Go systemd journal reader (portable mode, systemd v260.1 baseline)\n")
 		fmt.Fprintf(stderr, "\nOptions:\n")
 		fs.PrintDefaults()
 	}
@@ -190,9 +424,143 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 }
 
 func (f *cliFlags) validate() error {
-	if *f.sync || *f.flush || *f.rotate || *f.relinquish {
-		return journal.ErrUnsupported
+	// Source exclusivity: --directory=, --file=, --machine=, --root=,
+	// --image= are mutually exclusive.
+	sources := 0
+	if *f.file != "" {
+		sources++
 	}
+	if *f.directory != "" {
+		sources++
+	}
+	if *f.machineFlag != "" {
+		sources++
+	}
+	if *f.rootFlag != "" {
+		sources++
+	}
+	if *f.imageFlag != "" {
+		sources++
+	}
+	if sources > 1 {
+		return errors.New("Please specify at most one of -D/--directory=, --file=, -M/--machine=, --root=, --image=.")
+	}
+
+	// Since/until order.
+	sinceUsec, err := parseOptionalTimestampUsec(*f.since)
+	if err != nil {
+		return err
+	}
+	untilUsec, err := parseOptionalTimestampUsec(*f.until)
+	if err != nil {
+		return err
+	}
+	if sinceUsec != nil && untilUsec != nil && *sinceUsec > *untilUsec {
+		return errors.New("--since= must be before --until=.")
+	}
+
+	// Cursor source exclusivity.
+	cursorSources := 0
+	if *f.cursorFlag != "" {
+		cursorSources++
+	}
+	if *f.afterCursorFlag != "" {
+		cursorSources++
+	}
+	if *f.cursorFileFlag != "" {
+		cursorSources++
+	}
+	if *f.since != "" {
+		cursorSources++
+	}
+	if cursorSources > 1 {
+		return errors.New("Please specify only one of --since=, --cursor=, --cursor-file=, and --after-cursor=.")
+	}
+
+	// Follow/reverse conflict.
+	if *f.follow && *f.reverseFlag {
+		return errors.New("Please specify either --reverse or --follow, not both.")
+	}
+
+	// Oldest-lines conflict.
+	if f.linesFlag.set && strings.HasPrefix(f.linesFlag.value, "+") && (*f.reverseFlag || *f.follow) {
+		return errors.New("--lines=+N is unsupported when --reverse or --follow is specified.")
+	}
+
+	// Boot/merge conflict.
+	if (f.boot.set || *f.thisBootFlag || *f.listBoots) && *f.mergeFlag {
+		return errors.New("Using --boot or --list-boots with --merge is not supported.")
+	}
+
+	// Reject intentionally unsupported options with the portable-mode
+	// contract.
+	if *f.machineFlag != "" {
+		return portableUnsupported("--machine", "requires local container or machine journal access; portable mode never connects to a host or container")
+	}
+	if *f.rootFlag != "" {
+		return portableUnsupported("--root", "requires alternate root filesystem discovery and catalog hierarchy access; portable mode never inspects host rootfs")
+	}
+	if *f.imageFlag != "" {
+		return portableUnsupported("--image", "requires disk image dissection and mounting; portable mode never mounts or inspects images")
+	}
+	if *f.imagePolicyFlag != "" {
+		return portableUnsupported("--image-policy", "only meaningful with --image= which is not portable")
+	}
+	if *f.namespaceFlag != "" {
+		return portableUnsupported("--namespace", "requires systemd journal namespaces; portable mode never discovers host namespaces")
+	}
+	if f.synchronizeOnExitFlag.set && !isFalsey(f.synchronizeOnExitFlag.value) {
+		return portableUnsupported("--synchronize-on-exit", "requires journald Varlink synchronization on signal exit")
+	}
+	if *f.sync {
+		return portableUnsupported("--sync", "daemon-only journal synchronization; no journald in portable mode")
+	}
+	if *f.flush {
+		return portableUnsupported("--flush", "daemon-only runtime-to-persistent flush; no journald in portable mode")
+	}
+	if *f.rotate {
+		return portableUnsupported("--rotate", "daemon-only journald rotation request; use --vacuum-* with explicit --directory= instead")
+	}
+	if *f.relinquish {
+		return portableUnsupported("--relinquish-var", "daemon-only journald storage transition; no journald in portable mode")
+	}
+	if *f.smartRelinquishVarFlag {
+		return portableUnsupported("--smart-relinquish-var", "daemon-only journald storage transition plus host mount inspection")
+	}
+	if *f.listNamespacesFlag {
+		return portableUnsupported("--list-namespaces", "requires host journal namespace discovery")
+	}
+	if *f.listCatalogFlag {
+		return portableUnsupported("--list-catalog", "host catalog database action; portable commands do not read host catalog databases")
+	}
+	if *f.dumpCatalogFlag {
+		return portableUnsupported("--dump-catalog", "host catalog database action; portable commands do not read host catalog databases")
+	}
+	if *f.updateCatalogFlag {
+		return portableUnsupported("--update-catalog", "host catalog database mutation; portable commands do not mutate host catalog databases")
+	}
+	if *f.setupKeysFlag {
+		return portableUnsupported("--setup-keys", "FSS key pair generation requires journald integration; portable mode has no host journald")
+	}
+	if *f.newID128Flag {
+		return portableUnsupported("--new-id128", "deprecated utility action that requires journald integration")
+	}
+	if *f.headerFlag {
+		return portableUnsupported("--header", "header printing requires the journal facade to expose header information for explicit file/directory input")
+	}
+	if *f.listInvocationsFlag {
+		return portableUnsupported("--list-invocations", "invocation listing requires explicit unit context and journal facade integration")
+	}
+	if *f.diskUsageFlag {
+		return portableUnsupported("--disk-usage", "requires host journal directory; pass --file or --directory to compute disk usage for explicit input")
+	}
+	if *f.vacuumSizeFlag != "" || *f.vacuumFilesFlag != "" || *f.vacuumTimeFlag != "" {
+		if *f.directory == "" {
+			return portableUnsupported("--vacuum-*", "vacuum actions require explicit --directory= input")
+		}
+		return portableUnsupported("--vacuum-*", "vacuum actions mutate the supplied directory and are not implemented in the portable Go CLI")
+	}
+
 	if *f.head < 0 {
 		return errors.New("--head must be a non-negative integer")
 	}
@@ -200,6 +568,18 @@ func (f *cliFlags) validate() error {
 		return errors.New("--tail must be a non-negative integer")
 	}
 	return nil
+}
+
+func portableUnsupported(feature, reason string) error {
+	return fmt.Errorf("journalctl portable mode does not support %s: %s", feature, reason)
+}
+
+func isFalsey(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "false", "no", "0", "off":
+		return true
+	}
+	return false
 }
 
 func (f *cliFlags) inputPath() (string, error) {
@@ -229,6 +609,19 @@ func (f *cliFlags) timeBounds() (*uint64, *uint64, error) {
 }
 
 func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer) error {
+	if f.linesFlag.set {
+		limit, err := parseLinesLimitValue(f.linesFlag.value)
+		if err != nil {
+			return err
+		}
+		if limit.set && !limit.all {
+			if limit.oldest {
+				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+			}
+			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+		}
+	}
+
 	switch {
 	case *f.listBoots:
 		boots, err := j.ListBoots()
@@ -268,13 +661,19 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 		})
 
 	case *f.head > 0:
-		return showForward(j, *f.head, sinceUsec, untilUsec, stdout)
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
 
 	case *f.tail > 0:
-		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout)
+		if *f.reverseFlag {
+			return showReverse(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+		}
+		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
 
 	default:
-		return showForward(j, *f.head, sinceUsec, untilUsec, stdout)
+		if *f.reverseFlag {
+			return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+		}
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
 	}
 }
 
@@ -659,8 +1058,9 @@ func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, fn func(*jo
 	}
 }
 
-func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer) error {
+func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool) error {
 	count := 0
+	var lastCursor string
 	err := nextMatchingEntries(j, sinceUsec, untilUsec, func(entry *journal.Entry) error {
 		if limit > 0 && count >= limit {
 			return errStopIteration
@@ -670,23 +1070,31 @@ func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 			return err
 		}
 		fmt.Fprint(stdout, out)
+		lastCursor = entry.Cursor
 		count++
 		return nil
 	})
 	if errors.Is(err, errStopIteration) {
-		return nil
+		err = nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return printCursor(stdout, showCursor, lastCursor)
 }
 
-func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer) error {
-	var outputs []string
+func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool) error {
+	type renderedEntry struct {
+		cursor string
+		output string
+	}
+	var outputs []renderedEntry
 	if err := nextMatchingEntries(j, sinceUsec, untilUsec, func(entry *journal.Entry) error {
 		out, err := j.ProcessOutput(entry)
 		if err != nil {
 			return err
 		}
-		outputs = append(outputs, out)
+		outputs = append(outputs, renderedEntry{cursor: entry.Cursor, output: out})
 		return nil
 	}); err != nil {
 		return err
@@ -695,10 +1103,76 @@ func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.W
 	if start < 0 {
 		start = 0
 	}
+	var lastCursor string
 	for _, out := range outputs[start:] {
-		fmt.Fprint(stdout, out)
+		fmt.Fprint(stdout, out.output)
+		lastCursor = out.cursor
 	}
-	return nil
+	return printCursor(stdout, showCursor, lastCursor)
+}
+
+func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool) error {
+	count := 0
+	var lastCursor string
+	err := previousMatchingEntries(j, sinceUsec, untilUsec, func(entry *journal.Entry) error {
+		if limit > 0 && count >= limit {
+			return errStopIteration
+		}
+		out, err := j.ProcessOutput(entry)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(stdout, out)
+		lastCursor = entry.Cursor
+		count++
+		return nil
+	})
+	if errors.Is(err, errStopIteration) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	return printCursor(stdout, showCursor, lastCursor)
+}
+
+func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, fn func(*journal.Entry) error) error {
+	if untilUsec != nil {
+		if err := j.SeekRealtimeUsec(*untilUsec); err != nil {
+			return err
+		}
+	} else if err := j.SeekTail(); err != nil {
+		return err
+	}
+	for {
+		n, err := j.Previous()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		entry, err := j.GetEntry()
+		if err != nil {
+			return err
+		}
+		if sinceUsec != nil && entry.Realtime < *sinceUsec {
+			return nil
+		}
+		if entryInTimeRange(entry, sinceUsec, untilUsec) {
+			if err := fn(entry); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func printCursor(stdout io.Writer, enabled bool, cursor string) error {
+	if !enabled || cursor == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stdout, "-- cursor: %s\n", cursor)
+	return err
 }
 
 type followEntry struct {

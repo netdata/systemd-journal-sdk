@@ -1,0 +1,683 @@
+{
+  "baseline": "systemd v260.1",
+  "source_commit": "c0a5a2516d28",
+  "long_options": [
+    {
+      "name": "system",
+      "args": "none",
+      "classification": "recognized-no-op",
+      "expectation": "recognized-no-op",
+      "short_alias": null
+    },
+    {
+      "name": "user",
+      "args": "none",
+      "classification": "recognized-no-op",
+      "expectation": "recognized-no-op",
+      "short_alias": null
+    },
+    {
+      "name": "machine",
+      "args": "string",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": "M"
+    },
+    {
+      "name": "merge",
+      "args": "none",
+      "classification": "recognized-no-op",
+      "expectation": "recognized-no-op",
+      "short_alias": "m"
+    },
+    {
+      "name": "directory",
+      "args": "path",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "D"
+    },
+    {
+      "name": "file",
+      "args": "path",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "i"
+    },
+    {
+      "name": "root",
+      "args": "path",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "image",
+      "args": "path",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "image-policy",
+      "args": "policy",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "namespace",
+      "args": "string",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "since",
+      "args": "timestamp",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "S"
+    },
+    {
+      "name": "until",
+      "args": "timestamp",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "U"
+    },
+    {
+      "name": "cursor",
+      "args": "cursor",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "c"
+    },
+    {
+      "name": "after-cursor",
+      "args": "cursor",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "cursor-file",
+      "args": "path",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "boot",
+      "args": "optional descriptor",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "b"
+    },
+    {
+      "name": "this-boot",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "unit",
+      "args": "unit/glob",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "u"
+    },
+    {
+      "name": "user-unit",
+      "args": "unit/glob",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "invocation",
+      "args": "descriptor",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "identifier",
+      "args": "string",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "t"
+    },
+    {
+      "name": "exclude-identifier",
+      "args": "string",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "T"
+    },
+    {
+      "name": "priority",
+      "args": "range",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "p"
+    },
+    {
+      "name": "facility",
+      "args": "list",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "grep",
+      "args": "pattern",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "g"
+    },
+    {
+      "name": "case-sensitive",
+      "args": "optional bool",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "dmesg",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "k"
+    },
+    {
+      "name": "output",
+      "args": "mode",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "o"
+    },
+    {
+      "name": "output-fields",
+      "args": "comma list",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "lines",
+      "args": "optional int",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "n"
+    },
+    {
+      "name": "reverse",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "r"
+    },
+    {
+      "name": "show-cursor",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "utc",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "catalog",
+      "args": "none",
+      "classification": "recognized-no-op",
+      "expectation": "recognized-no-op",
+      "short_alias": "x"
+    },
+    {
+      "name": "no-hostname",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "W"
+    },
+    {
+      "name": "no-full",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "full",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "l"
+    },
+    {
+      "name": "all",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "a"
+    },
+    {
+      "name": "follow",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "f"
+    },
+    {
+      "name": "no-tail",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "truncate-newline",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "quiet",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "q"
+    },
+    {
+      "name": "synchronize-on-exit",
+      "args": "bool",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "no-pager",
+      "args": "none",
+      "classification": "recognized-no-op",
+      "expectation": "recognized-no-op",
+      "short_alias": null
+    },
+    {
+      "name": "pager-end",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "e"
+    },
+    {
+      "name": "verify-key",
+      "args": "key",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "interval",
+      "args": "duration",
+      "classification": "portable-utility-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "force",
+      "args": "none",
+      "classification": "portable-utility-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "setup-keys",
+      "args": "none",
+      "classification": "portable-utility-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "help",
+      "args": "none",
+      "classification": "portable-utility-required",
+      "expectation": "recognized-supported",
+      "short_alias": "h"
+    },
+    {
+      "name": "version",
+      "args": "none",
+      "classification": "portable-utility-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "new-id128",
+      "args": "none",
+      "classification": "portable-utility-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "fields",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "N"
+    },
+    {
+      "name": "field",
+      "args": "field",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": "F"
+    },
+    {
+      "name": "list-boots",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "list-invocations",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "list-namespaces",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "disk-usage",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "vacuum-size",
+      "args": "bytes",
+      "classification": "file-backed-maintenance-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "vacuum-files",
+      "args": "int",
+      "classification": "file-backed-maintenance-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "vacuum-time",
+      "args": "duration",
+      "classification": "file-backed-maintenance-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "verify",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "sync",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "relinquish-var",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "smart-relinquish-var",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "flush",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "rotate",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "header",
+      "args": "none",
+      "classification": "file-backed-required",
+      "expectation": "recognized-supported",
+      "short_alias": null
+    },
+    {
+      "name": "list-catalog",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "dump-catalog",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    },
+    {
+      "name": "update-catalog",
+      "args": "none",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
+      "short_alias": null
+    }
+  ],
+  "short_options": [
+    {
+      "letter": "h",
+      "long": "help"
+    },
+    {
+      "letter": "e",
+      "long": "pager-end"
+    },
+    {
+      "letter": "f",
+      "long": "follow"
+    },
+    {
+      "letter": "o",
+      "long": "output"
+    },
+    {
+      "letter": "a",
+      "long": "all"
+    },
+    {
+      "letter": "l",
+      "long": "full"
+    },
+    {
+      "letter": "n",
+      "long": "lines"
+    },
+    {
+      "letter": "q",
+      "long": "quiet"
+    },
+    {
+      "letter": "m",
+      "long": "merge"
+    },
+    {
+      "letter": "b",
+      "long": "boot"
+    },
+    {
+      "letter": "k",
+      "long": "dmesg"
+    },
+    {
+      "letter": "D",
+      "long": "directory"
+    },
+    {
+      "letter": "p",
+      "long": "priority"
+    },
+    {
+      "letter": "g",
+      "long": "grep"
+    },
+    {
+      "letter": "c",
+      "long": "cursor"
+    },
+    {
+      "letter": "S",
+      "long": "since"
+    },
+    {
+      "letter": "U",
+      "long": "until"
+    },
+    {
+      "letter": "t",
+      "long": "identifier"
+    },
+    {
+      "letter": "T",
+      "long": "exclude-identifier"
+    },
+    {
+      "letter": "u",
+      "long": "unit"
+    },
+    {
+      "letter": "I",
+      "long": "invocation"
+    },
+    {
+      "letter": "N",
+      "long": "fields"
+    },
+    {
+      "letter": "F",
+      "long": "field"
+    },
+    {
+      "letter": "x",
+      "long": "catalog"
+    },
+    {
+      "letter": "r",
+      "long": "reverse"
+    },
+    {
+      "letter": "M",
+      "long": "machine"
+    },
+    {
+      "letter": "i",
+      "long": "file"
+    },
+    {
+      "letter": "W",
+      "long": "no-hostname"
+    }
+  ],
+  "output_modes": [
+    "short",
+    "short-full",
+    "short-iso",
+    "short-iso-precise",
+    "short-precise",
+    "short-monotonic",
+    "short-delta",
+    "short-unix",
+    "verbose",
+    "export",
+    "json",
+    "json-pretty",
+    "json-sse",
+    "json-seq",
+    "cat",
+    "with-unit"
+  ],
+  "actions": [
+    "ACTION_SHOW",
+    "ACTION_NEW_ID128",
+    "ACTION_SETUP_KEYS",
+    "ACTION_LIST_CATALOG",
+    "ACTION_DUMP_CATALOG",
+    "ACTION_UPDATE_CATALOG",
+    "ACTION_PRINT_HEADER",
+    "ACTION_VERIFY",
+    "ACTION_DISK_USAGE",
+    "ACTION_LIST_BOOTS",
+    "ACTION_LIST_FIELDS",
+    "ACTION_LIST_FIELD_NAMES",
+    "ACTION_LIST_INVOCATIONS",
+    "ACTION_LIST_NAMESPACES",
+    "ACTION_FLUSH",
+    "ACTION_RELINQUISH_VAR",
+    "ACTION_SYNC",
+    "ACTION_ROTATE",
+    "ACTION_VACUUM",
+    "ACTION_ROTATE_AND_VACUUM"
+  ],
+  "parser_interactions": [
+    {
+      "name": "source-exclusivity",
+      "description": "Reject combinations of --directory=, --file=, -M/--machine=, --root=, --image=."
+    },
+    {
+      "name": "time-bounds-order",
+      "description": "Reject --since= later than --until=."
+    },
+    {
+      "name": "cursor-source-exclusivity",
+      "description": "Reject combinations of --since=, --cursor=, --cursor-file=, --after-cursor=."
+    },
+    {
+      "name": "follow-reverse-conflict",
+      "description": "Reject --follow with --reverse."
+    },
+    {
+      "name": "oldest-lines-conflict",
+      "description": "Reject --lines=+N with --reverse or --follow."
+    },
+    {
+      "name": "boot-merge-conflict",
+      "description": "Reject --boot or --list-boots with --merge."
+    }
+  ]
+}

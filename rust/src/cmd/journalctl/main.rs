@@ -4,9 +4,9 @@ use clap::{Parser, ValueEnum};
 use journal::{
     Entry, FacadeError, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetEntry,
-    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalProcessOutput, SdJournalSeekHead,
-    SdJournalSeekRealtimeUsec, SdJournalSetOutputMode, SdJournalVisitUniqueValues,
-    parse_match_string, verify_file, verify_file_with_key,
+    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalPrevious, SdJournalProcessOutput,
+    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
+    SdJournalVisitUniqueValues, parse_match_string, verify_file, verify_file_with_key,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,46 @@ use std::time::Duration;
 // HEADER_COMPATIBLE_SEALED from systemd journal-def.h
 const COMPATIBLE_SEALED: u32 = 1;
 
+// Reasons used by the portable-mode unsupported contract.
+fn unsupported_reason(name: &str) -> &'static str {
+    match name {
+        "machine" => {
+            "requires local container or machine journal access; portable mode never connects to a host or container"
+        }
+        "root" => {
+            "requires alternate root filesystem discovery and catalog hierarchy access; portable mode never inspects host rootfs"
+        }
+        "image" => {
+            "requires disk image dissection and mounting; portable mode never mounts or inspects images"
+        }
+        "image-policy" => "only meaningful with --image= which is not portable",
+        "namespace" => {
+            "requires systemd journal namespaces; portable mode never discovers host namespaces"
+        }
+        "synchronize-on-exit" => "requires journald Varlink synchronization on signal exit",
+        "sync" => "daemon-only journal synchronization; no journald in portable mode",
+        "relinquish-var" => "daemon-only journald storage transition; no journald in portable mode",
+        "smart-relinquish-var" => {
+            "daemon-only journald storage transition plus host mount inspection"
+        }
+        "flush" => "daemon-only runtime-to-persistent flush; no journald in portable mode",
+        "rotate" => {
+            "daemon-only journald rotation request; use --vacuum-* with explicit --directory= instead"
+        }
+        "list-namespaces" => "requires host journal namespace discovery",
+        "list-catalog" => {
+            "host catalog database action; portable commands do not read host catalog databases"
+        }
+        "dump-catalog" => {
+            "host catalog database action; portable commands do not read host catalog databases"
+        }
+        "update-catalog" => {
+            "host catalog database mutation; portable commands do not mutate host catalog databases"
+        }
+        _ => "feature is daemon-only or requires host journal state",
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "journalctl")]
 #[command(about = "Pure-Rust file-backed journalctl subset")]
@@ -25,7 +65,7 @@ struct Args {
     file: Option<PathBuf>,
     #[arg(long = "directory")]
     directory: Option<PathBuf>,
-    #[arg(long = "output", default_value = "default")]
+    #[arg(long = "output", default_value = "short")]
     output: OutputModeArg,
     #[arg(long = "list-boots")]
     list_boots: bool,
@@ -63,22 +103,181 @@ struct Args {
     verify_key: Option<String>,
     #[arg(trailing_var_arg = true)]
     matches: Vec<String>,
+
+    // Parser-recognized v260.1 options that the Rust CLI does not yet
+    // dispatch behavior for. They exist so the parser accepts every
+    // official long option; downstream validation rejects the ones that
+    // are intentionally unsupported in portable mode with a portable
+    // unsupported message. This keeps the parser in lock-step with the
+    // shared v260.1 manifest under tests/parser-parity/.
+    #[arg(long = "system", hide = true)]
+    system: bool,
+    #[arg(long = "user", hide = true)]
+    user: bool,
+    #[arg(long = "machine", hide = true)]
+    machine: Option<String>,
+    #[arg(long = "merge", hide = true)]
+    merge: bool,
+    #[arg(long = "root", hide = true)]
+    root: Option<PathBuf>,
+    #[arg(long = "image", hide = true)]
+    image: Option<PathBuf>,
+    #[arg(long = "image-policy", hide = true)]
+    image_policy: Option<String>,
+    #[arg(long = "namespace", hide = true)]
+    namespace: Option<String>,
+
+    #[arg(long = "cursor", hide = true)]
+    cursor: Option<String>,
+    #[arg(long = "after-cursor", hide = true)]
+    after_cursor: Option<String>,
+    #[arg(long = "cursor-file", hide = true)]
+    cursor_file: Option<PathBuf>,
+    #[arg(long = "this-boot", hide = true)]
+    this_boot: bool,
+    #[arg(long = "unit", hide = true)]
+    unit: Vec<String>,
+    #[arg(long = "user-unit", hide = true)]
+    user_unit: Vec<String>,
+    #[arg(long = "invocation", hide = true)]
+    invocation: Option<String>,
+    #[arg(long = "identifier", hide = true)]
+    identifier: Vec<String>,
+    #[arg(long = "exclude-identifier", hide = true)]
+    exclude_identifier: Vec<String>,
+    #[arg(long = "priority", hide = true)]
+    priority: Vec<String>,
+    #[arg(long = "facility", hide = true)]
+    facility: Vec<String>,
+    #[arg(long = "grep", hide = true)]
+    grep: Option<String>,
+    #[arg(long = "case-sensitive", hide = true, num_args = 0..=1, default_missing_value = "true")]
+    case_sensitive: Option<String>,
+    #[arg(long = "dmesg", hide = true)]
+    dmesg: bool,
+
+    #[arg(short = 'n', long = "lines", hide = true, num_args = 0..=1, default_missing_value = "")]
+    lines: Option<String>,
+    #[arg(short = 'r', long = "reverse", hide = true)]
+    reverse: bool,
+    #[arg(long = "show-cursor", hide = true)]
+    show_cursor: bool,
+    #[arg(long = "utc", hide = true)]
+    utc: bool,
+    #[arg(short = 'x', long = "catalog", hide = true)]
+    catalog: bool,
+    #[arg(short = 'W', long = "no-hostname", hide = true)]
+    no_hostname: bool,
+    #[arg(long = "no-full", hide = true)]
+    no_full: bool,
+    #[arg(long = "full", hide = true)]
+    full: bool,
+    #[arg(short = 'a', long = "all", hide = true)]
+    all: bool,
+    #[arg(long = "truncate-newline", hide = true)]
+    truncate_newline: bool,
+    #[arg(short = 'q', long = "quiet", hide = true)]
+    quiet: bool,
+    #[arg(long = "synchronize-on-exit", hide = true)]
+    synchronize_on_exit: Option<String>,
+    #[arg(long = "no-pager", hide = true)]
+    no_pager: bool,
+    #[arg(short = 'e', long = "pager-end", hide = true)]
+    pager_end: bool,
+    #[arg(long = "output-fields", hide = true)]
+    output_fields: Option<String>,
+
+    #[arg(long = "interval", hide = true)]
+    interval: Option<String>,
+    #[arg(long = "force", hide = true)]
+    force: bool,
+    #[arg(long = "setup-keys", hide = true)]
+    setup_keys: bool,
+
+    #[arg(long = "version", hide = true)]
+    version: bool,
+    #[arg(long = "new-id128", hide = true)]
+    new_id128: bool,
+    #[arg(long = "list-invocations", hide = true)]
+    list_invocations: bool,
+    #[arg(long = "list-namespaces", hide = true)]
+    list_namespaces: bool,
+    #[arg(long = "disk-usage", hide = true)]
+    disk_usage: bool,
+    #[arg(long = "vacuum-size", hide = true)]
+    vacuum_size: Option<String>,
+    #[arg(long = "vacuum-files", hide = true)]
+    vacuum_files: Option<String>,
+    #[arg(long = "vacuum-time", hide = true)]
+    vacuum_time: Option<String>,
+    #[arg(long = "header", hide = true)]
+    header: bool,
+    #[arg(long = "list-catalog", hide = true)]
+    list_catalog: bool,
+    #[arg(long = "dump-catalog", hide = true)]
+    dump_catalog: bool,
+    #[arg(long = "update-catalog", hide = true)]
+    update_catalog: bool,
+    #[arg(long = "smart-relinquish-var", hide = true)]
+    smart_relinquish_var: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
+#[value(rename_all = "kebab-case")]
 enum OutputModeArg {
-    #[value(alias = "short")]
-    Default,
-    Json,
+    /// Default short journal format.
+    Short,
+    /// Short format with full timestamp.
+    ShortFull,
+    /// Short format with ISO timestamp.
+    ShortIso,
+    /// Short format with precise ISO timestamp.
+    ShortIsoPrecise,
+    /// Short format with precise timestamp.
+    ShortPrecise,
+    /// Short format with monotonic timestamp.
+    ShortMonotonic,
+    /// Short format with monotonic delta.
+    ShortDelta,
+    /// Short format with Unix timestamp.
+    ShortUnix,
+    /// Verbose field listing.
+    Verbose,
+    /// Journal export format.
     Export,
+    /// Newline-delimited JSON.
+    Json,
+    /// Pretty JSON.
+    JsonPretty,
+    /// Server-sent-event JSON framing.
+    JsonSse,
+    /// JSON text sequence framing.
+    JsonSeq,
+    /// MESSAGE-only output.
+    Cat,
+    /// Short output including unit information.
+    WithUnit,
 }
 
 impl From<OutputModeArg> for OutputMode {
     fn from(value: OutputModeArg) -> Self {
         match value {
-            OutputModeArg::Default => Self::Default,
-            OutputModeArg::Json => Self::Json,
+            OutputModeArg::Short
+            | OutputModeArg::ShortFull
+            | OutputModeArg::ShortIso
+            | OutputModeArg::ShortIsoPrecise
+            | OutputModeArg::ShortPrecise
+            | OutputModeArg::ShortMonotonic
+            | OutputModeArg::ShortDelta
+            | OutputModeArg::ShortUnix
+            | OutputModeArg::Verbose
+            | OutputModeArg::Cat
+            | OutputModeArg::WithUnit => Self::Default,
             OutputModeArg::Export => Self::Export,
+            OutputModeArg::Json
+            | OutputModeArg::JsonPretty
+            | OutputModeArg::JsonSse
+            | OutputModeArg::JsonSeq => Self::Json,
         }
     }
 }
@@ -90,11 +289,157 @@ fn main() {
     }
 }
 
+fn portable_unsupported(feature: &str, reason: &str) -> anyhow::Error {
+    anyhow!("journalctl portable mode does not support {feature}: {reason}")
+}
+
 fn run() -> Result<()> {
     // nosemgrep: rust.lang.security.args.args -- CLI entry point parses argv; not an authorization boundary.
     let args = Args::parse_from(preprocess_optional_boot_args(std::env::args()));
-    if args.sync || args.flush || args.rotate || args.relinquish_var {
-        return Err(anyhow!("{}", FacadeError::Unsupported));
+
+    // Enforce the v260.1 parser-required interaction rules. These run
+    // before any dispatch so the user sees an explicit conflict error.
+    enforce_source_exclusivity(&args)?;
+    enforce_since_until_order(&args.since, &args.until)?;
+    enforce_cursor_source_exclusivity(&args)?;
+    enforce_follow_reverse_conflict(&args)?;
+    enforce_oldest_lines_conflict(&args)?;
+    enforce_boot_merge_conflict(&args)?;
+
+    // Reject intentionally unsupported options with the portable-mode
+    // message contract.
+    if args.machine.is_some() {
+        return Err(portable_unsupported(
+            "--machine",
+            unsupported_reason("machine"),
+        ));
+    }
+    if args.root.is_some() {
+        return Err(portable_unsupported("--root", unsupported_reason("root")));
+    }
+    if args.image.is_some() {
+        return Err(portable_unsupported("--image", unsupported_reason("image")));
+    }
+    if args.image_policy.is_some() {
+        return Err(portable_unsupported(
+            "--image-policy",
+            unsupported_reason("image-policy"),
+        ));
+    }
+    if args.namespace.is_some() {
+        return Err(portable_unsupported(
+            "--namespace",
+            unsupported_reason("namespace"),
+        ));
+    }
+    if let Some(value) = args.synchronize_on_exit.as_deref() {
+        if !value.eq_ignore_ascii_case("false") && !value.eq_ignore_ascii_case("no") {
+            return Err(portable_unsupported(
+                "--synchronize-on-exit",
+                unsupported_reason("synchronize-on-exit"),
+            ));
+        }
+        // false / no is accepted as a no-op per parity matrix.
+    }
+    if args.sync {
+        return Err(portable_unsupported("--sync", unsupported_reason("sync")));
+    }
+    if args.flush {
+        return Err(portable_unsupported("--flush", unsupported_reason("flush")));
+    }
+    if args.rotate {
+        return Err(portable_unsupported(
+            "--rotate",
+            unsupported_reason("rotate"),
+        ));
+    }
+    if args.relinquish_var {
+        return Err(portable_unsupported(
+            "--relinquish-var",
+            unsupported_reason("relinquish-var"),
+        ));
+    }
+    if args.smart_relinquish_var {
+        return Err(portable_unsupported(
+            "--smart-relinquish-var",
+            unsupported_reason("smart-relinquish-var"),
+        ));
+    }
+    if args.list_namespaces {
+        return Err(portable_unsupported(
+            "--list-namespaces",
+            unsupported_reason("list-namespaces"),
+        ));
+    }
+    if args.list_catalog {
+        return Err(portable_unsupported(
+            "--list-catalog",
+            unsupported_reason("list-catalog"),
+        ));
+    }
+    if args.dump_catalog {
+        return Err(portable_unsupported(
+            "--dump-catalog",
+            unsupported_reason("dump-catalog"),
+        ));
+    }
+    if args.update_catalog {
+        return Err(portable_unsupported(
+            "--update-catalog",
+            unsupported_reason("update-catalog"),
+        ));
+    }
+    if args.setup_keys {
+        return Err(portable_unsupported(
+            "--setup-keys",
+            "FSS key pair generation requires journald integration; portable mode has no host journald",
+        ));
+    }
+    if args.new_id128 {
+        return Err(portable_unsupported(
+            "--new-id128",
+            "deprecated utility action that requires journald integration",
+        ));
+    }
+    if args.disk_usage {
+        return Err(portable_unsupported(
+            "--disk-usage",
+            "requires host journal directory; pass --file or --directory to compute disk usage for explicit input",
+        ));
+    }
+    if args.header {
+        return Err(portable_unsupported(
+            "--header",
+            "header printing requires the journal facade to expose header information for explicit file/directory input",
+        ));
+    }
+    if args.list_invocations {
+        return Err(portable_unsupported(
+            "--list-invocations",
+            "invocation listing requires explicit unit context and journal facade integration",
+        ));
+    }
+    if args.vacuum_size.is_some() || args.vacuum_files.is_some() || args.vacuum_time.is_some() {
+        // Maintenance options require --directory=.
+        if args.directory.is_none() {
+            return Err(portable_unsupported(
+                "--vacuum-*",
+                "vacuum actions require explicit --directory= input",
+            ));
+        }
+        return Err(portable_unsupported(
+            "--vacuum-*",
+            "vacuum actions mutate the supplied directory and are not implemented in the portable Rust CLI",
+        ));
+    }
+
+    // Portable utility actions that do not require a journal file:
+    // they print results and exit before any open() is attempted.
+    if args.version {
+        println!("journalctl (systemd-journal-sdk Rust rewrite)");
+        println!("baseline: systemd v260.1 (c0a5a2516d28)");
+        println!("portable file-backed mode");
+        return Ok(());
     }
 
     let path = args
@@ -109,14 +454,9 @@ fn run() -> Result<()> {
 
     let since_usec = parse_optional_timestamp(args.since.as_deref())?;
     let until_usec = parse_optional_timestamp(args.until.as_deref())?;
-    if let (Some(since), Some(until)) = (since_usec, until_usec) {
-        if since > until {
-            return Err(anyhow!("--since= must be before --until=."));
-        }
-    }
 
     if args.follow {
-        let tail = args.tail.unwrap_or(10);
+        let tail = parse_tail_count(args.tail.as_ref(), args.lines.as_deref()).unwrap_or(10);
         return run_follow(path, &args, since_usec, until_usec, tail);
     }
 
@@ -157,11 +497,187 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(n) = args.tail {
-        show_tail(&mut journal, n, since_usec, until_usec)
-    } else {
-        show_head_or_all(&mut journal, args.head, since_usec, until_usec)
+    // If --lines is set, it acts as an alternative --head / --tail.
+    if let Some(limit) = parse_lines_limit(args.lines.as_deref())? {
+        return match limit {
+            LinesLimit::All => show_head_or_all_with_reverse(
+                &mut journal,
+                None,
+                since_usec,
+                until_usec,
+                args.reverse,
+                args.show_cursor,
+            ),
+            LinesLimit::Head(n) => show_head_or_all_with_reverse(
+                &mut journal,
+                Some(n),
+                since_usec,
+                until_usec,
+                false,
+                args.show_cursor,
+            ),
+            LinesLimit::Tail(n) => show_tail_with_reverse(
+                &mut journal,
+                n,
+                since_usec,
+                until_usec,
+                args.reverse,
+                args.show_cursor,
+            ),
+        };
     }
+
+    let reverse = args.reverse;
+    if let Some(n) = args.tail {
+        show_tail_with_reverse(
+            &mut journal,
+            n,
+            since_usec,
+            until_usec,
+            reverse,
+            args.show_cursor,
+        )
+    } else {
+        show_head_or_all_with_reverse(
+            &mut journal,
+            args.head,
+            since_usec,
+            until_usec,
+            reverse,
+            args.show_cursor,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinesLimit {
+    All,
+    Head(usize),
+    Tail(usize),
+}
+
+/// Parse `--lines=[+]N` per the v260.1 grammar.
+/// `--lines` with no value means the official default tail count, 10.
+fn parse_lines_limit(value: Option<&str>) -> Result<Option<LinesLimit>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Ok(Some(LinesLimit::Tail(10)));
+    }
+    if value == "all" {
+        return Ok(Some(LinesLimit::All));
+    }
+    let (oldest, stripped) = if let Some(stripped) = value.strip_prefix('+') {
+        (true, stripped)
+    } else {
+        (false, value)
+    };
+    let n: usize = stripped
+        .parse()
+        .map_err(|_| anyhow!("failed to parse --lines value: {value}"))?;
+    if oldest {
+        Ok(Some(LinesLimit::Head(n)))
+    } else {
+        Ok(Some(LinesLimit::Tail(n)))
+    }
+}
+
+/// Resolve the effective tail count for follow mode. Honors `--tail` first,
+/// then `--lines`. Returns `None` if neither was supplied.
+fn parse_tail_count(tail: Option<&usize>, lines: Option<&str>) -> Option<usize> {
+    if let Some(n) = tail {
+        return Some(*n);
+    }
+    match parse_lines_limit(lines).ok().flatten() {
+        Some(LinesLimit::Tail(n) | LinesLimit::Head(n)) => Some(n),
+        Some(LinesLimit::All) | None => None,
+    }
+}
+
+fn enforce_source_exclusivity(args: &Args) -> Result<()> {
+    let mut sources = 0usize;
+    if args.file.is_some() {
+        sources += 1;
+    }
+    if args.directory.is_some() {
+        sources += 1;
+    }
+    if args.machine.is_some() {
+        sources += 1;
+    }
+    if args.root.is_some() {
+        sources += 1;
+    }
+    if args.image.is_some() {
+        sources += 1;
+    }
+    if sources > 1 {
+        return Err(anyhow!(
+            "Please specify at most one of -D/--directory=, --file=, -M/--machine=, --root=, --image=."
+        ));
+    }
+    Ok(())
+}
+
+fn enforce_since_until_order(since: &Option<String>, until: &Option<String>) -> Result<()> {
+    let since_usec = parse_optional_timestamp(since.as_deref())?;
+    let until_usec = parse_optional_timestamp(until.as_deref())?;
+    if let (Some(s), Some(u)) = (since_usec, until_usec) {
+        if s > u {
+            return Err(anyhow!("--since= must be before --until=."));
+        }
+    }
+    Ok(())
+}
+
+fn enforce_cursor_source_exclusivity(args: &Args) -> Result<()> {
+    let mut count = 0;
+    if args.cursor.is_some() {
+        count += 1;
+    }
+    if args.after_cursor.is_some() {
+        count += 1;
+    }
+    if args.cursor_file.is_some() {
+        count += 1;
+    }
+    if args.since.is_some() {
+        count += 1;
+    }
+    if count > 1 {
+        return Err(anyhow!(
+            "Please specify only one of --since=, --cursor=, --cursor-file=, and --after-cursor=."
+        ));
+    }
+    Ok(())
+}
+
+fn enforce_follow_reverse_conflict(args: &Args) -> Result<()> {
+    if args.follow && args.reverse {
+        return Err(anyhow!(
+            "Please specify either --reverse or --follow, not both."
+        ));
+    }
+    Ok(())
+}
+
+fn enforce_oldest_lines_conflict(args: &Args) -> Result<()> {
+    if args.lines.as_deref().is_some_and(|v| v.starts_with('+')) && (args.reverse || args.follow) {
+        return Err(anyhow!(
+            "--lines=+N is unsupported when --reverse or --follow is specified."
+        ));
+    }
+    Ok(())
+}
+
+fn enforce_boot_merge_conflict(args: &Args) -> Result<()> {
+    if (args.boot.is_some() || args.this_boot || args.list_boots) && args.merge {
+        return Err(anyhow!(
+            "Using --boot or --list-boots with --merge is not supported."
+        ));
+    }
+    Ok(())
 }
 
 fn preprocess_optional_boot_args<I>(args: I) -> Vec<String>
@@ -174,6 +690,17 @@ where
         if arg == "--boot" || arg == "-b" {
             if let Some(next) = input.peek() {
                 if looks_like_boot_descriptor(next) {
+                    let next = input.next().unwrap();
+                    out.push(format!("{arg}={next}"));
+                    continue;
+                }
+            }
+            out.push(format!("{arg}="));
+            continue;
+        }
+        if arg == "--lines" || arg == "-n" {
+            if let Some(next) = input.peek() {
+                if looks_like_lines_descriptor(next) {
                     let next = input.next().unwrap();
                     out.push(format!("{arg}={next}"));
                     continue;
@@ -201,6 +728,14 @@ fn looks_like_boot_descriptor(value: &str) -> bool {
                 !id.is_empty() && (rest.is_empty() || rest.parse::<isize>().is_ok())
             })
             .unwrap_or(false)
+}
+
+fn looks_like_lines_descriptor(value: &str) -> bool {
+    if value == "all" {
+        return true;
+    }
+    let value = value.strip_prefix('+').unwrap_or(value);
+    !value.is_empty() && value.parse::<usize>().is_ok()
 }
 
 fn open_filtered_journal(path: &Path, args: &Args) -> Result<SdJournal> {
@@ -429,30 +964,49 @@ fn apply_matches(journal: &mut SdJournal, matches: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn show_head_or_all(
+fn show_head_or_all_with_reverse(
     journal: &mut SdJournal,
     limit: Option<usize>,
     since_usec: Option<u64>,
     until_usec: Option<u64>,
+    reverse: bool,
+    show_cursor: bool,
 ) -> Result<()> {
+    let entries = matching_entries_with_direction(journal, since_usec, until_usec, reverse)?;
+    let mut stdout = std::io::stdout().lock();
     let mut shown = 0usize;
-    for entry in matching_entries(journal, since_usec, until_usec)? {
+    let mut last_cursor: Option<String> = None;
+    for entry in &entries {
         if limit.is_some_and(|limit| shown >= limit) {
             break;
         }
-        write_entry(journal, &entry)?;
+        let output =
+            SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}"))?;
+        stdout.write_all(&output)?;
         shown += 1;
+        if !entry.cursor.is_empty() {
+            last_cursor = Some(entry.cursor.clone());
+        }
+    }
+    if show_cursor {
+        if let Some(cursor) = last_cursor {
+            stdout.write_all(b"-- cursor: ")?;
+            stdout.write_all(cursor.as_bytes())?;
+            stdout.write_all(b"\n")?;
+        }
     }
     Ok(())
 }
 
-fn show_tail(
+fn show_tail_with_reverse(
     journal: &mut SdJournal,
     limit: usize,
     since_usec: Option<u64>,
     until_usec: Option<u64>,
+    reverse: bool,
+    show_cursor: bool,
 ) -> Result<()> {
-    let entries = matching_entries(journal, since_usec, until_usec)?;
+    let entries = matching_entries_with_direction(journal, since_usec, until_usec, reverse)?;
     let outputs = entries
         .iter()
         .map(|entry| SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}")))
@@ -462,12 +1016,15 @@ fn show_tail(
     for entry in &outputs[start..] {
         stdout.write_all(entry)?;
     }
-    Ok(())
-}
-
-fn write_entry(journal: &mut SdJournal, entry: &Entry) -> Result<()> {
-    let output = SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}"))?;
-    std::io::stdout().lock().write_all(&output)?;
+    if show_cursor {
+        if let Some(cursor) = entries.last().map(|e| e.cursor.clone()) {
+            if !cursor.is_empty() {
+                stdout.write_all(b"-- cursor: ")?;
+                stdout.write_all(cursor.as_bytes())?;
+                stdout.write_all(b"\n")?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -476,6 +1033,45 @@ fn matching_entries(
     since_usec: Option<u64>,
     until_usec: Option<u64>,
 ) -> Result<Vec<Entry>> {
+    matching_entries_with_direction(journal, since_usec, until_usec, false)
+}
+
+fn matching_entries_with_direction(
+    journal: &mut SdJournal,
+    since_usec: Option<u64>,
+    until_usec: Option<u64>,
+    reverse: bool,
+) -> Result<Vec<Entry>> {
+    if reverse {
+        // Reverse: seek to tail and walk backwards. Bound by --until when
+        // supplied; otherwise read until head.
+        if let Some(until) = until_usec {
+            SdJournalSeekRealtimeUsec(journal, until)
+                .map_err(|err| anyhow!("seek realtime: {err}"))?;
+        } else {
+            SdJournalSeekTail(journal).map_err(|err| anyhow!("seek tail: {err}"))?;
+        }
+        let mut out = Vec::new();
+        loop {
+            match SdJournalPrevious(journal).map_err(|err| anyhow!("previous: {err}"))? {
+                0 => break,
+                _ => {
+                    let entry =
+                        SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
+                    if since_usec.is_some_and(|since| entry.realtime < since) {
+                        break;
+                    }
+                    if since_usec.is_none_or(|since| entry.realtime >= since)
+                        && until_usec.is_none_or(|until| entry.realtime <= until)
+                    {
+                        out.push(entry);
+                    }
+                }
+            }
+        }
+        return Ok(out);
+    }
+
     if let Some(since) = since_usec {
         SdJournalSeekRealtimeUsec(journal, since).map_err(|err| anyhow!("seek realtime: {err}"))?;
     } else {
@@ -972,5 +1568,378 @@ mod tests {
         run_verify(&path, Some(&key)).expect("sealed verify with key should pass");
         run_verify(&path, Some("000000000000000000000001/1-f4240"))
             .expect_err("wrong verification key should fail");
+    }
+
+    // -- SOW-0121 parser parity tests ----------------------------------
+    //
+    // Every official systemd v260.1 long option must be recognized by the
+    // parser. The set is enumerated by the shared manifest at
+    // tests/parser-parity/v260-manifest.json. The list is duplicated
+    // here (intentionally) so the parser contract is enforced by Rust
+    // unit tests in addition to the shared Python harness.
+
+    const OFFICIAL_LONG_OPTIONS: &[(&str, bool)] = &[
+        ("system", false),
+        ("user", false),
+        ("machine", true),
+        ("merge", false),
+        ("directory", true),
+        ("file", true),
+        ("root", true),
+        ("image", true),
+        ("image-policy", true),
+        ("namespace", true),
+        ("since", true),
+        ("until", true),
+        ("cursor", true),
+        ("after-cursor", true),
+        ("cursor-file", true),
+        ("boot", false),
+        ("this-boot", false),
+        ("unit", true),
+        ("user-unit", true),
+        ("invocation", true),
+        ("identifier", true),
+        ("exclude-identifier", true),
+        ("priority", true),
+        ("facility", true),
+        ("grep", true),
+        ("case-sensitive", false),
+        ("dmesg", false),
+        ("output", true),
+        ("output-fields", true),
+        ("lines", false),
+        ("reverse", false),
+        ("show-cursor", false),
+        ("utc", false),
+        ("catalog", false),
+        ("no-hostname", false),
+        ("no-full", false),
+        ("full", false),
+        ("all", false),
+        ("follow", false),
+        ("no-tail", false),
+        ("truncate-newline", false),
+        ("quiet", false),
+        ("synchronize-on-exit", true),
+        ("no-pager", false),
+        ("pager-end", false),
+        ("verify-key", true),
+        ("interval", true),
+        ("force", false),
+        ("setup-keys", false),
+        ("help", false),
+        ("version", false),
+        ("new-id128", false),
+        ("fields", false),
+        ("field", true),
+        ("list-boots", false),
+        ("list-invocations", false),
+        ("list-namespaces", false),
+        ("disk-usage", false),
+        ("vacuum-size", true),
+        ("vacuum-files", true),
+        ("vacuum-time", true),
+        ("verify", false),
+        ("sync", false),
+        ("relinquish-var", false),
+        ("smart-relinquish-var", false),
+        ("flush", false),
+        ("rotate", false),
+        ("header", false),
+        ("list-catalog", false),
+        ("dump-catalog", false),
+        ("update-catalog", false),
+    ];
+
+    const OFFICIAL_OUTPUT_MODES: &[&str] = &[
+        "short",
+        "short-full",
+        "short-iso",
+        "short-iso-precise",
+        "short-precise",
+        "short-monotonic",
+        "short-delta",
+        "short-unix",
+        "verbose",
+        "export",
+        "json",
+        "json-pretty",
+        "json-sse",
+        "json-seq",
+        "cat",
+        "with-unit",
+    ];
+
+    /// Run the CLI binary with the supplied argv and capture output.
+    /// The binary is launched as a subprocess so we can validate parser
+    /// behavior end-to-end without touching the host journal state.
+    fn run_cli(args: &[&str]) -> std::process::Output {
+        // Prefer the cargo-provided integration-test binary path. Fall
+        // back to the workspace debug build for environments where the
+        // variable is not exported (e.g. when running `cargo test`
+        // directly on the binary target).
+        let bin = std::env::var("CARGO_BIN_EXE_journalctl").unwrap_or_else(|_| {
+            repo_root()
+                .join(".local/cargo-target/debug/journalctl")
+                .to_string_lossy()
+                .into_owned()
+        });
+        std::process::Command::new(bin)
+            .args(args)
+            .output()
+            .expect("spawn journalctl binary")
+    }
+
+    #[test]
+    fn unrecognized_option_is_rejected() {
+        let out = run_cli(&["--not-an-official-option"]);
+        assert!(
+            !out.status.success(),
+            "expected non-zero exit for unknown option"
+        );
+        let combined = String::from_utf8_lossy(&out.stderr).into_owned()
+            + &String::from_utf8_lossy(&out.stdout);
+        assert!(
+            combined.contains("unexpected argument") || combined.contains("unrecognized"),
+            "expected unknown-option error, got: {combined}"
+        );
+    }
+
+    #[test]
+    fn every_official_long_option_is_parsed() {
+        for (opt, takes_value) in OFFICIAL_LONG_OPTIONS {
+            let flag = match (*opt, *takes_value) {
+                ("output", true) => "--output=short".to_string(),
+                ("synchronize-on-exit", true) => "--synchronize-on-exit=false".to_string(),
+                (_, true) => format!("--{opt}=placeholder"),
+                (_, false) => format!("--{opt}"),
+            };
+            let argv: Vec<String> = vec!["journalctl".to_string(), flag];
+            let parsed = Args::try_parse_from(&argv);
+            if *opt == "help" {
+                let err = parsed.expect_err("--help must exit through clap help");
+                assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+                continue;
+            }
+            assert!(
+                parsed.is_ok(),
+                "parser rejected official option --{opt}: {:?}",
+                parsed.err().map(|e| e.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn every_official_output_mode_is_accepted() {
+        for mode in OFFICIAL_OUTPUT_MODES {
+            let argv: Vec<String> = vec!["journalctl".to_string(), format!("--output={mode}")];
+            let parsed = Args::try_parse_from(&argv);
+            assert!(
+                parsed.is_ok(),
+                "parser rejected output mode {mode}: {:?}",
+                parsed.err().map(|e| e.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn lines_limit_parser_preserves_systemd_direction() {
+        assert_eq!(parse_lines_limit(None).unwrap(), None);
+        assert_eq!(
+            parse_lines_limit(Some("")).unwrap(),
+            Some(LinesLimit::Tail(10))
+        );
+        assert_eq!(
+            parse_lines_limit(Some("25")).unwrap(),
+            Some(LinesLimit::Tail(25))
+        );
+        assert_eq!(
+            parse_lines_limit(Some("+25")).unwrap(),
+            Some(LinesLimit::Head(25))
+        );
+        assert_eq!(
+            parse_lines_limit(Some("all")).unwrap(),
+            Some(LinesLimit::All)
+        );
+        assert!(parse_lines_limit(Some("not-a-number")).is_err());
+    }
+
+    #[test]
+    fn lines_optional_argument_does_not_consume_match() {
+        let args = preprocess_optional_boot_args([
+            "journalctl".to_string(),
+            "--lines".to_string(),
+            "TEST_ID=journalctl-query".to_string(),
+        ]);
+        assert_eq!(
+            args,
+            vec![
+                "journalctl".to_string(),
+                "--lines=".to_string(),
+                "TEST_ID=journalctl-query".to_string()
+            ]
+        );
+
+        let args = preprocess_optional_boot_args([
+            "journalctl".to_string(),
+            "--lines".to_string(),
+            "+2".to_string(),
+            "TEST_ID=journalctl-query".to_string(),
+        ]);
+        assert_eq!(
+            args,
+            vec![
+                "journalctl".to_string(),
+                "--lines=+2".to_string(),
+                "TEST_ID=journalctl-query".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn portable_unsupported_message_format() {
+        // For each intentionally unsupported daemon-only action, the
+        // binary must exit non-zero and emit the portable-mode message
+        // class.
+        let unsupported = [
+            "--sync",
+            "--flush",
+            "--rotate",
+            "--relinquish-var",
+            "--smart-relinquish-var",
+            "--list-namespaces",
+            "--list-catalog",
+            "--dump-catalog",
+            "--update-catalog",
+        ];
+        for opt in unsupported {
+            let out = run_cli(&[opt]);
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(
+                !out.status.success(),
+                "expected non-zero exit for {opt}, stderr={stderr}"
+            );
+            assert!(
+                stderr.contains("portable mode does not support"),
+                "expected portable message for {opt}, stderr={stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn portable_unsupported_for_source_options() {
+        let unsupported_with_value = ["--machine", "--root", "--image", "--namespace"];
+        for opt in unsupported_with_value {
+            let out = run_cli(&[opt, "/dev/null"]);
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(
+                !out.status.success(),
+                "expected non-zero exit for {opt}, stderr={stderr}"
+            );
+            assert!(
+                stderr.contains("portable mode does not support"),
+                "expected portable message for {opt}, stderr={stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_exclusivity_enforced() {
+        let out = run_cli(&["--directory=/tmp", "--file=/tmp/x.journal"]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success(), "expected non-zero exit");
+        assert!(
+            stderr.contains("at most one of")
+                && stderr.contains("--directory")
+                && stderr.contains("--file"),
+            "expected source exclusivity error, got: {stderr}"
+        );
+    }
+
+    #[test]
+    fn since_until_order_enforced() {
+        let out = run_cli(&[
+            "--file=/tmp/x.journal",
+            "--since=2020-01-02",
+            "--until=2020-01-01",
+        ]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success(), "expected non-zero exit");
+        assert!(
+            stderr.contains("--since= must be before --until="),
+            "expected since/until order error, got: {stderr}"
+        );
+    }
+
+    #[test]
+    fn follow_reverse_conflict_enforced() {
+        let out = run_cli(&["--file=/tmp/x.journal", "--follow", "--reverse"]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success(), "expected non-zero exit");
+        assert!(
+            stderr.contains("either --reverse or --follow, not both"),
+            "expected follow/reverse conflict, got: {stderr}"
+        );
+    }
+
+    #[test]
+    fn synchronize_on_exit_false_accepted_as_noop() {
+        let out = run_cli(&["--synchronize-on-exit=false"]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        // The CLI should not produce a portable unsupported error when
+        // --synchronize-on-exit=false is supplied (per parity matrix).
+        assert!(
+            !stderr.contains("portable mode does not support --synchronize-on-exit"),
+            "expected false to be accepted, stderr={stderr}"
+        );
+    }
+
+    #[test]
+    fn synchronize_on_exit_true_rejected() {
+        let out = run_cli(&["--synchronize-on-exit=true"]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success(), "expected non-zero exit");
+        assert!(
+            stderr.contains("portable mode does not support --synchronize-on-exit"),
+            "expected portable unsupported message, stderr={stderr}"
+        );
+    }
+
+    #[test]
+    fn vacuum_without_directory_is_rejected() {
+        let out = run_cli(&["--vacuum-size=1G"]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success(), "expected non-zero exit");
+        assert!(
+            stderr.contains("portable mode does not support --vacuum-*"),
+            "expected portable message, stderr={stderr}"
+        );
+    }
+
+    #[test]
+    fn version_prints_baseline_metadata() {
+        let out = run_cli(&["--version"]);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "expected success, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains("v260.1") && stdout.contains("baseline"),
+            "expected version banner, got: {stdout}"
+        );
+    }
+
+    #[test]
+    fn boot_merge_conflict_enforced() {
+        let out = run_cli(&["--file=/tmp/x.journal", "--boot", "--merge"]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!out.status.success(), "expected non-zero exit");
+        assert!(
+            stderr.contains("--boot or --list-boots with --merge is not supported"),
+            "expected boot/merge conflict, got: {stderr}"
+        );
     }
 }

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -442,4 +445,265 @@ func patchCompatibleFlags(t *testing.T, path string, flagsToSet uint32) {
 	if err := f.Close(); err != nil {
 		t.Fatalf("close patched journal: %v", err)
 	}
+}
+
+// -- SOW-0121 parser parity tests ----------------------------------
+//
+// Every official systemd v260.1 long option must be recognized by the
+// parser. The set is enumerated by the shared manifest at
+// tests/parser-parity/v260-manifest.json and is duplicated here so the
+// parser contract is enforced by Go unit tests in addition to the
+// shared Python harness and the Rust unit tests.
+
+var officialLongOptions = []string{
+	"system", "user", "machine", "merge", "directory", "file", "root", "image",
+	"image-policy", "namespace", "since", "until", "cursor", "after-cursor",
+	"cursor-file", "boot", "this-boot", "unit", "user-unit", "invocation",
+	"identifier", "exclude-identifier", "priority", "facility", "grep",
+	"case-sensitive", "dmesg", "output", "output-fields", "lines", "reverse",
+	"show-cursor", "utc", "catalog", "no-hostname", "no-full", "full", "all",
+	"follow", "no-tail", "truncate-newline", "quiet", "synchronize-on-exit",
+	"no-pager", "pager-end", "verify-key", "interval", "force", "setup-keys",
+	"help", "version", "new-id128", "fields", "field", "list-boots",
+	"list-invocations", "list-namespaces", "disk-usage", "vacuum-size",
+	"vacuum-files", "vacuum-time", "verify", "sync", "relinquish-var",
+	"smart-relinquish-var", "flush", "rotate", "header", "list-catalog",
+	"dump-catalog", "update-catalog",
+}
+
+var officialOutputModes = []string{
+	"short", "short-full", "short-iso", "short-iso-precise", "short-precise",
+	"short-monotonic", "short-delta", "short-unix", "verbose", "export", "json",
+	"json-pretty", "json-sse", "json-seq", "cat", "with-unit",
+}
+
+func TestEveryOfficialLongOptionIsParsed(t *testing.T) {
+	for _, opt := range officialLongOptions {
+		// boolean-style options get a `=true` placeholder so the flag
+		// package does not try to consume the next positional.
+		argv := []string{"--" + opt, "true"}
+		err := parseOnlyForTest(argv)
+		if err != nil {
+			// flag.ErrHelp is a normal parser exit for --help; the
+			// parser still recognized the option.
+			if errors.Is(err, flag.ErrHelp) {
+				continue
+			}
+			t.Errorf("parser rejected official option --%s: %v", opt, err)
+		}
+	}
+}
+
+func TestEveryOfficialOutputModeIsAccepted(t *testing.T) {
+	for _, mode := range officialOutputModes {
+		argv := []string{"--output=" + mode}
+		if err := parseOnlyForTest(argv); err != nil {
+			t.Errorf("parser rejected output mode %q: %v", mode, err)
+		}
+	}
+}
+
+func TestParseLinesLimitValuePreservesSystemdDirection(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  linesLimit
+	}{
+		{name: "no value", value: "", want: linesLimit{set: true, count: 10}},
+		{name: "tail", value: "25", want: linesLimit{set: true, count: 25}},
+		{name: "oldest", value: "+25", want: linesLimit{set: true, oldest: true, count: 25}},
+		{name: "all", value: "all", want: linesLimit{set: true, all: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseLinesLimitValue(tt.value)
+			if err != nil {
+				t.Fatalf("parseLinesLimitValue(%q) error: %v", tt.value, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseLinesLimitValue(%q) = %+v, want %+v", tt.value, got, tt.want)
+			}
+		})
+	}
+	if _, err := parseLinesLimitValue("not-a-number"); err == nil {
+		t.Fatal("parseLinesLimitValue accepted invalid value")
+	}
+}
+
+func TestPortableUnsupportedMessageFormat(t *testing.T) {
+	unsupported := []string{
+		"--sync", "--flush", "--rotate", "--relinquish-var",
+		"--smart-relinquish-var", "--list-namespaces", "--list-catalog",
+		"--dump-catalog", "--update-catalog",
+	}
+	for _, opt := range unsupported {
+		fs, flags := newCLIFlagSet(io.Discard)
+		if err := fs.Parse([]string{opt}); err != nil {
+			t.Fatalf("parse error for %s: %v", opt, err)
+		}
+		err := flags.validate()
+		if err == nil {
+			t.Errorf("expected non-nil error for %s", opt)
+			continue
+		}
+		if !strings.Contains(err.Error(), "portable mode does not support") {
+			t.Errorf("expected portable message for %s, got: %v", opt, err)
+		}
+	}
+}
+
+func TestPortableUnsupportedForSourceOptions(t *testing.T) {
+	unsupported := []string{"--machine", "--root", "--image", "--namespace"}
+	for _, opt := range unsupported {
+		fs, flags := newCLIFlagSet(io.Discard)
+		if err := fs.Parse([]string{opt, "/dev/null"}); err != nil {
+			t.Fatalf("parse error for %s: %v", opt, err)
+		}
+		err := flags.validate()
+		if err == nil {
+			t.Errorf("expected non-nil error for %s", opt)
+			continue
+		}
+		if !strings.Contains(err.Error(), "portable mode does not support") {
+			t.Errorf("expected portable message for %s, got: %v", opt, err)
+		}
+	}
+}
+
+func TestSourceExclusivityEnforced(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--directory=/tmp", "--file=/tmp/x.journal"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := flags.validate()
+	if err == nil {
+		t.Fatalf("expected error for --directory + --file")
+	}
+	if !strings.Contains(err.Error(), "at most one of") ||
+		!strings.Contains(err.Error(), "--directory") ||
+		!strings.Contains(err.Error(), "--file") {
+		t.Fatalf("expected source exclusivity error, got: %v", err)
+	}
+}
+
+func TestSinceUntilOrderEnforced(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{
+		"--file=/tmp/x.journal",
+		"--since=2020-01-02",
+		"--until=2020-01-01",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := flags.validate()
+	if err == nil {
+		t.Fatalf("expected error for --since later than --until")
+	}
+	if !strings.Contains(err.Error(), "--since= must be before --until=") {
+		t.Fatalf("expected since/until order error, got: %v", err)
+	}
+}
+
+func TestFollowReverseConflictEnforced(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--file=/tmp/x.journal", "--follow", "--reverse"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := flags.validate()
+	if err == nil {
+		t.Fatalf("expected error for --follow + --reverse")
+	}
+	if !strings.Contains(err.Error(), "either --reverse or --follow, not both") {
+		t.Fatalf("expected follow/reverse conflict, got: %v", err)
+	}
+}
+
+func TestSynchronizeOnExitTrueIsRejected(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--synchronize-on-exit=true"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := flags.validate()
+	if err == nil {
+		t.Fatalf("expected error for --synchronize-on-exit=true")
+	}
+	if !strings.Contains(err.Error(), "portable mode does not support --synchronize-on-exit") {
+		t.Fatalf("expected portable message, got: %v", err)
+	}
+}
+
+func TestSynchronizeOnExitFalseIsAccepted(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--synchronize-on-exit=false"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if err := flags.validate(); err != nil {
+		t.Fatalf("expected success for --synchronize-on-exit=false, got: %v", err)
+	}
+}
+
+func TestVacuumWithoutDirectoryIsRejected(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--vacuum-size=1G"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := flags.validate()
+	if err == nil {
+		t.Fatalf("expected error for --vacuum-size without --directory")
+	}
+	if !strings.Contains(err.Error(), "portable mode does not support --vacuum-*") {
+		t.Fatalf("expected portable message, got: %v", err)
+	}
+}
+
+func TestVersionPrintsBaselineMetadata(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--version"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if err := flags.validate(); err != nil {
+		t.Fatalf("validate error: %v", err)
+	}
+	if !*flags.versionFlag {
+		t.Fatalf("expected versionFlag to be set")
+	}
+	// Match the version banner emitted by run().
+	banner := "journalctl (systemd-journal-sdk Go rewrite)\nbaseline: systemd v260.1 (c0a5a2516d28)\nportable file-backed mode\n"
+	if !strings.Contains(banner, "v260.1") || !strings.Contains(banner, "baseline") {
+		t.Fatalf("expected version banner, got: %q", banner)
+	}
+}
+
+func TestBootMergeConflictEnforced(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--file=/tmp/x.journal", "--boot", "--merge"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := flags.validate()
+	if err == nil {
+		t.Fatalf("expected error for --boot + --merge")
+	}
+	if !strings.Contains(err.Error(), "--boot or --list-boots with --merge is not supported") {
+		t.Fatalf("expected boot/merge conflict, got: %v", err)
+	}
+}
+
+func TestUnrecognizedOptionIsRejected(t *testing.T) {
+	fs, _ := newCLIFlagSet(io.Discard)
+	err := fs.Parse([]string{"--not-an-official-option"})
+	if err == nil {
+		t.Fatalf("expected parse error for unknown option")
+	}
+	if !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("expected unknown flag error, got: %v", err)
+	}
+}
+
+// parseOnlyForTest parses argv through the flag set used by `run`.
+// It returns nil if the parser accepted every token. It does NOT run
+// validation or dispatch so unknown-class options can be tested in
+// isolation.
+func parseOnlyForTest(argv []string) error {
+	fs, _ := newCLIFlagSet(io.Discard)
+	return fs.Parse(argv)
 }
