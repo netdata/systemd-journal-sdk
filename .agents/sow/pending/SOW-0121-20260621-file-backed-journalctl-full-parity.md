@@ -70,6 +70,9 @@ Unknowns:
 - A committed v260.1 `journalctl` parity matrix classifies every official
   option/action as supported, unsupported with exact behavior, not applicable,
   or deferred with user approval.
+- The portable Rust and Go command-line parsers recognize 100% of the official
+  systemd v260.1 `journalctl` option/action surface, even when the feature is
+  unsupported in non-daemon mode.
 - Rust and Go implement all approved offline/file-backed behavior from the
   parity matrix.
 - Unsupported daemon/host-only options fail intentionally and consistently
@@ -265,6 +268,10 @@ User decision on 2026-06-21:
 - Create focused SOW work for a non-Linux official `journalctl` command.
 - Scope the target as full official offline/file-backed parity, not Linux
   daemon/system parity.
+- Require 100% official v260.1 command-line surface recognition: daemon-only
+  and host-only options/actions must be parsed and classified, then rejected
+  with intentional portable-mode unsupported behavior rather than being absent
+  from the CLI.
 - Implement or complete both Rust and Go commands first.
 - Decide which command to ship only after parity, portability, performance,
   size, dependency, and maintainability evidence exists.
