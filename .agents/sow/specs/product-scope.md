@@ -752,7 +752,8 @@ Current Go reader feature slice:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
   `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
-  `cat`, and `with-unit`;
+  `cat`, and `with-unit`; `--output=help` prints the official mode list
+  without opening a journal;
 - short-style output renders stock-compatible hostname, identifier/unit, and
   PID labels where the corresponding journal fields are present, and
   `--no-hostname` suppresses the hostname component;
@@ -876,7 +877,8 @@ Current Rust reader feature slice:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
   `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
-  `cat`, and `with-unit`;
+  `cat`, and `with-unit`; `--output=help` prints the official mode list
+  without opening a journal;
 - short-style output renders stock-compatible hostname, identifier/unit, and
   PID labels where the corresponding journal fields are present, and
   `--no-hostname` suppresses the hostname component;

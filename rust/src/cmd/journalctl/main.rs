@@ -61,6 +61,24 @@ const UNIT_SUFFIXES: &[&str] = &[
     ".target",
     ".timer",
 ];
+const OUTPUT_MODE_HELP_LIST: &[&str] = &[
+    "short",
+    "short-full",
+    "short-iso",
+    "short-iso-precise",
+    "short-precise",
+    "short-monotonic",
+    "short-delta",
+    "short-unix",
+    "verbose",
+    "export",
+    "json",
+    "json-pretty",
+    "json-sse",
+    "json-seq",
+    "cat",
+    "with-unit",
+];
 
 // Reasons used by the portable-mode unsupported contract.
 fn unsupported_reason(name: &str) -> &'static str {
@@ -304,6 +322,8 @@ enum OutputModeArg {
     Cat,
     /// Short output including unit information.
     WithUnit,
+    /// Print the official output mode list and exit.
+    Help,
 }
 
 impl From<OutputModeArg> for OutputMode {
@@ -325,6 +345,7 @@ impl From<OutputModeArg> for OutputMode {
             | OutputModeArg::JsonPretty
             | OutputModeArg::JsonSse
             | OutputModeArg::JsonSeq => Self::Json,
+            OutputModeArg::Help => Self::Default,
         }
     }
 }
@@ -345,6 +366,10 @@ fn run() -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     let full_width = resolve_full_width(&raw_args);
     let args = Args::parse_from(preprocess_optional_boot_args(raw_args));
+    if matches!(args.output, OutputModeArg::Help) {
+        print_output_mode_help();
+        return Ok(());
+    }
 
     // Enforce the v260.1 parser-required interaction rules. These run
     // before any dispatch so the user sees an explicit conflict error.
@@ -660,6 +685,12 @@ fn resolve_full_width(args: &[String]) -> bool {
         }
     }
     full_width
+}
+
+fn print_output_mode_help() {
+    for mode in OUTPUT_MODE_HELP_LIST {
+        println!("{mode}");
+    }
 }
 
 fn effective_quiet(args: &Args) -> bool {

@@ -829,6 +829,25 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
             }
         )
 
+    stock_output_help = run(action_command("stock", tools, ["--output=help"]), timeout=30)
+    require_ok(stock_output_help, "stock output-help")
+    for reader in READERS:
+        cmd = action_command(reader, tools, ["--output=help"])
+        result = run(cmd, timeout=30)
+        ok = result.returncode == 0 and result.stdout == stock_output_help.stdout
+        results.append(
+            {
+                "test": "output-help",
+                "reader": reader,
+                "status": "PASS" if ok else "FAIL",
+                "command": " ".join(cmd),
+                "expected": stock_output_help.stdout,
+                "actual": result.stdout,
+                "stderr": result.stderr[-1000:],
+                "returncode": result.returncode,
+            }
+        )
+
     for case_name, mode, path in (
         ("disk-usage-file", "file", fixtures["file"]),
         ("disk-usage-directory", "directory", fixtures["directory"]),

@@ -18,6 +18,7 @@ The rewrites cover file-backed query behavior only:
   `short-iso`, `short-iso-precise`, `short-precise`, `short-monotonic`,
   `short-delta`, `short-unix`, `verbose`, `export`, `json`,
   `json-pretty`, `json-sse`, `json-seq`, `cat`, and `with-unit`;
+  `--output=help` prints the official mode list without opening a journal;
 - short-style labels: hostname, identifier/unit, and PID are rendered from
   journal fields like stock file-backed `journalctl`; `--no-hostname`
   suppresses only the hostname component;

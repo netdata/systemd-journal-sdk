@@ -513,6 +513,13 @@ Official source evidence for the output-mode chunk:
   `go/README.md`, and `rust/README.md` so the documented file-backed
   `journalctl` contract includes the full output-mode family and
   `--output-fields`.
+- Implemented parser-level `--output=help` parity directly in Rust and Go:
+  - Go prints the official v260.1 output mode list immediately after parsing,
+    before requiring `--file` or `--directory`;
+  - Rust accepts `help` as the official parser pseudo-mode and exits before
+    validation/dispatch;
+  - the shared query matrix now compares the exact stdout from stock
+    `journalctl --output=help` against Go and Rust.
 - Implemented the file-backed header, invocation, and short-label parity chunk
   directly in Rust and Go:
   - `--header` prints stock-style journal header fields from explicit file and
@@ -976,6 +983,17 @@ Tests or equivalent validation:
   output-control/empty-result chunk.
 - `git diff --check`: passed after the output-control/empty-result chunk.
 - `.agents/sow/audit.sh`: passed after the output-control/empty-result chunk.
+- `go test ./cmd/journalctl`: passed after the `--output=help` chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the `--output=help` chunk; 26 Rust
+  `journalctl` tests passed.
+- Exact stdout diff checks against stock `journalctl --output=help` passed for
+  both `go run ./cmd/journalctl --output=help` and
+  `.local/cargo-target/debug/journalctl --output=help`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed after the `--output=help` chunk, including the new
+  exact `output-help` stock/Go/Rust comparison; report showed `failures=[]`
+  and `status=PASS`.
 
 Real-use evidence:
 
@@ -1016,7 +1034,8 @@ Artifact maintenance gate:
   behavior, after the explicit-directory vacuum chunk to record
   `--vacuum-size`/`--vacuum-files`/`--vacuum-time` behavior, and after the
   output-control/empty-result chunk to record `--all`, `--full`, `--no-full`,
-  `--pager-end`, JSON threshold, and empty-result behavior.
+  `--pager-end`, JSON threshold, and empty-result behavior, and after the
+  `--output=help` chunk to record parser-level output mode list behavior.
   `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
   `tests/parser-parity/v260-manifest.*` were updated to reclassify
   `--setup-keys` as recognized-unsupported based on official source evidence.
@@ -1030,7 +1049,8 @@ Artifact maintenance gate:
   `--setup-keys` unsupported behavior, after the explicit-directory vacuum
   chunk for `--vacuum-size`/`--vacuum-files`/`--vacuum-time`, and after the
   output-control/empty-result chunk for `--all`, `--full`, `--no-full`,
-  `--pager-end`, and empty-result behavior.
+  `--pager-end`, and empty-result behavior, and after the `--output=help`
+  chunk for the parser-level output mode list.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -1043,7 +1063,8 @@ Specs update:
   for the shipped cursor string contract change and current file-backed filter
   contract, then for the output-mode and `--output-fields` contract, then for
   invocation, `--list-invocations`, `--header`, and stock short-label behavior,
-  and then for the output-control/empty-result contract.
+  then for the output-control/empty-result contract, and then for the
+  `--output=help` parser-level output mode list.
   Additional product-scope updates remain pending final shipped behavior and
   ship recommendation.
 
@@ -1060,8 +1081,9 @@ End-user/operator docs update:
   `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` after the
   unit-filter chunk, after the output-mode chunk, after the
   header/invocation/label chunk, after the explicit-directory vacuum chunk, and
-  after the output-control/empty-result chunk. Final journalctl command
-  documentation remains pending full implementation.
+  after the output-control/empty-result chunk, and after the `--output=help`
+  chunk. Final journalctl command documentation remains pending full
+  implementation.
 
 End-user/operator skills update:
 

@@ -503,7 +503,8 @@ inputs.
 The CLI implements the stock v260.1 output-mode family, `--output-fields`
 projection for `verbose`, `export`, JSON modes, and `cat`, and stock output
 controls such as `--all`, `--full`, `--no-full`, empty-result messages, and
-`--pager-end` implicit 1000-line tail behavior.
+`--pager-end` implicit 1000-line tail behavior. `--output=help` prints the
+official mode list without opening a journal.
 
 Realtime ranges, boot filters, and follow mode are supported for file-backed
 inputs:

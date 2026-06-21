@@ -66,6 +66,24 @@ var (
 	}
 	systemUnitFieldsFull = []string{"_SYSTEMD_UNIT", "UNIT", "OBJECT_SYSTEMD_UNIT", "COREDUMP_UNIT", "_SYSTEMD_SLICE"}
 	userUnitFieldsFull   = []string{"_SYSTEMD_USER_UNIT", "USER_UNIT", "OBJECT_SYSTEMD_USER_UNIT", "COREDUMP_USER_UNIT", "_SYSTEMD_USER_SLICE"}
+	outputModeHelpList   = []string{
+		"short",
+		"short-full",
+		"short-iso",
+		"short-iso-precise",
+		"short-precise",
+		"short-monotonic",
+		"short-delta",
+		"short-unix",
+		"verbose",
+		"export",
+		"json",
+		"json-pretty",
+		"json-sse",
+		"json-seq",
+		"cat",
+		"with-unit",
+	}
 )
 
 type cliJournal interface {
@@ -262,6 +280,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 	flags.invocationSet = flagWasSet(fs, "invocation") || *flags.invocationShortFlag
+	if *flags.output == "help" {
+		printOutputModeHelp(stdout)
+		return nil
+	}
 
 	if err := flags.validate(); err != nil {
 		return err
@@ -358,6 +380,12 @@ func resolveFullWidth(args []string) bool {
 		}
 	}
 	return fullWidth
+}
+
+func printOutputModeHelp(stdout io.Writer) {
+	for _, mode := range outputModeHelpList {
+		fmt.Fprintln(stdout, mode)
+	}
 }
 
 type linesLimit struct {

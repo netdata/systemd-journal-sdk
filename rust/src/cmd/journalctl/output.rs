@@ -72,6 +72,7 @@ impl OutputRenderer {
             OutputModeArg::JsonPretty => self.render_json(entry, JsonFrame::Pretty),
             OutputModeArg::JsonSse => self.render_json(entry, JsonFrame::Sse),
             OutputModeArg::JsonSeq => self.render_json(entry, JsonFrame::Seq),
+            OutputModeArg::Help => Ok(Vec::new()),
         }
     }
 
