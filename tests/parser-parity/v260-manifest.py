@@ -276,8 +276,32 @@ def build_parser_interactions():
             "description": "Accept stock short-option attached values and clusters such as -n2, -ball, and -rn2.",
         },
         {
+            "name": "short-invalid-equals-lines",
+            "description": "Reject stock-invalid -n=2 instead of treating it like --lines=2.",
+        },
+        {
+            "name": "lines-zero-accepted",
+            "description": "Accept stock-valid --lines=0 as a zero-entry tail limit.",
+        },
+        {
+            "name": "signed-duration-four-digit-values",
+            "description": "Accept stock-valid four-digit signed duration timestamps such as +2025h and -2025m.",
+        },
+        {
+            "name": "synchronize-on-exit-bool-spellings",
+            "description": "Accept official false spellings and reject empty values for --synchronize-on-exit=.",
+        },
+        {
+            "name": "explicit-empty-boot-no-input",
+            "description": "Reject explicit --boot= as a boot-descriptor parse error before default-source handling.",
+        },
+        {
             "name": "explicit-empty-optional-values",
             "description": "Reject explicit empty optional values where stock rejects them, such as --lines= and --case-sensitive=.",
+        },
+        {
+            "name": "case-sensitive-bool-spellings",
+            "description": "Accept official parse_boolean spellings t and f for --case-sensitive=.",
         },
     ]
 

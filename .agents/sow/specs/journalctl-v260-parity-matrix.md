@@ -156,7 +156,7 @@ Every official v260.1 output mode is `file-backed-required`:
 | `-N`, `--fields` | none | file-backed-required | List field names from explicit file/directory input using FIELD indexes where safe. |
 | `-F`, `--field=` | field | file-backed-required | List unique values for a field from explicit file/directory input using FIELD DATA chains where safe. |
 | `--list-boots` | none | file-backed-required | List boots from explicit file/directory entries with official index, boot ID, and first/last timestamp table output. Preserve official `--lines` selection, `--reverse` ordering, and conflict with `--merge`. |
-| `--list-invocations` | none | file-backed-required | List invocation IDs from explicit file/directory entries for the selected unit context. |
+| `--list-invocations` | none | file-backed-required | List invocation IDs from explicit file/directory entries for the selected unit context. Correctness is required; SOW-0122 tracks remaining large-archive performance work for indexed invocation-range discovery. |
 | `--list-namespaces` | none | recognized-unsupported | Requires host journal namespace discovery. |
 | `--disk-usage` | none | file-backed-required | With explicit file/directory input, report disk usage for selected journal files. Without explicit input, return unsupported host journal discovery. |
 | `--vacuum-size=` | bytes | file-backed-maintenance-required | With explicit `--directory=`, scan that directory's direct regular files, delete recognized archived `.journal`/`.journal~` files until active plus archived journal allocated usage is under the requested size, and protect active/current, non-matching, unknown, and subdirectory files. Without explicit directory, return unsupported. |

@@ -55,6 +55,22 @@ func TestRunTailReturnsLatestEntries(t *testing.T) {
 	}
 }
 
+func TestShowTailLimitZeroDoesNotScan(t *testing.T) {
+	j := &trackingCLIJournal{}
+	var stdout bytes.Buffer
+
+	if err := showTail(j, 0, nil, nil, &stdout, false, false, &cliPostFilters{}, cursorControl{}, outputOptions{mode: "short"}); err != nil {
+		t.Fatalf("showTail limit=0 error: %v", err)
+	}
+	if got, want := stdout.String(), "-- No entries --\n"; got != want {
+		t.Fatalf("showTail limit=0 output = %q, want %q", got, want)
+	}
+	if j.seekHeadCalls != 0 || j.seekTailCalls != 0 || j.nextCalls != 0 || j.previousCalls != 0 || j.getEntryCalls != 0 {
+		t.Fatalf("showTail limit=0 scanned journal: seekHead=%d seekTail=%d next=%d previous=%d getEntry=%d",
+			j.seekHeadCalls, j.seekTailCalls, j.nextCalls, j.previousCalls, j.getEntryCalls)
+	}
+}
+
 func TestRunMatchSemanticsAndStandaloneDisjunction(t *testing.T) {
 	path := writeCLIJournal(t, []cliEntry{
 		{message: "alpha", priority: "3"},
@@ -178,6 +194,48 @@ type cliEntry struct {
 	message  string
 	priority string
 }
+
+type trackingCLIJournal struct {
+	seekHeadCalls int
+	seekTailCalls int
+	nextCalls     int
+	previousCalls int
+	getEntryCalls int
+}
+
+func (j *trackingCLIJournal) Close() error    { return nil }
+func (j *trackingCLIJournal) AddMatch([]byte) {}
+func (j *trackingCLIJournal) AddDisjunction() {}
+func (j *trackingCLIJournal) AddConjunction() {}
+func (j *trackingCLIJournal) FlushMatches()   {}
+func (j *trackingCLIJournal) SeekHead() error {
+	j.seekHeadCalls++
+	return nil
+}
+func (j *trackingCLIJournal) SeekTail() error {
+	j.seekTailCalls++
+	return nil
+}
+func (j *trackingCLIJournal) SeekRealtimeUsec(uint64) error   { return nil }
+func (j *trackingCLIJournal) SeekCursor(string) error         { return nil }
+func (j *trackingCLIJournal) TestCursor(string) (bool, error) { return false, nil }
+func (j *trackingCLIJournal) Next() (int, error) {
+	j.nextCalls++
+	return 0, nil
+}
+func (j *trackingCLIJournal) Previous() (int, error) {
+	j.previousCalls++
+	return 0, nil
+}
+func (j *trackingCLIJournal) GetEntry() (*journal.Entry, error) {
+	j.getEntryCalls++
+	return nil, nil
+}
+func (j *trackingCLIJournal) SetOutputMode(string)                         {}
+func (j *trackingCLIJournal) ProcessOutput(*journal.Entry) (string, error) { return "", nil }
+func (j *trackingCLIJournal) ListBoots() ([]journal.BootInfo, error)       { return nil, nil }
+func (j *trackingCLIJournal) EnumerateFields() ([]string, error)           { return nil, nil }
+func (j *trackingCLIJournal) VisitUnique(string, func([]byte) error) error { return nil }
 
 func writeCLIJournal(t *testing.T, entries []cliEntry) string {
 	t.Helper()
@@ -650,6 +708,21 @@ func TestSourceExclusivityEnforced(t *testing.T) {
 	}
 }
 
+func TestResolveFileInputsDeduplicatesRepeatedPaths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repeated.journal")
+	if err := os.WriteFile(path, []byte("not-a-real-journal"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	got, err := resolveFileInputs([]string{path, path})
+	if err != nil {
+		t.Fatalf("resolveFileInputs error: %v", err)
+	}
+	if len(got) != 1 || got[0] != path {
+		t.Fatalf("resolveFileInputs returned %#v, want one copy of %q", got, path)
+	}
+}
+
 func TestSinceUntilOrderEnforced(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
 	if err := fs.Parse([]string{
@@ -769,29 +842,19 @@ func TestRunVacuumTimeZeroIsNoop(t *testing.T) {
 }
 
 func TestVersionPrintsBaselineMetadata(t *testing.T) {
-	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--version"}); err != nil {
-		t.Fatalf("parse error: %v", err)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--version"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run --version error: %v; stderr=%s", err, stderr.String())
 	}
-	if err := flags.validate(); err != nil {
-		t.Fatalf("validate error: %v", err)
-	}
-	if !*flags.versionFlag {
-		t.Fatalf("expected versionFlag to be set")
-	}
-	// Match the version banner emitted by run().
-	banner := "journalctl (systemd-journal-sdk Go rewrite)\nbaseline: systemd v260.1 (c0a5a2516d28)\nportable file-backed mode\n"
+	banner := stdout.String()
 	if !strings.Contains(banner, "v260.1") || !strings.Contains(banner, "baseline") {
 		t.Fatalf("expected version banner, got: %q", banner)
 	}
 }
 
 func TestBootMergeConflictEnforced(t *testing.T) {
-	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--file=/tmp/x.journal", "--boot", "--merge"}); err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-	err := flags.validate()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"--file=/tmp/x.journal", "--boot", "--merge"}, strings.NewReader(""), &stdout, &stderr)
 	if err == nil {
 		t.Fatalf("expected error for --boot + --merge")
 	}

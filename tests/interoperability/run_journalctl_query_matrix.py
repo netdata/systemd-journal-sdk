@@ -245,7 +245,10 @@ def make_fixtures() -> dict[str, Path]:
     single_file = FIXTURE_DIR / "multi-boot-file.journal"
     output_special = FIXTURE_DIR / "output-special.journal"
     output_long = FIXTURE_DIR / "output-long.journal"
+    no_message = FIXTURE_DIR / "no-message.journal"
+    source_realtime = FIXTURE_DIR / "source-realtime.journal"
     pager = FIXTURE_DIR / "pager.journal"
+    implicit_boot = FIXTURE_DIR / "implicit-boot.journal"
     follow = FIXTURE_DIR / "follow"
     directory.mkdir(parents=True)
     follow.mkdir(parents=True)
@@ -255,13 +258,19 @@ def make_fixtures() -> dict[str, Path]:
     write_journal(single_file, FILE_ROWS)
     write_output_special_journal(output_special)
     write_output_long_journal(output_long)
+    write_no_message_journal(no_message)
+    write_source_realtime_journal(source_realtime)
     write_pager_journal(pager)
+    write_implicit_boot_journal(implicit_boot)
     return {
         "directory": directory,
         "file": single_file,
         "output_special": output_special,
         "output_long": output_long,
+        "no_message": no_message,
+        "source_realtime": source_realtime,
         "pager": pager,
+        "implicit_boot": implicit_boot,
         "follow": follow,
     }
 
@@ -280,6 +289,12 @@ def make_vacuum_dir(path: Path, source: Path, include_active: bool = True) -> No
         (3, 1_700_004_100_001_000),
     ):
         shutil.copy2(source, path / archived_journal_name(seqnum, realtime))
+    (path / archived_journal_name(4, 1_700_004_100_001_500)).write_bytes(b"")
+    (path / archived_journal_name(5, 1_700_004_100_002_000)).mkdir()
+    try:
+        (path / archived_journal_name(6, 1_700_004_100_002_500)).symlink_to(source)
+    except (OSError, NotImplementedError):
+        pass
     (path / "unknown.log").write_text("not a journal\n", encoding="utf-8")
 
 
@@ -332,7 +347,44 @@ def write_output_special_journal(path: Path) -> None:
                     ("LONG_FIELD", "L" * 500),
                     ("BINARY_FIELD", b"a\x00b"),
                 ],
-            }
+            },
+            {
+                "realtime_usec": 1_700_005_000_000_100,
+                "monotonic_usec": 2,
+                "boot_id": BOOT_A,
+                "fields": [
+                    ("MESSAGE", "first line\nsecond line"),
+                    ("TEST_ID", "journalctl-output-newline"),
+                    ("_BOOT_ID", BOOT_A),
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("SYSLOG_IDENTIFIER", "special"),
+                ],
+            },
+            {
+                "realtime_usec": 1_700_005_000_000_200,
+                "monotonic_usec": 3,
+                "boot_id": BOOT_A,
+                "fields": [
+                    ("MESSAGE", "caf\u00e9"),
+                    ("TEST_ID", "journalctl-output-utf8"),
+                    ("_BOOT_ID", BOOT_A),
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("SYSLOG_IDENTIFIER", "special"),
+                    ("UTF8_FIELD", "caf\u00e9"),
+                ],
+            },
+            {
+                "realtime_usec": 1_699_185_600_000_000,
+                "monotonic_usec": 4,
+                "boot_id": BOOT_A,
+                "fields": [
+                    ("MESSAGE", "single-digit-day"),
+                    ("TEST_ID", "journalctl-output-single-digit-day"),
+                    ("_BOOT_ID", BOOT_A),
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("SYSLOG_IDENTIFIER", "special"),
+                ],
+            },
         ],
     )
 
@@ -355,6 +407,52 @@ def write_output_long_journal(path: Path) -> None:
                     ("_MACHINE_ID", MACHINE_ID),
                     ("SYSLOG_IDENTIFIER", "special"),
                     ("HUGE_FIELD", "H" * 5000),
+                ],
+            }
+        ],
+    )
+
+
+def write_no_message_journal(path: Path) -> None:
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_A,
+        seqnum_id=VACUUM_SEQNUM_ID,
+        entries=[
+            {
+                "realtime_usec": 1_700_004_100_000_000,
+                "monotonic_usec": 1,
+                "boot_id": BOOT_A,
+                "fields": [
+                    ("TEST_ID", "journalctl-no-message"),
+                    ("_BOOT_ID", BOOT_A),
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("SYSLOG_IDENTIFIER", "app"),
+                ],
+            }
+        ],
+    )
+
+
+def write_source_realtime_journal(path: Path) -> None:
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_A,
+        seqnum_id=VACUUM_SEQNUM_ID,
+        entries=[
+            {
+                "realtime_usec": 1_700_004_100_000_000,
+                "monotonic_usec": 1,
+                "boot_id": BOOT_A,
+                "fields": [
+                    ("MESSAGE", "source-realtime-test"),
+                    ("TEST_ID", "journalctl-source-realtime"),
+                    ("_BOOT_ID", BOOT_A),
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("SYSLOG_IDENTIFIER", "app"),
+                    ("_SOURCE_REALTIME_TIMESTAMP", "1700004100005000"),
                 ],
             }
         ],
@@ -384,15 +482,41 @@ def write_pager_journal(path: Path) -> None:
     )
 
 
-def row_entry(message: str, realtime: int, monotonic: int, test_id: str) -> dict[str, object]:
+def write_implicit_boot_journal(path: Path) -> None:
+    entries = []
+    for idx, (boot_id, message) in enumerate(((BOOT_A, "implicit-old"), (BOOT_C, "implicit-current")), start=1):
+        entries.append(
+            {
+                "realtime_usec": 1_700_006_100_000_000 + idx,
+                "monotonic_usec": idx,
+                "boot_id": boot_id,
+                "fields": [
+                    ("MESSAGE", message),
+                    ("TEST_ID", "journalctl-implicit-boot"),
+                    ("_TRANSPORT", "kernel"),
+                    ("_BOOT_ID", boot_id),
+                    ("_MACHINE_ID", MACHINE_ID),
+                ],
+            }
+        )
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_C,
+        seqnum_id=VACUUM_SEQNUM_ID,
+        entries=entries,
+    )
+
+
+def row_entry(message: str, realtime: int, monotonic: int, test_id: str, boot_id: str = BOOT_A) -> dict[str, object]:
     return {
         "realtime_usec": realtime,
         "monotonic_usec": monotonic,
-        "boot_id": BOOT_A,
+        "boot_id": boot_id,
         "fields": [
             ("MESSAGE", message),
             ("TEST_ID", test_id),
-            ("_BOOT_ID", BOOT_A),
+            ("_BOOT_ID", boot_id),
             ("_MACHINE_ID", MACHINE_ID),
         ],
     }
@@ -412,7 +536,7 @@ def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, ar
 
 def raw_reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, args: list[str]) -> list[str]:
     if reader == "stock":
-        base = ["journalctl", f"--{mode}", str(path), "--no-pager", "--quiet"]
+        base = ["journalctl", f"--{mode}", str(path), "--no-pager"]
     elif reader == "go":
         base = [tools["go_journalctl"], f"--{mode}", str(path)]
     elif reader == "rust":
@@ -494,6 +618,24 @@ def parse_json_output(mode: str, output: str) -> list[object]:
     raise ValueError(f"not a JSON output mode: {mode}")
 
 
+def json_pretty_style_ok(output: str) -> bool:
+    saw_key_line = False
+    saw_tab_indent = False
+    for line in output.splitlines():
+        if not line:
+            continue
+        if line.startswith(" "):
+            return False
+        stripped = line.lstrip("\t")
+        if len(stripped) != len(line):
+            saw_tab_indent = True
+        if stripped.startswith('"'):
+            saw_key_line = True
+            if '" : ' not in stripped or '":' in stripped:
+                return False
+    return saw_key_line and saw_tab_indent
+
+
 def valid_new_id128_output(output: str) -> bool:
     match = NEW_ID128_RE.match(output)
     if not match:
@@ -553,14 +695,24 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             ["--boot=-1", "--since", "@1700004000.000001", "--until", "@1700004000.001", "TEST_ID=journalctl-query"],
         ),
         ("file-all", "file", fixtures["file"], ["TEST_ID=journalctl-query"]),
+        ("file-system-noop", "file", fixtures["file"], ["--system", "TEST_ID=journalctl-query"]),
+        ("file-user-noop", "file", fixtures["file"], ["--user", "TEST_ID=journalctl-query"]),
         ("file-reverse", "file", fixtures["file"], ["--reverse", "TEST_ID=journalctl-query"]),
         ("file-lines-tail", "file", fixtures["file"], ["--lines=2", "TEST_ID=journalctl-query"]),
+        ("file-lines-zero", "file", fixtures["file"], ["--lines=0", "TEST_ID=journalctl-query"]),
         ("file-lines-reverse", "file", fixtures["file"], ["--reverse", "--lines=2", "--boot=all", "TEST_ID=journalctl-query"]),
         ("file-lines-oldest", "file", fixtures["file"], ["--lines=+2", "TEST_ID=journalctl-query"]),
         ("file-lines-default", "file", fixtures["file"], ["--lines", "TEST_ID=journalctl-query"]),
         ("file-short-attached-lines", "file", fixtures["file"], ["-n2", "--boot=all", "TEST_ID=journalctl-query"]),
         ("file-short-cluster-reverse-lines", "file", fixtures["file"], ["-rn2", "-ball", "TEST_ID=journalctl-query"]),
         ("file-pager-end-default-lines", "file", fixtures["pager"], ["--pager-end", "TEST_ID=journalctl-pager-end"]),
+        ("file-pager-end-implicit-boot", "file", fixtures["implicit_boot"], ["--pager-end", "TEST_ID=journalctl-implicit-boot"]),
+        (
+            "file-pager-end-merge-suppresses-implicit-boot",
+            "file",
+            fixtures["implicit_boot"],
+            ["--pager-end", "--merge", "TEST_ID=journalctl-implicit-boot"],
+        ),
         ("file-show-cursor", "file", fixtures["file"], ["--show-cursor", "TEST_ID=journalctl-query"]),
         ("file-cursor-first", "file", fixtures["file"], ["--cursor", file_cursors[0], "--boot=all", "TEST_ID=journalctl-query"]),
         (
@@ -575,6 +727,12 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             fixtures["file"],
             ["--after-cursor", file_cursors[0], "--identifier=app-b", "--boot=all", "TEST_ID=journalctl-query"],
         ),
+        (
+            "file-after-cursor-partial-seqnum",
+            "file",
+            fixtures["file"],
+            [f"--after-cursor=s={VACUUM_SEQNUM_ID};i=999", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
         ("file-boot-latest", "file", fixtures["file"], ["--boot=0", "TEST_ID=journalctl-query"]),
         ("file-this-boot", "file", fixtures["file"], ["--this-boot", "TEST_ID=journalctl-query"]),
         ("file-boot-first", "file", fixtures["file"], ["--boot=1", "TEST_ID=journalctl-query"]),
@@ -583,6 +741,66 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             "file",
             fixtures["file"],
             ["--since", "@1700004100.000001", "--until", "@1700004100.001", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-since-relative-ago",
+            "file",
+            fixtures["file"],
+            ["--since", "1 hour ago", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-since-relative-month-ago",
+            "file",
+            fixtures["file"],
+            ["--since", "1 month ago", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-since-relative-capital-month-ago",
+            "file",
+            fixtures["file"],
+            ["--since", "1 M ago", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-since-relative-year-ago",
+            "file",
+            fixtures["file"],
+            ["--since", "1 year ago", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-since-signed-four-digit-hours",
+            "file",
+            fixtures["file"],
+            ["--since=+2025h", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-since-signed-four-digit-minutes",
+            "file",
+            fixtures["file"],
+            ["--since=-2025m", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-until-signed-four-digit-bare",
+            "file",
+            fixtures["file"],
+            ["--until=+2025", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-synchronize-on-exit-zero-noop",
+            "file",
+            fixtures["file"],
+            ["--synchronize-on-exit=0", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-synchronize-on-exit-f-noop",
+            "file",
+            fixtures["file"],
+            ["--synchronize-on-exit=f", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-synchronize-on-exit-off-noop",
+            "file",
+            fixtures["file"],
+            ["--synchronize-on-exit=off", "TEST_ID=journalctl-query"],
         ),
         ("file-identifier", "file", fixtures["file"], ["--identifier=app-a", "--boot=all", "TEST_ID=journalctl-query"]),
         (
@@ -620,6 +838,19 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             ["TEST_ID=journalctl-query", "--lines=2", "--boot=all"],
         ),
         (
+            "file-plus-disjunction",
+            "file",
+            fixtures["file"],
+            [
+                "TEST_ID=journalctl-query",
+                "SYSLOG_IDENTIFIER=app-b",
+                "+",
+                "TEST_ID=journalctl-query",
+                "MESSAGE=file-c",
+                "--boot=all",
+            ],
+        ),
+        (
             "file-grep-case-insensitive",
             "file",
             fixtures["file"],
@@ -631,7 +862,26 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             fixtures["file"],
             ["--grep=file-B", "--case-sensitive=true", "--boot=all", "TEST_ID=journalctl-query"],
         ),
+        (
+            "file-grep-case-sensitive-t",
+            "file",
+            fixtures["file"],
+            ["--grep=file-B", "--case-sensitive=t", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-grep-case-insensitive-f",
+            "file",
+            fixtures["file"],
+            ["--grep=FILE-B", "--case-sensitive=f", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
         ("file-dmesg", "file", fixtures["file"], ["--dmesg", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-dmesg-implicit-boot", "file", fixtures["implicit_boot"], ["--dmesg", "TEST_ID=journalctl-implicit-boot"]),
+        (
+            "file-dmesg-merge-suppresses-implicit-boot",
+            "file",
+            fixtures["implicit_boot"],
+            ["--dmesg", "--merge", "TEST_ID=journalctl-implicit-boot"],
+        ),
         ("file-unit-direct", "file", fixtures["file"], ["--unit=alpha.service", "--boot=all", "TEST_ID=journalctl-query"]),
         ("file-unit-short-mangled", "file", fixtures["file"], ["-u", "alpha", "--boot=all", "TEST_ID=journalctl-query"]),
         ("file-unit-manager", "file", fixtures["file"], ["--unit=manager-alpha.service", "--boot=all", "TEST_ID=journalctl-query"]),
@@ -730,6 +980,36 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             fixtures["file"],
             ["--exclude-identifier=app-a", "--boot=all", "TEST_ID=journalctl-query"],
         ),
+        (
+            "file-exclude-identifier-lines-short",
+            "file",
+            fixtures["file"],
+            ["--exclude-identifier=app-a", "--lines=2", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-exclude-identifier-reverse-lines-short",
+            "file",
+            fixtures["file"],
+            ["--exclude-identifier=app-a", "--reverse", "--lines=2", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-lines-zero-short",
+            "file",
+            fixtures["file"],
+            ["--lines=0", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-cursor-lines-zero-short",
+            "file",
+            fixtures["file"],
+            ["--cursor", file_cursors[0], "--lines=0", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-grep-reverse-lines-boot-separators-short",
+            "file",
+            fixtures["file"],
+            ["--grep=file-a", "--reverse", "--lines=2", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
     ]
     for case_name, mode, path, args in raw_exact_cases:
         stock = run(raw_reader_command("stock", tools, mode, path, args), timeout=30)
@@ -766,6 +1046,10 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
         (
             "multi-file-glob",
             ["--file", str(fixtures["directory"] / "*.journal"), "--output=json", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "multi-file-duplicate-same-file",
+            ["--file", str(fixtures["file"]), "--file", str(fixtures["file"]), "--output=json", "--boot=all", "TEST_ID=journalctl-query"],
         ),
     ]
     for case_name, args in multi_file_cases:
@@ -892,6 +1176,13 @@ def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
             ["./some/path"],
             "journalctl portable mode does not support path match argument",
         ),
+        (
+            "directory-rotate-vacuum-unsupported",
+            "directory",
+            fixtures["directory"],
+            ["--rotate", "--vacuum-size=1G"],
+            "journalctl portable mode does not support --rotate",
+        ),
     ]
 
     results: list[dict[str, object]] = []
@@ -944,6 +1235,34 @@ def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
                 }
             )
 
+    missing_follow_file = fixtures["directory"] / "missing-follow.journal"
+    for reader in ("go", "rust"):
+        cmd = action_command(reader, tools, ["--follow", "--file", str(missing_follow_file), "--output=json"])
+        try:
+            result = run(cmd, timeout=5)
+            combined = (result.stdout + result.stderr).lower()
+            ok = result.returncode != 0 and ("open" in combined or "no such file" in combined)
+            stdout = result.stdout[-1000:]
+            stderr = result.stderr[-1000:]
+            returncode = result.returncode
+        except subprocess.TimeoutExpired:
+            ok = False
+            stdout = ""
+            stderr = "timeout waiting for --follow on a missing journal file"
+            returncode = -1
+        results.append(
+            {
+                "test": "follow-missing-file-errors",
+                "reader": reader,
+                "status": "PASS" if ok else "FAIL",
+                "command": " ".join(cmd),
+                "expected_error": "open failure",
+                "stdout": stdout,
+                "stderr": stderr,
+                "returncode": returncode,
+            }
+        )
+
     stock_error_cases = [
         (
             "explicit-empty-boot",
@@ -966,6 +1285,11 @@ def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
             "failed to parse --lines",
         ),
         (
+            "short-invalid-equals-lines",
+            ["--file", str(fixtures["file"]), "-n=2"],
+            "failed to parse --lines",
+        ),
+        (
             "negative-lines",
             ["--file", str(fixtures["file"]), "--lines=-2"],
             "failed to parse --lines",
@@ -974,6 +1298,26 @@ def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
             "explicit-empty-case-sensitive",
             ["--file", str(fixtures["file"]), "--grep=file", "--case-sensitive="],
             "case-sensitive",
+        ),
+        (
+            "explicit-empty-case-sensitive-no-grep",
+            ["--file", str(fixtures["file"]), "--case-sensitive="],
+            "case-sensitive",
+        ),
+        (
+            "invalid-output-mode",
+            ["--file", str(fixtures["file"]), "--output=jzon"],
+            "output",
+        ),
+        (
+            "invalid-cursor-lines-zero",
+            ["--file", str(fixtures["file"]), "--cursor", "invalid", "--lines=0"],
+            "cursor",
+        ),
+        (
+            "explicit-empty-synchronize-on-exit",
+            ["--file", str(fixtures["file"]), "--synchronize-on-exit="],
+            "synchronize-on-exit",
         ),
     ]
     for case_name, args, expected_error in stock_error_cases:
@@ -1106,7 +1450,33 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
                 }
             )
 
+    field_set_cases = [
+        ("fields-file", ["--file", str(fixtures["file"]), "--fields"]),
+    ]
+    for case_name, args in field_set_cases:
+        stock = run(action_command("stock", tools, args), timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = sorted(line for line in stock.stdout.splitlines() if line)
+        for reader in ("go", "rust"):
+            cmd = action_command(reader, tools, args)
+            result = run(cmd, timeout=30)
+            actual = sorted(line for line in result.stdout.splitlines() if line)
+            ok = result.returncode == 0 and actual == expected
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": actual,
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
+                }
+            )
+
     exact_action_cases = [
+        ("field-message-file", ["--file", str(fixtures["file"]), "--field=MESSAGE"]),
         ("header-file", ["--file", str(fixtures["file"]), "--header"]),
         ("list-boots-file", ["--file", str(fixtures["file"]), "--list-boots"]),
         ("list-boots-file-tail", ["--file", str(fixtures["file"]), "--list-boots", "--lines=2"]),
@@ -1150,6 +1520,8 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
     vacuum_cases = [
         ("vacuum-files-protect-active", ["--vacuum-files=2"], True),
         ("vacuum-time-protect-active", ["--vacuum-time=1s"], True),
+        ("vacuum-time-month-protect-active", ["--vacuum-time=1 month"], True),
+        ("vacuum-time-capital-month-protect-active", ["--vacuum-time=1M"], True),
         ("vacuum-size-protect-active", ["--vacuum-size=1"], True),
     ]
     for case_name, vacuum_args, include_active in vacuum_cases:
@@ -1189,11 +1561,14 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
     base_args = ["--boot=all", "TEST_ID=journalctl-query"]
     text_cases = [
         ("output-short", ["--output=short", *base_args], "exact"),
+        ("output-short-quiet", ["--quiet", "--output=short", *base_args], "exact"),
         ("output-short-no-hostname", ["--no-hostname", "--output=short", *base_args], "exact"),
         ("output-short-full", ["--output=short-full", *base_args], "exact"),
         ("output-short-full-utc", ["--utc", "--output=short-full", *base_args], "exact"),
         ("output-short-iso", ["--output=short-iso", *base_args], "exact"),
+        ("output-short-iso-utc", ["--utc", "--output=short-iso", *base_args], "exact"),
         ("output-short-iso-precise", ["--output=short-iso-precise", *base_args], "exact"),
+        ("output-short-iso-precise-utc", ["--utc", "--output=short-iso-precise", *base_args], "exact"),
         ("output-short-precise", ["--output=short-precise", *base_args], "exact"),
         ("output-short-monotonic", ["--output=short-monotonic", *base_args], "exact"),
         ("output-short-delta", ["--output=short-delta", *base_args], "exact"),
@@ -1207,6 +1582,11 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
         ),
         ("output-verbose-fields", ["--output=verbose", "--output-fields=MESSAGE,PRIORITY", *base_args], "exact"),
         ("output-export-fields", ["--output=export", "--output-fields=MESSAGE,PRIORITY", *base_args], "exact"),
+        (
+            "output-short-merge-suppresses-boot-separators",
+            ["--merge", "--output=short", "--lines=5", "TEST_ID=journalctl-query"],
+            "exact",
+        ),
     ]
     results: list[dict[str, object]] = []
     for case_name, args, comparison in text_cases:
@@ -1254,6 +1634,66 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
             "exact",
         ),
         (
+            "output-short-newline-default",
+            fixtures["output_special"],
+            ["--output=short", "--boot=all", "TEST_ID=journalctl-output-newline"],
+            "exact",
+        ),
+        (
+            "output-short-newline-truncate",
+            fixtures["output_special"],
+            ["--truncate-newline", "--output=short", "--boot=all", "TEST_ID=journalctl-output-newline"],
+            "exact",
+        ),
+        (
+            "output-short-single-digit-day",
+            fixtures["output_special"],
+            ["--output=short", "--boot=all", "TEST_ID=journalctl-output-single-digit-day"],
+            "exact",
+        ),
+        (
+            "output-short-precise-single-digit-day",
+            fixtures["output_special"],
+            ["--output=short-precise", "--boot=all", "TEST_ID=journalctl-output-single-digit-day"],
+            "exact",
+        ),
+        (
+            "output-short-no-message",
+            fixtures["no_message"],
+            ["--output=short", "--boot=all", "TEST_ID=journalctl-no-message"],
+            "exact",
+        ),
+        (
+            "output-with-unit-no-message",
+            fixtures["no_message"],
+            ["--output=with-unit", "--boot=all", "TEST_ID=journalctl-no-message"],
+            "exact",
+        ),
+        (
+            "output-short-precise-source-realtime",
+            fixtures["source_realtime"],
+            ["--output=short-precise", "--boot=all", "TEST_ID=journalctl-source-realtime"],
+            "exact",
+        ),
+        (
+            "output-short-monotonic-source-realtime",
+            fixtures["source_realtime"],
+            ["--output=short-monotonic", "--boot=all", "TEST_ID=journalctl-source-realtime"],
+            "exact",
+        ),
+        (
+            "output-short-delta-source-realtime",
+            fixtures["source_realtime"],
+            ["--output=short-delta", "--boot=all", "TEST_ID=journalctl-source-realtime"],
+            "exact",
+        ),
+        (
+            "output-short-unix-source-realtime",
+            fixtures["source_realtime"],
+            ["--output=short-unix", "--boot=all", "TEST_ID=journalctl-source-realtime"],
+            "exact",
+        ),
+        (
             "output-verbose-binary-default",
             fixtures["output_special"],
             ["--output=verbose", "--boot=all", "TEST_ID=journalctl-output-special"],
@@ -1281,6 +1721,18 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
             "output-cat-binary-raw",
             fixtures["output_special"],
             ["--output=cat", "--boot=all", "TEST_ID=journalctl-output-special"],
+            "exact",
+        ),
+        (
+            "output-export-utf8",
+            fixtures["output_special"],
+            ["--output=export", "--boot=all", "TEST_ID=journalctl-output-utf8"],
+            "exact",
+        ),
+        (
+            "output-export-output-fields-boot-id",
+            fixtures["file"],
+            ["--output=export", "--output-fields=_BOOT_ID", *base_args],
             "exact",
         ),
     ]
@@ -1314,6 +1766,7 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
         for suffix, extra_args in (
             ("", []),
             ("-fields", ["--output-fields=MESSAGE,PRIORITY"]),
+            ("-metadata-fields", ["--output-fields=_BOOT_ID"]),
         ):
             case_name = f"output-{mode}{suffix}"
             args = [f"--output={mode}", *extra_args, *base_args]
@@ -1344,6 +1797,56 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
                         "stderr": result.stderr[-1000:],
                     }
                 )
+    json_pretty_style_cases = [
+        (
+            "output-json-pretty-style",
+            fixtures["file"],
+            ["--output=json-pretty", "--lines=1", *base_args],
+        ),
+        (
+            "output-json-pretty-array-style",
+            fixtures["output_special"],
+            ["--all", "--output=json-pretty", "--boot=all", "TEST_ID=journalctl-output-special"],
+        ),
+    ]
+    for case_name, path, args in json_pretty_style_cases:
+        stock_cmd = raw_reader_command("stock", tools, "file", path, args)
+        stock = run(stock_cmd, timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = parse_json_output("json-pretty", stock.stdout)
+        expected_style = json_pretty_style_ok(stock.stdout)
+        for reader in READERS:
+            cmd = raw_reader_command(reader, tools, "file", path, args)
+            result = run(cmd, timeout=30)
+            try:
+                actual = parse_json_output("json-pretty", result.stdout)
+                parse_error = ""
+            except Exception as err:  # noqa: BLE001 - failure detail belongs in matrix report.
+                actual = []
+                parse_error = str(err)
+            actual_style = json_pretty_style_ok(result.stdout)
+            ok = (
+                result.returncode == 0
+                and actual == expected
+                and not parse_error
+                and expected_style
+                and actual_style == expected_style
+            )
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": actual,
+                    "expected_style": expected_style,
+                    "actual_style": actual_style,
+                    "parse_error": parse_error,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
     json_control_cases = [
         (
             "output-json-binary-default",
@@ -1450,12 +1953,29 @@ def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             "expected": ["follow-0", "follow-1", "follow-2"],
         },
         {
+            "name": "follow-cursor-file-no-tail",
+            "test_id": "journalctl-follow-cursor-file",
+            "args": ["--follow", "--no-tail", "--boot=all"],
+            "initial": [],
+            "appends": [("cursor-follow-0", 1_700_004_250_000_000)],
+            "expected": ["cursor-follow-0"],
+            "cursor_file": True,
+        },
+        {
             "name": "follow-default-tail",
             "test_id": "journalctl-follow-tail",
             "args": ["--follow", "--boot=all"],
             "initial": [(f"tail-initial-{i:02d}", 1_700_004_300_000_000 + i) for i in range(12)],
             "appends": [(f"tail-new-{i}", 1_700_004_300_001_000 + i) for i in range(2)],
             "expected": [f"tail-initial-{i:02d}" for i in range(2, 12)] + ["tail-new-0", "tail-new-1"],
+        },
+        {
+            "name": "follow-lines-since",
+            "test_id": "journalctl-follow-lines-since",
+            "args": ["--follow", "--lines=2", "--since", "@1700004300", "--boot=all"],
+            "initial": [(f"lines-since-initial-{i}", 1_700_004_300_000_000 + i) for i in range(4)],
+            "appends": [("lines-since-new", 1_700_004_300_001_000)],
+            "expected": ["lines-since-initial-2", "lines-since-initial-3", "lines-since-new"],
         },
         {
             "name": "follow-since-boot-latest",
@@ -1474,6 +1994,18 @@ def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             "appends": [(f"dir-follow-{i}", 1_700_004_400_000_000 + i) for i in range(2)],
             "expected": ["dir-follow-0", "dir-follow-1"],
         },
+        {
+            "name": "follow-implicit-boot-no-tail",
+            "test_id": "journalctl-follow-implicit-boot",
+            "args": ["--follow", "--no-tail"],
+            "initial": [("implicit-seed-current", 1_700_004_500_000_000, BOOT_C)],
+            "appends": [
+                ("implicit-old-append", 1_700_004_500_000_001, BOOT_A),
+                ("implicit-current-append", 1_700_004_500_000_002, BOOT_C),
+            ],
+            "expected": ["implicit-seed-current", "implicit-current-append"],
+            "writer_boot_id": BOOT_C,
+        },
     ]
     for case in cases:
         mode = str(case.get("mode", "file"))
@@ -1485,9 +2017,9 @@ def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             else:
                 read_path = fixtures["follow"] / case["name"] / f"{reader}.journal"
                 write_path = read_path
-            actual, returncode, stderr, cmd = run_follow_reader(reader, tools, mode, read_path, write_path, case)
+            actual, returncode, stderr, cmd, cursor_written = run_follow_reader(reader, tools, mode, read_path, write_path, case)
             expected = case["expected"]
-            ok = returncode == 0 and actual == expected
+            ok = returncode == 0 and actual == expected and (not case.get("cursor_file") or cursor_written)
             results.append(
                 {
                     "test": case["name"],
@@ -1496,6 +2028,7 @@ def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
                     "command": " ".join(cmd),
                     "expected": expected,
                     "actual": actual,
+                    "cursor_written": cursor_written,
                     "returncode": returncode,
                     "stderr": stderr[-1000:],
                 }
@@ -1510,38 +2043,48 @@ def run_follow_reader(
     read_path: Path,
     write_path: Path,
     case: dict[str, object],
-) -> tuple[list[str], int, str, list[str]]:
+) -> tuple[list[str], int, str, list[str], bool]:
     if mode == "directory":
         read_path.mkdir(parents=True, exist_ok=True)
     write_path.parent.mkdir(parents=True, exist_ok=True)
     ready_file = write_path.with_suffix(write_path.suffix + ".ready")
     seq = 1
     initial_entries = []
-    for message, realtime in case["initial"]:
-        initial_entries.append(row_entry(message, realtime, seq, str(case["test_id"])))
+    for row in case["initial"]:
+        message, realtime, *boot_override = row
+        boot_id = str(boot_override[0]) if boot_override else BOOT_A
+        initial_entries.append(row_entry(message, realtime, seq, str(case["test_id"]), boot_id=boot_id))
         seq += 1
     append_entries = []
-    for message, realtime in case["appends"]:
-        append_entries.append(row_entry(message, realtime, seq, str(case["test_id"])))
+    for row in case["appends"]:
+        message, realtime, *boot_override = row
+        boot_id = str(boot_override[0]) if boot_override else BOOT_A
+        append_entries.append(row_entry(message, realtime, seq, str(case["test_id"]), boot_id=boot_id))
         seq += 1
     writer_proc = start_live_journal_writer(
         write_path,
         ready_file=ready_file,
         machine_id=MACHINE_ID,
-        boot_id=BOOT_A,
+        boot_id=str(case.get("writer_boot_id", BOOT_A)),
         seqnum_id="34343434343434343434343434343434",
         initial_entries=initial_entries,
         append_entries=append_entries,
     )
     ready_error = wait_for_writer_ready(writer_proc, ready_file)
     if ready_error is not None:
-        return [], ready_error[0], ready_error[1], []
+        return [], ready_error[0], ready_error[1], [], False
+    cursor_file = write_path.with_suffix(write_path.suffix + ".cursor")
+    args = [*case["args"], f"TEST_ID={case['test_id']}"]
+    if case.get("cursor_file"):
+        if cursor_file.exists():
+            cursor_file.unlink()
+        args = ["--cursor-file", str(cursor_file), *args]
     cmd = reader_command(
         reader,
         tools,
         mode,
         read_path,
-        [*case["args"], f"TEST_ID={case['test_id']}"],
+        args,
     )
     proc: subprocess.Popen[str] | None = None
     # nosemgrep
@@ -1564,9 +2107,10 @@ def run_follow_reader(
 
     actual = parse_messages(stdout)
     expected = case["expected"]
+    cursor_written = cursor_file.exists() and bool(cursor_file.read_text(encoding="utf-8").strip())
     if writer_proc.returncode != 0:
-        return actual, writer_proc.returncode or 1, (writer_stdout + writer_stderr + stderr)[-1000:], cmd
-    return actual, 0 if actual == expected else proc.returncode or 1, stderr, cmd
+        return actual, writer_proc.returncode or 1, (writer_stdout + writer_stderr + stderr)[-1000:], cmd, cursor_written
+    return actual, 0 if actual == expected else proc.returncode or 1, stderr, cmd, cursor_written
 
 
 def wait_for_writer_ready(writer_proc: subprocess.Popen[str], ready_file: Path) -> tuple[int, str] | None:

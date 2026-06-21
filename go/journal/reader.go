@@ -1034,12 +1034,16 @@ func (r *Reader) GetCursor() (string, error) {
 // syntactically valid cursor that is not present leaves the reader at the next
 // later entry, matching libsystemd seek-cursor behavior.
 func (r *Reader) SeekCursor(cursor string) error {
-	wantSeqnumID, wantBootID, wantRealtime, wantSeqnum, err := ParseCursor(cursor)
+	want, err := parseCursorLocation(cursor, true)
 	if err != nil {
 		return ErrInvalidCursor
 	}
 
-	if err := r.SeekRealtimeUsec(wantRealtime); err != nil {
+	if want.realtimeSet {
+		if err := r.SeekRealtimeUsec(want.realtime); err != nil {
+			return err
+		}
+	} else if err := r.SeekHead(); err != nil {
 		return err
 	}
 
@@ -1054,15 +1058,11 @@ func (r *Reader) SeekCursor(cursor string) error {
 		if err != nil {
 			return err
 		}
-		gotSeqnumID, gotBootID, gotRealtime, gotSeqnum, err := ParseCursor(current)
+		got, err := parseCursorLocation(current, false)
 		if err != nil {
 			return err
 		}
-		done, ok := cursorSeekPositionReached(
-			gotSeqnumID, gotBootID, gotRealtime, gotSeqnum,
-			wantSeqnumID, wantBootID, wantRealtime, wantSeqnum,
-		)
-		if done || ok {
+		if cursorLocationAtOrAfter(got, want) {
 			return nil
 		}
 	}
@@ -1071,20 +1071,20 @@ func (r *Reader) SeekCursor(cursor string) error {
 func (r *Reader) TestCursor(cursor string) (bool, error) {
 	current, err := r.GetCursor()
 	if err != nil {
+		if errors.Is(err, errEndOfEntries) {
+			return false, ErrEndOfEntries
+		}
 		return false, err
 	}
-	currentSeqnumID, currentBootID, currentRealtime, currentSeqnum, err := ParseCursor(current)
+	got, err := parseCursorLocation(current, false)
 	if err != nil {
 		return false, err
 	}
-	wantSeqnumID, wantBootID, wantRealtime, wantSeqnum, err := ParseCursor(cursor)
+	want, err := parseCursorLocation(cursor, false)
 	if err != nil {
 		return false, nil
 	}
-	return currentSeqnumID == wantSeqnumID &&
-		currentBootID == wantBootID &&
-		currentRealtime == wantRealtime &&
-		currentSeqnum == wantSeqnum, nil
+	return cursorLocationMatches(got, want), nil
 }
 
 func (r *Reader) Step() (bool, error) {

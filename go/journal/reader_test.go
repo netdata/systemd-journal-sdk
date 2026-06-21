@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -1460,6 +1461,44 @@ func TestReaderSeekCursorMatchesFullCursor(t *testing.T) {
 	}
 }
 
+func TestReaderSeekCursorMatchesPartialSeqnumCursor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "partial-cursor.journal")
+	createMessageJournal(t, path, []messageRow{
+		{message: "first", realtime: 1_700_000_000},
+		{message: "second", realtime: 1_700_000_001},
+	})
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile error: %v", err)
+	}
+	defer r.Close()
+
+	if ok, err := r.Step(); err != nil || !ok {
+		t.Fatalf("Step first = %v, %v", ok, err)
+	}
+	first, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("GetEntry first error: %v", err)
+	}
+
+	partialFirst := partialSeqnumCursor(t, first.Cursor)
+	assertReaderCursorSeeksToMessage(t, r, partialFirst, "first")
+	if ok, err := r.TestCursor(partialFirst); err != nil || !ok {
+		t.Fatalf("TestCursor(partial first) = %v, %v", ok, err)
+	}
+
+	futureSameSeqnumID := replaceCursorSeqnum(t, partialFirst, "f423f")
+	if err := r.SeekCursor(futureSameSeqnumID); err != nil {
+		t.Fatalf("SeekCursor(future same seqnum id) error: %v", err)
+	}
+	if _, err := r.GetEntry(); !errors.Is(err, errEndOfEntries) {
+		t.Fatalf("GetEntry after future same seqnum id error = %v, want errEndOfEntries", err)
+	}
+
+	differentSeqnumID := "s=00000000000000000000000000000000;i=f423f"
+	assertReaderCursorSeeksToMessage(t, r, differentSeqnumID, "first")
+}
+
 func assertReaderCursorSeeksToMessage(t *testing.T, r *Reader, cursor string, want string) {
 	t.Helper()
 	if err := r.SeekCursor(cursor); err != nil {
@@ -1472,6 +1511,36 @@ func assertReaderCursorSeeksToMessage(t *testing.T, r *Reader, cursor string, wa
 	if string(got.Fields["MESSAGE"]) != want {
 		t.Fatalf("cursor seek landed on %q, want %s", got.Fields["MESSAGE"], want)
 	}
+}
+
+func partialSeqnumCursor(t *testing.T, cursor string) string {
+	t.Helper()
+	var seqnumID, seqnum string
+	for _, part := range strings.Split(cursor, ";") {
+		if strings.HasPrefix(part, "s=") {
+			seqnumID = part
+		}
+		if strings.HasPrefix(part, "i=") {
+			seqnum = part
+		}
+	}
+	if seqnumID == "" || seqnum == "" {
+		t.Fatalf("cursor %q missing s= or i= segment", cursor)
+	}
+	return seqnumID + ";" + seqnum
+}
+
+func replaceCursorSeqnum(t *testing.T, cursor string, seqnum string) string {
+	t.Helper()
+	parts := strings.Split(cursor, ";")
+	for i, part := range parts {
+		if strings.HasPrefix(part, "i=") {
+			parts[i] = "i=" + seqnum
+			return strings.Join(parts, ";")
+		}
+	}
+	t.Fatalf("cursor %q missing i= segment", cursor)
+	return ""
 }
 
 func TestReaderUniqueFields(t *testing.T) {

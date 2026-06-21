@@ -6,8 +6,8 @@ Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: completed on 2026-06-21 after local implementation, local
-validation, read-only reviewer rechecks, lifecycle move, and audit.
+Sub-state: regression repair completed on 2026-06-21 after post-close gap
+analysis found file-backed `journalctl` parity and performance-contract gaps.
 This SOW is release-relevant for any non-Linux package that claims an official
 portable `journalctl` command.
 
@@ -1538,6 +1538,280 @@ None required for SOW-0121 close.
 
 ## Regression Log
 
-None yet.
+## Regression - 2026-06-21
 
-Append regression entries here only after this SOW was completed or closed and later testing or use found broken behavior. Use a dated `## Regression - YYYY-MM-DD` heading at the end of the file. Never prepend regression content above the original SOW narrative.
+Status: completed.
+
+Trigger:
+
+- The user requested read-only external gap analysis for Rust and Go
+  file-backed `journalctl` parity after this SOW was closed.
+- Reviewers and local verification found material gaps in the closed full
+  parity claim.
+- The user then instructed: "fix them".
+
+User decision:
+
+- Implement the verified gaps in this SOW regression repair.
+- Do the implementation locally in this session; do not delegate
+  implementation.
+- When rerunning reviewers after fixes, provide an unbiased fresh review
+  prompt only. Do not list the fixes, do not say it is a repeated review or
+  round 2, and do not give reviewers steering context from prior findings.
+
+What broke:
+
+- Short-family output does not emit official boot separator lines between
+  different boots when `--quiet` is not set.
+- Go accepts invalid `--output=<unknown>` values and silently falls back to
+  short output.
+- Rust and Go accept explicit empty `--case-sensitive=` when `--grep` is not
+  present.
+- Rust and Go reject official boolean spellings `--case-sensitive=t` and
+  `--case-sensitive=f`.
+- Rust accepts stock-invalid `-n=2`.
+- Rust and Go reject stock-supported relative timestamp text such as
+  `--since="1 hour ago"`.
+- Rust forward/head paths and Rust/Go tail paths materialize all matching
+  entries before output selection. Rust and Go follow paths rescan snapshots
+  every 100 ms and retain all seen cursors.
+- Rust and Go `--list-boots` / `--list-invocations` discover rows by scanning
+  entries and applying selection after collection.
+
+Evidence:
+
+- Local stock oracle: systemd `260.1-2-manjaro` with repository-local
+  `.local/interoperability/journalctl-query/multi-boot-file.journal`.
+- Stock printed two `-- Boot <id> --` separator lines for
+  `journalctl --file <fixture> --boot=all --output=short TEST_ID=journalctl-query`;
+  Rust and Go printed zero.
+- Stock rejected `--output=jzon`; Go exited successfully with short output;
+  Rust rejected.
+- Stock rejected bare `--case-sensitive=` without `--grep`; Rust and Go
+  accepted.
+- Stock accepted `--case-sensitive=t` and `--case-sensitive=f`; Rust and Go
+  rejected.
+- Stock and Go rejected `-n=2`; Rust accepted it.
+- Stock accepted `--since="1 hour ago"`; Rust and Go rejected.
+- Source evidence:
+  - `rust/src/cmd/journalctl/output.rs` renders short-family entries without
+    boot separator state.
+  - `go/cmd/journalctl/output.go` renders short-family entries without boot
+    separator state and defaults unknown output modes to short.
+  - `rust/src/cmd/journalctl/main.rs` validates `--case-sensitive=` only when
+    compiling a grep filter and normalizes optional `-n` before clap parsing.
+  - `go/cmd/journalctl/main.go` validates `--case-sensitive=` only when
+    compiling a grep filter.
+  - `tests/interoperability/run_journalctl_query_matrix.py` uses `--quiet` for
+    stock raw comparisons, hiding boot separator output.
+
+Why previous validation missed it:
+
+- Raw stock text comparisons were run with `--quiet`, which suppresses boot
+  separator lines.
+- Parser parity checked explicit empty `--case-sensitive=` only with
+  `--grep`, not as a standalone option.
+- Parser parity did not include invalid output modes or stock-invalid `-n=2`.
+- Timestamp cases covered a useful subset but not stock relative text.
+- Output equality tests were optimized for correctness over large-journal
+  memory behavior and did not include performance-contract assertions.
+
+Pre-implementation gate:
+
+- Problem / root-cause model: the closed SOW validated a broad parity matrix
+  but missed several parser and renderer interactions plus hot-path allocation
+  behavior.
+- Affected contracts and surfaces: Rust CLI, Go CLI, parser parity harness,
+  interoperability query matrix, `journalctl` parity spec, docs, SOW status.
+- Existing patterns to reuse: current output renderer state objects, current
+  `SdJournal*`/Go facade seek/next/previous primitives, current stock-oracle
+  query matrix, current parser parity interaction table.
+- Sensitive data plan: use only synthetic repository-local fixtures and
+  sanitized command summaries; write no raw host journal data.
+- Implementation plan:
+  - Add boot separator emission for short-family output modes, suppressed by
+    `--quiet`.
+  - Validate Go output modes before rendering.
+  - Validate `--case-sensitive=` independently of grep and extend bool parsing
+    to `t`/`f`.
+  - Preserve stock rejection for Rust `-n=2`.
+  - Add relative `"N unit ago"` timestamp parsing where stock accepts it.
+  - Stream Rust forward/head output, keep bounded tail buffers for Rust and Go,
+    and reduce follow initial/tail memory where practical without changing the
+    portable polling design in this repair.
+  - Add shared parser/interoperability tests for the missed gaps.
+- Validation plan:
+  - `python tests/parser-parity/check_v260_manifest.py`
+  - `python tests/parser-parity/run_parser_parity.py`
+  - `python tests/interoperability/run_journalctl_query_matrix.py`
+  - targeted Rust and Go tests for changed code
+  - unbiased read-only external review from scratch, with no fix list and no
+    repeated-review framing
+  - `git diff --check`
+  - `.agents/sow/audit.sh`
+- Artifact impact plan: update the SOW, SOW status, tests, and specs/docs only
+  if behavior wording changes. No end-user/operator skills are expected to
+  change unless validation exposes a workflow gap.
+- Open decisions: none. The user explicitly requested fixing the verified
+  gaps.
+
+Implementation repair - 2026-06-21:
+
+- Rust `journalctl`:
+  - rejects stock-invalid `-n=...` before clap normalization;
+  - validates `--case-sensitive=` independently of `--grep`;
+  - accepts stock boolean spellings `t` and `f`;
+  - parses stock relative timestamp text in the `"N unit ago"` form;
+  - emits boot separators for short-family, verbose, and with-unit modes when
+    not quiet;
+  - moves `--exclude-identifier` to render-time filtering so boot separator
+    emission matches stock short output behavior;
+  - streams forward/head rendering, bounds tail storage, keeps follow renderer
+    state across polls, and resumes follow polling from the last cursor;
+  - uses indexed `_BOOT_ID` unique-value enumeration plus per-boot head/tail
+    seeks for `--list-boots`, with row-scan fallback for malformed or
+    non-indexed compatibility cases.
+- Go `journalctl`:
+  - rejects unknown output modes before rendering;
+  - validates `--case-sensitive=` independently of `--grep`;
+  - accepts stock boolean spellings `t` and `f`;
+  - parses stock relative timestamp text in the `"N unit ago"` form;
+  - emits boot separators for short-family, verbose, and with-unit modes when
+    not quiet;
+  - moves `--exclude-identifier` to render-time filtering so boot separator
+    emission matches stock short output behavior;
+  - bounds tail storage, keeps follow renderer state across polls, and resumes
+    follow polling from the last cursor;
+  - uses indexed `_BOOT_ID` unique-value enumeration plus per-boot head/tail
+    seeks for `--list-boots`, with row-scan fallback for malformed or
+    non-indexed compatibility cases.
+- Shared test harness:
+  - parser parity now builds the Rust binary before testing, instead of
+    reusing a stale binary;
+  - parser parity covers `-n=2`, standalone explicit empty
+    `--case-sensitive=`, boolean `--case-sensitive=t/f`, and invalid output
+    mode behavior;
+  - the stock query matrix no longer forces `--quiet` for raw stock output,
+    exposing boot separator regressions;
+  - the query matrix includes relative `"ago"` timestamps, `t/f`
+    case-sensitive values, invalid output mode rejection, quiet/default boot
+    separator output, and multiline short-message indentation/truncation.
+- Rust workspace compile hygiene:
+  - `rust/src/journal/src/netdata.rs` had a stale test-only `FileHeader`
+    initializer that blocked full workspace validation. The fixture was
+    updated with zero-valued fields matching the current `FileHeader` shape.
+
+Validation evidence - 2026-06-21:
+
+- `python -m py_compile tests/parser-parity/v260-manifest.py
+  tests/parser-parity/run_parser_parity.py
+  tests/interoperability/run_journalctl_query_matrix.py`: passed.
+- `python tests/parser-parity/check_v260_manifest.py`: passed; official long
+  options 71/71, short options 28/28, output modes 16/16, actions 20/20.
+- `python tests/parser-parity/run_parser_parity.py`: passed; Rust 127/127,
+  Go 127/127, zero failures, zero skips.
+- `python tests/interoperability/run_journalctl_query_matrix.py`: passed
+  against stock `systemd 260 (260.1-2-manjaro)`; 427 comparisons, zero
+  failures; result captured at `.local/sow-0121/query-matrix-latest.json`.
+- `cargo fmt --manifest-path rust/Cargo.toml --all --check`: passed.
+- `cargo test --manifest-path rust/Cargo.toml --workspace`: passed.
+- `gofmt -w cmd/journalctl/main.go cmd/journalctl/output.go` and
+  `go test ./cmd/journalctl`: passed.
+- `go test ./...` from `go/`: passed.
+- `git diff --check`: passed.
+
+Residual performance note:
+
+- `--list-invocations` still discovers invocation ranges by iterating matching
+  rows. Correctness parity is covered by the stock query matrix, including
+  unit-scoped list-invocations cases. This is a remaining performance-contract
+  limitation, not an observed CLI correctness failure. A systemd-like indexed
+  implementation would need to preserve boot/unit match context while
+  enumerating candidate invocation IDs and seeking first/last per ID; doing
+  that safely is a separate shared CLI/facade design change if reviewers or the
+  user classify it as release-blocking.
+
+Reviewer plan:
+
+- Run read-only external reviewers with a neutral from-scratch prompt. The
+  prompt must not list these fixes, must not say this is a repeated review, and
+  must not steer reviewers toward earlier findings.
+
+Final close evidence - 2026-06-21:
+
+- Read-only reviewers were rerun with neutral from-scratch prompts that did not
+  list fixes, did not describe a review round, and did not steer reviewers
+  toward prior findings, per user instruction.
+- Tangible reviewer findings were fixed or dispositioned:
+  - unlimited bare `--reverse` now streams in Rust and Go instead of
+    materializing all matching rows;
+  - Go vacuum opens Unix candidates with `O_NOFOLLOW` and verifies the opened
+    file still matches the directory entry before deletion decisions;
+  - field-name, field-value, repeated `--file`, `+` disjunction, reverse grep
+    boot separators, version output, and vacuum edge cases are covered by
+    stock-oracle tests;
+  - false findings about Go export cursor output and Go Windows rename
+    replacement were rejected with local source/test evidence.
+- Final validation passed:
+  - `python tests/parser-parity/check_v260_manifest.py`: 71 long options, 28
+    short options, 16 output modes, and 20 actions matched the v260.1 manifest.
+  - `python tests/parser-parity/run_parser_parity.py`: Rust 132/132 and Go
+    132/132 passed.
+  - `python tests/interoperability/run_directory_matrix.py`: passed.
+  - `python tests/interoperability/run_journalctl_query_matrix.py`: passed
+    against stock `systemd 260 (260.1-2-manjaro)` with 581 results and zero
+    failures.
+  - `go test ./...` from `go/`: passed with repo-local Go caches.
+  - `cargo test --manifest-path rust/Cargo.toml --workspace`: passed with
+    repo-local Cargo paths.
+  - `python3 tests/docs/check_wiki_docs.py`: passed; 15 wiki markdown files
+    validated.
+  - `python3 tests/docs/verify_examples.py`: passed; 31/31 verified examples
+    passed.
+  - `git diff --check`: passed.
+  - `.agents/sow/audit.sh`: passed; audit reported seven pending SOWs,
+    empty current SOW directory, SOW-0121 completed in `done/`, and SOW-0122
+    open in `pending/`.
+
+Final reviewer disposition:
+
+- `glm`, `kimi`, `mimo`, `deepseek`, `qwen`, and `minimax` were asked for
+  read-only fresh review of SOW-0121 scope and changed journalctl surfaces.
+- Blocking correctness and security findings from the reviewer reports were
+  resolved before close.
+- Remaining non-blocking findings are tracked or rejected:
+  - `--list-invocations` indexed/range performance and portable follow
+    scalability are tracked by pending SOW-0122.
+  - Rust macOS, Windows, and FreeBSD native runtime validation remains release
+    packaging evidence, not a Linux-local correctness blocker for SOW-0121.
+  - Monolithic-file and regex-precompile comments are quality/performance
+    follow-ups only; no stock-oracle correctness failure remains.
+  - Go export cursor-output concern was rejected because exact export
+    stock-oracle comparisons pass.
+
+Final artifact maintenance gate:
+
+- AGENTS.md: unchanged; the project-wide workflow already covers journalctl
+  parity, daemon-only exclusions, review cadence, and SOW lifecycle.
+- Runtime project skills: unchanged; existing project orchestration,
+  docs-authoring, and journal-compatibility skills covered the work.
+- Specs: updated `.agents/sow/specs/product-scope.md` and
+  `.agents/sow/specs/journalctl-v260-parity-matrix.md` to record current
+  portable-mode performance reality and SOW-0122 tracking.
+- End-user/operator docs: updated `docs/Journalctl-CLI.md` with portable-mode
+  follow and `--list-invocations` limits.
+- End-user/operator skills: none exist for this project, so none changed.
+- SOW lifecycle: SOW-0121 is completed and will be moved to
+  `.agents/sow/done/` in the same commit as the code and artifact updates.
+- SOW-status.md: updated at close to move SOW-0121 from Current to Recently
+  Closed Or Completed and add SOW-0122 to Pending.
+
+Final follow-up mapping:
+
+- Implemented in SOW-0121: verified correctness and security gaps from
+  reviewers, plus final stock-oracle coverage for the affected CLI surfaces.
+- Tracked by pending SOW-0122: `--list-invocations` indexed/range performance,
+  portable follow scalability, and large-fixture performance evidence.
+- Rejected as not separate follow-up work: Go export cursor concern, because
+  exact stock export comparisons pass; monolithic-code cleanup, because
+  SOW-0097 and SOW-0098 already track parked maintainability debt.

@@ -426,20 +426,22 @@ impl DirectoryReader {
     }
 
     pub fn seek_cursor(&mut self, cursor: &str) -> Result<()> {
-        let want = parse_cursor(cursor).map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
-        let realtime = want.2;
-        self.seek_realtime(realtime);
+        let want = parse::parse_cursor_location(cursor, true)
+            .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        if want.realtime_set {
+            self.seek_realtime(want.realtime);
+        } else {
+            self.seek_head();
+        }
         while self.next()? {
             let current_cursor = self.get_cursor()?;
-            let got = parse_cursor(&current_cursor)
+            let got = parse::parse_cursor_location(&current_cursor, false)
                 .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
-            if got.2 > realtime {
-                return Ok(());
-            }
-            if got == want {
+            if parse::cursor_location_at_or_after(&got, &want) {
                 return Ok(());
             }
         }
+        self.seek_tail();
         Ok(())
     }
 

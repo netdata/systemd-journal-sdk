@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -21,6 +23,7 @@ type outputOptions struct {
 	fullWidth       bool
 	showAll         bool
 	truncateNewline bool
+	merge           bool
 }
 
 const (
@@ -39,6 +42,7 @@ func newOutputOptions(flags *cliFlags, outputFieldsSet bool, fullWidth bool) out
 		fullWidth:       fullWidth,
 		showAll:         *flags.allFlag,
 		truncateNewline: *flags.truncateNewlineFlag,
+		merge:           *flags.mergeFlag,
 	}
 }
 
@@ -100,8 +104,10 @@ func (r *outputRenderer) render(entry *journal.Entry) (string, error) {
 		return r.renderShortDelta(entry)
 	case "short-unix":
 		return r.renderShort(entry, timestampShortUnix)
-	default:
+	case "short":
 		return r.renderShort(entry, timestampShort)
+	default:
+		return "", fmt.Errorf("Unknown output format %q.", r.options.mode)
 	}
 }
 
@@ -142,7 +148,9 @@ func (r *outputRenderer) renderWithUnit(entry *journal.Entry) (string, error) {
 }
 
 func (r *outputRenderer) renderShortDelta(entry *journal.Entry) (string, error) {
-	monotonic := formatMonotonic(entry.Monotonic)
+	currentRealtime := displayRealtimeUsec(entry)
+	currentMonotonic := displayMonotonicUsec(entry)
+	monotonic := formatMonotonic(currentMonotonic)
 	delta := "                "
 	if r.previousDelta != nil {
 		marker := " "
@@ -151,13 +159,13 @@ func (r *outputRenderer) renderShortDelta(entry *journal.Entry) (string, error) 
 		}
 		var diff uint64
 		if marker == "*" {
-			diff = absDiff(entry.Realtime, r.previousDelta.realtime)
+			diff = absDiff(currentRealtime, r.previousDelta.realtime)
 		} else {
-			diff = absDiff(entry.Monotonic, r.previousDelta.monotonic)
+			diff = absDiff(currentMonotonic, r.previousDelta.monotonic)
 		}
 		delta = fmt.Sprintf(" <%s%s>", formatMonotonic(diff), marker)
 	}
-	r.previousDelta = &deltaState{realtime: entry.Realtime, monotonic: entry.Monotonic, bootID: entry.BootID}
+	r.previousDelta = &deltaState{realtime: currentRealtime, monotonic: currentMonotonic, bootID: entry.BootID}
 	prefix := fmt.Sprintf("[%s%s] %s: ", monotonic, delta, entryLabel(entry, r.options))
 	return prefix + displayMessage(entry, r.options, len(prefix)) + "\n", nil
 }
@@ -226,7 +234,7 @@ func (r *outputRenderer) renderJSON(entry *journal.Entry, frame jsonFrame) (stri
 	var encoded []byte
 	var err error
 	if frame == jsonFramePretty {
-		encoded, err = json.MarshalIndent(object, "", "  ")
+		encoded, err = marshalSystemdPrettyJSON(object)
 	} else {
 		encoded, err = json.Marshal(object)
 	}
@@ -245,12 +253,13 @@ func (r *outputRenderer) renderJSON(entry *journal.Entry, frame jsonFrame) (stri
 
 func (r *outputRenderer) formatTimestamp(entry *journal.Entry, mode timestampMode) (string, error) {
 	if mode == timestampShortMonotonic {
-		return "[" + formatMonotonic(entry.Monotonic) + "]", nil
+		return "[" + formatMonotonic(displayMonotonicUsec(entry)) + "]", nil
 	}
+	realtime := displayRealtimeUsec(entry)
 	if mode == timestampShortUnix {
-		return fmt.Sprintf("%d.%06d", entry.Realtime/1_000_000, entry.Realtime%1_000_000), nil
+		return fmt.Sprintf("%d.%06d", realtime/1_000_000, realtime%1_000_000), nil
 	}
-	t := time.UnixMicro(int64(entry.Realtime))
+	t := time.UnixMicro(int64(realtime))
 	if r.options.utc {
 		t = t.UTC()
 	} else {
@@ -258,20 +267,71 @@ func (r *outputRenderer) formatTimestamp(entry *journal.Entry, mode timestampMod
 	}
 	switch mode {
 	case timestampShort:
-		return t.Format("Jan _2 15:04:05"), nil
+		return t.Format("Jan 02 15:04:05"), nil
 	case timestampShortFull:
 		return t.Format("Mon 2006-01-02 15:04:05 MST"), nil
 	case timestampShortISO:
-		return t.Format("2006-01-02T15:04:05Z07:00"), nil
+		return t.Format("2006-01-02T15:04:05-07:00"), nil
 	case timestampShortISOPrecise:
-		return t.Format("2006-01-02T15:04:05.000000Z07:00"), nil
+		return t.Format("2006-01-02T15:04:05.000000-07:00"), nil
 	case timestampShortPrecise:
-		return t.Format("Jan _2 15:04:05.000000"), nil
+		return t.Format("Jan 02 15:04:05.000000"), nil
 	case timestampVerbose:
 		return t.Format("Mon 2006-01-02 15:04:05.000000 MST"), nil
 	default:
 		return "", fmt.Errorf("unknown timestamp mode")
 	}
+}
+
+func outputSkipsMissingMessage(mode string) bool {
+	switch mode {
+	case "short", "short-full", "short-iso", "short-iso-precise", "short-precise",
+		"short-monotonic", "short-delta", "short-unix", "with-unit":
+		return true
+	default:
+		return false
+	}
+}
+
+func displayRealtimeUsec(entry *journal.Entry) uint64 {
+	if realtime, ok := sourceRealtimeUsec(entry); ok {
+		return realtime
+	}
+	return entry.Realtime
+}
+
+func displayMonotonicUsec(entry *journal.Entry) uint64 {
+	if realtime, ok := sourceRealtimeUsec(entry); ok {
+		return mapClockUsec(entry.Monotonic, entry.Realtime, realtime)
+	}
+	return entry.Monotonic
+}
+
+func sourceRealtimeUsec(entry *journal.Entry) (uint64, bool) {
+	values := entryValues(entry, "_SOURCE_REALTIME_TIMESTAMP")
+	if len(values) == 0 {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(string(values[0]), 10, 64)
+	if err != nil || value == 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+func mapClockUsec(value, from, to uint64) uint64 {
+	if to >= from {
+		delta := to - from
+		if value > ^uint64(0)-delta {
+			return ^uint64(0)
+		}
+		return value + delta
+	}
+	delta := from - to
+	if value < delta {
+		return 0
+	}
+	return value - delta
 }
 
 func formatMonotonic(usec uint64) string {
@@ -331,11 +391,26 @@ func displayMessage(entry *journal.Entry, options outputOptions, prefixColumns i
 	if !options.showAll && !journalTextPrintable(value) {
 		return blobData(len(value))
 	}
-	out := cStringBytes(value)
+	out := indentContinuationLines(cStringBytes(value), prefixColumns)
 	if !options.showAll && !options.fullWidth {
 		out = ellipsizeLine(out, prefixColumns)
 	}
 	return string(out)
+}
+
+func indentContinuationLines(value []byte, prefixColumns int) []byte {
+	if !bytes.Contains(value, []byte{'\n'}) {
+		return value
+	}
+	indent := bytes.Repeat([]byte{' '}, prefixColumns)
+	out := make([]byte, 0, len(value)+bytes.Count(value, []byte{'\n'})*prefixColumns)
+	for idx, b := range value {
+		out = append(out, b)
+		if b == '\n' && idx+1 < len(value) {
+			out = append(out, indent...)
+		}
+	}
+	return out
 }
 
 func firstString(entry *journal.Entry, name string) string {
@@ -385,6 +460,9 @@ func ellipsizeLine(value []byte, prefixColumns int) []byte {
 	if len(value) <= limit {
 		return value
 	}
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
+	}
 	out := make([]byte, 0, limit+len("…"))
 	out = append(out, value[:limit]...)
 	out = append(out, "…"...)
@@ -422,10 +500,8 @@ func metadataFields(entry *journal.Entry) []outputField {
 	fields = append(fields,
 		outputField{"__REALTIME_TIMESTAMP", []byte(fmt.Sprintf("%d", entry.Realtime))},
 		outputField{"__MONOTONIC_TIMESTAMP", []byte(fmt.Sprintf("%d", entry.Monotonic))},
+		outputField{"__SEQNUM", []byte(fmt.Sprintf("%d", entry.Seqnum))},
 	)
-	if entry.Seqnum != 0 {
-		fields = append(fields, outputField{"__SEQNUM", []byte(fmt.Sprintf("%d", entry.Seqnum))})
-	}
 	if seqnumID, _, _, _, err := journal.ParseCursor(entry.Cursor); err == nil && seqnumID != "" {
 		fields = append(fields, outputField{"__SEQNUM_ID", []byte(seqnumID)})
 	}
@@ -446,7 +522,14 @@ func verboseFields(entry *journal.Entry, options outputOptions) []outputField {
 
 func selectedOutputFields(entry *journal.Entry, options outputOptions) []outputField {
 	if options.outputFieldsSet {
-		return selectedNamedFields(entry, options.outputFields)
+		fields := selectedNamedFields(entry, options.outputFields)
+		filtered := fields[:0]
+		for _, field := range fields {
+			if !isMetadataField(field.name) {
+				filtered = append(filtered, field)
+			}
+		}
+		return filtered
 	}
 	fields := make([]outputField, 0, len(entry.RawFields))
 	for _, field := range entry.RawFields {
@@ -456,6 +539,15 @@ func selectedOutputFields(entry *journal.Entry, options outputOptions) []outputF
 		fields = append(fields, outputField{name: string(field.Name), value: field.Value})
 	}
 	return fields
+}
+
+func isMetadataField(name string) bool {
+	switch name {
+	case "__CURSOR", "__REALTIME_TIMESTAMP", "__MONOTONIC_TIMESTAMP", "__SEQNUM", "__SEQNUM_ID", "_BOOT_ID":
+		return true
+	default:
+		return false
+	}
 }
 
 func selectedNamedFields(entry *journal.Entry, names []string) []outputField {
@@ -517,6 +609,81 @@ func jsonValueForBytes(name string, value []byte, showAll bool) any {
 	return values
 }
 
+func marshalSystemdPrettyJSON(object map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writeSystemdPrettyJSONValue(&buf, object, 0); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func writeSystemdPrettyJSONValue(buf *bytes.Buffer, value any, depth int) error {
+	switch v := value.(type) {
+	case map[string]any:
+		buf.WriteByte('{')
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		if len(keys) > 0 {
+			buf.WriteByte('\n')
+		}
+		for i, key := range keys {
+			writeJSONTabs(buf, depth+1)
+			keyBytes, err := json.Marshal(key)
+			if err != nil {
+				return err
+			}
+			buf.Write(keyBytes)
+			buf.WriteString(" : ")
+			if err := writeSystemdPrettyJSONValue(buf, v[key], depth+1); err != nil {
+				return err
+			}
+			if i+1 != len(keys) {
+				buf.WriteByte(',')
+			}
+			buf.WriteByte('\n')
+		}
+		if len(keys) > 0 {
+			writeJSONTabs(buf, depth)
+		}
+		buf.WriteByte('}')
+	case []any:
+		buf.WriteByte('[')
+		if len(v) > 0 {
+			buf.WriteByte('\n')
+		}
+		for i, item := range v {
+			writeJSONTabs(buf, depth+1)
+			if err := writeSystemdPrettyJSONValue(buf, item, depth+1); err != nil {
+				return err
+			}
+			if i+1 != len(v) {
+				buf.WriteByte(',')
+			}
+			buf.WriteByte('\n')
+		}
+		if len(v) > 0 {
+			writeJSONTabs(buf, depth)
+		}
+		buf.WriteByte(']')
+	default:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		buf.Write(raw)
+	}
+	return nil
+}
+
+func writeJSONTabs(buf *bytes.Buffer, depth int) {
+	for i := 0; i < depth; i++ {
+		buf.WriteByte('\t')
+	}
+}
+
 func writeExportField(buf *bytes.Buffer, name []byte, value []byte) {
 	text := make([]byte, 0, len(name)+1+len(value))
 	text = append(text, name...)
@@ -537,8 +704,12 @@ func writeExportField(buf *bytes.Buffer, name []byte, value []byte) {
 }
 
 func journalBytesPrintable(value []byte) bool {
-	for _, b := range value {
-		if b != '\t' && (b < 0x20 || b >= 0x7f) {
+	if !utf8.Valid(value) {
+		return false
+	}
+	for _, ch := range string(value) {
+		cp := uint32(ch)
+		if (cp < 0x20 && ch != '\t') || (cp >= 0x7f && cp <= 0x9f) {
 			return false
 		}
 	}

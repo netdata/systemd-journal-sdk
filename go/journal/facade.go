@@ -538,12 +538,16 @@ func SdJournalGetCursorWithRealtime(j *sdJournal, realtime uint64) (string, erro
 
 func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 	j.resetIterators()
-	wantSeqnumID, wantBootID, wantRealtime, wantSeqnum, err := ParseCursor(cursor)
+	want, err := parseCursorLocation(cursor, true)
 	if err != nil {
 		return ErrInvalidCursor
 	}
 
-	if err := j.reader.SeekRealtimeUsec(wantRealtime); err != nil {
+	if want.realtimeSet {
+		if err := j.reader.SeekRealtimeUsec(want.realtime); err != nil {
+			return err
+		}
+	} else if err := j.reader.SeekHead(); err != nil {
 		return err
 	}
 
@@ -564,28 +568,14 @@ func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 			return err
 		}
 
-		gotSeqnumID, gotBootID, gotRealtime, gotSeqnum, err := ParseCursor(entry.Cursor)
+		got, err := parseCursorLocation(entry.Cursor, false)
 		if err != nil {
 			return err
 		}
-		done, ok := cursorSeekPositionReached(
-			gotSeqnumID, gotBootID, gotRealtime, gotSeqnum,
-			wantSeqnumID, wantBootID, wantRealtime, wantSeqnum,
-		)
-		if done || ok {
+		if cursorLocationAtOrAfter(got, want) {
 			return nil
 		}
 	}
-}
-
-func cursorSeekPositionReached(gotSeqnumID, gotBootID string, gotRealtime, gotSeqnum uint64, wantSeqnumID, wantBootID string, wantRealtime, wantSeqnum uint64) (bool, bool) {
-	if gotRealtime > wantRealtime {
-		return true, false
-	}
-	return false, gotSeqnumID == wantSeqnumID &&
-		gotBootID == wantBootID &&
-		gotRealtime == wantRealtime &&
-		gotSeqnum == wantSeqnum
 }
 
 func SdJournalProcessOutput(j *sdJournal, entry *Entry) (string, error) {

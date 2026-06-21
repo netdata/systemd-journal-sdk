@@ -70,6 +70,22 @@ func TestParseCursor(t *testing.T) {
 	if seqnum != 42 {
 		t.Errorf("official seqnum = %d, want 42", seqnum)
 	}
+
+	seqnumID, bootID, realtime, seqnum, err = ParseCursor("s=ABC123;i=2a")
+	if err != nil {
+		t.Fatalf("partial seqnum ParseCursor error: %v", err)
+	}
+	if seqnumID != "abc123" || bootID != "" || realtime != 0 || seqnum != 42 {
+		t.Fatalf("partial seqnum cursor = (%q, %q, %d, %d)", seqnumID, bootID, realtime, seqnum)
+	}
+
+	seqnumID, bootID, realtime, seqnum, err = ParseCursor("t=10")
+	if err != nil {
+		t.Fatalf("partial realtime ParseCursor error: %v", err)
+	}
+	if seqnumID != "" || bootID != "" || realtime != 16 || seqnum != 0 {
+		t.Fatalf("partial realtime cursor = (%q, %q, %d, %d)", seqnumID, bootID, realtime, seqnum)
+	}
 }
 
 func TestUnsupportedDaemonCommands(t *testing.T) {

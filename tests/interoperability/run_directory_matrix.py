@@ -408,20 +408,29 @@ def run_fields_check(reader: ReaderSpec, tools: dict[str, str], directory: Path)
     return record
 
 
-def run_boots_check(reader: ReaderSpec, tools: dict[str, str], directory: Path, expected_count: int) -> dict:
+def boot_rows(stdout: str) -> list[str]:
+    return [
+        line.strip()
+        for line in stdout.splitlines()
+        if line.strip() and not line.startswith("IDX BOOT ID")
+    ]
+
+
+def run_boots_check(reader: ReaderSpec, tools: dict[str, str], directory: Path, expected_rows: list[str]) -> dict:
     cmd = reader_command(reader, tools, "boots", directory, [])
     result = run(cmd)
     record = base_record(reader, "list-boots", cmd)
     if result.returncode != 0:
         record["error"] = result.stderr[-1000:] or result.stdout[-1000:]
         return record
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    record["entries_read"] = len(lines)
-    record["expected"] = expected_count
-    if len(lines) == expected_count:
+    rows = boot_rows(result.stdout)
+    record["entries_read"] = len(rows)
+    record["expected"] = expected_rows
+    record["actual"] = rows
+    if rows == expected_rows:
         record["status"] = "PASS"
     else:
-        record["error"] = f"boot count mismatch: got {len(lines)}, expected {expected_count}"
+        record["error"] = f"boot rows mismatch: got {rows}, expected {expected_rows}"
     return record
 
 
@@ -525,7 +534,9 @@ def main() -> int:
             checks.append(run_export_check(reader, tools, fixtures["stock"], expected_all))
             checks.append(run_text_check(reader, tools, fixtures["stock"], expected_messages))
             checks.append(run_fields_check(reader, tools, fixtures["stock"]))
-            checks.append(run_boots_check(reader, tools, fixtures["stock"], expected_count=5))
+            stock_boots = run(reader_command(READERS["stock"], tools, "boots", fixtures["stock"], []))
+            require_ok(stock_boots, "stock list-boots")
+            checks.append(run_boots_check(reader, tools, fixtures["stock"], expected_rows=boot_rows(stock_boots.stdout)))
             checks.append(
                 run_json_check(
                     reader,

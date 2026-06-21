@@ -513,27 +513,22 @@ impl FileReader {
     }
 
     pub fn seek_cursor(&mut self, cursor: &str) -> Result<()> {
-        let (seqnum_id, boot_id, realtime, seqnum) =
-            parse_cursor(cursor).map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
-        self.seek_realtime(realtime);
+        let want = parse::parse_cursor_location(cursor, true)
+            .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        if want.realtime_set {
+            self.seek_realtime(want.realtime);
+        } else {
+            self.seek_head();
+        }
         while self.next()? {
-            let entry = self.get_entry()?;
-            if entry.realtime > realtime {
-                break;
-            }
-            if entry.realtime != realtime
-                || entry.seqnum != seqnum
-                || hex::encode(entry.boot_id) != boot_id
-            {
-                continue;
-            }
             let current_cursor = self.get_cursor()?;
-            let (current_seqnum_id, _, _, _) = parse_cursor(&current_cursor)
+            let got = parse::parse_cursor_location(&current_cursor, false)
                 .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
-            if current_seqnum_id == seqnum_id {
+            if parse::cursor_location_at_or_after(&got, &want) {
                 return Ok(());
             }
         }
+        self.seek_tail();
         Ok(())
     }
 
@@ -738,13 +733,17 @@ impl FileReader {
     }
 
     pub fn test_cursor(&self, cursor: &str) -> Result<bool> {
-        let current = self.get_cursor()?;
-        let current =
-            parse_cursor(&current).map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
-        let Ok(want) = parse_cursor(cursor) else {
+        let current = match self.get_cursor() {
+            Ok(cursor) => cursor,
+            Err(SdkError::Journal(JournalError::UnsetCursor)) => return Err(SdkError::NoEntry),
+            Err(err) => return Err(err),
+        };
+        let current = parse::parse_cursor_location(&current, false)
+            .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        let Ok(want) = parse::parse_cursor_location(cursor, false) else {
             return Ok(false);
         };
-        Ok(current == want)
+        Ok(parse::cursor_location_matches(&current, &want))
     }
 
     pub fn add_match(&mut self, data: &[u8]) {

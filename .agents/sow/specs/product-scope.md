@@ -958,6 +958,8 @@ File-backed query semantics:
   parse error, matching stock `journalctl`.
 - `--follow` follows repository-supported file and directory inputs by polling
   file-backed readers and emitting newly appended entries in cursor order.
+  This is the portable non-daemon behavior; it may cost more than
+  daemon-backed Linux journal wait APIs on very large inputs.
 - `--pager-end` does not spawn a pager in portable mode, but it preserves stock
   line-selection semantics by applying an implicit 1000-entry tail when no
   explicit `--lines`, `--head`, or `--tail` option is present.
@@ -968,6 +970,10 @@ File-backed query semantics:
 - `--cursor`, `--after-cursor`, `--cursor-file`, and `--show-cursor` use
   official systemd cursor strings for file-backed reads and cursor-file
   updates.
+- `--list-invocations` is correctness-compatible for covered file-backed unit
+  contexts, but the current implementation derives invocation ranges from
+  matching entries. SOW-0122 tracks the remaining performance work before any
+  large-archive performance claim.
 - Recognized options may appear before or after show-action match arguments,
   matching stock argument permutation. Short options accept stock attached
   values and clusters such as `-n2`, `-ball`, and `-rn2`, while stock-invalid

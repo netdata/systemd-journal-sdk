@@ -65,6 +65,19 @@ Host and daemon operations are out of scope by design. `--sync`, `--flush`,
 `--rotate`, `--relinquish-var`, and `--setup-keys` return a controlled error
 in every language.
 
+## Portable Mode Limits
+
+The rewrites are file-backed tools. They never connect to journald, read the
+host journal by default, or use daemon wait APIs. `--follow` therefore watches
+explicit files and directories by portable polling. Correctness is covered by
+the shared stock-oracle follow matrix, but very large inputs may cost more than
+daemon-backed Linux `journalctl --follow`.
+
+`--list-invocations` is stock-compatible for covered file-backed unit contexts,
+but it currently derives invocation ranges from matching entries. Treat it as a
+correctness-compatible path, not a performance-certified large-archive index
+path. Large-archive performance work remains tracked internally.
+
 ## Running Each Rewrite
 
 <!-- illustrative-only: build/run commands depend on local toolchains and paths -->

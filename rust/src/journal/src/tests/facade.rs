@@ -607,19 +607,27 @@ fn assert_stateful_facade_cursor_navigation(journal: &mut SdJournal) {
     SdJournalSeekCursor(journal, &cursor).expect("seek cursor back to second");
     let entry = SdJournalGetEntry(journal).expect("entry after cursor seek");
     assert_eq!(entry.get_str("MESSAGE"), Some("second"));
+    let partial_first_cursor = partial_seqnum_cursor(&first_cursor);
+    SdJournalSeekCursor(journal, &partial_first_cursor).expect("seek partial first cursor");
+    assert!(SdJournalTestCursor(journal, &partial_first_cursor).expect("test partial cursor"));
+    let entry = SdJournalGetEntry(journal).expect("entry after partial cursor seek");
+    assert_eq!(entry.get_str("MESSAGE"), Some("first"));
     let missing_cursor = cursor_with_missing_seqnum(&first_cursor);
     SdJournalSeekCursor(journal, &missing_cursor)
         .expect("valid missing cursor is accepted as a seek location");
     assert!(
-        !SdJournalTestCursor(journal, &first_cursor)
-            .expect("missing cursor seek does not stay on original cursor")
+        SdJournalGetEntry(journal).is_err(),
+        "future same-source seqnum cursor should leave no current row"
     );
-    assert!(
-        SdJournalGetRealtimeUsec(journal).expect("realtime after missing cursor seek")
-            >= first_realtime
+    let different_seqnum_id_cursor = "s=00000000000000000000000000000000;i=f423f";
+    SdJournalSeekCursor(journal, different_seqnum_id_cursor)
+        .expect("different seqnum id cursor seeks to head");
+    let entry = SdJournalGetEntry(journal).expect("entry after different seqnum id cursor");
+    assert_eq!(entry.get_str("MESSAGE"), Some("first"));
+    assert_eq!(
+        SdJournalGetRealtimeUsec(journal).expect("realtime after different seqnum id cursor"),
+        first_realtime
     );
-    let entry = SdJournalGetEntry(journal).expect("entry after missing cursor seek");
-    assert_eq!(entry.get_str("MESSAGE"), Some("second"));
 }
 
 fn cursor_with_missing_seqnum(cursor: &str) -> String {
@@ -635,6 +643,24 @@ fn cursor_with_missing_seqnum(cursor: &str) -> String {
         }
     }
     panic!("cursor has seqnum segment: {cursor}");
+}
+
+fn partial_seqnum_cursor(cursor: &str) -> String {
+    let mut seqnum_id = None;
+    let mut seqnum = None;
+    for part in cursor.split(';') {
+        if part.starts_with("s=") {
+            seqnum_id = Some(part);
+        }
+        if part.starts_with("i=") {
+            seqnum = Some(part);
+        }
+    }
+    format!(
+        "{};{}",
+        seqnum_id.expect("cursor has seqnum id segment"),
+        seqnum.expect("cursor has seqnum segment")
+    )
 }
 
 fn assert_stateful_facade_multi_file_navigation(dir: &tempfile::TempDir, path: &Path) {
@@ -669,8 +695,6 @@ fn assert_stateful_facade_multi_file_navigation(dir: &tempfile::TempDir, path: &
         1
     );
     let multi_first_cursor = SdJournalGetCursor(&cursor_multi).expect("cursor multi first cursor");
-    let multi_first_realtime =
-        SdJournalGetRealtimeUsec(&cursor_multi).expect("cursor multi first realtime");
     assert_eq!(
         SdJournalNext(&mut cursor_multi).expect("cursor multi second"),
         1
@@ -691,13 +715,8 @@ fn assert_stateful_facade_multi_file_navigation(dir: &tempfile::TempDir, path: &
     SdJournalSeekCursor(&mut cursor_multi, &missing_cursor)
         .expect("directory valid missing cursor is accepted as a seek location");
     assert!(
-        !SdJournalTestCursor(&cursor_multi, &multi_first_cursor)
-            .expect("directory missing seek does not stay on original cursor")
-    );
-    assert!(
-        SdJournalGetRealtimeUsec(&cursor_multi)
-            .expect("directory realtime after missing cursor seek")
-            >= multi_first_realtime
+        SdJournalGetEntry(&mut cursor_multi).is_err(),
+        "directory future same-source seqnum cursor should leave no current row"
     );
 
     SdJournalSeekRealtimeUsec(&mut multi, 1002).expect("multi seek realtime backward");

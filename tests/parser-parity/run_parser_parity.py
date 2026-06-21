@@ -141,6 +141,13 @@ def looks_like_unsupported(err: str) -> bool:
     )
 
 
+def sample_long_option_value(long_name: str, args_type: str) -> str:
+    """Return a syntactically valid placeholder for option-surface probes."""
+    if long_name == "synchronize-on-exit":
+        return "true"
+    return "placeholder"
+
+
 def exercise_long_option(cmd: Command, opt: dict) -> CaseResult:
     """Probe whether the parser recognizes one long option.
 
@@ -156,13 +163,13 @@ def exercise_long_option(cmd: Command, opt: dict) -> CaseResult:
     if expectation == "recognized-unsupported":
         # Use a minimal placeholder; the option itself should still be parsed.
         if has_value:
-            arg_list = [f"--{long_name}=placeholder"]
+            arg_list = [f"--{long_name}={sample_long_option_value(long_name, args_type)}"]
         else:
             arg_list = [f"--{long_name}"]
     elif expectation == "recognized-no-op":
         # Recognize. Behavior may or may not require a file/directory.
         if has_value:
-            arg_list = [f"--{long_name}=placeholder"]
+            arg_list = [f"--{long_name}={sample_long_option_value(long_name, args_type)}"]
         else:
             arg_list = [f"--{long_name}"]
     else:
@@ -170,7 +177,7 @@ def exercise_long_option(cmd: Command, opt: dict) -> CaseResult:
         # Probe with a placeholder path; this will likely fail on file
         # access, but the parser must accept the option first.
         if has_value:
-            arg_list = [f"--{long_name}=placeholder"]
+            arg_list = [f"--{long_name}={sample_long_option_value(long_name, args_type)}"]
         else:
             arg_list = [f"--{long_name}"]
 
@@ -355,6 +362,43 @@ def exercise_output_mode(cmd: Command, mode: str) -> CaseResult:
             f"unknown output format: {result.stderr.strip()[:300]}",
         )
     return CaseResult(f"output={mode}", "recognized-supported", "ok", f"rc={result.returncode}")
+
+
+def exercise_invalid_output_mode(cmd: Command) -> CaseResult:
+    """Probe whether invalid output mode values are rejected instead of falling back."""
+    try:
+        result = run_command(cmd, ["--output=jzon", "--file=placeholder.journal"], timeout=20)
+    except subprocess.TimeoutExpired:
+        return CaseResult("output-invalid", "parser-required", "fail", "timeout")
+    except FileNotFoundError as exc:
+        return CaseResult("output-invalid", "parser-required", "fail", f"binary missing: {exc}")
+    combined = (result.stderr + "\n" + result.stdout).lower()
+    if result.returncode != 0 and ("output" in combined or "format" in combined or "jzon" in combined):
+        return CaseResult("output-invalid", "parser-required", "ok", "invalid output mode rejected")
+    return CaseResult(
+        "output-invalid",
+        "parser-required",
+        "fail",
+        f"invalid output mode accepted: stdout={result.stdout.strip()[:300]} stderr={result.stderr.strip()[:300]}",
+    )
+
+
+def exercise_help_stdout(cmd: Command) -> CaseResult:
+    """Probe whether explicit --help writes usage to stdout without stderr noise."""
+    try:
+        result = run_command(cmd, ["--help"], timeout=20)
+    except subprocess.TimeoutExpired:
+        return CaseResult("help-stdout", "parser-required", "fail", "timeout")
+    except FileNotFoundError as exc:
+        return CaseResult("help-stdout", "parser-required", "fail", f"binary missing: {exc}")
+    if result.returncode == 0 and "Usage:" in result.stdout and "Options:" in result.stdout and result.stderr == "":
+        return CaseResult("help-stdout", "parser-required", "ok", "--help writes usage to stdout")
+    return CaseResult(
+        "help-stdout",
+        "parser-required",
+        "fail",
+        f"--help did not write usage cleanly to stdout: rc={result.returncode} stdout={result.stdout[:200]!r} stderr={result.stderr[:200]!r}",
+    )
 
 
 def exercise_interaction(cmd: Command, interaction: dict) -> CaseResult:
@@ -553,10 +597,125 @@ def exercise_interaction(cmd: Command, interaction: dict) -> CaseResult:
             "fail",
             f"attached short values rejected: stderr={result.stderr.strip()[:300]}",
         )
+    if name == "short-invalid-equals-lines":
+        try:
+            result = run_command(
+                cmd,
+                ["-n=2", "--file=placeholder.journal"],
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return CaseResult(name, "parser-required", "fail", "timeout")
+        except FileNotFoundError as exc:
+            return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+        combined = (result.stderr + "\n" + result.stdout).lower()
+        if result.returncode != 0 and "lines" in combined:
+            return CaseResult(name, "parser-required", "ok", "-n=2 rejected")
+        return CaseResult(
+            name,
+            "parser-required",
+            "fail",
+            f"-n=2 accepted: stdout={result.stdout.strip()[:300]} stderr={result.stderr.strip()[:300]}",
+        )
+    if name == "lines-zero-accepted":
+        try:
+            result = run_command(
+                cmd,
+                ["--lines=0", "--file=placeholder.journal"],
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return CaseResult(name, "parser-required", "fail", "timeout")
+        except FileNotFoundError as exc:
+            return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+        combined = (result.stderr + "\n" + result.stdout).lower()
+        if "lines" not in combined or ("parse --lines" not in combined and "invalid lines" not in combined):
+            return CaseResult(name, "parser-required", "ok", "--lines=0 accepted")
+        return CaseResult(
+            name,
+            "parser-required",
+            "fail",
+            f"--lines=0 rejected: stdout={result.stdout.strip()[:300]} stderr={result.stderr.strip()[:300]}",
+        )
+    if name == "signed-duration-four-digit-values":
+        cases = [
+            ["--since=+2025h", "--file=placeholder.journal"],
+            ["--since=-2025m", "--file=placeholder.journal"],
+            ["--until=+2025", "--file=placeholder.journal"],
+        ]
+        for args in cases:
+            try:
+                result = run_command(cmd, args, timeout=20)
+            except subprocess.TimeoutExpired:
+                return CaseResult(name, "parser-required", "fail", f"timeout for {args!r}")
+            except FileNotFoundError as exc:
+                return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+            combined = (result.stderr + "\n" + result.stdout).lower()
+            if "parse timestamp" in combined or "failed to parse timestamp" in combined:
+                return CaseResult(
+                    name,
+                    "parser-required",
+                    "fail",
+                    f"{args[0]} rejected: stderr={result.stderr.strip()[:300]}",
+                )
+        return CaseResult(name, "parser-required", "ok", "four-digit signed durations accepted")
+    if name == "synchronize-on-exit-bool-spellings":
+        falsey_cases = [
+            ["--synchronize-on-exit=0", "--file=placeholder.journal"],
+            ["--synchronize-on-exit=f", "--file=placeholder.journal"],
+            ["--synchronize-on-exit=off", "--file=placeholder.journal"],
+        ]
+        for args in falsey_cases:
+            try:
+                result = run_command(cmd, args, timeout=20)
+            except subprocess.TimeoutExpired:
+                return CaseResult(name, "parser-required", "fail", f"timeout for {args!r}")
+            except FileNotFoundError as exc:
+                return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+            combined = (result.stderr + "\n" + result.stdout).lower()
+            if "synchronize-on-exit" in combined and "portable mode does not support" in combined:
+                return CaseResult(
+                    name,
+                    "parser-required",
+                    "fail",
+                    f"{args[0]} treated as true: stderr={result.stderr.strip()[:300]}",
+                )
+        try:
+            result = run_command(cmd, ["--synchronize-on-exit=", "--file=placeholder.journal"], timeout=20)
+        except subprocess.TimeoutExpired:
+            return CaseResult(name, "parser-required", "fail", "timeout for empty synchronize-on-exit")
+        except FileNotFoundError as exc:
+            return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+        combined = (result.stderr + "\n" + result.stdout).lower()
+        if result.returncode != 0 and "synchronize-on-exit" in combined:
+            return CaseResult(name, "parser-required", "ok", "false spellings accepted and empty rejected")
+        return CaseResult(
+            name,
+            "parser-required",
+            "fail",
+            f"empty --synchronize-on-exit= accepted: stdout={result.stdout.strip()[:300]} stderr={result.stderr.strip()[:300]}",
+        )
+    if name == "explicit-empty-boot-no-input":
+        try:
+            result = run_command(cmd, ["--boot="], timeout=20)
+        except subprocess.TimeoutExpired:
+            return CaseResult(name, "parser-required", "fail", "timeout")
+        except FileNotFoundError as exc:
+            return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+        combined = (result.stderr + "\n" + result.stdout).lower()
+        if result.returncode != 0 and "boot descriptor" in combined and "default journal source" not in combined:
+            return CaseResult(name, "parser-required", "ok", "--boot= rejected before default source")
+        return CaseResult(
+            name,
+            "parser-required",
+            "fail",
+            f"--boot= wrong error class: stdout={result.stdout.strip()[:300]} stderr={result.stderr.strip()[:300]}",
+        )
     if name == "explicit-empty-optional-values":
         cases = [
             (["--lines=", "--file=placeholder.journal"], "lines"),
             (["--case-sensitive=", "--grep=x", "--file=placeholder.journal"], "case-sensitive"),
+            (["--case-sensitive=", "--file=placeholder.journal"], "case-sensitive"),
         ]
         for args, expected in cases:
             try:
@@ -574,6 +733,27 @@ def exercise_interaction(cmd: Command, interaction: dict) -> CaseResult:
                     f"explicit empty {args[0]} not rejected: stderr={result.stderr.strip()[:300]}",
                 )
         return CaseResult(name, "parser-required", "ok", "explicit empty values rejected")
+    if name == "case-sensitive-bool-spellings":
+        cases = [
+            ["--grep=x", "--case-sensitive=t", "--file=placeholder.journal"],
+            ["--grep=x", "--case-sensitive=f", "--file=placeholder.journal"],
+        ]
+        for args in cases:
+            try:
+                result = run_command(cmd, args, timeout=20)
+            except subprocess.TimeoutExpired:
+                return CaseResult(name, "parser-required", "fail", f"timeout for {args!r}")
+            except FileNotFoundError as exc:
+                return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+            combined = (result.stderr + "\n" + result.stdout).lower()
+            if "case-sensitive" in combined and ("bad" in combined or "invalid" in combined):
+                return CaseResult(
+                    name,
+                    "parser-required",
+                    "fail",
+                    f"{args[1]} rejected: stderr={result.stderr.strip()[:300]}",
+                )
+        return CaseResult(name, "parser-required", "ok", "t/f bool spellings accepted")
     return CaseResult(name, "parser-required", "skipped", "interaction not yet exercised")
 
 
@@ -586,6 +766,8 @@ def run_for_command(cmd: Command, manifest: dict) -> list[CaseResult]:
         results.append(exercise_short_option(cmd, short, long_options))
     for mode in manifest["output_modes"]:
         results.append(exercise_output_mode(cmd, mode))
+    results.append(exercise_invalid_output_mode(cmd))
+    results.append(exercise_help_stdout(cmd))
     for interaction in manifest["parser_interactions"]:
         results.append(exercise_interaction(cmd, interaction))
     return results
@@ -625,6 +807,31 @@ def build_go_binary(go_root: Path) -> Path:
     return bin_path
 
 
+def build_rust_binary() -> Path:
+    """Build the Rust journalctl binary under .local/cargo-target/."""
+    target_dir = REPO_ROOT / ".local" / "cargo-target"
+    cmd = [
+        "cargo",
+        "build",
+        "--manifest-path",
+        str(REPO_ROOT / "rust" / "Cargo.toml"),
+        "-p",
+        "journalctl",
+        "--target-dir",
+        str(target_dir),
+    ]
+    env = os.environ.copy()
+    env.setdefault("CARGO_HOME", str(REPO_ROOT / ".local" / "cargo-home"))
+    subprocess.run(  # nosec B603 B607
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        text=True,
+        check=True,
+    )
+    return target_dir / "debug" / "journalctl"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rust-bin", type=Path, default=DEFAULT_RUST_BIN)
@@ -640,11 +847,13 @@ def main():
 
     manifest = json.loads(args.manifest.read_text())
 
-    rust_cmd = Command(name="rust", path=args.rust_bin, flag_style="gnu-long")
     if not args.no_build:
+        rust_bin = build_rust_binary()
         go_bin = build_go_binary(args.go_root)
     else:
+        rust_bin = args.rust_bin
         go_bin = args.go_bin
+    rust_cmd = Command(name="rust", path=rust_bin, flag_style="gnu-long")
     go_cmd = Command(name="go", path=go_bin, flag_style="go-flag")
 
     print(f"rust binary: {rust_cmd.path}")

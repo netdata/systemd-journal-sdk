@@ -16,6 +16,7 @@ pub(crate) struct OutputOptions {
     full_width: bool,
     show_all: bool,
     truncate_newline: bool,
+    merge: bool,
 }
 
 const PRINT_CHAR_THRESHOLD: usize = 300;
@@ -33,7 +34,16 @@ impl OutputOptions {
             full_width,
             show_all: args.all,
             truncate_newline: args.truncate_newline,
+            merge: args.merge,
         }
+    }
+
+    pub(crate) fn mode(&self) -> OutputModeArg {
+        self.mode
+    }
+
+    pub(crate) fn suppress_boot_separators(&self) -> bool {
+        self.merge
     }
 }
 
@@ -76,6 +86,11 @@ impl OutputRenderer {
         }
     }
 
+    pub(crate) fn skips_entry(&self, entry: &Entry) -> bool {
+        output_skips_missing_message(self.options.mode)
+            && values_for_name(entry, "MESSAGE").is_empty()
+    }
+
     fn render_short(&mut self, entry: &Entry, timestamp_mode: TimestampMode) -> Result<Vec<u8>> {
         let timestamp = format_timestamp(entry, timestamp_mode, self.options.utc)?;
         let label = entry_label(entry, &self.options);
@@ -102,14 +117,16 @@ impl OutputRenderer {
 
     fn render_short_delta(&mut self, entry: &Entry) -> Result<Vec<u8>> {
         let label = entry_label(entry, &self.options);
-        let current = (entry.realtime, entry.monotonic, entry.boot_id);
-        let monotonic = format_monotonic(entry.monotonic);
+        let current_realtime = display_realtime_usec(entry);
+        let current_monotonic = display_monotonic_usec(entry);
+        let current = (current_realtime, current_monotonic, entry.boot_id);
+        let monotonic = format_monotonic(current_monotonic);
         let delta = match self.previous_delta {
             Some((previous_realtime, previous_monotonic, previous_boot)) => {
                 let (diff, marker) = if previous_boot == entry.boot_id {
-                    (entry.monotonic.abs_diff(previous_monotonic), " ")
+                    (current_monotonic.abs_diff(previous_monotonic), " ")
                 } else {
-                    (entry.realtime.abs_diff(previous_realtime), "*")
+                    (current_realtime.abs_diff(previous_realtime), "*")
                 };
                 format!(" <{}{}>", format_monotonic(diff), marker)
             }
@@ -182,9 +199,7 @@ impl OutputRenderer {
                 out.push(b'\n');
             }
             JsonFrame::Pretty => {
-                let text = serde_json::to_string_pretty(&Value::Object(object))
-                    .map_err(|err| anyhow!("json output: {err}"))?;
-                out.extend_from_slice(text.as_bytes());
+                write_systemd_pretty_json(&mut out, &Value::Object(object))?;
                 out.push(b'\n');
             }
             JsonFrame::Sse => {
@@ -235,18 +250,22 @@ fn parse_output_fields(value: Option<&str>) -> Vec<String> {
 
 fn format_timestamp(entry: &Entry, mode: TimestampMode, utc: bool) -> Result<String> {
     if matches!(mode, TimestampMode::ShortMonotonic) {
-        return Ok(format!("[{}]", format_monotonic(entry.monotonic)));
+        return Ok(format!(
+            "[{}]",
+            format_monotonic(display_monotonic_usec(entry))
+        ));
     }
+    let realtime = display_realtime_usec(entry);
     if matches!(mode, TimestampMode::ShortUnix) {
         return Ok(format!(
             "{}.{:06}",
-            entry.realtime / 1_000_000,
-            entry.realtime % 1_000_000
+            realtime / 1_000_000,
+            realtime % 1_000_000
         ));
     }
 
-    let secs = (entry.realtime / 1_000_000) as i64;
-    let nanos = ((entry.realtime % 1_000_000) * 1000) as u32;
+    let secs = (realtime / 1_000_000) as i64;
+    let nanos = ((realtime % 1_000_000) * 1000) as u32;
     let needs_zone_name = matches!(mode, TimestampMode::ShortFull | TimestampMode::Verbose);
     let pattern = match mode {
         TimestampMode::Short => "%b %d %H:%M:%S",
@@ -280,6 +299,44 @@ fn format_timestamp(entry: &Entry, mode: TimestampMode, utc: bool) -> Result<Str
         return Ok(format!("{formatted} {zone}"));
     }
     Ok(formatted)
+}
+
+fn output_skips_missing_message(mode: OutputModeArg) -> bool {
+    matches!(
+        mode,
+        OutputModeArg::Short
+            | OutputModeArg::ShortFull
+            | OutputModeArg::ShortIso
+            | OutputModeArg::ShortIsoPrecise
+            | OutputModeArg::ShortPrecise
+            | OutputModeArg::ShortMonotonic
+            | OutputModeArg::ShortDelta
+            | OutputModeArg::ShortUnix
+            | OutputModeArg::WithUnit
+    )
+}
+
+fn display_realtime_usec(entry: &Entry) -> u64 {
+    source_realtime_usec(entry).unwrap_or(entry.realtime)
+}
+
+fn display_monotonic_usec(entry: &Entry) -> u64 {
+    source_realtime_usec(entry)
+        .map(|source| map_clock_usec(entry.monotonic, entry.realtime, source))
+        .unwrap_or(entry.monotonic)
+}
+
+fn source_realtime_usec(entry: &Entry) -> Option<u64> {
+    values_for_name(entry, "_SOURCE_REALTIME_TIMESTAMP")
+        .first()
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn map_clock_usec(value: u64, from: u64, to: u64) -> u64 {
+    let mapped = value as i128 + to as i128 - from as i128;
+    mapped.clamp(0, u64::MAX as i128) as u64
 }
 
 pub(crate) fn format_header_timestamp(usec: u64) -> Result<String> {
@@ -392,13 +449,28 @@ fn display_message(entry: &Entry, options: &OutputOptions, prefix_columns: usize
             if !options.show_all && !journal_text_printable(value) {
                 return blob_data(value.len()).into_bytes();
             }
-            let mut out = c_string_bytes(value).to_vec();
+            let mut out = indent_continuation_lines(c_string_bytes(value), prefix_columns);
             if !options.show_all && !options.full_width {
                 out = ellipsize_line(&out, prefix_columns);
             }
             out
         })
         .unwrap_or_default()
+}
+
+fn indent_continuation_lines(value: &[u8], prefix_columns: usize) -> Vec<u8> {
+    let newline_count = value.iter().filter(|byte| **byte == b'\n').count();
+    if newline_count == 0 {
+        return value.to_vec();
+    }
+    let mut out = Vec::with_capacity(value.len() + newline_count * prefix_columns);
+    for (idx, byte) in value.iter().enumerate() {
+        out.push(*byte);
+        if *byte == b'\n' && idx + 1 < value.len() {
+            out.extend(std::iter::repeat(b' ').take(prefix_columns));
+        }
+    }
+    out
 }
 
 fn first_string(entry: &Entry, name: &str) -> Option<String> {
@@ -460,7 +532,13 @@ fn ellipsize_line(value: &[u8], prefix_columns: usize) -> Vec<u8> {
     if value.len() <= limit {
         return value.to_vec();
     }
-    let mut out = value[..limit].to_vec();
+    let mut end = limit;
+    if let Ok(text) = std::str::from_utf8(value) {
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+    }
+    let mut out = value[..end].to_vec();
     out.extend_from_slice("…".as_bytes());
     out
 }
@@ -472,6 +550,16 @@ fn journal_text_printable(value: &[u8]) -> bool {
     text.chars().all(|ch| {
         let cp = ch as u32;
         (cp >= 0x20 || ch == '\t' || ch == '\n') && !(0x7f..=0x9f).contains(&cp)
+    })
+}
+
+fn journal_export_text_printable(value: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(value) else {
+        return false;
+    };
+    text.chars().all(|ch| {
+        let cp = ch as u32;
+        (cp >= 0x20 || ch == '\t') && !(0x7f..=0x9f).contains(&cp)
     })
 }
 
@@ -530,7 +618,10 @@ fn verbose_fields<'a>(entry: &'a Entry, options: &OutputOptions) -> Vec<(String,
 
 fn entry_fields<'a>(entry: &'a Entry, options: &OutputOptions) -> Vec<(String, &'a [u8])> {
     if options.output_fields_set {
-        return selected_entry_fields(entry, &options.output_fields);
+        return selected_entry_fields(entry, &options.output_fields)
+            .into_iter()
+            .filter(|(name, _)| !is_metadata_field(name))
+            .collect();
     }
     entry
         .raw_fields()
@@ -552,6 +643,18 @@ fn selected_entry_fields<'a>(entry: &'a Entry, names: &[String]) -> Vec<(String,
         }
     }
     out
+}
+
+fn is_metadata_field(name: &str) -> bool {
+    matches!(
+        name,
+        "__CURSOR"
+            | "__REALTIME_TIMESTAMP"
+            | "__MONOTONIC_TIMESTAMP"
+            | "__SEQNUM"
+            | "__SEQNUM_ID"
+            | "_BOOT_ID"
+    )
 }
 
 fn json_object(entry: &Entry, options: &OutputOptions) -> Map<String, Value> {
@@ -602,13 +705,12 @@ fn json_value_for_bytes(name: &str, value: &[u8], show_all: bool) -> Value {
 }
 
 fn write_export_field(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
-    if value
-        .iter()
-        .all(|byte| *byte == b'\t' || (0x20..0x7f).contains(byte))
-    {
-        out.extend_from_slice(name);
-        out.push(b'=');
-        out.extend_from_slice(value);
+    let mut text = Vec::with_capacity(name.len() + 1 + value.len());
+    text.extend_from_slice(name);
+    text.push(b'=');
+    text.extend_from_slice(value);
+    if journal_export_text_printable(&text) {
+        out.extend_from_slice(&text);
         out.push(b'\n');
         return;
     }
@@ -617,4 +719,60 @@ fn write_export_field(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
     out.extend_from_slice(&(value.len() as u64).to_le_bytes());
     out.extend_from_slice(value);
     out.push(b'\n');
+}
+
+fn write_systemd_pretty_json(out: &mut Vec<u8>, value: &Value) -> Result<()> {
+    write_systemd_pretty_json_at(out, value, 0)
+}
+
+fn write_systemd_pretty_json_at(out: &mut Vec<u8>, value: &Value, depth: usize) -> Result<()> {
+    match value {
+        Value::Object(map) => {
+            out.push(b'{');
+            if !map.is_empty() {
+                out.push(b'\n');
+            }
+            for (idx, (key, value)) in map.iter().enumerate() {
+                write_json_tabs(out, depth + 1);
+                serde_json::to_writer(&mut *out, key)
+                    .map_err(|err| anyhow!("json output: {err}"))?;
+                out.extend_from_slice(b" : ");
+                write_systemd_pretty_json_at(out, value, depth + 1)?;
+                if idx + 1 != map.len() {
+                    out.push(b',');
+                }
+                out.push(b'\n');
+            }
+            if !map.is_empty() {
+                write_json_tabs(out, depth);
+            }
+            out.push(b'}');
+        }
+        Value::Array(values) => {
+            out.push(b'[');
+            if !values.is_empty() {
+                out.push(b'\n');
+            }
+            for (idx, value) in values.iter().enumerate() {
+                write_json_tabs(out, depth + 1);
+                write_systemd_pretty_json_at(out, value, depth + 1)?;
+                if idx + 1 != values.len() {
+                    out.push(b',');
+                }
+                out.push(b'\n');
+            }
+            if !values.is_empty() {
+                write_json_tabs(out, depth);
+            }
+            out.push(b']');
+        }
+        _ => {
+            serde_json::to_writer(&mut *out, value).map_err(|err| anyhow!("json output: {err}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_json_tabs(out: &mut Vec<u8>, depth: usize) {
+    out.extend(std::iter::repeat(b'\t').take(depth));
 }

@@ -4,7 +4,7 @@ Last updated: 2026-06-21
 
 ## Current
 
-- None.
+No current SOW.
 
 ## Pending
 
@@ -26,21 +26,24 @@ Last updated: 2026-06-21
 - SOW-0098 - Rust Legacy Core Duplication Debt: open, parked by user decision
   on 2026-06-21. Still valid as Rust quality debt, but live-path work is
   high-risk and not mandatory before integration/release work.
+- SOW-0122 - Journalctl Performance Followups: open. Tracks non-blocking
+  SOW-0121 performance follow-up for indexed `--list-invocations`, portable
+  `--follow` scalability, and large-fixture performance evidence before any
+  large-archive performance claim.
 ## Recently Closed Or Completed
 
-- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
-  Rust and Go now recognize the full official systemd v260.1 `journalctl`
-  command-line surface and implement the accepted portable file-backed behavior
-  covered by the parity matrix. Daemon/host-only behavior remains intentionally
-  unsupported in portable mode. Final local validation passed Go tests, Rust
-  tests, parser parity with 124/124 cases for both languages, stock-oracle
-  query matrix with 403 results and zero failures against systemd
-  `260.1-2-manjaro`, docs checks, verified examples, whitespace checks, and
-  SOW audit. Five completed read-only reviewer rechecks returned
-  `PRODUCTION-GRADE: YES`; one pre-compaction reviewer transcript was
-  unavailable. Recommendation: keep both commands as product artifacts, and use
-  Go first when a single standalone non-Linux binary must be selected because
-  this SOW has broader local cross-compilation evidence for Go.
+- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed
+  after regression repair on 2026-06-21. Rust and Go now recognize the official
+  systemd v260.1 `journalctl` option/action surface and pass stock-oracle
+  parser, directory, and file-backed query matrices for covered offline
+  behavior, including cursor strings, output modes, boot separators,
+  field/value listing, invocation filters, repeated files, disjunction groups,
+  vacuum edge cases, and daemon-only controlled errors. Final validation passed
+  parser manifest/parity, directory matrix, query matrix with 581 zero-failure
+  results against stock `systemd 260 (260.1-2-manjaro)`, full Go tests, full
+  Rust workspace tests, docs validation, whitespace checks, read-only external
+  review disposition, and SOW audit. Remaining performance work is tracked by
+  SOW-0122.
 - SOW-0094 - Rust Explorer Lazy Compressed Field Inference Experiment: closed
   without implementation by user decision on 2026-06-21. The optimization is not
   important enough to keep in the active backlog. No SDK behavior, source,

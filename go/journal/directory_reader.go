@@ -54,6 +54,7 @@ func OpenFiles(paths []string) (*DirectoryReader, error) {
 }
 
 func OpenFilesWithOptions(paths []string, opts ReaderOptions) (*DirectoryReader, error) {
+	paths = dedupeOpenFilePaths(paths)
 	readers := make([]*Reader, 0, len(paths))
 	for _, path := range paths {
 		if !isJournalFileName(path) {
@@ -66,6 +67,31 @@ func OpenFilesWithOptions(paths []string, opts ReaderOptions) (*DirectoryReader,
 		readers = append(readers, r)
 	}
 	return newDirectoryReader(readers, false)
+}
+
+func dedupeOpenFilePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		key := canonicalOpenFileKey(path)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, path)
+	}
+	return out
+}
+
+func canonicalOpenFileKey(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
 }
 
 func newDirectoryReader(readers []*Reader, allowEmpty bool) (*DirectoryReader, error) {
@@ -419,20 +445,20 @@ func (dr *DirectoryReader) GetCursor() (string, error) {
 func (dr *DirectoryReader) TestCursor(cursor string) (bool, error) {
 	current, err := dr.GetCursor()
 	if err != nil {
+		if errors.Is(err, errEndOfEntries) {
+			return false, ErrEndOfEntries
+		}
 		return false, err
 	}
-	currentSeqnumID, currentBootID, currentRealtime, currentSeqnum, err := ParseCursor(current)
+	got, err := parseCursorLocation(current, false)
 	if err != nil {
 		return false, err
 	}
-	wantSeqnumID, wantBootID, wantRealtime, wantSeqnum, err := ParseCursor(cursor)
+	want, err := parseCursorLocation(cursor, false)
 	if err != nil {
 		return false, nil
 	}
-	return currentSeqnumID == wantSeqnumID &&
-		currentBootID == wantBootID &&
-		currentRealtime == wantRealtime &&
-		currentSeqnum == wantSeqnum, nil
+	return cursorLocationMatches(got, want), nil
 }
 
 func (dr *DirectoryReader) QueryUnique(fieldName string) ([][]byte, error) {

@@ -3,51 +3,183 @@ use std::error::Error;
 pub type ParseError = Box<dyn Error + Send + Sync>;
 pub type ParsedCursor = (String, String, u64, u64);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedCursorLocation {
+    pub seqnum_id: String,
+    pub seqnum: u64,
+    pub seqnum_set: bool,
+    pub boot_id: String,
+    pub monotonic: u64,
+    pub monotonic_set: bool,
+    pub realtime: u64,
+    pub realtime_set: bool,
+    pub xor_hash: u64,
+    pub xor_hash_set: bool,
+}
+
 pub fn parse_match_string(s: &str) -> std::result::Result<Vec<u8>, ParseError> {
     parse_match_bytes(s.as_bytes())
 }
 
 pub fn parse_cursor(cursor: &str) -> std::result::Result<ParsedCursor, ParseError> {
+    let location = parse_cursor_location(cursor, true)?;
+    Ok((
+        location.seqnum_id,
+        location.boot_id,
+        location.realtime,
+        location.seqnum,
+    ))
+}
+
+pub fn parse_cursor_location(
+    cursor: &str,
+    require_seek_component: bool,
+) -> std::result::Result<ParsedCursorLocation, ParseError> {
     let mut seqnum_id = String::new();
     let mut boot_id = String::new();
     let mut realtime = None;
+    let mut monotonic = None;
     let mut seqnum = None;
+    let mut xor_hash = None;
+    let mut legacy_cursor = false;
 
     for part in cursor.split(';') {
         let Some((key, value)) = part.split_once('=') else {
             return Err("invalid cursor: malformed segment".into());
         };
-        if key.is_empty() {
-            return Err("invalid cursor: empty key".into());
+        if key.is_empty() || value.is_empty() {
+            return Err("invalid cursor: empty segment".into());
         }
         match key {
             "s" => seqnum_id = normalize_id(value),
             // Legacy SDK cursor shape.
-            "j" => boot_id = normalize_id(value),
-            "c" => realtime = Some(u64::from_str_radix(value, 16)?),
-            "n" => seqnum = Some(value.parse()?),
+            "j" => {
+                legacy_cursor = true;
+                boot_id = normalize_id(value);
+            }
+            "c" => {
+                legacy_cursor = true;
+                realtime = Some(u64::from_str_radix(value, 16)?);
+            }
+            "n" => {
+                legacy_cursor = true;
+                seqnum = Some(value.parse()?);
+            }
             // Official systemd cursor shape.
             "b" => boot_id = normalize_id(value),
+            "m" => monotonic = Some(u64::from_str_radix(value, 16)?),
             "t" => realtime = Some(u64::from_str_radix(value, 16)?),
             "i" => seqnum = Some(u64::from_str_radix(value, 16)?),
+            "x" => xor_hash = Some(u64::from_str_radix(value, 16)?),
             _ => {}
         }
     }
 
-    if seqnum_id.is_empty() || boot_id.is_empty() {
-        return Err("invalid cursor: missing id".into());
+    if legacy_cursor {
+        if seqnum_id.is_empty() || boot_id.is_empty() || realtime.is_none() || seqnum.is_none() {
+            return Err("invalid cursor: incomplete legacy cursor".into());
+        }
+    } else {
+        let has_seqnum_cursor = !seqnum_id.is_empty() && seqnum.is_some();
+        let has_monotonic_cursor = !boot_id.is_empty() && monotonic.is_some();
+        let has_realtime_cursor = realtime.is_some();
+        if require_seek_component
+            && !(has_seqnum_cursor || has_monotonic_cursor || has_realtime_cursor)
+        {
+            return Err("invalid cursor: missing seek component".into());
+        }
+        if !require_seek_component
+            && seqnum_id.is_empty()
+            && seqnum.is_none()
+            && boot_id.is_empty()
+            && monotonic.is_none()
+            && realtime.is_none()
+            && xor_hash.is_none()
+        {
+            return Err("invalid cursor: missing cursor component".into());
+        }
     }
 
-    Ok((
+    Ok(ParsedCursorLocation {
         seqnum_id,
         boot_id,
-        realtime.ok_or("invalid cursor: missing realtime")?,
-        seqnum.ok_or("invalid cursor: missing seqnum")?,
-    ))
+        realtime: realtime.unwrap_or(0),
+        realtime_set: realtime.is_some(),
+        monotonic: monotonic.unwrap_or(0),
+        monotonic_set: monotonic.is_some(),
+        seqnum: seqnum.unwrap_or(0),
+        seqnum_set: seqnum.is_some(),
+        xor_hash: xor_hash.unwrap_or(0),
+        xor_hash_set: xor_hash.is_some(),
+    })
 }
 
 fn normalize_id(value: &str) -> String {
     value.replace('-', "").to_ascii_lowercase()
+}
+
+pub fn cursor_location_matches(got: &ParsedCursorLocation, want: &ParsedCursorLocation) -> bool {
+    let mut matched = false;
+    if !want.seqnum_id.is_empty() {
+        if got.seqnum_id != want.seqnum_id {
+            return false;
+        }
+        matched = true;
+    }
+    if want.seqnum_set {
+        if !got.seqnum_set || got.seqnum != want.seqnum {
+            return false;
+        }
+        matched = true;
+    }
+    if !want.boot_id.is_empty() {
+        if got.boot_id != want.boot_id {
+            return false;
+        }
+        matched = true;
+    }
+    if want.monotonic_set {
+        if !got.monotonic_set || got.monotonic != want.monotonic {
+            return false;
+        }
+        matched = true;
+    }
+    if want.realtime_set {
+        if !got.realtime_set || got.realtime != want.realtime {
+            return false;
+        }
+        matched = true;
+    }
+    if want.xor_hash_set {
+        if !got.xor_hash_set || got.xor_hash != want.xor_hash {
+            return false;
+        }
+        matched = true;
+    }
+    matched
+}
+
+pub fn cursor_location_at_or_after(
+    got: &ParsedCursorLocation,
+    want: &ParsedCursorLocation,
+) -> bool {
+    if !want.seqnum_id.is_empty() && want.seqnum_set && got.seqnum_id == want.seqnum_id {
+        if got.seqnum != want.seqnum {
+            return got.seqnum > want.seqnum;
+        }
+    }
+    if !want.boot_id.is_empty() && want.monotonic_set && got.boot_id == want.boot_id {
+        if got.monotonic != want.monotonic {
+            return got.monotonic > want.monotonic;
+        }
+    }
+    if want.realtime_set && got.realtime != want.realtime {
+        return got.realtime > want.realtime;
+    }
+    if want.xor_hash_set && got.xor_hash != want.xor_hash {
+        return got.xor_hash > want.xor_hash;
+    }
+    true
 }
 
 pub fn parse_match_bytes(data: &[u8]) -> std::result::Result<Vec<u8>, ParseError> {
@@ -93,5 +225,14 @@ mod tests {
                 42,
             )
         );
+    }
+
+    #[test]
+    fn parse_cursor_accepts_partial_systemd_shape() {
+        let parsed = parse_cursor("s=ABC123;i=2a").expect("partial seqnum cursor parses");
+        assert_eq!(parsed, ("abc123".to_string(), "".to_string(), 0, 42));
+
+        let parsed = parse_cursor("t=10").expect("partial realtime cursor parses");
+        assert_eq!(parsed, ("".to_string(), "".to_string(), 16, 0));
     }
 }
