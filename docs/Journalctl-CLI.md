@@ -27,6 +27,8 @@ The rewrites cover file-backed query behavior only:
   `--show-cursor`, using official systemd cursor strings;
 - paging: `--head <n>`, `--tail <n>`, `--no-tail`;
 - live reads: `--follow` on actively appended files and directories;
+- utility actions: `--new-id128` and `--disk-usage` for explicit
+  `--file`/`--directory` inputs;
 - integrity: `--verify`, and `--verify-key <key>` for sealed files, where
   `<key>` is the systemd-style verification key `<seed>/<start>-<interval>`
   produced when sealing was set up (the same value stock
@@ -46,6 +48,8 @@ cargo run --manifest-path rust/Cargo.toml --bin journalctl -- \
 
 # Go
 go run ./go/cmd/journalctl --directory ./journal-dir --list-boots
+go run ./go/cmd/journalctl --file ./fixtures/system.journal --disk-usage
+go run ./go/cmd/journalctl --new-id128
 
 ```
 

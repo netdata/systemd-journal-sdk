@@ -907,6 +907,12 @@ File-backed query semantics:
   use the same systemd v260.1 unit-related fields, disjunction groups, unit
   suffix mangling, and glob expansion over FIELD/DATA indexes as stock
   file-backed `journalctl`.
+- `--disk-usage` reports allocated filesystem usage for explicit
+  `--file`/`--directory` journal inputs. Without explicit input, it remains an
+  unsupported host-journal discovery action.
+- `--new-id128` is a portable standalone utility action and prints a new v4
+  ID128 in the same string, UUID, `SD_ID128_MAKE()`, and Python constant forms
+  as stock systemd v260.1.
 - The long `--follow` option is supported. Existing short `-f` file aliases are
   preserved in languages that already used `-f` for `--file`.
 

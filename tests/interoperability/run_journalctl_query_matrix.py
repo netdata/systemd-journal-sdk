@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess  # nosec B404
 import time
@@ -33,6 +34,17 @@ BOOT_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 BOOT_C = "cccccccccccccccccccccccccccccccc"
 HOST_UID = str(os.getuid()) if hasattr(os, "getuid") else "0"
 COREDUMP_MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
+NEW_ID128_RE = re.compile(
+    r"^As string:\n"
+    r"([0-9a-f]{32})\n\n"
+    r"As UUID:\n"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\n\n"
+    r"As systemd-id128\(1\) macro:\n"
+    r"#define XYZ SD_ID128_MAKE\(((?:[0-9a-f]{2},){15}[0-9a-f]{2})\)\n\n"
+    r"As Python constant:\n"
+    r">>> import uuid\n"
+    r">>> XYZ = uuid.UUID\('([0-9a-f]{32})'\)\n$"
+)
 
 
 @dataclass(frozen=True)
@@ -268,6 +280,16 @@ def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, ar
     return [*base, *args]
 
 
+def action_command(reader: str, tools: dict[str, str], args: list[str]) -> list[str]:
+    if reader == "stock":
+        return ["journalctl", "--no-pager", "--quiet", *args]
+    if reader == "go":
+        return [tools["go_journalctl"], *args]
+    if reader == "rust":
+        return [tools["rust_journalctl"], *args]
+    raise ValueError(reader)
+
+
 def parse_messages(output: str) -> list[str]:
     messages = []
     for line in output.splitlines():
@@ -292,6 +314,18 @@ def parse_cursors(output: str) -> list[str]:
         if isinstance(cursor, str) and cursor:
             cursors.append(cursor)
     return cursors
+
+
+def valid_new_id128_output(output: str) -> bool:
+    match = NEW_ID128_RE.match(output)
+    if not match:
+        return False
+    simple, uuid_text, macro_bytes, python_simple = match.groups()
+    return (
+        uuid_text.replace("-", "") == simple
+        and macro_bytes.replace(",", "") == simple
+        and python_simple == simple
+    )
 
 
 def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
@@ -579,6 +613,52 @@ def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
     return results
 
 
+def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+
+    for reader in READERS:
+        cmd = action_command(reader, tools, ["--new-id128"])
+        result = run(cmd, timeout=30)
+        ok = result.returncode == 0 and valid_new_id128_output(result.stdout)
+        results.append(
+            {
+                "test": "new-id128",
+                "reader": reader,
+                "status": "PASS" if ok else "FAIL",
+                "command": " ".join(cmd),
+                "stdout": result.stdout[-1000:],
+                "stderr": result.stderr[-1000:],
+                "returncode": result.returncode,
+            }
+        )
+
+    for case_name, mode, path in (
+        ("disk-usage-file", "file", fixtures["file"]),
+        ("disk-usage-directory", "directory", fixtures["directory"]),
+    ):
+        stock = run(action_command("stock", tools, [f"--{mode}", str(path), "--disk-usage"]), timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = stock.stdout
+        for reader in READERS:
+            cmd = action_command(reader, tools, [f"--{mode}", str(path), "--disk-usage"])
+            result = run(cmd, timeout=30)
+            ok = result.returncode == 0 and result.stdout == expected
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": result.stdout,
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
+                }
+            )
+
+    return results
+
+
 def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
     results = []
     cases = [
@@ -758,6 +838,7 @@ def main() -> int:
     results = run_static_cases(tools, fixtures)
     results.extend(run_cursor_file_cases(tools, fixtures))
     results.extend(run_portable_error_cases(tools, fixtures))
+    results.extend(run_utility_action_cases(tools, fixtures))
     if not args.skip_follow:
         results.extend(run_follow_cases(tools, fixtures))
 

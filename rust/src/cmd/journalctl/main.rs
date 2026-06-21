@@ -426,18 +426,6 @@ fn run() -> Result<()> {
             "FSS key pair generation requires journald integration; portable mode has no host journald",
         ));
     }
-    if args.new_id128 {
-        return Err(portable_unsupported(
-            "--new-id128",
-            "deprecated utility action that requires journald integration",
-        ));
-    }
-    if args.disk_usage {
-        return Err(portable_unsupported(
-            "--disk-usage",
-            "requires host journal directory; pass --file or --directory to compute disk usage for explicit input",
-        ));
-    }
     if args.header {
         return Err(portable_unsupported(
             "--header",
@@ -472,10 +460,21 @@ fn run() -> Result<()> {
         println!("portable file-backed mode");
         return Ok(());
     }
+    if args.new_id128 {
+        print_new_id128();
+        return Ok(());
+    }
 
     if facility_help_requested(&args.facility) {
         print_facility_help(args.quiet);
         return Ok(());
+    }
+
+    if args.disk_usage && args.file.is_none() && args.directory.is_none() {
+        return Err(portable_unsupported(
+            "--disk-usage",
+            "requires host journal directory; pass --file or --directory to compute disk usage for explicit input",
+        ));
     }
 
     let path = args
@@ -485,6 +484,10 @@ fn run() -> Result<()> {
         .ok_or_else(|| anyhow!("use --file or --directory"))?;
 
     validate_path_match_arguments(&args.matches)?;
+
+    if args.disk_usage {
+        return run_disk_usage(path);
+    }
 
     if args.verify || args.verify_only || args.verify_key.is_some() {
         return run_verify(path, args.verify_key.as_deref());
@@ -1021,6 +1024,98 @@ fn is_journal_subdir_name(name: &str) -> bool {
         return false;
     }
     id128_string_valid(name)
+}
+
+fn print_new_id128() {
+    let id = uuid::Uuid::new_v4();
+    let simple = id.simple().to_string();
+    let macro_bytes = id
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    println!("As string:");
+    println!("{simple}");
+    println!();
+    println!("As UUID:");
+    println!("{}", id.hyphenated());
+    println!();
+    println!("As systemd-id128(1) macro:");
+    println!("#define XYZ SD_ID128_MAKE({macro_bytes})");
+    println!();
+    println!("As Python constant:");
+    println!(">>> import uuid");
+    println!(">>> XYZ = uuid.UUID('{simple}')");
+}
+
+fn run_disk_usage(path: &Path) -> Result<()> {
+    let files = disk_usage_files(path)?;
+    let mut bytes = 0u64;
+    for file in files {
+        bytes = bytes.saturating_add(allocated_file_bytes(&file)?);
+    }
+    println!(
+        "Archived and active journals take up {} in the file system.",
+        format_journal_bytes(bytes)
+    );
+    Ok(())
+}
+
+fn disk_usage_files(path: &Path) -> Result<Vec<PathBuf>> {
+    let metadata =
+        fs::metadata(path).map_err(|err| anyhow!("disk usage: {}: {err}", path.display()))?;
+    if !metadata.is_dir() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    collect_journal_files_for_verify(path)
+        .map_err(|err| anyhow!("disk usage: read directory {}: {err}", path.display()))
+}
+
+fn allocated_file_bytes(path: &Path) -> Result<u64> {
+    let metadata =
+        fs::metadata(path).map_err(|err| anyhow!("disk usage: {}: {err}", path.display()))?;
+    Ok(allocated_bytes(&metadata))
+}
+
+#[cfg(unix)]
+fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.blocks().saturating_mul(512)
+}
+
+#[cfg(not(unix))]
+fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
+    metadata.len()
+}
+
+fn format_journal_bytes(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 6] = [
+        ("E", 1024_u64.pow(6)),
+        ("P", 1024_u64.pow(5)),
+        ("T", 1024_u64.pow(4)),
+        ("G", 1024_u64.pow(3)),
+        ("M", 1024_u64.pow(2)),
+        ("K", 1024),
+    ];
+
+    for (idx, (suffix, factor)) in UNITS.iter().enumerate() {
+        if bytes >= *factor {
+            let remainder = if idx != UNITS.len() - 1 {
+                let lower_factor = UNITS[idx + 1].1;
+                (bytes / lower_factor * 10 / 1024) % 10
+            } else {
+                (bytes * 10 / factor) % 10
+            };
+            if remainder > 0 {
+                return format!("{}.{remainder}{suffix}", bytes / factor);
+            }
+            return format!("{}{suffix}", bytes / factor);
+        }
+    }
+
+    format!("{bytes}B")
 }
 
 fn id128_string_valid(s: &str) -> bool {

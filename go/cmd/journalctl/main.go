@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -253,6 +255,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, "portable file-backed mode")
 		return nil
 	}
+	if *flags.newID128Flag {
+		return printNewID128(stdout)
+	}
 
 	if facilityHelpRequested(flags.facilityFlag.Values()) {
 		printFacilityHelp(stdout, *flags.quietFlag)
@@ -266,6 +271,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if err := validatePathMatchArguments(fs.Args()); err != nil {
 		return err
+	}
+	if *flags.diskUsageFlag {
+		return runDiskUsage(inputPath, stdout)
 	}
 	if *flags.verify || *flags.verifyOnly || hasVerifyKey {
 		return runVerify(inputPath, *flags.verifyKey, hasVerifyKey, stdout, stderr)
@@ -614,16 +622,13 @@ func (f *cliFlags) validate() error {
 	if *f.setupKeysFlag {
 		return portableUnsupported("--setup-keys", "FSS key pair generation requires journald integration; portable mode has no host journald")
 	}
-	if *f.newID128Flag {
-		return portableUnsupported("--new-id128", "deprecated utility action that requires journald integration")
-	}
 	if *f.headerFlag {
 		return portableUnsupported("--header", "header printing requires the journal facade to expose header information for explicit file/directory input")
 	}
 	if *f.listInvocationsFlag {
 		return portableUnsupported("--list-invocations", "invocation listing requires explicit unit context and journal facade integration")
 	}
-	if *f.diskUsageFlag {
+	if *f.diskUsageFlag && *f.file == "" && *f.directory == "" {
 		return portableUnsupported("--disk-usage", "requires host journal directory; pass --file or --directory to compute disk usage for explicit input")
 	}
 	if *f.vacuumSizeFlag != "" || *f.vacuumFilesFlag != "" || *f.vacuumTimeFlag != "" {
@@ -1986,6 +1991,111 @@ func runVerify(inputPath, verifyKey string, hasVerifyKey bool, stdout, stderr io
 	}
 
 	return firstErr
+}
+
+func printNewID128(stdout io.Writer) error {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return fmt.Errorf("generate ID128: %w", err)
+	}
+	id[6] = (id[6] & 0x0f) | 0x40
+	id[8] = (id[8] & 0x3f) | 0x80
+
+	simple := hex.EncodeToString(id[:])
+	uuidText := fmt.Sprintf("%s-%s-%s-%s-%s", simple[0:8], simple[8:12], simple[12:16], simple[16:20], simple[20:32])
+	macroBytes := make([]string, 0, len(id))
+	for _, b := range id {
+		macroBytes = append(macroBytes, fmt.Sprintf("%02x", b))
+	}
+
+	fmt.Fprintln(stdout, "As string:")
+	fmt.Fprintln(stdout, simple)
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "As UUID:")
+	fmt.Fprintln(stdout, uuidText)
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "As systemd-id128(1) macro:")
+	fmt.Fprintf(stdout, "#define XYZ SD_ID128_MAKE(%s)\n", strings.Join(macroBytes, ","))
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "As Python constant:")
+	fmt.Fprintln(stdout, ">>> import uuid")
+	fmt.Fprintf(stdout, ">>> XYZ = uuid.UUID('%s')\n", simple)
+	return nil
+}
+
+func runDiskUsage(inputPath string, stdout io.Writer) error {
+	files, err := diskUsageInputFiles(inputPath)
+	if err != nil {
+		return err
+	}
+	var bytes uint64
+	for _, path := range files {
+		allocated, err := allocatedFileBytes(path)
+		if err != nil {
+			return err
+		}
+		if ^uint64(0)-bytes < allocated {
+			bytes = ^uint64(0)
+		} else {
+			bytes += allocated
+		}
+	}
+	fmt.Fprintf(stdout, "Archived and active journals take up %s in the file system.\n", formatJournalBytes(bytes))
+	return nil
+}
+
+func diskUsageInputFiles(inputPath string) ([]string, error) {
+	info, err := os.Stat(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("disk usage: %w", err)
+	}
+	if !info.IsDir() {
+		return []string{inputPath}, nil
+	}
+	files, err := collectJournalFilesForVerify(inputPath)
+	if err != nil {
+		return nil, fmt.Errorf("disk usage: read directory: %w", err)
+	}
+	return files, nil
+}
+
+func allocatedFileBytes(path string) (uint64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("disk usage: %s: %w", path, err)
+	}
+	return allocatedBytes(info), nil
+}
+
+func formatJournalBytes(bytes uint64) string {
+	type unit struct {
+		suffix string
+		factor uint64
+	}
+	units := []unit{
+		{"E", 1024 * 1024 * 1024 * 1024 * 1024 * 1024},
+		{"P", 1024 * 1024 * 1024 * 1024 * 1024},
+		{"T", 1024 * 1024 * 1024 * 1024},
+		{"G", 1024 * 1024 * 1024},
+		{"M", 1024 * 1024},
+		{"K", 1024},
+	}
+	for i, unit := range units {
+		if bytes >= unit.factor {
+			var remainder uint64
+			if i != len(units)-1 {
+				lowerFactor := units[i+1].factor
+				remainder = (bytes / lowerFactor * 10 / 1024) % 10
+			} else {
+				remainder = (bytes * 10 / unit.factor) % 10
+			}
+			if remainder > 0 {
+				return fmt.Sprintf("%d.%d%s", bytes/unit.factor, remainder, unit.suffix)
+			}
+			return fmt.Sprintf("%d%s", bytes/unit.factor, unit.suffix)
+		}
+	}
+	return fmt.Sprintf("%dB", bytes)
 }
 
 func validateVerificationKeyOption(verifyKey string, hasVerifyKey bool, stderr io.Writer) error {

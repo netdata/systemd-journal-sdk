@@ -464,6 +464,23 @@ Official source evidence for the unit-filter chunk:
   `go/README.md`, and `rust/README.md` so the documented file-backed
   `journalctl` contract includes the implemented cursor, identifier, priority,
   facility, grep, dmesg, and system/user unit filter behavior.
+- Added portable utility/action parity for `--new-id128` and explicit-input
+  `--disk-usage` in both Rust and Go:
+  - `--new-id128` generates v4 ID128 values and prints the stock v260.1 string,
+    UUID, `SD_ID128_MAKE()`, and Python constant blocks.
+  - `--disk-usage` remains unsupported without explicit `--file` or
+    `--directory`, because that would require host journal discovery.
+  - With explicit input, `--disk-usage` sums allocated filesystem blocks for
+    selected journal files and formats the size with systemd's IEC
+    `FORMAT_BYTES()` convention.
+  - Go uses Unix allocated block counts on Unix builds and logical size on
+    non-Unix builds where stock `journalctl` has no oracle.
+  - Rust uses Unix allocated block counts on Unix builds and logical size on
+    non-Unix builds.
+- Updated `.agents/sow/specs/product-scope.md`, `docs/Journalctl-CLI.md`,
+  `go/README.md`, and `rust/README.md` so the documented file-backed
+  `journalctl` contract includes `--new-id128` and explicit-input
+  `--disk-usage`.
 
 ## Validation
 
@@ -487,12 +504,13 @@ Acceptance criteria evidence:
   `--show-cursor`, `--lines` direction/default semantics, `--identifier`,
   `--priority`, `--facility`, `--grep`, `--case-sensitive`, `--dmesg`,
   `--this-boot`, `--cursor`, `--after-cursor`, `--cursor-file`, `--unit`,
-  `--user-unit`, and portable path-match rejection.
+  `--user-unit`, `--new-id128`, explicit-input `--disk-usage`, and portable
+  path-match rejection.
 - Remaining file-backed parity is still pending, including full short-family
   formatting, verbose/cat/with-unit/JSON variant exact framing,
-  `--output-fields`, invocation filters, `--header`, `--disk-usage`,
-  `--list-invocations`, `--new-id128`, `--setup-keys`, exact empty-result exit
-  semantics, and directory vacuum actions where approved by the parity matrix.
+  `--output-fields`, invocation filters, `--header`, `--list-invocations`,
+  `--setup-keys`, exact empty-result exit semantics, and directory vacuum
+  actions where approved by the parity matrix.
 
 Tests or equivalent validation:
 
@@ -603,6 +621,51 @@ Tests or equivalent validation:
   GOMODCACHE="$PWD/.local/go-mod-cache"
   python3 tests/docs/verify_examples.py`: passed after the unit-filter docs
   update; 31 of 31 verified examples passed.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the utility/action chunk; 24 Rust
+  `journalctl` tests passed.
+- `cd go && GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test ./cmd/journalctl
+  ./journal`: passed after the utility/action chunk.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)` after the utility/action chunk, including stock-shape
+  `--new-id128`, exact `--disk-usage --file`, and exact
+  `--disk-usage --directory` output.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+  against stock `journalctl` from systemd 260 `(260.1-2-manjaro)` after the
+  utility/action chunk, including the live follow checks.
+- `GOOS=windows GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-windows.test.exe ./cmd/journalctl`: passed after the
+  utility/action chunk.
+- `GOOS=darwin GOARCH=arm64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-darwin-arm64.test ./cmd/journalctl`: passed after
+  the utility/action chunk.
+- `GOOS=freebsd GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-freebsd-amd64.test ./cmd/journalctl`: passed after
+  the utility/action chunk.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the utility/action docs
+  update; validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after the utility/action docs
+  update; 31 of 31 verified examples passed.
+- `python3 tests/parser-parity/check_v260_manifest.py`: passed after the
+  utility/action chunk; manifest still matches the official systemd v260.1
+  surface.
+- `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after the utility/action chunk;
+  Rust `ok=93 skipped=0 failed=0`, Go `ok=93 skipped=0 failed=0`.
+- `git diff --check`: passed after the utility/action chunk.
+- Sensitive string scan over changed durable artifacts and candidate code:
+  passed after the utility/action chunk; the only matches were the ordinary
+  word `token` in existing SOW text about `--lines` parsing.
+- `.agents/sow/audit.sh`: passed after the utility/action chunk.
 
 Real-use evidence:
 
