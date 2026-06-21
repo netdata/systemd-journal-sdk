@@ -45,6 +45,7 @@ NEW_ID128_RE = re.compile(
     r">>> import uuid\n"
     r">>> XYZ = uuid.UUID\('([0-9a-f]{32})'\)\n$"
 )
+VACUUM_SEQNUM_ID = "12121212121212121212121212121212"
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,27 @@ def make_fixtures() -> dict[str, Path]:
         write_journal(directory / row.path, [row])
     write_journal(single_file, FILE_ROWS)
     return {"directory": directory, "file": single_file, "follow": follow}
+
+
+def archived_journal_name(seqnum: int, realtime_usec: int) -> str:
+    return f"system@{VACUUM_SEQNUM_ID}-{seqnum:016x}-{realtime_usec:016x}.journal"
+
+
+def make_vacuum_dir(path: Path, source: Path, include_active: bool = True) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if include_active:
+        shutil.copy2(source, path / "system.journal")
+    for seqnum, realtime in (
+        (1, 1_700_004_100_000_000),
+        (2, 1_700_004_100_000_500),
+        (3, 1_700_004_100_001_000),
+    ):
+        shutil.copy2(source, path / archived_journal_name(seqnum, realtime))
+    (path / "unknown.log").write_text("not a journal\n", encoding="utf-8")
+
+
+def remaining_names(path: Path) -> list[str]:
+    return sorted(child.name for child in path.iterdir())
 
 
 def write_journal(path: Path, rows: list[Row]) -> None:
@@ -775,6 +797,42 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
                     "command": " ".join(cmd),
                     "expected": expected,
                     "actual": result.stdout,
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
+                }
+            )
+
+    vacuum_root = fixtures["directory"].parent / "vacuum"
+    vacuum_cases = [
+        ("vacuum-files-protect-active", ["--vacuum-files=2"], True),
+        ("vacuum-time-protect-active", ["--vacuum-time=1s"], True),
+        ("vacuum-size-protect-active", ["--vacuum-size=1"], True),
+    ]
+    for case_name, vacuum_args, include_active in vacuum_cases:
+        stock_dir = vacuum_root / case_name / "stock"
+        make_vacuum_dir(stock_dir, fixtures["file"], include_active=include_active)
+        stock_args = ["--directory", str(stock_dir), *vacuum_args]
+        stock = run(action_command("stock", tools, stock_args), timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = remaining_names(stock_dir)
+
+        for reader in ("go", "rust"):
+            reader_dir = vacuum_root / case_name / reader
+            make_vacuum_dir(reader_dir, fixtures["file"], include_active=include_active)
+            args = ["--directory", str(reader_dir), *vacuum_args]
+            cmd = action_command(reader, tools, args)
+            result = run(cmd, timeout=30)
+            actual = remaining_names(reader_dir)
+            ok = result.returncode == 0 and actual == expected
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": actual,
+                    "stdout": result.stdout[-1000:],
                     "stderr": result.stderr[-1000:],
                     "returncode": result.returncode,
                 }

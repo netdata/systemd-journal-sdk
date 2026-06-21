@@ -568,6 +568,51 @@ Official source evidence for the header/invocation/label chunk:
   `go/README.md`, and `rust/README.md` so the documented file-backed
   `journalctl` contract includes header, invocation, stock short labels, and
   the corrected `--setup-keys` unsupported classification.
+- Implemented explicit-directory vacuum maintenance in Rust and Go:
+  - `--vacuum-size`, `--vacuum-files`, and `--vacuum-time` remain unsupported
+    without explicit `--directory` input;
+  - explicit-directory vacuum scans only direct regular files in that
+    directory, matching the `journal_directory_vacuum()` contract;
+  - only stock-recognized archived `.journal` and `.journal~` filenames are
+    candidates for deletion;
+  - active/current `.journal` files, non-matching `.journal`/`.journal~`
+    files, unknown files, symlinks, and subdirectories are protected;
+  - deletion order follows stock seqnum/realtime/filename ordering;
+  - `--vacuum-files` follows the stock total-count rule: protected active files
+    plus remaining archived candidates must be at or below the requested count;
+  - empty recognized archived files are removed before applying normal
+    retention constraints.
+
+Official source evidence for the vacuum chunk:
+
+- `systemd/systemd @ c0a5a2516d28`
+  - `src/journal/journalctl-varlink.c:99`: `action_vacuum()` handles
+    `ACTION_VACUUM` and `ACTION_ROTATE_AND_VACUUM`.
+  - `src/journal/journalctl-varlink.c:110`: official action passes each
+    selected directory path to `journal_directory_vacuum()`.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:35`: candidate sort prefers
+    seqnum when both archived files share the same seqnum ID.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:129`: directory vacuum takes
+    one explicit directory path plus size/file/time constraints.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:148`: all-zero constraints are
+    a no-op.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:154`: vacuum opens only the
+    supplied directory.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:167`: direct entries are
+    statted without following symlinks.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:179`: `.journal` active files
+    are protected unless the archived suffix shape is present and valid.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:217`: `.journal~` corrupted
+    archive candidates use the separate realtime/tmp suffix shape.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:260`: empty archived files are
+    always deleted.
+  - `src/libsystemd/sd-journal/journal-vacuum.c:300`: `--vacuum-files`
+    compares protected active files plus remaining candidates against the
+    requested count.
+- Updated `.agents/sow/specs/journalctl-v260-parity-matrix.md`,
+  `.agents/sow/specs/product-scope.md`, `docs/Journalctl-CLI.md`,
+  `go/README.md`, and `rust/README.md` so the documented file-backed
+  `journalctl` contract includes explicit-directory vacuum behavior.
 
 ## Validation
 
@@ -593,11 +638,12 @@ Acceptance criteria evidence:
   `--this-boot`, `--cursor`, `--after-cursor`, `--cursor-file`, `--unit`,
   `--user-unit`, `--invocation`, `-I`, `--list-invocations`, `--header`,
   stock short labels including `--no-hostname`, `--new-id128`, explicit-input
-  `--disk-usage`, full output-mode rendering, `--output-fields`, and portable
-  path-match rejection.
+  `--disk-usage`, explicit-directory `--vacuum-size`/`--vacuum-files`/
+  `--vacuum-time`, full output-mode rendering, `--output-fields`, and
+  portable path-match rejection.
 - Remaining file-backed parity is still pending, including exact empty-result
-  exit semantics, directory vacuum actions where approved by the parity matrix,
-  and final whole-SOW cross-platform/reviewer/ship-decision gates.
+  exit semantics and final whole-SOW cross-platform/reviewer/ship-decision
+  gates.
 
 Tests or equivalent validation:
 
@@ -826,6 +872,50 @@ Tests or equivalent validation:
   header/invocation/label docs update; 31 of 31 verified examples passed.
 - `git diff --check`: passed after the header/invocation/label chunk.
 - `.agents/sow/audit.sh`: passed after the header/invocation/label chunk.
+- `go test ./cmd/journalctl`: passed after the explicit-directory vacuum chunk,
+  including active/current protection and oldest archived-file deletion for
+  `--vacuum-files`.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target vacuum`: passed after the explicit-directory vacuum
+  chunk, including active/current protection and oldest archived-file deletion
+  for `--vacuum-files`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)` after the explicit-directory vacuum chunk, including
+  side-effect parity for `--vacuum-files`, `--vacuum-time`, and
+  `--vacuum-size`; final rerun reported `status=PASS failures=0 results=262`.
+- `go test ./cmd/journalctl ./journal`: passed after final
+  explicit-directory vacuum validation.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after final explicit-directory vacuum
+  validation; 26 Rust `journalctl` tests passed, including the
+  `--vacuum-time=0s` no-op case.
+- `python3 tests/parser-parity/check_v260_manifest.py`: passed after final
+  explicit-directory vacuum validation; manifest still matches the official
+  systemd v260.1 surface.
+- `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after final explicit-directory
+  vacuum validation; Rust `ok=93 skipped=0 failed=0`, Go `ok=93 skipped=0
+  failed=0`.
+- `python3 tests/docs/check_wiki_docs.py`: passed after final
+  explicit-directory vacuum docs update; validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after final
+  explicit-directory vacuum docs update; 31 of 31 verified examples passed.
+- `GOOS=windows GOARCH=amd64 go test -c -o
+  ../.local/go-journalctl-windows.test.exe ./cmd/journalctl`: passed after the
+  explicit-directory vacuum chunk with repo-local Go caches.
+- `GOOS=darwin GOARCH=arm64 go test -c -o
+  ../.local/go-journalctl-darwin-arm64.test ./cmd/journalctl`: passed after
+  the explicit-directory vacuum chunk with repo-local Go caches.
+- `GOOS=freebsd GOARCH=amd64 go test -c -o
+  ../.local/go-journalctl-freebsd-amd64.test ./cmd/journalctl`: passed after
+  the explicit-directory vacuum chunk with repo-local Go caches.
+- `git diff --check`: passed after the explicit-directory vacuum chunk.
+- `.agents/sow/audit.sh`: passed after the explicit-directory vacuum chunk.
 
 Real-use evidence:
 
@@ -863,7 +953,9 @@ Artifact maintenance gate:
   contract, after the output-mode chunk to record full output-mode and
   `--output-fields` behavior, and after the header/invocation/label chunk to
   record invocation, `--list-invocations`, `--header`, and stock short-label
-  behavior. `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
+  behavior, and after the explicit-directory vacuum chunk to record
+  `--vacuum-size`/`--vacuum-files`/`--vacuum-time` behavior.
+  `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
   `tests/parser-parity/v260-manifest.*` were updated to reclassify
   `--setup-keys` as recognized-unsupported based on official source evidence.
 - End-user/operator docs: `rust/README.md`, `go/README.md`, `go/API.md`, and
@@ -873,7 +965,8 @@ Artifact maintenance gate:
   after the output-mode chunk for output rendering and `--output-fields`, and
   after the header/invocation/label chunk for invocation filters,
   `--list-invocations`, `--header`, stock short labels, and the
-  `--setup-keys` unsupported behavior.
+  `--setup-keys` unsupported behavior, and after the explicit-directory vacuum
+  chunk for `--vacuum-size`/`--vacuum-files`/`--vacuum-time`.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -902,8 +995,9 @@ End-user/operator docs update:
   `docs/Reader-APIs.md` for the cursor string format contract. Updated
   `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` after the
   unit-filter chunk, after the output-mode chunk, and after the
-  header/invocation/label chunk. Final journalctl command documentation remains
-  pending full implementation.
+  header/invocation/label chunk, and after the explicit-directory vacuum
+  chunk. Final journalctl command documentation remains pending full
+  implementation.
 
 End-user/operator skills update:
 

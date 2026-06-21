@@ -159,9 +159,9 @@ Every official v260.1 output mode is `file-backed-required`:
 | `--list-invocations` | none | file-backed-required | List invocation IDs from explicit file/directory entries for the selected unit context. |
 | `--list-namespaces` | none | recognized-unsupported | Requires host journal namespace discovery. |
 | `--disk-usage` | none | file-backed-required | With explicit file/directory input, report disk usage for selected journal files. Without explicit input, return unsupported host journal discovery. |
-| `--vacuum-size=` | bytes | file-backed-maintenance-required | With explicit `--directory=`, remove archived journal files until under the requested size while protecting active/current files. Without explicit directory, return unsupported. |
-| `--vacuum-files=` | int | file-backed-maintenance-required | With explicit `--directory=`, retain the requested number of archived journal files while protecting active/current files. Without explicit directory, return unsupported. |
-| `--vacuum-time=` | duration | file-backed-maintenance-required | With explicit `--directory=`, remove archived journal files older than the requested age while protecting active/current files. Without explicit directory, return unsupported. |
+| `--vacuum-size=` | bytes | file-backed-maintenance-required | With explicit `--directory=`, scan that directory's direct regular files, delete recognized archived `.journal`/`.journal~` files until active plus archived journal allocated usage is under the requested size, and protect active/current, non-matching, unknown, and subdirectory files. Without explicit directory, return unsupported. |
+| `--vacuum-files=` | int | file-backed-maintenance-required | With explicit `--directory=`, delete recognized archived `.journal`/`.journal~` files until protected active/current files plus remaining archived candidates is at or below the requested count. Without explicit directory, return unsupported. |
+| `--vacuum-time=` | duration | file-backed-maintenance-required | With explicit `--directory=`, delete recognized archived `.journal`/`.journal~` files older than the requested age while protecting active/current, non-matching, unknown, and subdirectory files. Without explicit directory, return unsupported. |
 | `--verify` | none | file-backed-required | Verify explicit file/directory inputs, including sealed files with `--verify-key`. |
 | `--sync` | none | recognized-unsupported | Daemon-only journal synchronization. |
 | `--relinquish-var` | none | recognized-unsupported | Daemon-only journald storage transition. |

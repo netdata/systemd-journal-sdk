@@ -427,6 +427,9 @@ support exact units and glob expansion over journal unit fields.
 `--new-id128` is a portable standalone utility action, and `--disk-usage`
 reports allocated filesystem usage for explicit `--file` or `--directory`
 inputs.
+`--vacuum-size`, `--vacuum-files`, and `--vacuum-time` operate on explicit
+`--directory` inputs, deleting only stock-recognized archived `.journal` and
+`.journal~` files while protecting active/current and unknown files.
 The CLI implements the stock v260.1 output-mode family and `--output-fields`
 projection for `verbose`, `export`, JSON modes, and `cat`.
 

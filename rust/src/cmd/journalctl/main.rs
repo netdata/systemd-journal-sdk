@@ -14,11 +14,11 @@ use journal::{
 use output::{OutputOptions, OutputRenderer};
 use regex::{Regex, RegexBuilder};
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // HEADER_COMPATIBLE_SEALED from systemd journal-def.h
 const COMPATIBLE_SEALED: u32 = 1;
@@ -31,6 +31,7 @@ const INCOMPATIBLE_COMPRESSED_ZSTD: u32 = 1 << 3;
 const INCOMPATIBLE_COMPACT: u32 = 1 << 4;
 const HASH_ITEM_SIZE: u64 = 16;
 const JOURNAL_HEADER_SIZE: u64 = 272;
+const JOURNAL_HEADER_N_ENTRIES_OFFSET: u64 = 152;
 const HEADER_CHAIN_DEPTH_MAX: u64 = 100;
 const COREDUMP_MESSAGE_ID: &str = "fc2e22bc6ee647b6b90729ab34a250b1";
 const SYSTEM_UNIT_FIELDS_FULL: &[&str] = &[
@@ -441,7 +442,7 @@ fn run() -> Result<()> {
             "FSS key pair generation requires journald integration; portable mode has no host journald",
         ));
     }
-    if args.vacuum_size.is_some() || args.vacuum_files.is_some() || args.vacuum_time.is_some() {
+    if has_vacuum_flags(&args) {
         // Maintenance options require --directory=.
         if args.directory.is_none() {
             return Err(portable_unsupported(
@@ -449,10 +450,6 @@ fn run() -> Result<()> {
                 "vacuum actions require explicit --directory= input",
             ));
         }
-        return Err(portable_unsupported(
-            "--vacuum-*",
-            "vacuum actions mutate the supplied directory and are not implemented in the portable Rust CLI",
-        ));
     }
 
     // Portable utility actions that do not require a journal file:
@@ -490,6 +487,10 @@ fn run() -> Result<()> {
 
     if args.disk_usage {
         return run_disk_usage(path);
+    }
+
+    if has_vacuum_flags(&args) {
+        return run_vacuum(path, &args);
     }
 
     if args.header {
@@ -1070,6 +1071,335 @@ fn run_disk_usage(path: &Path) -> Result<()> {
         format_journal_bytes(bytes)
     );
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VacuumOptions {
+    max_use: u64,
+    max_files: u64,
+    max_retention_usec: u64,
+}
+
+#[derive(Debug, Clone)]
+struct VacuumCandidate {
+    path: PathBuf,
+    name: String,
+    usage: u64,
+    seqnum_id: [u8; 16],
+    seqnum: u64,
+    realtime: u64,
+    have_seqno: bool,
+}
+
+fn has_vacuum_flags(args: &Args) -> bool {
+    args.vacuum_size.is_some() || args.vacuum_files.is_some() || args.vacuum_time.is_some()
+}
+
+fn run_vacuum(path: &Path, args: &Args) -> Result<()> {
+    let opts = parse_vacuum_options(args)?;
+    if opts.max_use == 0 && opts.max_files == 0 && opts.max_retention_usec == 0 {
+        return Ok(());
+    }
+    let metadata =
+        fs::metadata(path).map_err(|err| anyhow!("vacuum: {}: {err}", path.display()))?;
+    if !metadata.is_dir() {
+        return Err(anyhow!("vacuum: {} is not a directory", path.display()));
+    }
+    vacuum_directory(path, opts, args.quiet)
+}
+
+fn parse_vacuum_options(args: &Args) -> Result<VacuumOptions> {
+    let max_use = match args.vacuum_size.as_deref() {
+        Some(value) => parse_vacuum_size(value)?,
+        None => 0,
+    };
+    let max_files = match args.vacuum_files.as_deref() {
+        Some(value) => value
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| anyhow!("failed to parse --vacuum-files value: {value}"))?,
+        None => 0,
+    };
+    let max_retention_usec = match args.vacuum_time.as_deref() {
+        Some(value) => parse_duration_usec_allow_zero(value.trim())
+            .map_err(|_| anyhow!("failed to parse --vacuum-time value: {value}"))?,
+        None => 0,
+    };
+    Ok(VacuumOptions {
+        max_use,
+        max_files,
+        max_retention_usec,
+    })
+}
+
+fn parse_vacuum_size(value: &str) -> Result<u64> {
+    let re = Regex::new(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$")?;
+    let captures = re
+        .captures(value)
+        .ok_or_else(|| anyhow!("failed to parse --vacuum-size value: {value}"))?;
+    let number = captures[1].parse::<f64>()?;
+    let unit = captures
+        .get(2)
+        .map(|m| m.as_str().to_ascii_lowercase())
+        .unwrap_or_default();
+    let multiplier = match unit.as_str() {
+        "" | "b" | "byte" | "bytes" => 1_u64,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024_u64.pow(2),
+        "g" | "gb" | "gib" => 1024_u64.pow(3),
+        "t" | "tb" | "tib" => 1024_u64.pow(4),
+        "p" | "pb" | "pib" => 1024_u64.pow(5),
+        "e" | "eb" | "eib" => 1024_u64.pow(6),
+        _ => return Err(anyhow!("failed to parse --vacuum-size value: {value}")),
+    };
+    if number < 0_f64 || number > u64::MAX as f64 / multiplier as f64 {
+        return Err(anyhow!("failed to parse --vacuum-size value: {value}"));
+    }
+    Ok((number * multiplier as f64) as u64)
+}
+
+fn vacuum_directory(dir: &Path, opts: VacuumOptions, quiet: bool) -> Result<()> {
+    let archived_re =
+        Regex::new(r"^.+@([0-9A-Fa-f]{32})-([0-9A-Fa-f]{16})-([0-9A-Fa-f]{16})\.journal$")?;
+    let corrupt_re = Regex::new(r"^.+@([0-9A-Fa-f]{16})-([0-9A-Fa-f]{16})\.journal~$")?;
+
+    let mut candidates = Vec::new();
+    let mut active_files = 0_u64;
+    let mut sum = 0_u64;
+    let mut freed = 0_u64;
+
+    for entry in fs::read_dir(dir)
+        .map_err(|err| anyhow!("vacuum: read directory {}: {err}", dir.display()))?
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => continue,
+        };
+        let usage = allocated_bytes(&metadata);
+        let (candidate, protected) =
+            parse_vacuum_candidate(&archived_re, &corrupt_re, path.clone(), &name, usage);
+        if protected {
+            active_files = active_files.saturating_add(1);
+            sum = sum.saturating_add(usage);
+            continue;
+        }
+        let Some(mut candidate) = candidate else {
+            continue;
+        };
+
+        match vacuum_journal_file_empty(&path, &metadata) {
+            Ok(true) => {
+                match fs::remove_file(&path) {
+                    Ok(()) => {
+                        freed = freed.saturating_add(usage);
+                        if !quiet {
+                            eprintln!(
+                                "Deleted empty archived journal {}/{} ({}).",
+                                dir.display(),
+                                name,
+                                format_journal_bytes(usage)
+                            );
+                        }
+                    }
+                    Err(err) if err.kind() == ErrorKind::NotFound => {}
+                    Err(err) if !quiet => {
+                        eprintln!(
+                            "Failed to delete empty archived journal {}/{}: {err}",
+                            dir.display(),
+                            name
+                        );
+                    }
+                    Err(_) => {}
+                }
+                continue;
+            }
+            Ok(false) => {}
+            Err(_) => continue,
+        }
+
+        patch_vacuum_realtime(&mut candidate, &metadata);
+        candidates.push(candidate);
+        sum = sum.saturating_add(usage);
+    }
+
+    candidates.sort_by(vacuum_candidate_cmp);
+    let retention_limit = if opts.max_retention_usec > 0 {
+        current_realtime_usec().saturating_sub(opts.max_retention_usec)
+    } else {
+        0
+    };
+
+    for (idx, candidate) in candidates.iter().enumerate() {
+        let left = active_files.saturating_add((candidates.len() - idx) as u64);
+        if (opts.max_retention_usec == 0 || candidate.realtime >= retention_limit)
+            && (opts.max_use == 0 || sum <= opts.max_use)
+            && (opts.max_files == 0 || left <= opts.max_files)
+        {
+            break;
+        }
+
+        match fs::remove_file(&candidate.path) {
+            Ok(()) => {
+                freed = freed.saturating_add(candidate.usage);
+                sum = sum.saturating_sub(candidate.usage);
+                if !quiet {
+                    eprintln!(
+                        "Deleted archived journal {}/{} ({}).",
+                        dir.display(),
+                        candidate.name,
+                        format_journal_bytes(candidate.usage)
+                    );
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) if !quiet => {
+                eprintln!(
+                    "Failed to delete archived journal {}/{}: {err}",
+                    dir.display(),
+                    candidate.name
+                );
+            }
+            Err(_) => {}
+        }
+    }
+
+    if !quiet {
+        eprintln!(
+            "Vacuuming done, freed {} of archived journals from {}.",
+            format_journal_bytes(freed),
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn parse_vacuum_candidate(
+    archived_re: &Regex,
+    corrupt_re: &Regex,
+    path: PathBuf,
+    name: &str,
+    usage: u64,
+) -> (Option<VacuumCandidate>, bool) {
+    if name.ends_with(".journal") {
+        let Some(captures) = archived_re.captures(name) else {
+            return (None, true);
+        };
+        let Ok(seqnum_id) = parse_id128_hex(&captures[1]) else {
+            return (None, true);
+        };
+        let Ok(seqnum) = u64::from_str_radix(&captures[2], 16) else {
+            return (None, true);
+        };
+        let Ok(realtime) = u64::from_str_radix(&captures[3], 16) else {
+            return (None, true);
+        };
+        return (
+            Some(VacuumCandidate {
+                path,
+                name: name.to_owned(),
+                usage,
+                seqnum_id,
+                seqnum,
+                realtime,
+                have_seqno: true,
+            }),
+            false,
+        );
+    }
+    if name.ends_with(".journal~") {
+        let Some(captures) = corrupt_re.captures(name) else {
+            return (None, true);
+        };
+        let Ok(realtime) = u64::from_str_radix(&captures[1], 16) else {
+            return (None, true);
+        };
+        return (
+            Some(VacuumCandidate {
+                path,
+                name: name.to_owned(),
+                usage,
+                seqnum_id: [0u8; 16],
+                seqnum: 0,
+                realtime,
+                have_seqno: false,
+            }),
+            false,
+        );
+    }
+    (None, false)
+}
+
+fn parse_id128_hex(value: &str) -> Result<[u8; 16]> {
+    let decoded = hex::decode(value)?;
+    decoded
+        .try_into()
+        .map_err(|_| anyhow!("failed to parse id128"))
+}
+
+fn vacuum_candidate_cmp(a: &VacuumCandidate, b: &VacuumCandidate) -> std::cmp::Ordering {
+    if a.have_seqno && b.have_seqno && a.seqnum_id == b.seqnum_id {
+        return a.seqnum.cmp(&b.seqnum);
+    }
+    match a.realtime.cmp(&b.realtime) {
+        std::cmp::Ordering::Equal => {}
+        order => return order,
+    }
+    if a.have_seqno && b.have_seqno {
+        match a.seqnum_id.cmp(&b.seqnum_id) {
+            std::cmp::Ordering::Equal => {}
+            order => return order,
+        }
+    }
+    a.name.cmp(&b.name)
+}
+
+fn vacuum_journal_file_empty(path: &Path, metadata: &fs::Metadata) -> Result<bool> {
+    if metadata.len() < JOURNAL_HEADER_SIZE {
+        return Ok(true);
+    }
+    let mut file =
+        fs::File::open(path).map_err(|err| anyhow!("vacuum: open {}: {err}", path.display()))?;
+    file.seek(SeekFrom::Start(JOURNAL_HEADER_N_ENTRIES_OFFSET))?;
+    let mut buf = [0u8; 8];
+    file.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf) == 0)
+}
+
+fn patch_vacuum_realtime(candidate: &mut VacuumCandidate, metadata: &fs::Metadata) {
+    for value in [
+        metadata.modified().ok(),
+        metadata.accessed().ok(),
+        metadata.created().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(usec) = system_time_to_usec(value) {
+            if usec > 0 && usec < candidate.realtime {
+                candidate.realtime = usec;
+            }
+        }
+    }
+}
+
+fn current_realtime_usec() -> u64 {
+    system_time_to_usec(SystemTime::now()).unwrap_or(0)
+}
+
+fn system_time_to_usec(value: SystemTime) -> Option<u64> {
+    let duration = value.duration_since(UNIX_EPOCH).ok()?;
+    Some(
+        duration
+            .as_secs()
+            .saturating_mul(1_000_000)
+            .saturating_add(u64::from(duration.subsec_micros())),
+    )
 }
 
 fn run_header(path: &Path) -> Result<()> {
@@ -2636,9 +2966,18 @@ fn local_datetime_to_usec(dt: NaiveDateTime) -> Result<u64> {
 }
 
 fn parse_duration_usec(value: &str) -> Result<u64> {
+    parse_duration_usec_mode(value, false)
+}
+
+fn parse_duration_usec_allow_zero(value: &str) -> Result<u64> {
+    parse_duration_usec_mode(value, true)
+}
+
+fn parse_duration_usec_mode(value: &str, allow_zero: bool) -> Result<u64> {
     let mut total = 0_f64;
     let bytes = value.as_bytes();
     let mut i = 0usize;
+    let mut seen = false;
     while i < bytes.len() {
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
@@ -2650,6 +2989,7 @@ fn parse_duration_usec(value: &str) -> Result<u64> {
         if start == i {
             return Err(anyhow!("failed to parse duration: {value}"));
         }
+        seen = true;
         let number = value[start..i].parse::<f64>()?;
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
@@ -2665,7 +3005,7 @@ fn parse_duration_usec(value: &str) -> Result<u64> {
         };
         total += number * duration_unit_multiplier(unit)?;
     }
-    if total == 0_f64 {
+    if !seen || (!allow_zero && total == 0_f64) {
         return Err(anyhow!("failed to parse duration: {value}"));
     }
     Ok(total as u64)
@@ -2892,6 +3232,101 @@ mod tests {
             .expect("write sealed entry");
         journal_file.sync().expect("sync journal");
         seal
+    }
+
+    fn write_unsealed_file(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create journal parent");
+        }
+        let repo_file = RepoFile::from_path(path)
+            .unwrap_or_else(|| panic!("test journal path should parse: {}", path.display()));
+        let mut journal_file = JournalFile::<MmapMut>::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=vacuum".as_slice()],
+                1_500_000,
+                100,
+            )
+            .expect("write entry");
+        journal_file.sync().expect("sync journal");
+    }
+
+    fn archived_journal_name_for_test(seqnum: u64, realtime: u64) -> String {
+        format!("system@12121212121212121212121212121212-{seqnum:016x}-{realtime:016x}.journal")
+    }
+
+    #[test]
+    fn vacuum_files_with_directory_deletes_oldest_archived() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = source_dir.path().join("source.journal");
+        write_unsealed_file(&source);
+
+        let dir = tempfile::tempdir().expect("create vacuum dir");
+        let active = dir.path().join("system.journal");
+        std::fs::copy(&source, &active).expect("copy active journal");
+        let names = [
+            archived_journal_name_for_test(1, 1_700_004_100_000_000),
+            archived_journal_name_for_test(2, 1_700_004_100_000_500),
+            archived_journal_name_for_test(3, 1_700_004_100_001_000),
+        ];
+        for name in &names {
+            std::fs::copy(&source, dir.path().join(name)).expect("copy archived journal");
+        }
+
+        let args = Args::try_parse_from([
+            "journalctl",
+            "--directory",
+            dir.path().to_str().expect("utf8 temp path"),
+            "--vacuum-files=2",
+            "--quiet",
+        ])
+        .expect("parse vacuum args");
+        run_vacuum(dir.path(), &args).expect("vacuum should pass");
+
+        assert!(active.exists(), "active journal should be protected");
+        assert!(
+            !dir.path().join(&names[0]).exists(),
+            "oldest archived journal should be deleted"
+        );
+        assert!(
+            !dir.path().join(&names[1]).exists(),
+            "second archived journal should be deleted"
+        );
+        assert!(
+            dir.path().join(&names[2]).exists(),
+            "newest archived journal should be retained"
+        );
+    }
+
+    #[test]
+    fn vacuum_time_zero_is_noop() {
+        let source_dir = tempfile::tempdir().expect("create source dir");
+        let source = source_dir.path().join("source.journal");
+        write_unsealed_file(&source);
+
+        let dir = tempfile::tempdir().expect("create vacuum dir");
+        let name = archived_journal_name_for_test(1, 1_700_004_100_000_000);
+        std::fs::copy(&source, dir.path().join(&name)).expect("copy archived journal");
+        let args = Args::try_parse_from([
+            "journalctl",
+            "--directory",
+            dir.path().to_str().expect("utf8 temp path"),
+            "--vacuum-time=0s",
+            "--quiet",
+        ])
+        .expect("parse vacuum args");
+        run_vacuum(dir.path(), &args).expect("zero-time vacuum should pass");
+        assert!(
+            dir.path().join(&name).exists(),
+            "archived journal should remain after zero-time vacuum"
+        );
     }
 
     #[test]

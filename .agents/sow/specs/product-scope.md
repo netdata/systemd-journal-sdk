@@ -767,7 +767,8 @@ Current Go reader feature slice:
   with `--follow`, cursor seek/update behavior, repeated same-field OR
   matches, `+` disjunction, syslog identifier, priority, facility, grep,
   dmesg, system/user unit filters, invocation filters, `--list-invocations`,
-  `--header`, and explicit-input `--disk-usage`;
+  `--header`, explicit-input `--disk-usage`, and explicit-directory
+  `--vacuum-size`/`--vacuum-files`/`--vacuum-time`;
 - Go conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, and file-backed journalctl cases.
 
@@ -883,7 +884,8 @@ Current Rust reader feature slice:
   with `--follow`, cursor seek/update behavior, repeated same-field OR
   matches, `+` disjunction, syslog identifier, priority, facility, grep,
   dmesg, system/user unit filters, invocation filters, `--list-invocations`,
-  `--header`, and explicit-input `--disk-usage`;
+  `--header`, explicit-input `--disk-usage`, and explicit-directory
+  `--vacuum-size`/`--vacuum-files`/`--vacuum-time`;
 - Rust conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, header parsing, and file-backed
   journalctl cases.
@@ -934,6 +936,12 @@ File-backed query semantics:
 - `--disk-usage` reports allocated filesystem usage for explicit
   `--file`/`--directory` journal inputs. Without explicit input, it remains an
   unsupported host-journal discovery action.
+- `--vacuum-size`, `--vacuum-files`, and `--vacuum-time` mutate only explicit
+  `--directory` inputs. They delete stock-recognized archived `.journal` and
+  `.journal~` files from that directory while protecting active/current,
+  non-matching, unknown, and subdirectory files. `--vacuum-files` uses the
+  stock count condition: protected active/current files plus remaining archived
+  candidates must be at or below the requested count.
 - `--new-id128` is a portable standalone utility action and prints a new v4
   ID128 in the same string, UUID, `SD_ID128_MAKE()`, and Python constant forms
   as stock systemd v260.1.

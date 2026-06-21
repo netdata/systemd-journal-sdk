@@ -39,6 +39,8 @@ The rewrites cover file-backed query behavior only:
 - live reads: `--follow` on actively appended files and directories;
 - utility actions: `--new-id128` and `--disk-usage` for explicit
   `--file`/`--directory` inputs;
+- maintenance actions: `--vacuum-size`, `--vacuum-files`, and `--vacuum-time`
+  for explicit `--directory` inputs, using stock archived-file deletion rules;
 - integrity: `--verify`, and `--verify-key <key>` for sealed files, where
   `<key>` is the systemd-style verification key `<seed>/<start>-<interval>`
   produced when sealing was set up (the same value stock
@@ -59,6 +61,7 @@ cargo run --manifest-path rust/Cargo.toml --bin journalctl -- \
 # Go
 go run ./go/cmd/journalctl --directory ./journal-dir --list-boots
 go run ./go/cmd/journalctl --file ./fixtures/system.journal --disk-usage
+go run ./go/cmd/journalctl --directory ./journal-dir --vacuum-time=30d
 go run ./go/cmd/journalctl --new-id128
 
 ```

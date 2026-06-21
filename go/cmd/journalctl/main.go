@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -30,6 +31,7 @@ const incompatibleCompressedZSTD = 1 << 3
 const incompatibleCompact = 1 << 4
 const hashItemSizeBytes = 16
 const journalHeaderSize = 272
+const journalHeaderNEntriesOffset = 152
 const headerChainDepthMax = 100
 const coredumpMessageID = "fc2e22bc6ee647b6b90729ab34a250b1"
 
@@ -39,6 +41,7 @@ var (
 	signedDatePrefixRe = regexp.MustCompile(`^[+-]\d{4}-`)
 	epochTimestampRe   = regexp.MustCompile(`^\d+(\.\d+)?$`)
 	durationTokenRe    = regexp.MustCompile(`\s*(\d+(?:\.\d+)?)(?:\s*([A-Za-z]+))?`)
+	sizeTokenRe        = regexp.MustCompile(`^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$`)
 
 	bootDescriptorRe       = regexp.MustCompile(`^(([0-9A-Fa-f]{32})|([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}))?([+-]?\d+)?$`)
 	bootDescriptorPatterns = []*regexp.Regexp{
@@ -46,7 +49,9 @@ var (
 		regexp.MustCompile(`^[0-9A-Fa-f]{32}([+-]\d+)?$`),
 		regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}([+-]\d+)?$`),
 	}
-	unitSuffixes = []string{
+	archivedJournalNameRe = regexp.MustCompile(`^.+@([0-9A-Fa-f]{32})-([0-9A-Fa-f]{16})-([0-9A-Fa-f]{16})\.journal$`)
+	corruptJournalNameRe  = regexp.MustCompile(`^.+@([0-9A-Fa-f]{16})-([0-9A-Fa-f]{16})\.journal~$`)
+	unitSuffixes          = []string{
 		".automount",
 		".device",
 		".mount",
@@ -287,6 +292,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if *flags.diskUsageFlag {
 		return runDiskUsage(inputPath, stdout)
+	}
+	if hasVacuumFlags(flags) {
+		return runVacuum(inputPath, flags, stderr)
 	}
 	if *flags.headerFlag {
 		return runHeader(inputPath, stdout)
@@ -651,7 +659,6 @@ func (f *cliFlags) validate() error {
 		if *f.directory == "" {
 			return portableUnsupported("--vacuum-*", "vacuum actions require explicit --directory= input")
 		}
-		return portableUnsupported("--vacuum-*", "vacuum actions mutate the supplied directory and are not implemented in the portable Go CLI")
 	}
 
 	if *f.head < 0 {
@@ -1549,6 +1556,14 @@ func parseEpochTimestampUsec(value string) (uint64, error) {
 }
 
 func parseDurationUsec(value string) (uint64, error) {
+	return parseDurationUsecMode(value, false)
+}
+
+func parseDurationUsecAllowZero(value string) (uint64, error) {
+	return parseDurationUsecMode(value, true)
+}
+
+func parseDurationUsecMode(value string, allowZero bool) (uint64, error) {
 	units := map[string]float64{
 		"us": 1, "usec": 1, "usecs": 1,
 		"ms": 1_000, "msec": 1_000, "msecs": 1_000,
@@ -1560,10 +1575,12 @@ func parseDurationUsec(value string) (uint64, error) {
 	}
 	var total float64
 	pos := 0
+	seen := false
 	for _, match := range durationTokenRe.FindAllStringSubmatchIndex(value, -1) {
 		if match[0] != pos {
 			return 0, fmt.Errorf("failed to parse duration: %s", value)
 		}
+		seen = true
 		number, err := strconv.ParseFloat(value[match[2]:match[3]], 64)
 		if err != nil {
 			return 0, err
@@ -1579,7 +1596,7 @@ func parseDurationUsec(value string) (uint64, error) {
 		total += number * multiplier
 		pos = match[1]
 	}
-	if pos != len(value) || total == 0 {
+	if pos != len(value) || !seen || (!allowZero && total == 0) {
 		return 0, fmt.Errorf("failed to parse duration: %s", value)
 	}
 	return uint64(total), nil
@@ -2280,6 +2297,283 @@ func runDiskUsage(inputPath string, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "Archived and active journals take up %s in the file system.\n", formatJournalBytes(bytes))
 	return nil
+}
+
+type vacuumOptions struct {
+	maxUse           uint64
+	maxFiles         uint64
+	maxRetentionUsec uint64
+}
+
+type vacuumCandidate struct {
+	path      string
+	name      string
+	usage     uint64
+	seqnumID  string
+	seqnum    uint64
+	realtime  uint64
+	haveSeqno bool
+}
+
+func hasVacuumFlags(f *cliFlags) bool {
+	return *f.vacuumSizeFlag != "" || *f.vacuumFilesFlag != "" || *f.vacuumTimeFlag != ""
+}
+
+func runVacuum(inputPath string, flags *cliFlags, stderr io.Writer) error {
+	opts, err := parseVacuumOptions(flags)
+	if err != nil {
+		return err
+	}
+	if opts.maxUse == 0 && opts.maxFiles == 0 && opts.maxRetentionUsec == 0 {
+		return nil
+	}
+	info, err := os.Stat(inputPath)
+	if err != nil {
+		return fmt.Errorf("vacuum: %s: %w", inputPath, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("vacuum: %s is not a directory", inputPath)
+	}
+	return vacuumDirectory(inputPath, opts, *flags.quietFlag, stderr)
+}
+
+func parseVacuumOptions(flags *cliFlags) (vacuumOptions, error) {
+	var opts vacuumOptions
+	if *flags.vacuumSizeFlag != "" {
+		value, err := parseVacuumSize(*flags.vacuumSizeFlag)
+		if err != nil {
+			return vacuumOptions{}, err
+		}
+		opts.maxUse = value
+	}
+	if *flags.vacuumFilesFlag != "" {
+		value, err := strconv.ParseUint(strings.TrimSpace(*flags.vacuumFilesFlag), 10, 64)
+		if err != nil {
+			return vacuumOptions{}, fmt.Errorf("failed to parse --vacuum-files value: %s", *flags.vacuumFilesFlag)
+		}
+		opts.maxFiles = value
+	}
+	if *flags.vacuumTimeFlag != "" {
+		trimmed := strings.TrimSpace(*flags.vacuumTimeFlag)
+		value, err := parseDurationUsecAllowZero(trimmed)
+		if err != nil {
+			return vacuumOptions{}, fmt.Errorf("failed to parse --vacuum-time value: %s", *flags.vacuumTimeFlag)
+		}
+		opts.maxRetentionUsec = value
+	}
+	return opts, nil
+}
+
+func parseVacuumSize(value string) (uint64, error) {
+	match := sizeTokenRe.FindStringSubmatch(value)
+	if match == nil {
+		return 0, fmt.Errorf("failed to parse --vacuum-size value: %s", value)
+	}
+	number, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0, err
+	}
+	unit := strings.ToLower(match[2])
+	multipliers := map[string]uint64{
+		"": 1, "b": 1, "byte": 1, "bytes": 1,
+		"k": 1024, "kb": 1024, "kib": 1024,
+		"m": 1024 * 1024, "mb": 1024 * 1024, "mib": 1024 * 1024,
+		"g": 1024 * 1024 * 1024, "gb": 1024 * 1024 * 1024, "gib": 1024 * 1024 * 1024,
+		"t": 1024 * 1024 * 1024 * 1024, "tb": 1024 * 1024 * 1024 * 1024, "tib": 1024 * 1024 * 1024 * 1024,
+		"p": 1024 * 1024 * 1024 * 1024 * 1024, "pb": 1024 * 1024 * 1024 * 1024 * 1024, "pib": 1024 * 1024 * 1024 * 1024 * 1024,
+		"e": 1024 * 1024 * 1024 * 1024 * 1024 * 1024, "eb": 1024 * 1024 * 1024 * 1024 * 1024 * 1024, "eib": 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
+	}
+	multiplier, ok := multipliers[unit]
+	if !ok {
+		return 0, fmt.Errorf("failed to parse --vacuum-size value: %s", value)
+	}
+	if number < 0 || number > float64(^uint64(0))/float64(multiplier) {
+		return 0, fmt.Errorf("failed to parse --vacuum-size value: %s", value)
+	}
+	return uint64(number * float64(multiplier)), nil
+}
+
+func vacuumDirectory(dir string, opts vacuumOptions, quiet bool, stderr io.Writer) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("vacuum: read directory %s: %w", dir, err)
+	}
+
+	var candidates []vacuumCandidate
+	var activeFiles, sum, freed uint64
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		usage := allocatedBytes(info)
+
+		candidate, protected := parseVacuumCandidate(path, name, usage)
+		if protected {
+			activeFiles++
+			sum = saturatingAdd(sum, usage)
+			continue
+		}
+		if candidate == nil {
+			continue
+		}
+
+		empty, err := vacuumJournalFileEmpty(path, info)
+		if err != nil {
+			continue
+		}
+		if empty {
+			if err := os.Remove(path); err == nil {
+				freed = saturatingAdd(freed, usage)
+				if !quiet {
+					fmt.Fprintf(stderr, "Deleted empty archived journal %s/%s (%s).\n", dir, name, formatJournalBytes(usage))
+				}
+			} else if !errors.Is(err, os.ErrNotExist) && !quiet {
+				fmt.Fprintf(stderr, "Failed to delete empty archived journal %s/%s: %v\n", dir, name, err)
+			}
+			continue
+		}
+
+		patchVacuumRealtime(candidate, info)
+		candidates = append(candidates, *candidate)
+		sum = saturatingAdd(sum, usage)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return vacuumCandidateLess(candidates[i], candidates[j])
+	})
+
+	retentionLimit := uint64(0)
+	if opts.maxRetentionUsec > 0 {
+		now := currentRealtimeUsec()
+		if now > opts.maxRetentionUsec {
+			retentionLimit = now - opts.maxRetentionUsec
+		}
+	}
+
+	for i, candidate := range candidates {
+		left := activeFiles + uint64(len(candidates)-i)
+		if (opts.maxRetentionUsec == 0 || candidate.realtime >= retentionLimit) &&
+			(opts.maxUse == 0 || sum <= opts.maxUse) &&
+			(opts.maxFiles == 0 || left <= opts.maxFiles) {
+			break
+		}
+
+		if err := os.Remove(candidate.path); err == nil {
+			freed = saturatingAdd(freed, candidate.usage)
+			if candidate.usage < sum {
+				sum -= candidate.usage
+			} else {
+				sum = 0
+			}
+			if !quiet {
+				fmt.Fprintf(stderr, "Deleted archived journal %s/%s (%s).\n", dir, candidate.name, formatJournalBytes(candidate.usage))
+			}
+		} else if !errors.Is(err, os.ErrNotExist) && !quiet {
+			fmt.Fprintf(stderr, "Failed to delete archived journal %s/%s: %v\n", dir, candidate.name, err)
+		}
+	}
+
+	if !quiet {
+		fmt.Fprintf(stderr, "Vacuuming done, freed %s of archived journals from %s.\n", formatJournalBytes(freed), dir)
+	}
+	return nil
+}
+
+func parseVacuumCandidate(path, name string, usage uint64) (*vacuumCandidate, bool) {
+	if strings.HasSuffix(name, ".journal") {
+		match := archivedJournalNameRe.FindStringSubmatch(name)
+		if match == nil {
+			return nil, true
+		}
+		seqnum, err1 := strconv.ParseUint(match[2], 16, 64)
+		realtime, err2 := strconv.ParseUint(match[3], 16, 64)
+		if err1 != nil || err2 != nil {
+			return nil, true
+		}
+		return &vacuumCandidate{
+			path:      path,
+			name:      name,
+			usage:     usage,
+			seqnumID:  strings.ToLower(match[1]),
+			seqnum:    seqnum,
+			realtime:  realtime,
+			haveSeqno: true,
+		}, false
+	}
+	if strings.HasSuffix(name, ".journal~") {
+		match := corruptJournalNameRe.FindStringSubmatch(name)
+		if match == nil {
+			return nil, true
+		}
+		realtime, err := strconv.ParseUint(match[1], 16, 64)
+		if err != nil {
+			return nil, true
+		}
+		return &vacuumCandidate{
+			path:     path,
+			name:     name,
+			usage:    usage,
+			realtime: realtime,
+		}, false
+	}
+	return nil, false
+}
+
+func vacuumCandidateLess(a, b vacuumCandidate) bool {
+	if a.haveSeqno && b.haveSeqno && a.seqnumID == b.seqnumID {
+		return a.seqnum < b.seqnum
+	}
+	if a.realtime != b.realtime {
+		return a.realtime < b.realtime
+	}
+	if a.haveSeqno && b.haveSeqno && a.seqnumID != b.seqnumID {
+		return a.seqnumID < b.seqnumID
+	}
+	return a.name < b.name
+}
+
+func vacuumJournalFileEmpty(path string, info os.FileInfo) (bool, error) {
+	if info.Size() < journalHeaderSize {
+		return true, nil
+	}
+	file, err := os.Open(path) // nosec G304 - caller explicitly supplied the journal directory.
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	var buf [8]byte
+	if _, err := file.ReadAt(buf[:], journalHeaderNEntriesOffset); err != nil {
+		return false, err
+	}
+	return binary.LittleEndian.Uint64(buf[:]) == 0, nil
+}
+
+func patchVacuumRealtime(candidate *vacuumCandidate, info os.FileInfo) {
+	usec := timeToUsec(info.ModTime())
+	if usec > 0 && usec < candidate.realtime {
+		candidate.realtime = usec
+	}
+}
+
+func currentRealtimeUsec() uint64 {
+	return timeToUsec(time.Now())
+}
+
+func timeToUsec(t time.Time) uint64 {
+	if t.IsZero() || t.Unix() < 0 {
+		return 0
+	}
+	return uint64(t.Unix())*1_000_000 + uint64(t.Nanosecond()/1_000)
+}
+
+func saturatingAdd(a, b uint64) uint64 {
+	if ^uint64(0)-a < b {
+		return ^uint64(0)
+	}
+	return a + b
 }
 
 func runHeader(inputPath string, stdout io.Writer) error {
