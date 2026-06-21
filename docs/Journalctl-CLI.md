@@ -14,7 +14,12 @@ traversal, mixed-format directories, query/follow behavior, and verification.
 The rewrites cover file-backed query behavior only:
 
 - input selection: `--file <path>` or `--directory <path>`;
-- output: `--output default|json|export`;
+- output: all stock v260.1 file-backed modes: `short`, `short-full`,
+  `short-iso`, `short-iso-precise`, `short-precise`, `short-monotonic`,
+  `short-delta`, `short-unix`, `verbose`, `export`, `json`,
+  `json-pretty`, `json-sse`, `json-seq`, `cat`, and `with-unit`;
+- field projection: `--output-fields` for `verbose`, `export`, `json*`, and
+  `cat`, with stock metadata retention for JSON/export modes;
 - metadata: `--list-boots`, `--fields`, `--field <NAME>` (unique values);
 - filtering: `FIELD=value` matches, repeated same-field matches as OR,
   different fields as AND, and the `+` disjunction separator;

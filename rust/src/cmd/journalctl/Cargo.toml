@@ -20,6 +20,7 @@ hex = { workspace = true }
 regex = { workspace = true }
 libc = { workspace = true }
 uuid = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 journal-core = { workspace = true }

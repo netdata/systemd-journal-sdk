@@ -79,9 +79,13 @@ Current reader scope:
   realtime/monotonic/seqnum/cursor metadata, and boot listing;
 - cursor metadata is emitted in the official systemd cursor shape; cursor seek
   and test also accept the older SDK cursor shape for compatibility;
+- file-backed `journalctl` output covers the stock v260.1 short family,
+  `verbose`, `with-unit`, `cat`, `export`, `json`, `json-pretty`,
+  `json-sse`, and `json-seq` modes; `--output-fields` projects requested
+  fields while JSON/export retain stock metadata fields;
 - `--output=export` uses systemd's size-prefixed binary field encoding and
-  blank-line entry separator; `--output=json` encodes duplicate fields as
-  arrays and non-printable/non-UTF-8 values as arrays of unsigned bytes;
+  blank-line entry separator; JSON output encodes duplicate fields as arrays
+  and non-printable/non-UTF-8 values as arrays of unsigned bytes;
 - libsystemd-style match behavior: AND between different fields, OR between
   values for the same field, `AddDisjunction()` for `+`, and
   `AddConjunction()` for explicit AND groups;
@@ -417,6 +421,8 @@ user unit filters are supported for file-backed inputs. Unit filters support
 exact units and glob expansion over journal unit fields. `--new-id128` is a
 portable standalone utility action, and `--disk-usage` reports allocated
 filesystem usage for explicit `--file` or `--directory` inputs.
+The CLI implements the stock v260.1 output-mode family and `--output-fields`
+projection for `verbose`, `export`, JSON modes, and `cat`.
 
 Realtime ranges, boot filters, and follow mode are supported for file-backed
 inputs:

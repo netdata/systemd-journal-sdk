@@ -46,7 +46,7 @@ func TestRunTailReturnsLatestEntries(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{"--file", path, "--tail", "2"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+	if err := run([]string{"--file", path, "--tail", "2", "--output=cat"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("run --tail error: %v; stderr=%s", err, stderr.String())
 	}
 

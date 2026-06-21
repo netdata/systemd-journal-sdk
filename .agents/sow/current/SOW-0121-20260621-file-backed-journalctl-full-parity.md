@@ -481,6 +481,38 @@ Official source evidence for the unit-filter chunk:
   `go/README.md`, and `rust/README.md` so the documented file-backed
   `journalctl` contract includes `--new-id128` and explicit-input
   `--disk-usage`.
+- Implemented the file-backed output-mode parity chunk directly in Rust and
+  Go:
+  - the short-family modes `short`, `short-full`, `short-iso`,
+    `short-iso-precise`, `short-precise`, `short-monotonic`, `short-delta`,
+    and `short-unix`;
+  - `with-unit`, `cat`, `verbose`, `export`, `json`, `json-pretty`,
+    `json-sse`, and `json-seq`;
+  - `--output-fields` projection for `verbose`, `export`, JSON modes, and
+    `cat`, with stock metadata retention for JSON/export modes;
+  - Rust local timezone-name formatting for stock-style `short-full`,
+    `with-unit`, and `verbose` output on Unix hosts, with UTC and non-Unix
+    fallback behavior kept explicit;
+  - deterministic selected-field order in Rust/Go for `cat --output-fields`,
+    while the interoperability oracle accepts stock's Set iteration order for
+    that one mode.
+
+Official source evidence for the output-mode chunk:
+
+- `systemd/systemd @ c0a5a2516d28`
+  - `src/journal/journalctl.c:546`: parses `--output` and maps official output
+    mode strings.
+  - `src/journal/journalctl.c:1044`: parses `--output-fields` as a comma list
+    and stores it in `arg_output_fields`.
+  - `src/shared/logs-show.c:783`: `output_verbose()` prints timestamp/cursor
+    header and filters row data through `field_set_test()`.
+  - `src/shared/logs-show.c:1410`: `output_cat()` prints `MESSAGE` by default
+    and iterates the `output_fields` Set when fields are supplied, so field
+    order is not a stable byte contract for stock `cat --output-fields`.
+- Updated `.agents/sow/specs/product-scope.md`, `docs/Journalctl-CLI.md`,
+  `go/README.md`, and `rust/README.md` so the documented file-backed
+  `journalctl` contract includes the full output-mode family and
+  `--output-fields`.
 
 ## Validation
 
@@ -504,13 +536,11 @@ Acceptance criteria evidence:
   `--show-cursor`, `--lines` direction/default semantics, `--identifier`,
   `--priority`, `--facility`, `--grep`, `--case-sensitive`, `--dmesg`,
   `--this-boot`, `--cursor`, `--after-cursor`, `--cursor-file`, `--unit`,
-  `--user-unit`, `--new-id128`, explicit-input `--disk-usage`, and portable
-  path-match rejection.
-- Remaining file-backed parity is still pending, including full short-family
-  formatting, verbose/cat/with-unit/JSON variant exact framing,
-  `--output-fields`, invocation filters, `--header`, `--list-invocations`,
-  `--setup-keys`, exact empty-result exit semantics, and directory vacuum
-  actions where approved by the parity matrix.
+  `--user-unit`, `--new-id128`, explicit-input `--disk-usage`, full
+  output-mode rendering, `--output-fields`, and portable path-match rejection.
+- Remaining file-backed parity is still pending, including invocation filters,
+  `--header`, `--list-invocations`, `--setup-keys`, exact empty-result exit
+  semantics, and directory vacuum actions where approved by the parity matrix.
 
 Tests or equivalent validation:
 
@@ -661,11 +691,55 @@ Tests or equivalent validation:
 - `python3 tests/parser-parity/run_parser_parity.py --rust-bin
   .local/cargo-target/debug/journalctl`: passed after the utility/action chunk;
   Rust `ok=93 skipped=0 failed=0`, Go `ok=93 skipped=0 failed=0`.
-- `git diff --check`: passed after the utility/action chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the output-mode chunk; 24 Rust
+  `journalctl` tests passed.
+- `cd go && GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test ./cmd/journalctl
+  ./journal`: passed after the output-mode chunk.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)` after the output-mode chunk, including exact stock
+  comparisons for the short-family, `with-unit`, `cat`, `verbose`, and
+  `export` modes, parsed-object parity for JSON frame modes, and
+  `--output-fields` projection.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+  against stock `journalctl` from systemd 260 `(260.1-2-manjaro)` after the
+  output-mode chunk; saved report
+  `.local/interoperability/journalctl-query-full-output-mode.json` recorded
+  `PASS results=248 failures=0`.
+- `python3 tests/parser-parity/check_v260_manifest.py`: passed after the
+  output-mode chunk; manifest still matches the official systemd v260.1
+  surface.
+- `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after the output-mode chunk;
+  Rust `ok=93 skipped=0 failed=0`, Go `ok=93 skipped=0 failed=0`.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the output-mode docs
+  update; validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after the output-mode docs
+  update; 31 of 31 verified examples passed.
+- `GOOS=windows GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-windows.test.exe ./cmd/journalctl`: passed after the
+  output-mode chunk.
+- `GOOS=darwin GOARCH=arm64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-darwin-arm64.test ./cmd/journalctl`: passed after
+  the output-mode chunk.
+- `GOOS=freebsd GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-freebsd-amd64.test ./cmd/journalctl`: passed after
+  the output-mode chunk.
+- `git diff --check`: passed after the output-mode chunk.
 - Sensitive string scan over changed durable artifacts and candidate code:
-  passed after the utility/action chunk; the only matches were the ordinary
-  word `token` in existing SOW text about `--lines` parsing.
-- `.agents/sow/audit.sh`: passed after the utility/action chunk.
+  passed after the output-mode chunk; the only matches were benign placeholder
+  paths/phrasing, parser token wording, accounting terminology, source-name
+  text, and sanitized SOW policy text.
+- `.agents/sow/audit.sh`: passed after the output-mode chunk.
 
 Real-use evidence:
 
@@ -700,11 +774,13 @@ Artifact maintenance gate:
   to record that emitted cursor strings now use the official systemd cursor
   shape while seek/test still accept the older SDK cursor shape, and again
   after the unit-filter chunk to record the current file-backed filter
-  contract.
+  contract, and after the output-mode chunk to record full output-mode and
+  `--output-fields` behavior.
 - End-user/operator docs: `rust/README.md`, `go/README.md`, `go/API.md`, and
   `docs/Reader-APIs.md` were updated for the cursor string format contract.
   `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` were updated
-  after the unit-filter chunk for current file-backed filter behavior.
+  after the unit-filter chunk for current file-backed filter behavior and again
+  after the output-mode chunk for output rendering and `--output-fields`.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -715,8 +791,9 @@ Specs update:
 - Added `.agents/sow/specs/journalctl-v260-parity-matrix.md` for the active
   SOW implementation contract. Updated `.agents/sow/specs/product-scope.md`
   for the shipped cursor string contract change and current file-backed filter
-  contract. Additional product-scope updates remain pending final shipped
-  behavior and ship recommendation.
+  contract, then for the output-mode and `--output-fields` contract.
+  Additional product-scope updates remain pending final shipped behavior and
+  ship recommendation.
 
 Project skills update:
 
@@ -729,8 +806,8 @@ End-user/operator docs update:
 - Updated `rust/README.md`, `go/README.md`, `go/API.md`, and
   `docs/Reader-APIs.md` for the cursor string format contract. Updated
   `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` after the
-  unit-filter chunk. Final journalctl command documentation remains pending
-  full implementation.
+  unit-filter chunk and after the output-mode chunk. Final journalctl command
+  documentation remains pending full implementation.
 
 End-user/operator skills update:
 
@@ -743,6 +820,10 @@ Lessons:
 - Optional-argument CLI compatibility must be tested with a following match
   token. Stock `journalctl --lines FIELD=value` does not consume the match as a
   lines value.
+- Stock `cat --output-fields` stores selected fields in a Set and can expose
+  non-stable field order. Rust and Go keep deterministic requested-field order,
+  and the shared oracle compares the selected line multiset for that one stock
+  nondeterministic text mode.
 
 Follow-up mapping:
 

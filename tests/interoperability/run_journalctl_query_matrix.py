@@ -280,6 +280,18 @@ def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, ar
     return [*base, *args]
 
 
+def raw_reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, args: list[str]) -> list[str]:
+    if reader == "stock":
+        base = ["journalctl", f"--{mode}", str(path), "--no-pager", "--quiet"]
+    elif reader == "go":
+        base = [tools["go_journalctl"], f"--{mode}", str(path)]
+    elif reader == "rust":
+        base = [tools["rust_journalctl"], f"--{mode}", str(path)]
+    else:
+        raise ValueError(reader)
+    return [*base, *args]
+
+
 def action_command(reader: str, tools: dict[str, str], args: list[str]) -> list[str]:
     if reader == "stock":
         return ["journalctl", "--no-pager", "--quiet", *args]
@@ -314,6 +326,42 @@ def parse_cursors(output: str) -> list[str]:
         if isinstance(cursor, str) and cursor:
             cursors.append(cursor)
     return cursors
+
+
+def parse_json_output(mode: str, output: str) -> list[object]:
+    if mode == "json":
+        return [json.loads(line) for line in output.splitlines() if line.strip()]
+    if mode == "json-pretty":
+        decoder = json.JSONDecoder()
+        values: list[object] = []
+        index = 0
+        while index < len(output):
+            while index < len(output) and output[index].isspace():
+                index += 1
+            if index >= len(output):
+                break
+            value, index = decoder.raw_decode(output, index)
+            values.append(value)
+        return values
+    if mode == "json-sse":
+        values = []
+        for block in output.split("\n\n"):
+            payload_lines = [
+                line[len("data: ") :]
+                for line in block.splitlines()
+                if line.startswith("data: ")
+            ]
+            if payload_lines:
+                values.append(json.loads("\n".join(payload_lines)))
+        return values
+    if mode == "json-seq":
+        values = []
+        for record in output.split("\x1e"):
+            record = record.strip()
+            if record:
+                values.append(json.loads(record))
+        return values
+    raise ValueError(f"not a JSON output mode: {mode}")
 
 
 def valid_new_id128_output(output: str) -> bool:
@@ -659,6 +707,92 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
     return results
 
 
+def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
+    base_args = ["--boot=all", "TEST_ID=journalctl-query"]
+    text_cases = [
+        ("output-short", ["--output=short", *base_args], "exact"),
+        ("output-short-full", ["--output=short-full", *base_args], "exact"),
+        ("output-short-full-utc", ["--utc", "--output=short-full", *base_args], "exact"),
+        ("output-short-iso", ["--output=short-iso", *base_args], "exact"),
+        ("output-short-iso-precise", ["--output=short-iso-precise", *base_args], "exact"),
+        ("output-short-precise", ["--output=short-precise", *base_args], "exact"),
+        ("output-short-monotonic", ["--output=short-monotonic", *base_args], "exact"),
+        ("output-short-delta", ["--output=short-delta", *base_args], "exact"),
+        ("output-short-unix", ["--output=short-unix", *base_args], "exact"),
+        ("output-with-unit", ["--output=with-unit", *base_args], "exact"),
+        ("output-cat", ["--output=cat", *base_args], "exact"),
+        (
+            "output-cat-fields",
+            ["--output=cat", "--output-fields=MESSAGE,PRIORITY", *base_args],
+            "line-multiset",
+        ),
+        ("output-verbose-fields", ["--output=verbose", "--output-fields=MESSAGE,PRIORITY", *base_args], "exact"),
+        ("output-export-fields", ["--output=export", "--output-fields=MESSAGE,PRIORITY", *base_args], "exact"),
+    ]
+    results: list[dict[str, object]] = []
+    for case_name, args, comparison in text_cases:
+        stock_cmd = raw_reader_command("stock", tools, "file", fixtures["file"], args)
+        stock = run(stock_cmd, timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = stock.stdout
+        expected_cmp: object = sorted(expected.splitlines()) if comparison == "line-multiset" else expected
+        for reader in READERS:
+            cmd = raw_reader_command(reader, tools, "file", fixtures["file"], args)
+            result = run(cmd, timeout=30)
+            actual_cmp: object = sorted(result.stdout.splitlines()) if comparison == "line-multiset" else result.stdout
+            ok = result.returncode == 0 and actual_cmp == expected_cmp
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": result.stdout,
+                    "comparison": comparison,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
+
+    json_modes = ["json", "json-pretty", "json-sse", "json-seq"]
+    for mode in json_modes:
+        for suffix, extra_args in (
+            ("", []),
+            ("-fields", ["--output-fields=MESSAGE,PRIORITY"]),
+        ):
+            case_name = f"output-{mode}{suffix}"
+            args = [f"--output={mode}", *extra_args, *base_args]
+            stock_cmd = raw_reader_command("stock", tools, "file", fixtures["file"], args)
+            stock = run(stock_cmd, timeout=30)
+            require_ok(stock, f"stock {case_name}")
+            expected = parse_json_output(mode, stock.stdout)
+            for reader in READERS:
+                cmd = raw_reader_command(reader, tools, "file", fixtures["file"], args)
+                result = run(cmd, timeout=30)
+                try:
+                    actual = parse_json_output(mode, result.stdout)
+                    parse_error = ""
+                except Exception as err:  # noqa: BLE001 - failure detail belongs in matrix report.
+                    actual = []
+                    parse_error = str(err)
+                ok = result.returncode == 0 and actual == expected and not parse_error
+                results.append(
+                    {
+                        "test": case_name,
+                        "reader": reader,
+                        "status": "PASS" if ok else "FAIL",
+                        "command": " ".join(cmd),
+                        "expected": expected,
+                        "actual": actual,
+                        "parse_error": parse_error,
+                        "returncode": result.returncode,
+                        "stderr": result.stderr[-1000:],
+                    }
+                )
+    return results
+
+
 def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
     results = []
     cases = [
@@ -839,6 +973,7 @@ def main() -> int:
     results.extend(run_cursor_file_cases(tools, fixtures))
     results.extend(run_portable_error_cases(tools, fixtures))
     results.extend(run_utility_action_cases(tools, fixtures))
+    results.extend(run_output_mode_cases(tools, fixtures))
     if not args.skip_follow:
         results.extend(run_follow_cases(tools, fixtures))
 

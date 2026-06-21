@@ -1,14 +1,17 @@
+mod output;
+
 use anyhow::{Result, anyhow};
 use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 use clap::{Parser, ValueEnum};
 use journal::{
     Entry, FacadeError, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetEntry,
-    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalPrevious, SdJournalProcessOutput,
-    SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
-    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_string,
-    verify_file, verify_file_with_key,
+    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalPrevious, SdJournalSeekCursor,
+    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
+    SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_string, verify_file,
+    verify_file_with_key,
 };
+use output::{OutputOptions, OutputRenderer};
 use regex::{Regex, RegexBuilder};
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -253,7 +256,7 @@ struct Args {
     smart_relinquish_var: bool,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 enum OutputModeArg {
     /// Default short journal format.
@@ -497,6 +500,7 @@ fn run() -> Result<()> {
     let until_usec = parse_optional_timestamp(args.until.as_deref())?;
     let post_filters = CliPostFilters::from_args(&args)?;
     let cursor_control = CursorControl::from_args(&args)?;
+    let output_options = OutputOptions::from_args(&args);
 
     if args.follow {
         let tail = parse_tail_count(args.tail.as_ref(), args.lines.as_deref()).unwrap_or(10);
@@ -508,6 +512,7 @@ fn run() -> Result<()> {
             tail,
             &post_filters,
             &cursor_control,
+            &output_options,
         );
     }
 
@@ -560,6 +565,7 @@ fn run() -> Result<()> {
                 args.show_cursor,
                 &post_filters,
                 &cursor_control,
+                &output_options,
             ),
             LinesLimit::Head(n) => show_head_or_all_with_reverse(
                 &mut journal,
@@ -570,6 +576,7 @@ fn run() -> Result<()> {
                 args.show_cursor,
                 &post_filters,
                 &cursor_control,
+                &output_options,
             ),
             LinesLimit::Tail(n) => show_tail_with_reverse(
                 &mut journal,
@@ -580,6 +587,7 @@ fn run() -> Result<()> {
                 args.show_cursor,
                 &post_filters,
                 &cursor_control,
+                &output_options,
             ),
         };
     }
@@ -595,6 +603,7 @@ fn run() -> Result<()> {
             args.show_cursor,
             &post_filters,
             &cursor_control,
+            &output_options,
         )
     } else {
         show_head_or_all_with_reverse(
@@ -606,6 +615,7 @@ fn run() -> Result<()> {
             args.show_cursor,
             &post_filters,
             &cursor_control,
+            &output_options,
         )
     }
 }
@@ -1662,6 +1672,7 @@ fn show_head_or_all_with_reverse(
     show_cursor: bool,
     post_filters: &CliPostFilters,
     cursor_control: &CursorControl,
+    output_options: &OutputOptions,
 ) -> Result<()> {
     let entries = matching_entries_with_direction(
         journal,
@@ -1672,14 +1683,14 @@ fn show_head_or_all_with_reverse(
         cursor_control.seek.as_ref(),
     )?;
     let mut stdout = std::io::stdout().lock();
+    let mut renderer = OutputRenderer::new(output_options.clone());
     let mut shown = 0usize;
     let mut last_cursor: Option<String> = None;
     for entry in &entries {
         if limit.is_some_and(|limit| shown >= limit) {
             break;
         }
-        let output =
-            SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}"))?;
+        let output = renderer.render(entry)?;
         stdout.write_all(&output)?;
         shown += 1;
         if !entry.cursor.is_empty() {
@@ -1704,6 +1715,7 @@ fn show_tail_with_reverse(
     show_cursor: bool,
     post_filters: &CliPostFilters,
     cursor_control: &CursorControl,
+    output_options: &OutputOptions,
 ) -> Result<()> {
     let entries = matching_entries_with_direction(
         journal,
@@ -1713,16 +1725,17 @@ fn show_tail_with_reverse(
         post_filters,
         cursor_control.seek.as_ref(),
     )?;
-    let outputs = entries
-        .iter()
-        .map(|entry| SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}")))
-        .collect::<Result<Vec<_>>>()?;
-    let start = outputs.len().saturating_sub(limit);
+    let start = entries.len().saturating_sub(limit);
     let mut stdout = std::io::stdout().lock();
-    for entry in &outputs[start..] {
-        stdout.write_all(entry)?;
+    let mut renderer = OutputRenderer::new(output_options.clone());
+    let mut last_cursor: Option<&str> = None;
+    for entry in &entries[start..] {
+        let output = renderer.render(entry)?;
+        stdout.write_all(&output)?;
+        if !entry.cursor.is_empty() {
+            last_cursor = Some(entry.cursor.as_str());
+        }
     }
-    let last_cursor = entries.last().map(|entry| entry.cursor.as_str());
     finish_cursor_output(
         &mut stdout,
         show_cursor,
@@ -2174,6 +2187,7 @@ fn scan_follow_snapshot(
     until_usec: Option<u64>,
     post_filters: &CliPostFilters,
     cursor_control: &CursorControl,
+    output_options: &OutputOptions,
 ) -> Vec<(String, Vec<u8>)> {
     let Ok(mut journal) = open_filtered_journal(path, args) else {
         return Vec::new();
@@ -2187,12 +2201,10 @@ fn scan_follow_snapshot(
     ) else {
         return Vec::new();
     };
+    let mut renderer = OutputRenderer::new(output_options.clone());
     entries
         .iter()
-        .filter_map(|entry| {
-            let output = SdJournalProcessOutput(&mut journal, entry).ok()?;
-            Some((entry.cursor.clone(), output))
-        })
+        .filter_map(|entry| Some((entry.cursor.clone(), renderer.render(entry).ok()?)))
         .collect()
 }
 
@@ -2204,6 +2216,7 @@ fn run_follow(
     tail: usize,
     post_filters: &CliPostFilters,
     cursor_control: &CursorControl,
+    output_options: &OutputOptions,
 ) -> Result<()> {
     use std::collections::HashSet;
 
@@ -2215,6 +2228,7 @@ fn run_follow(
         until_usec,
         post_filters,
         cursor_control,
+        output_options,
     );
     for (cursor, _) in &initial {
         seen.insert(cursor.clone());
@@ -2240,6 +2254,7 @@ fn run_follow(
             until_usec,
             post_filters,
             cursor_control,
+            output_options,
         );
         let mut stdout = std::io::stdout().lock();
         for (cursor, output) in snapshot {

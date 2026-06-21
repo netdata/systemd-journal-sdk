@@ -1,0 +1,488 @@
+use super::{Args, OutputModeArg};
+use anyhow::{Result, anyhow};
+use chrono::{Local, TimeZone, Utc};
+use journal::Entry;
+use serde_json::{Map, Value};
+#[cfg(unix)]
+use std::ffi::CStr;
+
+#[derive(Clone)]
+pub(crate) struct OutputOptions {
+    mode: OutputModeArg,
+    output_fields: Vec<String>,
+    output_fields_set: bool,
+    utc: bool,
+    truncate_newline: bool,
+}
+
+impl OutputOptions {
+    pub(crate) fn from_args(args: &Args) -> Self {
+        Self {
+            mode: args.output.clone(),
+            output_fields: parse_output_fields(args.output_fields.as_deref()),
+            output_fields_set: args.output_fields.is_some(),
+            utc: args.utc,
+            truncate_newline: args.truncate_newline,
+        }
+    }
+}
+
+pub(crate) struct OutputRenderer {
+    options: OutputOptions,
+    previous_delta: Option<(u64, [u8; 16])>,
+}
+
+impl OutputRenderer {
+    pub(crate) fn new(options: OutputOptions) -> Self {
+        Self {
+            options,
+            previous_delta: None,
+        }
+    }
+
+    pub(crate) fn render(&mut self, entry: &Entry) -> Result<Vec<u8>> {
+        match self.options.mode {
+            OutputModeArg::Short => self.render_short(entry, TimestampMode::Short),
+            OutputModeArg::ShortFull => self.render_short(entry, TimestampMode::ShortFull),
+            OutputModeArg::ShortIso => self.render_short(entry, TimestampMode::ShortIso),
+            OutputModeArg::ShortIsoPrecise => {
+                self.render_short(entry, TimestampMode::ShortIsoPrecise)
+            }
+            OutputModeArg::ShortPrecise => self.render_short(entry, TimestampMode::ShortPrecise),
+            OutputModeArg::ShortMonotonic => {
+                self.render_short(entry, TimestampMode::ShortMonotonic)
+            }
+            OutputModeArg::ShortDelta => self.render_short_delta(entry),
+            OutputModeArg::ShortUnix => self.render_short(entry, TimestampMode::ShortUnix),
+            OutputModeArg::WithUnit => self.render_with_unit(entry),
+            OutputModeArg::Cat => Ok(self.render_cat(entry)),
+            OutputModeArg::Verbose => self.render_verbose(entry),
+            OutputModeArg::Export => Ok(self.render_export(entry)),
+            OutputModeArg::Json => self.render_json(entry, JsonFrame::Line),
+            OutputModeArg::JsonPretty => self.render_json(entry, JsonFrame::Pretty),
+            OutputModeArg::JsonSse => self.render_json(entry, JsonFrame::Sse),
+            OutputModeArg::JsonSeq => self.render_json(entry, JsonFrame::Seq),
+        }
+    }
+
+    fn render_short(&mut self, entry: &Entry, timestamp_mode: TimestampMode) -> Result<Vec<u8>> {
+        let timestamp = format_timestamp(entry, timestamp_mode, self.options.utc)?;
+        let label = entry_label(entry);
+        let message = display_message(entry, self.options.truncate_newline);
+        Ok(format!("{timestamp} {label}: {message}\n").into_bytes())
+    }
+
+    fn render_with_unit(&mut self, entry: &Entry) -> Result<Vec<u8>> {
+        let timestamp = format_timestamp(entry, TimestampMode::ShortFull, self.options.utc)?;
+        let label = unit_label(entry).unwrap_or_else(|| entry_label(entry));
+        let message = display_message(entry, self.options.truncate_newline);
+        Ok(format!("{timestamp} {label}: {message}\n").into_bytes())
+    }
+
+    fn render_short_delta(&mut self, entry: &Entry) -> Result<Vec<u8>> {
+        let message = display_message(entry, self.options.truncate_newline);
+        let label = entry_label(entry);
+        let current = (entry.realtime, entry.boot_id);
+        let monotonic = format_monotonic(entry.monotonic);
+        let delta = match self.previous_delta {
+            Some((previous_realtime, previous_boot)) => {
+                let diff = entry.realtime.abs_diff(previous_realtime);
+                let marker = if previous_boot == entry.boot_id {
+                    " "
+                } else {
+                    "*"
+                };
+                format!(" <{}{}>", format_monotonic(diff), marker)
+            }
+            None => "                ".to_string(),
+        };
+        self.previous_delta = Some(current);
+        Ok(format!("[{monotonic}{delta}] {label}: {message}\n").into_bytes())
+    }
+
+    fn render_cat(&self, entry: &Entry) -> Vec<u8> {
+        let mut out = Vec::new();
+        if self.options.output_fields_set {
+            for name in &self.options.output_fields {
+                for value in values_for_name(entry, name) {
+                    out.extend_from_slice(&display_value(value, self.options.truncate_newline));
+                    out.push(b'\n');
+                }
+            }
+            return out;
+        }
+        for value in values_for_name(entry, "MESSAGE") {
+            out.extend_from_slice(&display_value(value, self.options.truncate_newline));
+            out.push(b'\n');
+        }
+        out
+    }
+
+    fn render_verbose(&self, entry: &Entry) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        out.extend_from_slice(
+            format!(
+                "{} [{}]\n",
+                format_timestamp(entry, TimestampMode::Verbose, self.options.utc)?,
+                entry.cursor
+            )
+            .as_bytes(),
+        );
+        for (name, value) in verbose_fields(entry, &self.options) {
+            out.extend_from_slice(format!("    {name}=").as_bytes());
+            out.extend_from_slice(&display_value(value, false));
+            out.push(b'\n');
+        }
+        Ok(out)
+    }
+
+    fn render_export(&self, entry: &Entry) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut metadata = metadata_fields(entry);
+        for (name, value) in &mut metadata {
+            write_export_field(&mut out, name.as_bytes(), value);
+        }
+        for (name, value) in entry_fields(entry, &self.options) {
+            write_export_field(&mut out, name.as_bytes(), value);
+        }
+        out.push(b'\n');
+        out
+    }
+
+    fn render_json(&self, entry: &Entry, frame: JsonFrame) -> Result<Vec<u8>> {
+        let object = json_object(entry, &self.options);
+        let mut out = Vec::new();
+        match frame {
+            JsonFrame::Line => {
+                serde_json::to_writer(&mut out, &Value::Object(object))
+                    .map_err(|err| anyhow!("json output: {err}"))?;
+                out.push(b'\n');
+            }
+            JsonFrame::Pretty => {
+                let text = serde_json::to_string_pretty(&Value::Object(object))
+                    .map_err(|err| anyhow!("json output: {err}"))?;
+                out.extend_from_slice(text.as_bytes());
+                out.push(b'\n');
+            }
+            JsonFrame::Sse => {
+                out.extend_from_slice(b"data: ");
+                serde_json::to_writer(&mut out, &Value::Object(object))
+                    .map_err(|err| anyhow!("json output: {err}"))?;
+                out.extend_from_slice(b"\n\n");
+            }
+            JsonFrame::Seq => {
+                out.push(0x1e);
+                serde_json::to_writer(&mut out, &Value::Object(object))
+                    .map_err(|err| anyhow!("json output: {err}"))?;
+                out.push(b'\n');
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TimestampMode {
+    Short,
+    ShortFull,
+    ShortIso,
+    ShortIsoPrecise,
+    ShortPrecise,
+    ShortMonotonic,
+    ShortUnix,
+    Verbose,
+}
+
+enum JsonFrame {
+    Line,
+    Pretty,
+    Sse,
+    Seq,
+}
+
+fn parse_output_fields(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn format_timestamp(entry: &Entry, mode: TimestampMode, utc: bool) -> Result<String> {
+    if matches!(mode, TimestampMode::ShortMonotonic) {
+        return Ok(format!("[{}]", format_monotonic(entry.monotonic)));
+    }
+    if matches!(mode, TimestampMode::ShortUnix) {
+        return Ok(format!(
+            "{}.{:06}",
+            entry.realtime / 1_000_000,
+            entry.realtime % 1_000_000
+        ));
+    }
+
+    let secs = (entry.realtime / 1_000_000) as i64;
+    let nanos = ((entry.realtime % 1_000_000) * 1000) as u32;
+    let needs_zone_name = matches!(mode, TimestampMode::ShortFull | TimestampMode::Verbose);
+    let pattern = match mode {
+        TimestampMode::Short => "%b %d %H:%M:%S",
+        TimestampMode::ShortFull => "%a %Y-%m-%d %H:%M:%S",
+        TimestampMode::ShortIso => "%Y-%m-%dT%H:%M:%S%:z",
+        TimestampMode::ShortIsoPrecise => "%Y-%m-%dT%H:%M:%S%.6f%:z",
+        TimestampMode::ShortPrecise => "%b %d %H:%M:%S%.6f",
+        TimestampMode::Verbose => "%a %Y-%m-%d %H:%M:%S%.6f",
+        TimestampMode::ShortMonotonic | TimestampMode::ShortUnix => unreachable!(),
+    };
+
+    if utc {
+        let dt = Utc
+            .timestamp_opt(secs, nanos)
+            .single()
+            .ok_or_else(|| anyhow!("invalid realtime timestamp"))?;
+        let formatted = dt.format(pattern).to_string();
+        return Ok(if needs_zone_name {
+            format!("{formatted} UTC")
+        } else {
+            formatted
+        });
+    }
+    let dt = Local
+        .timestamp_opt(secs, nanos)
+        .single()
+        .ok_or_else(|| anyhow!("invalid realtime timestamp"))?;
+    let formatted = dt.format(pattern).to_string();
+    if needs_zone_name {
+        let zone = local_timezone_name(secs).unwrap_or_else(|| dt.format("%Z").to_string());
+        return Ok(format!("{formatted} {zone}"));
+    }
+    Ok(formatted)
+}
+
+fn format_monotonic(usec: u64) -> String {
+    format!("{:>5}.{:06}", usec / 1_000_000, usec % 1_000_000)
+}
+
+#[cfg(unix)]
+fn local_timezone_name(secs: i64) -> Option<String> {
+    let timestamp = libc::time_t::try_from(secs).ok()?;
+    let mut local_tm = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: localtime_r initializes local_tm for the provided timestamp
+    // and returns a null pointer on failure.
+    let ptr = unsafe { libc::localtime_r(&timestamp, local_tm.as_mut_ptr()) };
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: localtime_r returned success, so local_tm is initialized.
+    let local_tm = unsafe { local_tm.assume_init() };
+    if local_tm.tm_zone.is_null() {
+        return None;
+    }
+    // SAFETY: tm_zone is a NUL-terminated C string owned by the C runtime.
+    unsafe { CStr::from_ptr(local_tm.tm_zone) }
+        .to_str()
+        .ok()
+        .map(str::to_string)
+}
+
+#[cfg(not(unix))]
+fn local_timezone_name(_secs: i64) -> Option<String> {
+    None
+}
+
+fn entry_label(entry: &Entry) -> String {
+    first_string(entry, "SYSLOG_IDENTIFIER")
+        .or_else(|| first_string(entry, "_COMM"))
+        .or_else(|| first_string(entry, "_EXE"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn unit_label(entry: &Entry) -> Option<String> {
+    for name in [
+        "_SYSTEMD_UNIT",
+        "_SYSTEMD_USER_UNIT",
+        "UNIT",
+        "USER_UNIT",
+        "OBJECT_SYSTEMD_UNIT",
+        "OBJECT_SYSTEMD_USER_UNIT",
+    ] {
+        if let Some(value) = first_string(entry, name) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn display_message(entry: &Entry, truncate_newline: bool) -> String {
+    values_for_name(entry, "MESSAGE")
+        .first()
+        .map(|value| String::from_utf8_lossy(&display_value(value, truncate_newline)).into_owned())
+        .unwrap_or_default()
+}
+
+fn first_string(entry: &Entry, name: &str) -> Option<String> {
+    values_for_name(entry, name)
+        .first()
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+}
+
+fn values_for_name<'a>(entry: &'a Entry, name: &str) -> Vec<&'a [u8]> {
+    if let Some(values) = entry.field_values.get(name) {
+        if !values.is_empty() {
+            return values.iter().map(Vec::as_slice).collect();
+        }
+    }
+    entry
+        .fields
+        .get(name)
+        .map(|value| vec![value.as_slice()])
+        .unwrap_or_default()
+}
+
+fn display_value(value: &[u8], truncate_newline: bool) -> Vec<u8> {
+    if !truncate_newline {
+        return value.to_vec();
+    }
+    let end = value
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(value.len());
+    value[..end].to_vec()
+}
+
+fn metadata_fields(entry: &Entry) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    if !entry.cursor.is_empty() {
+        out.push(("__CURSOR".to_string(), entry.cursor.as_bytes().to_vec()));
+    }
+    out.push((
+        "__REALTIME_TIMESTAMP".to_string(),
+        entry.realtime.to_string().into_bytes(),
+    ));
+    out.push((
+        "__MONOTONIC_TIMESTAMP".to_string(),
+        entry.monotonic.to_string().into_bytes(),
+    ));
+    out.push((
+        "__SEQNUM".to_string(),
+        entry.seqnum.to_string().into_bytes(),
+    ));
+    if let Some(seqnum_id) = cursor_component(&entry.cursor, "s") {
+        out.push(("__SEQNUM_ID".to_string(), seqnum_id.into_bytes()));
+    }
+    out.push((
+        "_BOOT_ID".to_string(),
+        hex::encode(entry.boot_id).into_bytes(),
+    ));
+    out
+}
+
+fn cursor_component(cursor: &str, name: &str) -> Option<String> {
+    cursor.split(';').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == name).then(|| value.to_string())
+    })
+}
+
+fn verbose_fields<'a>(entry: &'a Entry, options: &OutputOptions) -> Vec<(String, &'a [u8])> {
+    if options.output_fields_set {
+        return selected_entry_fields(entry, &options.output_fields);
+    }
+    entry
+        .raw_fields()
+        .map(|field| {
+            (
+                String::from_utf8_lossy(field.name).into_owned(),
+                field.value,
+            )
+        })
+        .collect()
+}
+
+fn entry_fields<'a>(entry: &'a Entry, options: &OutputOptions) -> Vec<(String, &'a [u8])> {
+    if options.output_fields_set {
+        return selected_entry_fields(entry, &options.output_fields);
+    }
+    entry
+        .raw_fields()
+        .filter(|field| field.name != b"_BOOT_ID")
+        .map(|field| {
+            (
+                String::from_utf8_lossy(field.name).into_owned(),
+                field.value,
+            )
+        })
+        .collect()
+}
+
+fn selected_entry_fields<'a>(entry: &'a Entry, names: &[String]) -> Vec<(String, &'a [u8])> {
+    let mut out = Vec::new();
+    for name in names {
+        for value in values_for_name(entry, name) {
+            out.push((name.clone(), value));
+        }
+    }
+    out
+}
+
+fn json_object(entry: &Entry, options: &OutputOptions) -> Map<String, Value> {
+    let mut map = Map::new();
+    for (name, value) in metadata_fields(entry) {
+        add_json_value(&mut map, name, &value);
+    }
+    for (name, value) in entry_fields(entry, options) {
+        add_json_value(&mut map, name, value);
+    }
+    map
+}
+
+fn add_json_value(map: &mut Map<String, Value>, name: String, value: &[u8]) {
+    let value = json_value_for_bytes(value);
+    match map.remove(&name) {
+        Some(Value::Array(mut values)) => {
+            values.push(value);
+            map.insert(name, Value::Array(values));
+        }
+        Some(existing) => {
+            map.insert(name, Value::Array(vec![existing, value]));
+        }
+        None => {
+            map.insert(name, value);
+        }
+    }
+}
+
+fn json_value_for_bytes(value: &[u8]) -> Value {
+    if let Ok(text) = std::str::from_utf8(value) {
+        if text.chars().all(|ch| {
+            let cp = ch as u32;
+            (cp >= 0x20 || ch == '\t' || ch == '\n') && !(0x7f..=0x9f).contains(&cp)
+        }) {
+            return Value::String(text.to_string());
+        }
+    }
+    Value::Array(
+        value
+            .iter()
+            .map(|byte| Value::Number((*byte).into()))
+            .collect(),
+    )
+}
+
+fn write_export_field(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
+    if value
+        .iter()
+        .all(|byte| *byte == b'\t' || (0x20..0x7f).contains(byte))
+    {
+        out.extend_from_slice(name);
+        out.push(b'=');
+        out.extend_from_slice(value);
+        out.push(b'\n');
+        return;
+    }
+    out.extend_from_slice(name);
+    out.push(b'\n');
+    out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    out.extend_from_slice(value);
+    out.push(b'\n');
+}

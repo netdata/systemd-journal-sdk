@@ -748,6 +748,14 @@ Current Go reader feature slice:
 - systemd-compatible export output for binary fields using size-prefixed field
   values and blank-line entry separators;
 - systemd-compatible JSON output for duplicate fields and binary values;
+- file-backed journalctl output modes cover the stock v260.1 family:
+  `short`, `short-full`, `short-iso`, `short-iso-precise`,
+  `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
+  `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
+  `cat`, and `with-unit`;
+- `--output-fields` is supported for `verbose`, `export`, JSON modes, and
+  `cat`; JSON/export preserve stock metadata fields such as cursor, realtime,
+  monotonic, seqnum, seqnum ID, and boot ID;
 - libsystemd-style match tree behavior from `sd_journal_add_match()`,
   `sd_journal_add_disjunction()`, and `sd_journal_add_conjunction()`;
 - file-backed Go journalctl behavior for `--file`, `--directory`,
@@ -852,6 +860,14 @@ Current Rust reader feature slice:
 - export byte output preserves non-UTF8 RAW field names; JSON output, field
   enumeration, unique queries, and `get_data` facade helpers remain UTF-8
   field-name surfaces;
+- file-backed journalctl output modes cover the stock v260.1 family:
+  `short`, `short-full`, `short-iso`, `short-iso-precise`,
+  `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
+  `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
+  `cat`, and `with-unit`;
+- `--output-fields` is supported for `verbose`, `export`, JSON modes, and
+  `cat`; JSON/export preserve stock metadata fields such as cursor, realtime,
+  monotonic, seqnum, seqnum ID, and boot ID;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
 - file-backed Rust journalctl behavior for `--file`, `--directory`,
