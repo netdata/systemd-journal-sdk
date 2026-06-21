@@ -6,10 +6,11 @@ Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: regression repair completed on 2026-06-21 after post-close gap
-analysis found file-backed `journalctl` parity and performance-contract gaps.
-This SOW is release-relevant for any non-Linux package that claims an official
-portable `journalctl` command.
+Sub-state: completed on 2026-06-21 after the user-requested strict P0/P1/P2
+review gate. Six requested read-only reviewers reported no P0, P1, or P2
+findings; only P3 cosmetic or optional-hardening observations remain. This SOW
+is release-relevant for any non-Linux package that claims an official portable
+`journalctl` command.
 
 ## Requirements
 
@@ -1815,3 +1816,339 @@ Final follow-up mapping:
 - Rejected as not separate follow-up work: Go export cursor concern, because
   exact stock export comparisons pass; monolithic-code cleanup, because
   SOW-0097 and SOW-0098 already track parked maintainability debt.
+
+## Regression - 2026-06-21 P0/P1/P2 Review Gate
+
+Status: in-progress.
+
+Trigger:
+
+- The user set a stricter acceptance goal: run `glm`, `minimax`, `kimi`,
+  `mimo`, `deepseek`, and `qwen` as unbiased first-time reviewers until no
+  P0, P1, or P2 findings remain. Only P3 cosmetic findings are allowed.
+
+Reviewer run:
+
+- Prompt file: `.local/sow-0121/review-p0-gate-prompt.txt`.
+- Reports:
+  - `.local/sow-0121/review-p0gate-current-glm.txt`.
+  - `.local/sow-0121/review-p0gate-current-minimax.txt`.
+  - `.local/sow-0121/review-p0gate-current-kimi.txt`.
+  - `.local/sow-0121/review-p0gate-current-mimo.txt`.
+  - `.local/sow-0121/review-p0gate-current-deepseek.txt`.
+  - `.local/sow-0121/review-p0gate-current-qwen.txt`.
+
+Verified findings:
+
+- P1: Rust `--help` hides most official options, while the parity matrix
+  requires the full v260.1 option surface to be visible in help.
+- P2: the parser parity help test only checks generic help headers, so it did
+  not catch missing official options.
+- P1: `--pager-end --reverse` without an explicit `--lines=N` uses tail output
+  in both Rust and Go and prints oldest-to-newest, while stock v260.1 prints
+  newest-to-oldest.
+- P2: the ignored `go/journalctl` workspace binary was stale and diverged from
+  current source for `--merge` boot-separator behavior. It was removed as a
+  build artifact.
+- P2: reviewers still classify `--list-invocations` row scanning and portable
+  follow polling as non-cosmetic performance gaps under the stricter gate.
+
+Validation evidence for the pager-end/reverse bug:
+
+- Stock command:
+  `journalctl --no-pager --file .local/interoperability/journalctl-query/multi-boot-file.journal --pager-end --reverse --boot=all TEST_ID=journalctl-query`
+  starts with boot `cccc...`.
+- Rust and Go current binaries printed boot `aaaa...` first for the same
+  command because the `--pager-end` branch forced non-reverse tail output.
+
+Pre-implementation gate:
+
+- Problem / root-cause model: the prior close validated broad file-backed
+  behavior but still left hidden-help surface gaps, a `--pager-end` dispatch
+  ordering bug, weak help-surface validation, and performance paths that the
+  stricter user gate no longer accepts as P2 follow-ups.
+- Evidence reviewed: six reviewer reports listed above, local stock
+  `journalctl` v260.1 probes, Rust and Go dispatch source, parser parity
+  harness, product scope and parity specs.
+- Affected contracts and surfaces: Rust CLI help, Go CLI help/test oracle,
+  Rust/Go show dispatch, query matrix, parser parity, `--list-invocations`,
+  follow polling, SOW lifecycle, SOW status.
+- Existing patterns to reuse: manifest-driven parser parity, stock-oracle query
+  matrix, existing facade cursor seek primitives, FIELD-index unique-value
+  enumeration, current output renderer state.
+- Risk and blast radius: medium. Help/test changes are low risk; show dispatch
+  affects ordering; invocation/follow performance work touches required CLI
+  paths and must preserve stock output.
+- Sensitive data handling plan: use only synthetic repository-local fixtures
+  and `.local/` reviewer reports. Do not read or write host journal data.
+- Implementation plan:
+  1. Make Rust and Go `--help` visibly list the full official v260.1 option
+     surface and strengthen parser parity to assert it.
+  2. Fix `--pager-end --reverse` dispatch in Rust and Go and add a
+     stock-oracle matrix case.
+  3. Remove stale ignored `go/journalctl` build artifact.
+  4. Reduce follow polling P2 risk with adaptive idle backoff while preserving
+     current cursor resume behavior.
+  5. Replace `--list-invocations` row-scan discovery with indexed candidate
+     enumeration and treat indexed traversal errors as real errors instead of
+     silently scanning rows.
+  6. Run local validation and rerun the same six unbiased reviewers from
+     scratch.
+- Validation plan:
+  - `python tests/parser-parity/check_v260_manifest.py`
+  - `python tests/parser-parity/run_parser_parity.py`
+  - `python tests/interoperability/run_journalctl_query_matrix.py`
+  - targeted Rust and Go tests
+  - `go test ./...`
+  - `cargo test --manifest-path rust/Cargo.toml --workspace`
+  - `git diff --check`
+  - six unbiased external reviewers with the same scope and no fix list
+- Artifact impact plan: update this SOW, SOW status, specs/docs only if the
+  final behavior or accepted limitations change.
+- Open decisions: none. The user explicitly requested iteration until no
+  P0/P1/P2 findings remain.
+
+Regression repair implementation - 2026-06-21:
+
+- Rust and Go help output now includes a visible `Official systemd v260.1
+  option surface` block listing every official long option in the manifest.
+- Parser parity now asserts that `--help` output contains every official
+  manifest long option, so hidden-option regressions fail the test.
+- Rust and Go dispatch now preserve `--reverse` when `--pager-end` is used
+  without an explicit `--lines=N`.
+- The query matrix now includes `--pager-end --reverse --boot=all` normal and
+  raw-output cases.
+- Portable follow now uses adaptive idle backoff from 100ms up to 1s in both
+  languages, resetting immediately when new entries are emitted.
+- `--list-invocations` and `--invocation` offset resolution now discover
+  invocation ID candidates through indexed FIELD/DATA unique-value traversal in
+  both languages. Indexed traversal errors now fail the action; the previous
+  row-scan collector is no longer present in either implementation.
+- The stale ignored `go/journalctl` build artifact was removed. It is already
+  covered by `.gitignore`, so no committed ignore change was required.
+
+Regression repair validation - 2026-06-21:
+
+- `cargo check --manifest-path rust/Cargo.toml --bin journalctl`: passed.
+- `go test ./...` from `go/`: passed.
+- `python3 tests/parser-parity/run_parser_parity.py`: passed; Rust 132/132 and
+  Go 132/132.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+  against stock `systemd 260 (260.1-2-manjaro)` with `failures: []`.
+
+Reviewer gate status - 2026-06-21:
+
+- Local fixes and validation are complete.
+- The next gate is a fresh read-only reviewer run with the same six requested
+  models. The prompt must not mention prior findings, fixes, or review rounds.
+
+Second regression repair pass - 2026-06-21:
+
+- Fresh reviewer gate was not clean:
+  - `minimax` reported P2 for `--list-invocations --reverse` not reversing the
+    invocation table in Rust or Go and for the missing stock-oracle case.
+  - `kimi` timed out and cannot be counted as a clean unbiased report, but its
+    partial output independently found the same `--list-invocations --reverse`
+    issue.
+  - `minimax` also reported the stricter `--merge --boot=all` rejection as
+    non-cosmetic. Stock systemd v260.1 allows `--boot=all` with `--merge`.
+- Implemented fixes:
+  - Rust and Go invocation table selection now assigns row indexes before
+    applying `--reverse`, matching systemd table behavior.
+  - Rust and Go now allow `--merge --boot=all` while still rejecting specific
+    boot selectors, `--this-boot`, and `--list-boots` with `--merge`.
+  - The stock query matrix now includes `list-invocations-alpha-reverse` and
+    `output-short-merge-boot-all` oracle cases.
+  - Parser parity now asserts that `--boot --merge` is rejected but
+    `--boot=all --merge` is not rejected as a boot/merge conflict.
+  - The v260 parser manifest and parity spec now document the `--boot=all`
+    exception.
+- Validation after this pass:
+  - `python3 -m py_compile tests/parser-parity/v260-manifest.py
+    tests/parser-parity/run_parser_parity.py
+    tests/interoperability/run_journalctl_query_matrix.py`: passed.
+  - `cargo test --manifest-path rust/Cargo.toml -p journalctl`: passed; 28/28
+    tests.
+  - `go test ./cmd/journalctl` from `go/`: passed.
+  - `python3 tests/parser-parity/check_v260_manifest.py`: passed; 71 long
+    options, 28 short options, 16 output modes, 20 actions.
+  - `python3 tests/parser-parity/run_parser_parity.py`: passed; Rust 132/132
+    and Go 132/132.
+  - `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+    against stock `systemd 260 (260.1-2-manjaro)` with `failures: []`.
+  - `cargo test --manifest-path rust/Cargo.toml --workspace`: passed.
+  - `go test ./...` from `go/`: passed.
+  - `git diff --check`: passed.
+
+Third regression repair pass - 2026-06-21:
+
+- Fresh reviewer gate was still not clean:
+  - `deepseek` labeled daemon rotate-and-vacuum handling as P2 because
+    `--rotate --vacuum-*` was not presented as the official combined action.
+  - `deepseek` and `qwen` labeled `--list-invocations` scan fallback/performance
+    wording as P2-class risk.
+  - `kimi` returned an invalid non-review response and `minimax` timed out, so
+    neither can be counted as a clean reviewer report.
+- Implemented fixes:
+  - Rust and Go now reject `--rotate` plus any `--vacuum-*` option through a
+    distinct `--rotate with --vacuum-*` portable-unsupported path, preserving
+    the official `ACTION_ROTATE_AND_VACUUM` distinction while keeping daemon
+    rotation unsupported.
+  - Rust and Go removed the old `--list-invocations` row-scan fallback. If
+    indexed unique-value traversal fails, the action fails instead of scanning
+    all entries.
+  - Rust and Go unit tests now cover the distinct rotate-and-vacuum unsupported
+    message.
+- Validation after this pass:
+  - `cargo test --manifest-path rust/Cargo.toml -p journalctl`: passed; 29/29
+    tests.
+  - `go test ./cmd/journalctl` from `go/`: passed.
+  - `python3 -m py_compile tests/parser-parity/v260-manifest.py
+    tests/parser-parity/run_parser_parity.py
+    tests/interoperability/run_journalctl_query_matrix.py`: passed.
+  - `python3 tests/parser-parity/check_v260_manifest.py`: passed; 71 long
+    options, 28 short options, 16 output modes, 20 actions.
+  - `python3 tests/parser-parity/run_parser_parity.py`: passed; Rust 132/132
+    and Go 132/132.
+  - `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+    against stock `systemd 260 (260.1-2-manjaro)` with `failures: []`.
+  - `cargo test --manifest-path rust/Cargo.toml --workspace`: passed.
+  - `go test ./...` from `go/`: passed.
+  - `git diff --check`: passed.
+
+Fourth regression repair pass - 2026-06-21:
+
+- Fresh reviewer gate was still not clean:
+  - `deepseek` reported P1 for stock-accepted ISO `T` timestamp forms being
+    rejected by Rust and Go.
+  - `minimax` reported P2 for applying the `--lines=+N` reverse/follow
+    conflict to non-show actions such as `--list-boots`.
+  - `glm` timed out and cannot be counted as a clean report, but its partial
+    output identified two real issues: cursor seek ordering incorrectly used
+    the optional `x=` hash, and Rust `--directory=` accepted a regular file as
+    file input.
+  - `kimi` timed out and cannot be counted as a clean report. Its partial
+    vacuum accounting concern was inspected and rejected because empty archived
+    candidates are removed before retained usage is added.
+- Implemented fixes:
+  - Rust and Go timestamp parsing now accepts stock ISO `T` forms with local,
+    `Z`, and colon-offset timezone forms while still rejecting compact offset
+    forms that stock rejects.
+  - Rust and Go now apply the `--lines=+N` reverse/follow conflict only to the
+    show action, matching stock parser interaction behavior.
+  - Rust `--directory=` now uses the directory-open path and rejects regular
+    files instead of silently treating them like `--file=`.
+  - Rust and Go cursor seek ordering now ignores the optional `x=` hash for
+    candidate location while preserving exact cursor matching semantics.
+  - Rust help output now exposes official options directly by removing hidden
+    clap entries and keeping the visible systemd v260.1 option reference.
+  - The stock-oracle query matrix now covers ISO `T` timestamps, mismatched
+    cursor `x=` seek behavior, regular-file `--directory=` rejection,
+    `--list-boots --lines=+N --reverse`, and
+    `--list-invocations --lines=+N --reverse`.
+  - Parser parity now covers the show-action-only `--lines=+N` conflict.
+- Validation after this pass:
+  - `python3 -m py_compile tests/parser-parity/v260-manifest.py
+    tests/parser-parity/run_parser_parity.py
+    tests/interoperability/run_journalctl_query_matrix.py`: passed.
+  - `python3 tests/parser-parity/check_v260_manifest.py`: passed; 71 long
+    options, 28 short options, 16 output modes, 20 actions.
+  - `go test ./cmd/journalctl ./journal` from `go/`: passed.
+  - `cargo test --manifest-path rust/Cargo.toml -p journalctl`: passed; 32/32
+    tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p systemd-journal-sdk
+    cursor_seek_order_ignores_x_hash_but_exact_match_checks_it`: passed.
+  - `python3 tests/parser-parity/run_parser_parity.py`: passed; Rust 132/132
+    and Go 132/132.
+  - `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+    against stock `systemd 260 (260.1-2-manjaro)` with `failures: []`.
+  - `cargo test --manifest-path rust/Cargo.toml --workspace`: passed.
+  - `go test ./...` from `go/`: passed.
+  - `git diff --check`: passed.
+
+Reviewer gate status after fourth pass:
+
+- Local fixes and validation are complete.
+- The fresh read-only reviewer gate is complete:
+  - `glm`: `P0/P1/P2 FINDINGS: NO`; P3-only observations.
+  - `minimax`: `P0/P1/P2 FINDINGS: NO`; P3-only observations.
+  - `mimo`: `P0/P1/P2 FINDINGS: NO`; P3-only observations.
+  - `deepseek`: `P0/P1/P2 FINDINGS: NO`; P3-only observations.
+  - `qwen`: `P0/P1/P2 FINDINGS: NO`; P3-only observations.
+  - `kimi`: first run timed out and was not counted; rerun completed with
+    `P0/P1/P2 FINDINGS: NO`; P3-only observations.
+- P3 review observations were inspected:
+  - Rust cursor-file newline concern was a false positive; Rust writes
+    `cursor\n`.
+  - `--verify-only` is an SDK extension alias and remains documented as
+    outside the official surface requirement.
+  - Vacuum race and non-Unix `O_NOFOLLOW` comments are defense-in-depth
+    hardening notes inside explicit user-supplied directories, not P0/P1/P2
+    blockers.
+
+Final validation gate after strict reviewer closure - 2026-06-21:
+
+- Acceptance criteria evidence: Rust and Go recognize the complete official
+  v260.1 option/action surface; parser parity reports 132/132 passing cases per
+  language; stock-oracle query matrix reports no failures against local
+  `systemd 260 (260.1-2-manjaro)`.
+- Tests or equivalent validation:
+  - `python3 -m py_compile tests/parser-parity/v260-manifest.py
+    tests/parser-parity/run_parser_parity.py
+    tests/interoperability/run_journalctl_query_matrix.py`: passed.
+  - `python3 tests/parser-parity/check_v260_manifest.py`: passed; 71 long
+    options, 28 short options, 16 output modes, 20 actions.
+  - `go test ./cmd/journalctl ./journal` from `go/`: passed.
+  - `cargo test --manifest-path rust/Cargo.toml -p journalctl`: passed; 32/32
+    tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p systemd-journal-sdk
+    cursor_seek_order_ignores_x_hash_but_exact_match_checks_it`: passed.
+  - `python3 tests/parser-parity/run_parser_parity.py`: passed; Rust 132/132
+    and Go 132/132.
+  - `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+    against stock `systemd 260 (260.1-2-manjaro)` with `failures: []`.
+  - `cargo test --manifest-path rust/Cargo.toml --workspace`: passed.
+  - `go test ./...` from `go/`: passed.
+  - `git diff --check`: passed.
+- Real-use evidence: the interoperability matrix built and compared synthetic
+  repository-local journal fixtures against stock `journalctl` without reading
+  or mutating live host journals.
+- Reviewer findings and handling: every P0/P1/P2 finding from the reopened
+  gate was either fixed and covered by tests or rejected with evidence as not
+  P0/P1/P2. The final six requested reviewers all reported no P0/P1/P2
+  findings.
+- Same-failure search results: parser parity help checks now assert all
+  official long options; stock-oracle matrix covers the repaired timestamp,
+  cursor, `--directory`, `--pager-end --reverse`, list-boots/list-invocations,
+  merge, and rotate-vacuum cases.
+- Sensitive data gate: only synthetic repository-local fixtures and `.local/`
+  reviewer reports were used. Durable artifacts contain sanitized command names,
+  model names, paths, and aggregate results only.
+- Artifact maintenance gate:
+  - `AGENTS.md`: no workflow or project-wide guardrail change was needed.
+  - Runtime project skills: no HOW-to-work-here change was needed.
+  - Specs: `.agents/sow/specs/journalctl-v260-parity-matrix.md` was updated for
+    `--boot=all --merge`, strict `--directory=`, ISO `T` timestamps, cursor
+    `x=` seek ordering, and show-action-only `--lines=+N` conflicts.
+  - End-user/operator docs: no user-facing behavior changed beyond the existing
+    documented portable `journalctl` scope.
+  - End-user/operator skills: none exist for this project.
+  - SOW lifecycle: this reopened SOW is completed and will move from
+    `.agents/sow/current/` to `.agents/sow/done/` in the same commit.
+  - `.agents/sow/SOW-status.md`: updated for completion.
+- Spec update: completed as listed above.
+- Project skill update: no skill behavior changed; no update needed.
+- End-user/operator docs update: no update needed because the docs already
+  describe portable file/directory scope, supported query surfaces, and SDK
+  extension aliases.
+- End-user/operator skill update: no output/reference skills exist.
+- Lessons extracted: strict reviewer gates need stock-oracle tests for parser
+  edge cases, not just option-presence checks. Timed-out or malformed reviewer
+  runs cannot count as clean approvals even if partial output looks favorable.
+- Follow-up mapping:
+  - Implemented: all reviewer-confirmed P0/P1/P2 gaps in this reopened SOW.
+  - Tracked: SOW-0122 remains the pending performance follow-up for large
+    archive evidence and scalability claims.
+  - Rejected: P3-only vacuum hardening, SDK extension alias cleanup, and
+    cosmetic error text differences are not required for this SOW acceptance
+    gate.

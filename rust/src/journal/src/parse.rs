@@ -176,9 +176,10 @@ pub fn cursor_location_at_or_after(
     if want.realtime_set && got.realtime != want.realtime {
         return got.realtime > want.realtime;
     }
-    if want.xor_hash_set && got.xor_hash != want.xor_hash {
-        return got.xor_hash > want.xor_hash;
-    }
+    // systemd uses x= for exact cursor tests, but seek-cursor positioning
+    // treats sequence/monotonic/realtime components as the ordering key.
+    // A cursor with a mismatched x= still seeks to the row matching the
+    // other components; TestCursor remains exact and checks x= above.
     true
 }
 
@@ -202,7 +203,9 @@ pub fn parse_match_bytes(data: &[u8]) -> std::result::Result<Vec<u8>, ParseError
 
 #[cfg(test)]
 mod tests {
-    use super::parse_cursor;
+    use super::{
+        cursor_location_at_or_after, cursor_location_matches, parse_cursor, parse_cursor_location,
+    };
 
     #[test]
     fn parse_cursor_accepts_legacy_sdk_shape() {
@@ -234,5 +237,22 @@ mod tests {
 
         let parsed = parse_cursor("t=10").expect("partial realtime cursor parses");
         assert_eq!(parsed, ("".to_string(), "".to_string(), 16, 0));
+    }
+
+    #[test]
+    fn cursor_seek_order_ignores_x_hash_but_exact_match_checks_it() {
+        let got = parse_cursor_location("s=abc;i=2;b=def;m=3;t=4;x=1", false)
+            .expect("current cursor parses");
+        let want = parse_cursor_location("s=abc;i=2;b=def;m=3;t=4;x=ffffffffffffffff", true)
+            .expect("target cursor parses");
+
+        assert!(
+            cursor_location_at_or_after(&got, &want),
+            "seek ordering should ignore mismatched x= when other components match"
+        );
+        assert!(
+            !cursor_location_matches(&got, &want),
+            "exact cursor matching must still include x="
+        );
     }
 }

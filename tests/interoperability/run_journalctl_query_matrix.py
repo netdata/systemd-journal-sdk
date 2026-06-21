@@ -18,7 +18,7 @@ import shutil
 import subprocess  # nosec B404
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from go_fixture_writer import start_live_journal_writer, write_journal_file
@@ -155,6 +155,18 @@ FILE_ROWS = [
 
 def local_timestamp(usec: int) -> str:
     return datetime.fromtimestamp(usec / 1_000_000).isoformat(sep=" ", timespec="microseconds")
+
+
+def local_t_timestamp(usec: int) -> str:
+    return datetime.fromtimestamp(usec / 1_000_000).isoformat(sep="T", timespec="microseconds")
+
+
+def utc_z_timestamp(usec: int) -> str:
+    return (
+        datetime.fromtimestamp(usec / 1_000_000, tz=timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def run(
@@ -582,6 +594,20 @@ def parse_cursors(output: str) -> list[str]:
     return cursors
 
 
+def replace_cursor_x(cursor: str, value: str) -> str:
+    parts = []
+    replaced = False
+    for part in cursor.split(";"):
+        if part.startswith("x="):
+            parts.append(f"x={value}")
+            replaced = True
+        else:
+            parts.append(part)
+    if not replaced:
+        parts.append(f"x={value}")
+    return ";".join(parts)
+
+
 def parse_json_output(mode: str, output: str) -> list[object]:
     if mode == "json":
         return [json.loads(line) for line in output.splitlines() if line.strip()]
@@ -663,6 +689,7 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
     file_cursors = parse_cursors(cursor_probe.stdout)
     if len(file_cursors) != len(FILE_ROWS):
         raise RuntimeError(f"expected {len(FILE_ROWS)} file cursors, got {len(file_cursors)}")
+    mismatched_x_cursor = replace_cursor_x(file_cursors[1], "ffffffffffffffff")
 
     cases = [
         ("directory-all", "directory", fixtures["directory"], ["TEST_ID=journalctl-query"]),
@@ -673,6 +700,24 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             "directory",
             fixtures["directory"],
             ["--since", local_timestamp(1_700_004_000_000_001), "TEST_ID=journalctl-query"],
+        ),
+        (
+            "directory-since-local-t-fraction",
+            "directory",
+            fixtures["directory"],
+            ["--since", local_t_timestamp(1_700_004_000_000_001), "TEST_ID=journalctl-query"],
+        ),
+        (
+            "directory-since-utc-z-fraction",
+            "directory",
+            fixtures["directory"],
+            ["--since", utc_z_timestamp(1_700_004_000_000_001), "TEST_ID=journalctl-query"],
+        ),
+        (
+            "directory-since-offset-fraction",
+            "directory",
+            fixtures["directory"],
+            ["--since", "2023-11-15T01:20:00.000001+02:00", "TEST_ID=journalctl-query"],
         ),
         ("directory-until", "directory", fixtures["directory"], ["--until", "@1700004000.001", "TEST_ID=journalctl-query"]),
         (
@@ -706,6 +751,12 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
         ("file-short-attached-lines", "file", fixtures["file"], ["-n2", "--boot=all", "TEST_ID=journalctl-query"]),
         ("file-short-cluster-reverse-lines", "file", fixtures["file"], ["-rn2", "-ball", "TEST_ID=journalctl-query"]),
         ("file-pager-end-default-lines", "file", fixtures["pager"], ["--pager-end", "TEST_ID=journalctl-pager-end"]),
+        (
+            "file-pager-end-reverse-boot-all",
+            "file",
+            fixtures["file"],
+            ["--pager-end", "--reverse", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
         ("file-pager-end-implicit-boot", "file", fixtures["implicit_boot"], ["--pager-end", "TEST_ID=journalctl-implicit-boot"]),
         (
             "file-pager-end-merge-suppresses-implicit-boot",
@@ -720,6 +771,18 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             "file",
             fixtures["file"],
             ["--after-cursor", file_cursors[0], "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-cursor-mismatched-x",
+            "file",
+            fixtures["file"],
+            ["--cursor", mismatched_x_cursor, "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-after-cursor-mismatched-x",
+            "file",
+            fixtures["file"],
+            ["--after-cursor", mismatched_x_cursor, "--boot=all", "TEST_ID=journalctl-query"],
         ),
         (
             "file-after-cursor-filtered-first",
@@ -1010,6 +1073,12 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             fixtures["file"],
             ["--grep=file-a", "--reverse", "--lines=2", "--boot=all", "TEST_ID=journalctl-query"],
         ),
+        (
+            "file-pager-end-reverse-boot-separators-short",
+            "file",
+            fixtures["file"],
+            ["--pager-end", "--reverse", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
     ]
     for case_name, mode, path, args in raw_exact_cases:
         stock = run(raw_reader_command("stock", tools, mode, path, args), timeout=30)
@@ -1182,6 +1251,13 @@ def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
             fixtures["directory"],
             ["--rotate", "--vacuum-size=1G"],
             "journalctl portable mode does not support --rotate",
+        ),
+        (
+            "directory-regular-file-rejected",
+            "directory",
+            fixtures["file"],
+            [],
+            "not a directory",
         ),
     ]
 
@@ -1483,6 +1559,10 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
         ("list-boots-file-head", ["--file", str(fixtures["file"]), "--list-boots", "--lines=+2"]),
         ("list-boots-file-reverse", ["--file", str(fixtures["file"]), "--list-boots", "--reverse"]),
         (
+            "list-boots-file-head-reverse",
+            ["--file", str(fixtures["file"]), "--list-boots", "--lines=+1", "--reverse"],
+        ),
+        (
             "list-invocations-alpha",
             ["--file", str(fixtures["file"]), "--list-invocations", "--unit=alpha.service"],
         ),
@@ -1493,6 +1573,21 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
         (
             "list-invocations-alpha-head",
             ["--file", str(fixtures["file"]), "--list-invocations", "--unit=alpha.service", "--lines=+1"],
+        ),
+        (
+            "list-invocations-alpha-reverse",
+            ["--file", str(fixtures["file"]), "--list-invocations", "--unit=alpha.service", "--reverse"],
+        ),
+        (
+            "list-invocations-alpha-head-reverse",
+            [
+                "--file",
+                str(fixtures["file"]),
+                "--list-invocations",
+                "--unit=alpha.service",
+                "--lines=+2",
+                "--reverse",
+            ],
         ),
     ]
     for case_name, args in exact_action_cases:
@@ -1585,6 +1680,11 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
         (
             "output-short-merge-suppresses-boot-separators",
             ["--merge", "--output=short", "--lines=5", "TEST_ID=journalctl-query"],
+            "exact",
+        ),
+        (
+            "output-short-merge-boot-all",
+            ["--merge", "--boot=all", "--output=short", "TEST_ID=journalctl-query"],
             "exact",
         ),
     ]

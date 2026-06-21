@@ -6,10 +6,10 @@ use clap::{Parser, ValueEnum};
 use journal::{
     Entry, FacadeError, FileHeader, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalFlushMatches,
-    SdJournalGetEntry, SdJournalNext, SdJournalOpen, SdJournalOpenFiles, SdJournalPrevious,
-    SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
-    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_string,
-    verify_file, verify_file_with_key,
+    SdJournalGetEntry, SdJournalNext, SdJournalOpenDirectory, SdJournalOpenFiles,
+    SdJournalPrevious, SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec,
+    SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
+    parse_match_string, verify_file, verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
 use regex::{Regex, RegexBuilder};
@@ -35,6 +35,12 @@ const JOURNAL_HEADER_SIZE: u64 = 272;
 const JOURNAL_HEADER_N_ENTRIES_OFFSET: u64 = 152;
 const HEADER_CHAIN_DEPTH_MAX: u64 = 100;
 const COREDUMP_MESSAGE_ID: &str = "fc2e22bc6ee647b6b90729ab34a250b1";
+const INVOCATION_ID_FIELDS: [&str; 4] = [
+    "_SYSTEMD_INVOCATION_ID",
+    "OBJECT_SYSTEMD_INVOCATION_ID",
+    "INVOCATION_ID",
+    "USER_INVOCATION_ID",
+];
 const SYSTEM_UNIT_FIELDS_FULL: &[&str] = &[
     "_SYSTEMD_UNIT",
     "UNIT",
@@ -81,6 +87,80 @@ const OUTPUT_MODE_HELP_LIST: &[&str] = &[
     "with-unit",
 ];
 
+const OFFICIAL_OPTION_SURFACE_HELP: &str = r#"Official systemd v260.1 option reference:
+  --system                    Show system journals when host-backed; no-op for explicit files.
+  --user                      Show user journals when host-backed; no-op for explicit files.
+  -M, --machine=CONTAINER     Unsupported: requires host/container journal access.
+  -m, --merge                 Merge all available explicit input files.
+  -D, --directory=DIR         Read journal files from DIR.
+  -i, --file=FILE             Read the specified journal file.
+  --root=ROOT                 Unsupported: requires alternate root filesystem discovery.
+  --image=IMAGE               Unsupported: requires disk image mounting.
+  --image-policy=POLICY       Unsupported without --image.
+  --namespace=NAMESPACE       Unsupported: requires host journal namespaces.
+  -S, --since=TIME            Show entries not older than TIME.
+  -U, --until=TIME            Show entries not newer than TIME.
+  -c, --cursor=CURSOR         Start at the specified cursor.
+  --after-cursor=CURSOR       Start after the specified cursor when it matches exactly.
+  --cursor-file=FILE          Read/update a cursor file.
+  -b, --boot[=ID|OFFSET|all]  Restrict output to a boot.
+  --this-boot                 Restrict output to the current boot selector.
+  -u, --unit=UNIT             Match system unit fields.
+  --user-unit=UNIT            Match user unit fields.
+  --invocation=ID             Match a specific invocation ID.
+  -I                          Match the latest invocation for the selected unit.
+  -t, --identifier=SYSLOG_IDENTIFIER  Match syslog identifier.
+  -T, --exclude-identifier=SYSLOG_IDENTIFIER  Exclude syslog identifier at render time.
+  -p, --priority=RANGE        Match priority/facility priority range.
+  --facility=RANGE            Match syslog facility range.
+  -g, --grep=PATTERN          Filter MESSAGE by pattern.
+  --case-sensitive[=BOOL]     Control grep case sensitivity.
+  -k, --dmesg                 Match kernel transport.
+  -o, --output=MODE           Select output mode.
+  --output-fields=FIELDS      Select fields for verbose/export/json/cat modes.
+  -n, --lines[=N|+N|all]      Select newest, oldest, or all rows.
+  -r, --reverse               Show newest rows first.
+  --show-cursor               Print the cursor after output.
+  --utc                       Render timestamps in UTC.
+  -x, --catalog               Accepted for CLI parity; catalogs are host-backed.
+  -W, --no-hostname           Suppress host names in short output.
+  --no-full                   Ellipsize long fields.
+  -l, --full                  Show long fields without ellipsizing.
+  -a, --all                   Show all field bytes where supported.
+  -f, --follow                Follow explicit files/directories by portable polling.
+  --no-tail                   Do not imply tail mode with --follow.
+  --truncate-newline          Truncate MESSAGE at the first newline.
+  -q, --quiet                 Suppress status/separator output.
+  --synchronize-on-exit[=BOOL] Unsupported when true: requires journald Varlink.
+  --no-pager                  Accepted for CLI parity; output is never paged.
+  -e, --pager-end             Start near the end.
+  --verify-key=KEY            Verify sealed journals with KEY.
+  --interval=TIME             Accepted for setup-keys parser parity.
+  --force                     Accepted for setup-keys parser parity.
+  --setup-keys                Unsupported: host FSS key setup.
+  -h, --help                  Print help.
+  --version                   Print rewrite and baseline version.
+  --new-id128                 Print a new ID128.
+  -N, --fields                List field names.
+  -F, --field=FIELD           List unique values for FIELD.
+  --list-boots                List boots from explicit input.
+  --list-invocations          List invocations for the selected unit context.
+  --list-namespaces           Unsupported: requires host namespace discovery.
+  --disk-usage                Report disk usage for explicit input.
+  --vacuum-size=BYTES         Vacuum archived files in an explicit directory.
+  --vacuum-files=N            Vacuum archived files by count in an explicit directory.
+  --vacuum-time=TIME          Vacuum archived files by age in an explicit directory.
+  --verify                    Verify explicit input files.
+  --sync                      Unsupported: daemon-only journal synchronization.
+  --relinquish-var            Unsupported: daemon-only storage transition.
+  --smart-relinquish-var      Unsupported: daemon-only storage transition.
+  --flush                     Unsupported: daemon-only runtime-to-persistent flush.
+  --rotate                    Unsupported: daemon-only rotation request.
+  --header                    Print journal file headers.
+  --list-catalog              Unsupported: host catalog database.
+  --dump-catalog              Unsupported: host catalog database.
+  --update-catalog            Unsupported: host catalog database mutation."#;
+
 // Reasons used by the portable-mode unsupported contract.
 fn unsupported_reason(name: &str) -> &'static str {
     match name {
@@ -124,6 +204,7 @@ fn unsupported_reason(name: &str) -> &'static str {
 #[derive(Parser, Debug)]
 #[command(name = "journalctl")]
 #[command(about = "Pure-Rust file-backed journalctl subset")]
+#[command(after_help = OFFICIAL_OPTION_SURFACE_HELP)]
 struct Args {
     #[arg(short = 'i', long = "file")]
     file: Vec<PathBuf>,
@@ -173,117 +254,117 @@ struct Args {
     // are intentionally unsupported in portable mode with a portable
     // unsupported message. This keeps the parser in lock-step with the
     // shared v260.1 manifest under tests/parser-parity/.
-    #[arg(long = "system", hide = true)]
+    #[arg(long = "system")]
     system: bool,
-    #[arg(long = "user", hide = true)]
+    #[arg(long = "user")]
     user: bool,
-    #[arg(short = 'M', long = "machine", hide = true)]
+    #[arg(short = 'M', long = "machine")]
     machine: Option<String>,
-    #[arg(short = 'm', long = "merge", hide = true)]
+    #[arg(short = 'm', long = "merge")]
     merge: bool,
-    #[arg(long = "root", hide = true)]
+    #[arg(long = "root")]
     root: Option<PathBuf>,
-    #[arg(long = "image", hide = true)]
+    #[arg(long = "image")]
     image: Option<PathBuf>,
-    #[arg(long = "image-policy", hide = true)]
+    #[arg(long = "image-policy")]
     image_policy: Option<String>,
-    #[arg(long = "namespace", hide = true)]
+    #[arg(long = "namespace")]
     namespace: Option<String>,
 
-    #[arg(short = 'c', long = "cursor", hide = true)]
+    #[arg(short = 'c', long = "cursor")]
     cursor: Option<String>,
-    #[arg(long = "after-cursor", hide = true)]
+    #[arg(long = "after-cursor")]
     after_cursor: Option<String>,
-    #[arg(long = "cursor-file", hide = true)]
+    #[arg(long = "cursor-file")]
     cursor_file: Option<PathBuf>,
-    #[arg(long = "this-boot", hide = true)]
+    #[arg(long = "this-boot")]
     this_boot: bool,
-    #[arg(short = 'u', long = "unit", hide = true)]
+    #[arg(short = 'u', long = "unit")]
     unit: Vec<String>,
-    #[arg(long = "user-unit", hide = true)]
+    #[arg(long = "user-unit")]
     user_unit: Vec<String>,
-    #[arg(long = "invocation", hide = true)]
+    #[arg(long = "invocation")]
     invocation: Option<String>,
-    #[arg(short = 'I', hide = true)]
+    #[arg(short = 'I')]
     invocation_latest: bool,
-    #[arg(short = 't', long = "identifier", hide = true)]
+    #[arg(short = 't', long = "identifier")]
     identifier: Vec<String>,
-    #[arg(short = 'T', long = "exclude-identifier", hide = true)]
+    #[arg(short = 'T', long = "exclude-identifier")]
     exclude_identifier: Vec<String>,
-    #[arg(short = 'p', long = "priority", hide = true)]
+    #[arg(short = 'p', long = "priority")]
     priority: Vec<String>,
-    #[arg(long = "facility", hide = true)]
+    #[arg(long = "facility")]
     facility: Vec<String>,
-    #[arg(short = 'g', long = "grep", hide = true)]
+    #[arg(short = 'g', long = "grep")]
     grep: Option<String>,
-    #[arg(long = "case-sensitive", hide = true, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long = "case-sensitive", num_args = 0..=1, default_missing_value = "true")]
     case_sensitive: Option<String>,
-    #[arg(short = 'k', long = "dmesg", hide = true)]
+    #[arg(short = 'k', long = "dmesg")]
     dmesg: bool,
 
-    #[arg(short = 'n', long = "lines", hide = true, num_args = 0..=1, default_missing_value = "10")]
+    #[arg(short = 'n', long = "lines", num_args = 0..=1, default_missing_value = "10")]
     lines: Option<String>,
-    #[arg(short = 'r', long = "reverse", hide = true)]
+    #[arg(short = 'r', long = "reverse")]
     reverse: bool,
-    #[arg(long = "show-cursor", hide = true)]
+    #[arg(long = "show-cursor")]
     show_cursor: bool,
-    #[arg(long = "utc", hide = true)]
+    #[arg(long = "utc")]
     utc: bool,
-    #[arg(short = 'x', long = "catalog", hide = true)]
+    #[arg(short = 'x', long = "catalog")]
     catalog: bool,
-    #[arg(short = 'W', long = "no-hostname", hide = true)]
+    #[arg(short = 'W', long = "no-hostname")]
     no_hostname: bool,
-    #[arg(long = "no-full", hide = true)]
+    #[arg(long = "no-full")]
     no_full: bool,
-    #[arg(short = 'l', long = "full", hide = true)]
+    #[arg(short = 'l', long = "full")]
     full: bool,
-    #[arg(short = 'a', long = "all", hide = true)]
+    #[arg(short = 'a', long = "all")]
     all: bool,
-    #[arg(long = "truncate-newline", hide = true)]
+    #[arg(long = "truncate-newline")]
     truncate_newline: bool,
-    #[arg(short = 'q', long = "quiet", hide = true)]
+    #[arg(short = 'q', long = "quiet")]
     quiet: bool,
-    #[arg(long = "synchronize-on-exit", hide = true)]
+    #[arg(long = "synchronize-on-exit")]
     synchronize_on_exit: Option<String>,
-    #[arg(long = "no-pager", hide = true)]
+    #[arg(long = "no-pager")]
     no_pager: bool,
-    #[arg(short = 'e', long = "pager-end", hide = true)]
+    #[arg(short = 'e', long = "pager-end")]
     pager_end: bool,
-    #[arg(long = "output-fields", hide = true)]
+    #[arg(long = "output-fields")]
     output_fields: Option<String>,
 
-    #[arg(long = "interval", hide = true)]
+    #[arg(long = "interval")]
     interval: Option<String>,
-    #[arg(long = "force", hide = true)]
+    #[arg(long = "force")]
     force: bool,
-    #[arg(long = "setup-keys", hide = true)]
+    #[arg(long = "setup-keys")]
     setup_keys: bool,
 
-    #[arg(long = "version", hide = true)]
+    #[arg(long = "version")]
     version: bool,
-    #[arg(long = "new-id128", hide = true)]
+    #[arg(long = "new-id128")]
     new_id128: bool,
-    #[arg(long = "list-invocations", hide = true)]
+    #[arg(long = "list-invocations")]
     list_invocations: bool,
-    #[arg(long = "list-namespaces", hide = true)]
+    #[arg(long = "list-namespaces")]
     list_namespaces: bool,
-    #[arg(long = "disk-usage", hide = true)]
+    #[arg(long = "disk-usage")]
     disk_usage: bool,
-    #[arg(long = "vacuum-size", hide = true)]
+    #[arg(long = "vacuum-size")]
     vacuum_size: Option<String>,
-    #[arg(long = "vacuum-files", hide = true)]
+    #[arg(long = "vacuum-files")]
     vacuum_files: Option<String>,
-    #[arg(long = "vacuum-time", hide = true)]
+    #[arg(long = "vacuum-time")]
     vacuum_time: Option<String>,
-    #[arg(long = "header", hide = true)]
+    #[arg(long = "header")]
     header: bool,
-    #[arg(long = "list-catalog", hide = true)]
+    #[arg(long = "list-catalog")]
     list_catalog: bool,
-    #[arg(long = "dump-catalog", hide = true)]
+    #[arg(long = "dump-catalog")]
     dump_catalog: bool,
-    #[arg(long = "update-catalog", hide = true)]
+    #[arg(long = "update-catalog")]
     update_catalog: bool,
-    #[arg(long = "smart-relinquish-var", hide = true)]
+    #[arg(long = "smart-relinquish-var")]
     smart_relinquish_var: bool,
 }
 
@@ -569,7 +650,7 @@ fn run() -> Result<()> {
                 1000,
                 since_usec,
                 until_usec,
-                false,
+                reverse,
                 args.show_cursor,
                 effective_quiet(&args),
                 &post_filters,
@@ -633,9 +714,8 @@ impl CliInput {
 
     fn open_journal(&self) -> Result<SdJournal> {
         match self {
-            Self::Directory(path) => {
-                SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))
-            }
+            Self::Directory(path) => SdJournalOpenDirectory(&path.to_string_lossy(), 0)
+                .map_err(|err| anyhow!("open: {err}")),
             Self::Files(paths) => {
                 let strings: Vec<String> = paths
                     .iter()
@@ -968,16 +1048,43 @@ fn enforce_follow_reverse_conflict(args: &Args) -> Result<()> {
 }
 
 fn enforce_oldest_lines_conflict(args: &Args) -> Result<()> {
-    if matches!(
-        parse_lines_limit(args.lines.as_deref())?,
-        Some(LinesLimit::Head(_))
-    ) && (args.reverse || args.follow)
+    if is_show_action(args)
+        && matches!(
+            parse_lines_limit(args.lines.as_deref())?,
+            Some(LinesLimit::Head(_))
+        )
+        && (args.reverse || args.follow)
     {
         return Err(anyhow!(
             "--lines=+N is unsupported when --reverse or --follow is specified."
         ));
     }
     Ok(())
+}
+
+fn is_show_action(args: &Args) -> bool {
+    !args.version
+        && !args.new_id128
+        && !args.fields
+        && args.field.is_none()
+        && !args.list_boots
+        && !args.list_invocations
+        && !args.disk_usage
+        && !has_vacuum_flags(args)
+        && !args.header
+        && !args.verify
+        && !args.verify_only
+        && args.verify_key.is_none()
+        && !args.sync
+        && !args.flush
+        && !args.rotate
+        && !args.relinquish_var
+        && !args.smart_relinquish_var
+        && !args.list_namespaces
+        && !args.list_catalog
+        && !args.dump_catalog
+        && !args.update_catalog
+        && !args.setup_keys
 }
 
 fn enforce_case_sensitive_value(args: &Args) -> Result<()> {
@@ -999,7 +1106,9 @@ fn enforce_boot_descriptor_value(args: &Args) -> Result<()> {
 }
 
 fn enforce_boot_merge_conflict(args: &Args) -> Result<()> {
-    if (args.boot.is_some() || args.this_boot || args.list_boots) && args.merge {
+    let boot_conflicts_with_merge =
+        matches!(args.boot.as_deref().map(str::trim), Some(value) if value != "all");
+    if (boot_conflicts_with_merge || args.this_boot || args.list_boots) && args.merge {
         return Err(anyhow!(
             "Using --boot or --list-boots with --merge is not supported."
         ));
@@ -1078,6 +1187,12 @@ fn enforce_portable_unsupported(args: &Args) -> Result<()> {
     }
     if args.flush {
         return Err(portable_unsupported("--flush", unsupported_reason("flush")));
+    }
+    if args.rotate && has_vacuum_flags(args) {
+        return Err(portable_unsupported(
+            "--rotate with --vacuum-*",
+            "official rotate-and-vacuum action requires journald rotation; portable mode can only vacuum explicit directories without rotation",
+        ));
     }
     if args.rotate {
         return Err(portable_unsupported(
@@ -1853,31 +1968,27 @@ fn run_list_boots(input: &CliInput, args: &Args) -> Result<()> {
 }
 
 fn run_list_invocations(input: &CliInput, args: &Args) -> Result<()> {
-    let mut journal = input.open_journal()?;
-    apply_boot_match(&mut journal, args, None)?;
-    apply_single_invocation_unit(&mut journal, args, "--list-invocations")?;
-    let invocations = collect_invocations(&mut journal)?;
+    let invocations = collect_invocations_from_input(input, args, Some("--list-invocations"))?;
     if invocations.is_empty() {
         return Err(anyhow!("No invocation ID found."));
     }
-    let (rows, first_index) = select_invocation_rows(&invocations, args)?;
+    let rows = select_invocation_rows(&invocations, args)?;
     if !args.quiet {
         println!("IDX INVOCATION ID                    FIRST ENTRY                 LAST ENTRY");
     }
     let quiet_index_width = if args.quiet {
         rows.iter()
-            .enumerate()
-            .map(|(idx, _)| (first_index + idx as isize).to_string().len())
+            .map(|(row_index, _)| row_index.to_string().len())
             .max()
             .unwrap_or(1)
     } else {
         1
     };
-    for (idx, entry) in rows.iter().enumerate() {
+    for (row_index, entry) in rows {
         if args.quiet {
             println!(
                 "{:>width$} {} {} {}",
-                first_index + idx as isize,
+                row_index,
                 entry.id,
                 output::format_header_timestamp(entry.first_usec)?,
                 output::format_header_timestamp(entry.last_usec)?,
@@ -1886,7 +1997,7 @@ fn run_list_invocations(input: &CliInput, args: &Args) -> Result<()> {
         } else {
             println!(
                 "{:>3} {:<32} {} {}",
-                first_index + idx as isize,
+                row_index,
                 entry.id,
                 output::format_header_timestamp(entry.first_usec)?,
                 output::format_header_timestamp(entry.last_usec)?,
@@ -2017,22 +2128,29 @@ fn format_header_timespan(usec: u64) -> String {
 fn select_invocation_rows<'a>(
     invocations: &'a [InvocationEntry],
     args: &Args,
-) -> Result<(&'a [InvocationEntry], isize)> {
-    let Some(limit) = parse_lines_limit(args.lines.as_deref())? else {
-        return Ok((invocations, 1 - invocations.len() as isize));
-    };
-    match limit {
-        LinesLimit::All => Ok((invocations, 1 - invocations.len() as isize)),
-        LinesLimit::Head(count) => {
+) -> Result<Vec<(isize, &'a InvocationEntry)>> {
+    let (selected, first_index) = match parse_lines_limit(args.lines.as_deref())? {
+        None => (invocations, 1 - invocations.len() as isize),
+        Some(LinesLimit::All) => (invocations, 1 - invocations.len() as isize),
+        Some(LinesLimit::Head(count)) => {
             let count = count.min(invocations.len());
-            Ok((&invocations[..count], 1))
+            (&invocations[..count], 1)
         }
-        LinesLimit::Tail(count) => {
+        Some(LinesLimit::Tail(count)) => {
             let count = count.min(invocations.len());
             let rows = &invocations[invocations.len() - count..];
-            Ok((rows, 1 - rows.len() as isize))
+            (rows, 1 - rows.len() as isize)
         }
+    };
+    let mut rows: Vec<_> = selected
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| (first_index + idx as isize, entry))
+        .collect();
+    if args.reverse {
+        rows.reverse();
     }
+    Ok(rows)
 }
 
 fn allocated_file_bytes(path: &Path) -> Result<u64> {
@@ -3687,13 +3805,12 @@ fn resolve_invocation_filter(input: &CliInput, args: &Args) -> Result<Option<Str
         return Ok(None);
     };
 
-    let mut journal = input.open_journal()?;
-    apply_boot_match(&mut journal, args, None)?;
-    if id.is_empty() || offset != 0 {
-        apply_single_invocation_unit(&mut journal, args, "-I/--invocation= with an offset")?;
-    }
-
-    let invocations = collect_invocations(&mut journal)?;
+    let invocation_unit_option = if id.is_empty() || offset != 0 {
+        Some("-I/--invocation= with an offset")
+    } else {
+        None
+    };
+    let invocations = collect_invocations_from_input(input, args, invocation_unit_option)?;
     let target = if !id.is_empty() {
         invocations
             .iter()
@@ -3772,35 +3889,20 @@ fn single_invocation_unit(
     Ok((Vec::new(), units))
 }
 
-fn collect_invocations(journal: &mut SdJournal) -> Result<Vec<InvocationEntry>> {
-    use std::collections::HashMap;
+fn collect_invocations_from_input(
+    input: &CliInput,
+    args: &Args,
+    unit_option: Option<&str>,
+) -> Result<Vec<InvocationEntry>> {
+    let mut indexed_journal = open_invocation_scope_journal(input, args, unit_option)?;
+    let candidate_ids = collect_invocation_candidate_ids(&mut indexed_journal)?;
 
-    SdJournalSeekHead(journal).map_err(|err| anyhow!("seek head: {err}"))?;
-    let mut by_id: HashMap<String, InvocationEntry> = HashMap::new();
-    loop {
-        match SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? {
-            0 => break,
-            _ => {
-                let entry =
-                    SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
-                let Some(id) = entry_invocation_id(&entry) else {
-                    continue;
-                };
-                by_id
-                    .entry(id.clone())
-                    .and_modify(|current| {
-                        current.first_usec = current.first_usec.min(entry.realtime);
-                        current.last_usec = current.last_usec.max(entry.realtime);
-                    })
-                    .or_insert(InvocationEntry {
-                        id,
-                        first_usec: entry.realtime,
-                        last_usec: entry.realtime,
-                    });
-            }
+    let mut out = Vec::new();
+    for id in candidate_ids {
+        if let Some(entry) = invocation_bounds_for_id(input, args, unit_option, &id)? {
+            out.push(entry);
         }
     }
-    let mut out: Vec<_> = by_id.into_values().collect();
     out.sort_by(|a, b| {
         a.first_usec
             .cmp(&b.first_usec)
@@ -3809,37 +3911,71 @@ fn collect_invocations(journal: &mut SdJournal) -> Result<Vec<InvocationEntry>> 
     Ok(out)
 }
 
-fn entry_invocation_id(entry: &Entry) -> Option<String> {
-    for field in [
-        "_SYSTEMD_INVOCATION_ID",
-        "OBJECT_SYSTEMD_INVOCATION_ID",
-        "INVOCATION_ID",
-        "USER_INVOCATION_ID",
-    ] {
-        for value in values_for_entry_field(entry, field) {
-            let Ok(text) = std::str::from_utf8(value) else {
-                continue;
-            };
-            let Some(id) = parse_invocation_id_value(text) else {
-                continue;
-            };
-            if !id.chars().all(|ch| ch == '0') {
-                return Some(id);
-            }
-        }
+fn open_invocation_scope_journal(
+    input: &CliInput,
+    args: &Args,
+    unit_option: Option<&str>,
+) -> Result<SdJournal> {
+    let mut journal = input.open_journal()?;
+    apply_boot_match(&mut journal, args, None)?;
+    if let Some(option_name) = unit_option {
+        apply_single_invocation_unit(&mut journal, args, option_name)?;
     }
-    None
+    Ok(journal)
 }
 
-fn values_for_entry_field<'a>(entry: &'a Entry, field: &str) -> Vec<&'a [u8]> {
-    if let Some(values) = entry.field_values.get(field) {
-        return values.iter().map(Vec::as_slice).collect();
+fn collect_invocation_candidate_ids(journal: &mut SdJournal) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for field in INVOCATION_ID_FIELDS {
+        SdJournalVisitUniqueValues(journal, field, |value| {
+            let Ok(text) = std::str::from_utf8(value) else {
+                return Ok(());
+            };
+            let Some(id) = parse_invocation_id_value(text) else {
+                return Ok(());
+            };
+            if !id.chars().all(|ch| ch == '0') && seen.insert(id.clone()) {
+                out.push(id);
+            }
+            Ok(())
+        })
+        .map_err(|err| anyhow!("visit unique invocation values for {field}: {err}"))?;
     }
-    entry
-        .fields
-        .get(field)
-        .map(|value| vec![value.as_slice()])
-        .unwrap_or_default()
+    Ok(out)
+}
+
+fn invocation_bounds_for_id(
+    input: &CliInput,
+    args: &Args,
+    unit_option: Option<&str>,
+    id: &str,
+) -> Result<Option<InvocationEntry>> {
+    let mut first_journal = open_invocation_scope_journal(input, args, unit_option)?;
+    add_invocation_matches(&mut first_journal, id)?;
+    SdJournalSeekHead(&mut first_journal).map_err(|err| anyhow!("seek invocation head: {err}"))?;
+    if SdJournalNext(&mut first_journal).map_err(|err| anyhow!("next invocation: {err}"))? == 0 {
+        return Ok(None);
+    }
+    let first_entry = SdJournalGetEntry(&mut first_journal)
+        .map_err(|err| anyhow!("get invocation entry: {err}"))?;
+
+    let mut last_journal = open_invocation_scope_journal(input, args, unit_option)?;
+    add_invocation_matches(&mut last_journal, id)?;
+    SdJournalSeekTail(&mut last_journal).map_err(|err| anyhow!("seek invocation tail: {err}"))?;
+    if SdJournalPrevious(&mut last_journal).map_err(|err| anyhow!("previous invocation: {err}"))?
+        == 0
+    {
+        return Ok(None);
+    }
+    let last_entry = SdJournalGetEntry(&mut last_journal)
+        .map_err(|err| anyhow!("get invocation entry: {err}"))?;
+
+    Ok(Some(InvocationEntry {
+        id: id.to_string(),
+        first_usec: first_entry.realtime,
+        last_usec: last_entry.realtime,
+    }))
 }
 
 fn parse_invocation_id_value(value: &str) -> Option<String> {
@@ -3933,7 +4069,25 @@ fn parse_epoch_timestamp_usec(value: &str) -> Result<u64> {
 }
 
 fn parse_local_timestamp_usec(value: &str) -> Result<u64> {
+    if has_compact_timezone_offset(value) {
+        return Err(anyhow!("failed to parse timestamp: {value}"));
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Ok(dt.timestamp_micros() as u64);
+    }
     for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f%:z",
+        "%Y-%m-%dT%H:%M:%S%:z",
+        "%Y-%m-%dT%H:%M%:z",
+    ] {
+        if let Ok(dt) = chrono::DateTime::parse_from_str(value, fmt) {
+            return Ok(dt.timestamp_micros() as u64);
+        }
+    }
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
@@ -3952,6 +4106,16 @@ fn parse_local_timestamp_usec(value: &str) -> Result<u64> {
         }
     }
     Err(anyhow!("failed to parse timestamp: {value}"))
+}
+
+fn has_compact_timezone_offset(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 5
+        && value.contains('T')
+        && matches!(bytes[bytes.len() - 5], b'+' | b'-')
+        && bytes[bytes.len() - 4..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit())
 }
 
 fn local_datetime_to_usec(dt: NaiveDateTime) -> Result<u64> {
@@ -4147,14 +4311,18 @@ fn run_follow(
         update_cursor_file(cursor_control, last_seen_cursor.as_deref())?;
     }
 
+    let min_poll_interval = Duration::from_millis(100);
+    let max_poll_interval = Duration::from_secs(1);
+    let mut poll_interval = min_poll_interval;
     loop {
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(poll_interval);
         let last_cursor = last_seen_cursor.clone();
         let follow_seek = last_cursor.map(|cursor| CursorSeek {
             cursor,
             after: true,
         });
         let cursor_seek = follow_seek.as_ref().or(cursor_control.seek.as_ref());
+        let mut emitted = 0usize;
         for_each_follow_entry(
             input,
             args,
@@ -4171,6 +4339,7 @@ fn run_follow(
                     post_filters,
                     &entry,
                 )?;
+                emitted += 1;
                 if !entry.cursor.is_empty() {
                     last_seen_cursor = Some(entry.cursor.clone());
                     update_cursor_file(cursor_control, last_seen_cursor.as_deref())?;
@@ -4178,6 +4347,11 @@ fn run_follow(
                 Ok(())
             },
         )?;
+        poll_interval = if emitted > 0 {
+            min_poll_interval
+        } else {
+            (poll_interval * 2).min(max_poll_interval)
+        };
     }
 }
 
@@ -4614,6 +4788,24 @@ mod tests {
     }
 
     #[test]
+    fn directory_input_does_not_open_regular_file_as_file() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("regular.journal");
+        fs::write(&path, b"not-a-real-journal").expect("write fixture");
+
+        let err = match CliInput::Directory(path).open_journal() {
+            Ok(_) => panic!("regular file opened through --directory"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .to_ascii_lowercase()
+                .contains("not a directory"),
+            "expected not-a-directory error, got: {err}"
+        );
+    }
+
+    #[test]
     fn lines_limit_parser_preserves_systemd_direction() {
         assert_eq!(parse_lines_limit(None).unwrap(), None);
         assert!(parse_lines_limit(Some("")).is_err());
@@ -4634,6 +4826,46 @@ mod tests {
             Some(LinesLimit::All)
         );
         assert!(parse_lines_limit(Some("not-a-number")).is_err());
+    }
+
+    #[test]
+    fn oldest_lines_conflict_applies_only_to_show_action() {
+        let show_args = Args::parse_from([
+            "journalctl",
+            "--file=/tmp/x.journal",
+            "--lines=+1",
+            "--reverse",
+        ]);
+        assert!(
+            enforce_oldest_lines_conflict(&show_args).is_err(),
+            "show action must reject --lines=+N with --reverse"
+        );
+
+        let list_boots_args = Args::parse_from([
+            "journalctl",
+            "--file=/tmp/x.journal",
+            "--list-boots",
+            "--lines=+1",
+            "--reverse",
+        ]);
+        enforce_oldest_lines_conflict(&list_boots_args)
+            .expect("non-show action should allow --lines=+N with --reverse");
+    }
+
+    #[test]
+    fn timestamp_parser_accepts_stock_iso_t_forms() {
+        let local_space = parse_timestamp_usec("2023-11-15 00:00").expect("space local");
+        let local_t = parse_timestamp_usec("2023-11-15T00:00").expect("T local");
+        assert_eq!(local_t, local_space);
+
+        parse_timestamp_usec("2023-11-15T00:00:00Z").expect("UTC RFC3339");
+        parse_timestamp_usec("2023-11-15T00:00:00.000001Z").expect("UTC RFC3339 fraction");
+        parse_timestamp_usec("2023-11-15T00:00:00+02:00").expect("offset RFC3339");
+        parse_timestamp_usec("2023-11-15T00:00+02:00").expect("offset without seconds");
+        assert!(
+            parse_timestamp_usec("2023-11-15T00:00:00+0200").is_err(),
+            "stock rejects compact timezone offsets"
+        );
     }
 
     #[test]
@@ -4789,6 +5021,18 @@ mod tests {
     }
 
     #[test]
+    fn rotate_with_vacuum_is_distinct_unsupported_action() {
+        let args = Args::parse_from(["journalctl", "--rotate", "--vacuum-files=2"]);
+        let err =
+            enforce_portable_unsupported(&args).expect_err("rotate+vacuum should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("portable mode does not support --rotate with --vacuum-*"),
+            "expected rotate-and-vacuum portable message, got: {msg}"
+        );
+    }
+
+    #[test]
     fn version_prints_baseline_metadata() {
         let out = run_cli(&["--version"]);
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -4812,5 +5056,16 @@ mod tests {
             stderr.contains("--boot or --list-boots with --merge is not supported"),
             "expected boot/merge conflict, got: {stderr}"
         );
+    }
+
+    #[test]
+    fn boot_all_merge_is_not_rejected_as_conflict() {
+        let args = Args::parse_from(preprocess_optional_boot_args([
+            "journalctl".to_string(),
+            "--file=/tmp/x.journal".to_string(),
+            "--boot=all".to_string(),
+            "--merge".to_string(),
+        ]));
+        enforce_boot_merge_conflict(&args).expect("boot=all must not conflict with --merge");
     }
 }

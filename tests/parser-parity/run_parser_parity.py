@@ -383,8 +383,8 @@ def exercise_invalid_output_mode(cmd: Command) -> CaseResult:
     )
 
 
-def exercise_help_stdout(cmd: Command) -> CaseResult:
-    """Probe whether explicit --help writes usage to stdout without stderr noise."""
+def exercise_help_stdout(cmd: Command, manifest: dict) -> CaseResult:
+    """Probe whether --help writes usage and the full official option surface."""
     try:
         result = run_command(cmd, ["--help"], timeout=20)
     except subprocess.TimeoutExpired:
@@ -392,7 +392,24 @@ def exercise_help_stdout(cmd: Command) -> CaseResult:
     except FileNotFoundError as exc:
         return CaseResult("help-stdout", "parser-required", "fail", f"binary missing: {exc}")
     if result.returncode == 0 and "Usage:" in result.stdout and "Options:" in result.stdout and result.stderr == "":
-        return CaseResult("help-stdout", "parser-required", "ok", "--help writes usage to stdout")
+        missing = [
+            f"--{opt['name']}"
+            for opt in manifest["long_options"]
+            if f"--{opt['name']}" not in result.stdout
+        ]
+        if not missing:
+            return CaseResult(
+                "help-stdout",
+                "parser-required",
+                "ok",
+                "--help writes usage and full official option surface to stdout",
+            )
+        return CaseResult(
+            "help-stdout",
+            "parser-required",
+            "fail",
+            f"--help missing official options: {', '.join(missing[:20])}",
+        )
     return CaseResult(
         "help-stdout",
         "parser-required",
@@ -511,23 +528,40 @@ def exercise_interaction(cmd: Command, interaction: dict) -> CaseResult:
         )
     if name == "oldest-lines-conflict":
         try:
-            result = run_command(
+            show_result = run_command(
                 cmd,
                 ["--lines=+5", "--reverse", "--file=placeholder.journal"],
+                timeout=20,
+            )
+            list_result = run_command(
+                cmd,
+                ["--list-boots", "--lines=+1", "--reverse", "--file=placeholder.journal"],
                 timeout=20,
             )
         except subprocess.TimeoutExpired:
             return CaseResult(name, "parser-required", "fail", "timeout")
         except FileNotFoundError as exc:
             return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
-        combined = (result.stderr + "\n" + result.stdout).lower()
-        if "lines=+n" in combined and ("reverse" in combined or "follow" in combined):
-            return CaseResult(name, "parser-required", "ok", "oldest-lines conflict enforced")
+        show_combined = (show_result.stderr + "\n" + show_result.stdout).lower()
+        list_combined = (list_result.stderr + "\n" + list_result.stdout).lower()
+        show_rejected = "lines=+n" in show_combined and (
+            "reverse" in show_combined or "follow" in show_combined
+        )
+        list_allowed = "lines=+n" not in list_combined
+        if show_rejected and list_allowed:
+            return CaseResult(
+                name,
+                "parser-required",
+                "ok",
+                "oldest-lines conflict enforced only for show actions",
+            )
         return CaseResult(
             name,
             "parser-required",
             "fail",
-            f"oldest-lines conflict not enforced: stderr={result.stderr.strip()[:300]}",
+            "oldest-lines conflict mismatch: "
+            f"show_stderr={show_result.stderr.strip()[:180]} "
+            f"list_stderr={list_result.stderr.strip()[:180]}",
         )
     if name == "boot-merge-conflict":
         try:
@@ -544,7 +578,29 @@ def exercise_interaction(cmd: Command, interaction: dict) -> CaseResult:
         if "boot" in combined and "merge" in combined and (
             "not supported" in combined or "not both" in combined or "conflict" in combined
         ):
-            return CaseResult(name, "parser-required", "ok", "boot+merge rejected")
+            try:
+                allowed = run_command(
+                    cmd,
+                    ["--boot=all", "--merge", "--file=placeholder.journal"],
+                    timeout=20,
+                )
+            except subprocess.TimeoutExpired:
+                return CaseResult(name, "parser-required", "fail", "boot=all+merge timeout")
+            except FileNotFoundError as exc:
+                return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+            allowed_combined = (allowed.stderr + "\n" + allowed.stdout).lower()
+            if "boot" in allowed_combined and "merge" in allowed_combined and (
+                "not supported" in allowed_combined
+                or "not both" in allowed_combined
+                or "conflict" in allowed_combined
+            ):
+                return CaseResult(
+                    name,
+                    "parser-required",
+                    "fail",
+                    f"boot=all+merge rejected as conflict: stderr={allowed.stderr.strip()[:300]}",
+                )
+            return CaseResult(name, "parser-required", "ok", "boot+merge rejected; boot=all+merge allowed")
         return CaseResult(
             name,
             "parser-required",
@@ -767,7 +823,7 @@ def run_for_command(cmd: Command, manifest: dict) -> list[CaseResult]:
     for mode in manifest["output_modes"]:
         results.append(exercise_output_mode(cmd, mode))
     results.append(exercise_invalid_output_mode(cmd))
-    results.append(exercise_help_stdout(cmd))
+    results.append(exercise_help_stdout(cmd, manifest))
     for interaction in manifest["parser_interactions"]:
         results.append(exercise_interaction(cmd, interaction))
     return results

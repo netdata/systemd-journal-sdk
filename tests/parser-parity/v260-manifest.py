@@ -265,7 +265,7 @@ def build_parser_interactions():
         },
         {
             "name": "boot-merge-conflict",
-            "description": "Reject --boot or --list-boots with --merge.",
+            "description": "Reject --boot except --boot=all, or --list-boots, with --merge.",
         },
         {
             "name": "interspersed-show-option",

@@ -755,6 +755,68 @@ func TestFollowReverseConflictEnforced(t *testing.T) {
 	}
 }
 
+func TestOldestLinesConflictAppliesOnlyToShowAction(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--file=/tmp/x.journal", "--lines=+1", "--reverse"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if err := flags.validateParserInteractions(); err == nil {
+		t.Fatalf("expected show action to reject --lines=+N with --reverse")
+	}
+
+	fs, flags = newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--file=/tmp/x.journal", "--list-boots", "--lines=+1", "--reverse"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if err := flags.validateParserInteractions(); err != nil {
+		t.Fatalf("non-show action should allow --lines=+N with --reverse, got: %v", err)
+	}
+}
+
+func TestTimestampParserAcceptsStockISOTForms(t *testing.T) {
+	localSpace, err := parseTimestampUsec("2023-11-15 00:00")
+	if err != nil {
+		t.Fatalf("space local parse error: %v", err)
+	}
+	localT, err := parseTimestampUsec("2023-11-15T00:00")
+	if err != nil {
+		t.Fatalf("T local parse error: %v", err)
+	}
+	if localT != localSpace {
+		t.Fatalf("T local = %d, want %d", localT, localSpace)
+	}
+	for _, value := range []string{
+		"2023-11-15T00:00:00Z",
+		"2023-11-15T00:00:00.000001Z",
+		"2023-11-15T00:00:00+02:00",
+		"2023-11-15T00:00+02:00",
+	} {
+		if _, err := parseTimestampUsec(value); err != nil {
+			t.Fatalf("expected %s to parse: %v", value, err)
+		}
+	}
+	if _, err := parseTimestampUsec("2023-11-15T00:00:00+0200"); err == nil {
+		t.Fatalf("stock rejects compact timezone offsets")
+	}
+}
+
+func TestDirectoryInputDoesNotOpenRegularFileAsFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "regular.journal")
+	if err := os.WriteFile(path, []byte("not-a-real-journal"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"--directory", path, "--output=cat"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected --directory regular file to fail")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "not a directory") {
+		t.Fatalf("expected not-a-directory error, got: %v", err)
+	}
+}
+
 func TestSynchronizeOnExitTrueIsRejected(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
 	if err := fs.Parse([]string{"--synchronize-on-exit=true"}); err != nil {
@@ -790,6 +852,20 @@ func TestVacuumWithoutDirectoryIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "portable mode does not support --vacuum-*") {
 		t.Fatalf("expected portable message, got: %v", err)
+	}
+}
+
+func TestRotateWithVacuumIsDistinctUnsupportedAction(t *testing.T) {
+	fs, flags := newCLIFlagSet(io.Discard)
+	if err := fs.Parse([]string{"--rotate", "--vacuum-files=2"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := flags.validate()
+	if err == nil {
+		t.Fatalf("expected error for --rotate with --vacuum-files")
+	}
+	if !strings.Contains(err.Error(), "portable mode does not support --rotate with --vacuum-*") {
+		t.Fatalf("expected rotate-and-vacuum portable message, got: %v", err)
 	}
 }
 
@@ -860,6 +936,17 @@ func TestBootMergeConflictEnforced(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--boot or --list-boots with --merge is not supported") {
 		t.Fatalf("expected boot/merge conflict, got: %v", err)
+	}
+}
+
+func TestBootAllMergeIsNotRejectedAsConflict(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"--file=/tmp/x.journal", "--boot=all", "--merge"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected invalid fixture to fail")
+	}
+	if strings.Contains(err.Error(), "--boot or --list-boots with --merge is not supported") {
+		t.Fatalf("did not expect boot=all/merge conflict, got: %v", err)
 	}
 }
 

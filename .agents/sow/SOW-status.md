@@ -4,7 +4,7 @@ Last updated: 2026-06-21
 
 ## Current
 
-No current SOW.
+- None.
 
 ## Pending
 
@@ -33,17 +33,16 @@ No current SOW.
 ## Recently Closed Or Completed
 
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed
-  after regression repair on 2026-06-21. Rust and Go now recognize the official
-  systemd v260.1 `journalctl` option/action surface and pass stock-oracle
-  parser, directory, and file-backed query matrices for covered offline
-  behavior, including cursor strings, output modes, boot separators,
-  field/value listing, invocation filters, repeated files, disjunction groups,
-  vacuum edge cases, and daemon-only controlled errors. Final validation passed
-  parser manifest/parity, directory matrix, query matrix with 581 zero-failure
-  results against stock `systemd 260 (260.1-2-manjaro)`, full Go tests, full
-  Rust workspace tests, docs validation, whitespace checks, read-only external
-  review disposition, and SOW audit. Remaining performance work is tracked by
-  SOW-0122.
+  after strict P0/P1/P2 reviewer-gate repair. Rust and Go portable
+  `journalctl` now recognize the full official systemd v260.1 option/action
+  surface, preserve required file-backed parity for the repaired timestamp,
+  cursor, directory, reverse, merge, invocation, and rotate-vacuum cases, and
+  reject daemon/host-only behavior with portable unsupported messages. Local
+  validation passed parser parity, stock-oracle interoperability, Rust and Go
+  tests, full Rust workspace tests, full Go tests, and whitespace checks. The
+  final requested reviewer gate returned valid `P0/P1/P2 FINDINGS: NO` reports
+  from glm, minimax, kimi, mimo, deepseek, and qwen; only P3 cosmetic or
+  optional-hardening observations remain.
 - SOW-0094 - Rust Explorer Lazy Compressed Field Inference Experiment: closed
   without implementation by user decision on 2026-06-21. The optimization is not
   important enough to keep in the active backlog. No SDK behavior, source,

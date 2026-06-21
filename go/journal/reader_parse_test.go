@@ -88,6 +88,23 @@ func TestParseCursor(t *testing.T) {
 	}
 }
 
+func TestCursorSeekOrderIgnoresXHashButExactMatchChecksIt(t *testing.T) {
+	got, err := parseCursorLocation("s=abc;i=2;b=def;m=3;t=4;x=1", false)
+	if err != nil {
+		t.Fatalf("got cursor parse error: %v", err)
+	}
+	want, err := parseCursorLocation("s=abc;i=2;b=def;m=3;t=4;x=ffffffffffffffff", true)
+	if err != nil {
+		t.Fatalf("want cursor parse error: %v", err)
+	}
+	if !cursorLocationAtOrAfter(got, want) {
+		t.Fatalf("seek ordering should ignore mismatched x= when other components match")
+	}
+	if cursorLocationMatches(got, want) {
+		t.Fatalf("exact cursor matching must still include x=")
+	}
+}
+
 func TestUnsupportedDaemonCommands(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")

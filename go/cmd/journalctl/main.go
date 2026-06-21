@@ -86,6 +86,25 @@ var (
 	}
 )
 
+const officialOptionSurfaceHelp = `Official systemd v260.1 option surface:
+  --system --user --machine --merge --directory --file --root --image --image-policy --namespace
+  --since --until --cursor --after-cursor --cursor-file --boot --this-boot --unit --user-unit --invocation
+  --identifier --exclude-identifier --priority --facility --grep --case-sensitive --dmesg
+  --output --output-fields --lines --reverse --show-cursor --utc --catalog --no-hostname --no-full --full
+  --all --follow --no-tail --truncate-newline --quiet --synchronize-on-exit --no-pager --pager-end
+  --verify-key --interval --force --setup-keys
+  --help --version --new-id128 --fields --field --list-boots --list-invocations --list-namespaces
+  --disk-usage --vacuum-size --vacuum-files --vacuum-time --verify --sync --relinquish-var
+  --smart-relinquish-var --flush --rotate --header --list-catalog --dump-catalog --update-catalog
+`
+
+var invocationIDFields = []string{
+	"_SYSTEMD_INVOCATION_ID",
+	"OBJECT_SYSTEMD_INVOCATION_ID",
+	"INVOCATION_ID",
+	"USER_INVOCATION_ID",
+}
+
 type cliJournal interface {
 	Close() error
 	AddMatch([]byte)
@@ -593,6 +612,7 @@ func printUsage(fs *flag.FlagSet, out io.Writer) {
 	fmt.Fprintf(out, "Pure-Go systemd journal reader (portable mode, systemd v260.1 baseline)\n")
 	fmt.Fprintf(out, "\nOptions:\n")
 	fs.PrintDefaults()
+	fmt.Fprintf(out, "\n%s", officialOptionSurfaceHelp)
 }
 
 func argsContainHelp(args []string) bool {
@@ -679,7 +699,7 @@ func (f *cliFlags) validateParserInteractions() error {
 		if err != nil {
 			return err
 		}
-		if limit.oldest && (*f.reverseFlag || *f.follow) {
+		if f.isShowAction() && limit.oldest && (*f.reverseFlag || *f.follow) {
 			return errors.New("--lines=+N is unsupported when --reverse or --follow is specified.")
 		}
 	}
@@ -699,6 +719,31 @@ func (f *cliFlags) validateParserInteractions() error {
 	}
 
 	return nil
+}
+
+func (f *cliFlags) isShowAction() bool {
+	return !*f.versionFlag &&
+		!*f.newID128Flag &&
+		!*f.fields &&
+		*f.field == "" &&
+		!*f.listBoots &&
+		!*f.listInvocationsFlag &&
+		!*f.diskUsageFlag &&
+		!hasVacuumFlags(f) &&
+		!*f.headerFlag &&
+		!*f.verify &&
+		!*f.verifyOnly &&
+		*f.verifyKey == "" &&
+		!*f.sync &&
+		!*f.flush &&
+		!*f.rotate &&
+		!*f.relinquish &&
+		!*f.smartRelinquishVarFlag &&
+		!*f.listNamespacesFlag &&
+		!*f.listCatalogFlag &&
+		!*f.dumpCatalogFlag &&
+		!*f.updateCatalogFlag &&
+		!*f.setupKeysFlag
 }
 
 func (f *cliFlags) validateActionArguments(args []string, hasVerifyKey, fieldWasSet bool) error {
@@ -732,7 +777,8 @@ func (f *cliFlags) actionRejectsArguments(hasVerifyKey, fieldWasSet bool) bool {
 
 func (f *cliFlags) validatePostAction() error {
 	// Boot/merge conflict.
-	if (f.boot.set || *f.thisBootFlag || *f.listBoots) && *f.mergeFlag {
+	bootConflictsWithMerge := f.boot.set && strings.TrimSpace(f.boot.value) != "all"
+	if (bootConflictsWithMerge || *f.thisBootFlag || *f.listBoots) && *f.mergeFlag {
 		return errors.New("Using --boot or --list-boots with --merge is not supported.")
 	}
 
@@ -767,6 +813,9 @@ func (f *cliFlags) validatePostAction() error {
 	}
 	if *f.flush {
 		return portableUnsupported("--flush", "daemon-only runtime-to-persistent flush; no journald in portable mode")
+	}
+	if *f.rotate && hasVacuumFlags(f) {
+		return portableUnsupported("--rotate with --vacuum-*", "official rotate-and-vacuum action requires journald rotation; portable mode can only vacuum explicit directories without rotation")
 	}
 	if *f.rotate {
 		return portableUnsupported("--rotate", "daemon-only journald rotation request; use --vacuum-* with explicit --directory= instead")
@@ -1616,6 +1665,9 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 
 	default:
 		if *f.pagerEndFlag {
+			if *f.reverseFlag {
+				return showReverse(j, 1000, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+			}
 			return showTail(j, 1000, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 		}
 		if *f.reverseFlag {
@@ -1932,6 +1984,18 @@ func parseSignedDurationTimestampUsec(value string) (uint64, bool, error) {
 
 func parseDateTimestampUsec(value string) (uint64, bool) {
 	for _, layout := range []string{
+		"2006-01-02T15:04:05.999999Z07:00",
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02T15:04Z07:00",
+	} {
+		if t, err := time.Parse(layout, value); err == nil {
+			return uint64(t.UnixMicro()), true
+		}
+	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
 		"2006-01-02 15:04:05.999999",
 		"2006-01-02 15:04:05",
 		"2006-01-02 15:04",
@@ -2322,6 +2386,11 @@ type invocationInfo struct {
 	lastUsec  uint64
 }
 
+type invocationDisplayRow struct {
+	index int
+	info  invocationInfo
+}
+
 func effectiveInvocationDescriptor(flags *cliFlags) (string, bool) {
 	if !flags.invocationSet {
 		return "", false
@@ -2356,22 +2425,12 @@ func resolveInvocationFilter(input cliInput, flags *cliFlags) (string, bool, err
 		return "", false, nil
 	}
 
-	j, err := input.openJournal()
-	if err != nil {
-		return "", false, fmt.Errorf("open journal: %w", err)
-	}
-	defer j.Close()
-
-	if err := applyBootMatch(j, flags, optionalStringFlag{}); err != nil {
-		return "", false, err
-	}
+	invocationUnitOption := ""
 	if id == "" || offset != 0 {
-		if err := applySingleInvocationUnit(j, flags, "-I/--invocation= with an offset"); err != nil {
-			return "", false, err
-		}
+		invocationUnitOption = "-I/--invocation= with an offset"
 	}
 
-	infos, err := collectInvocations(j)
+	infos, err := collectInvocationsFromInput(input, flags, invocationUnitOption)
 	if err != nil {
 		return "", false, err
 	}
@@ -2437,42 +2496,29 @@ func singleInvocationUnit(j cliJournal, flags *cliFlags, optionName string) ([]s
 	return nil, units, nil
 }
 
-func collectInvocations(j cliJournal) ([]invocationInfo, error) {
-	if err := j.SeekHead(); err != nil {
+func collectInvocationsFromInput(input cliInput, flags *cliFlags, unitOption string) ([]invocationInfo, error) {
+	indexedJournal, err := openInvocationScopeJournal(input, flags, unitOption)
+	if err != nil {
 		return nil, err
 	}
-	byID := make(map[string]*invocationInfo)
-	for {
-		ok, err := j.Next()
-		if err != nil {
-			return nil, err
-		}
-		if ok == 0 {
-			break
-		}
-		entry, err := j.GetEntry()
-		if err != nil {
-			return nil, err
-		}
-		id, hasInvocation := entryInvocationID(entry)
-		if !hasInvocation {
-			continue
-		}
-		info := byID[id]
-		if info == nil {
-			byID[id] = &invocationInfo{id: id, firstUsec: entry.Realtime, lastUsec: entry.Realtime}
-			continue
-		}
-		if entry.Realtime < info.firstUsec {
-			info.firstUsec = entry.Realtime
-		}
-		if entry.Realtime > info.lastUsec {
-			info.lastUsec = entry.Realtime
-		}
+	candidateIDs, err := collectInvocationCandidateIDs(indexedJournal)
+	closeErr := indexedJournal.Close()
+	if closeErr != nil && err == nil {
+		return nil, closeErr
 	}
-	out := make([]invocationInfo, 0, len(byID))
-	for _, info := range byID {
-		out = append(out, *info)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]invocationInfo, 0, len(candidateIDs))
+	for _, id := range candidateIDs {
+		info, ok, err := invocationBoundsForID(input, flags, unitOption, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, info)
+		}
 	}
 	sort.Slice(out, func(i, k int) bool {
 		if out[i].firstUsec != out[k].firstUsec {
@@ -2483,21 +2529,102 @@ func collectInvocations(j cliJournal) ([]invocationInfo, error) {
 	return out, nil
 }
 
-func entryInvocationID(entry *journal.Entry) (string, bool) {
-	for _, field := range []string{
-		"_SYSTEMD_INVOCATION_ID",
-		"OBJECT_SYSTEMD_INVOCATION_ID",
-		"INVOCATION_ID",
-		"USER_INVOCATION_ID",
-	} {
-		for _, value := range entryValues(entry, field) {
-			id, err := journal.ParseUUID(string(value))
-			if err == nil && strings.Trim(id.String(), "0") != "" {
-				return id.String(), true
-			}
+func openInvocationScopeJournal(input cliInput, flags *cliFlags, unitOption string) (cliJournal, error) {
+	j, err := input.openJournal()
+	if err != nil {
+		return nil, fmt.Errorf("open journal: %w", err)
+	}
+	if err := applyBootMatch(j, flags, optionalStringFlag{}); err != nil {
+		j.Close()
+		return nil, err
+	}
+	if unitOption != "" {
+		if err := applySingleInvocationUnit(j, flags, unitOption); err != nil {
+			j.Close()
+			return nil, err
 		}
 	}
-	return "", false
+	return j, nil
+}
+
+func collectInvocationCandidateIDs(j cliJournal) ([]string, error) {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, field := range invocationIDFields {
+		if err := j.VisitUnique(field, func(value []byte) error {
+			id, err := journal.ParseUUID(string(value))
+			if err != nil {
+				return nil
+			}
+			text := id.String()
+			if strings.Trim(text, "0") == "" {
+				return nil
+			}
+			if _, exists := seen[text]; exists {
+				return nil
+			}
+			seen[text] = struct{}{}
+			out = append(out, text)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("visit unique invocation values for %s: %w", field, err)
+		}
+	}
+	return out, nil
+}
+
+func invocationBoundsForID(input cliInput, flags *cliFlags, unitOption, id string) (invocationInfo, bool, error) {
+	firstJournal, err := openInvocationScopeJournal(input, flags, unitOption)
+	if err != nil {
+		return invocationInfo{}, false, err
+	}
+	defer firstJournal.Close()
+	if err := addInvocationMatches(firstJournal, id); err != nil {
+		return invocationInfo{}, false, err
+	}
+	if err := firstJournal.SeekHead(); err != nil {
+		return invocationInfo{}, false, err
+	}
+	ok, err := firstJournal.Next()
+	if err != nil {
+		return invocationInfo{}, false, err
+	}
+	if ok == 0 {
+		return invocationInfo{}, false, nil
+	}
+	firstEntry, err := firstJournal.GetEntry()
+	if err != nil {
+		return invocationInfo{}, false, err
+	}
+
+	lastJournal, err := openInvocationScopeJournal(input, flags, unitOption)
+	if err != nil {
+		return invocationInfo{}, false, err
+	}
+	defer lastJournal.Close()
+	if err := addInvocationMatches(lastJournal, id); err != nil {
+		return invocationInfo{}, false, err
+	}
+	if err := lastJournal.SeekTail(); err != nil {
+		return invocationInfo{}, false, err
+	}
+	ok, err = lastJournal.Previous()
+	if err != nil {
+		return invocationInfo{}, false, err
+	}
+	if ok == 0 {
+		return invocationInfo{}, false, nil
+	}
+	lastEntry, err := lastJournal.GetEntry()
+	if err != nil {
+		return invocationInfo{}, false, err
+	}
+
+	return invocationInfo{
+		id:        id,
+		firstUsec: firstEntry.Realtime,
+		lastUsec:  lastEntry.Realtime,
+	}, true, nil
 }
 
 func entryInTimeRange(entry *journal.Entry, sinceUsec, untilUsec *uint64) bool {
@@ -3112,16 +3239,20 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 			return err
 		}
 	}
+	pollInterval := 100 * time.Millisecond
+	const maxPollInterval = time.Second
 	for {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(pollInterval)
 		seek := cursorControl.seek
 		if lastSeenCursor != "" {
 			seek = &cursorSeek{cursor: lastSeenCursor, after: true}
 		}
+		emitted := 0
 		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, postFilters, seek, func(entry *journal.Entry) error {
 			if err := renderEntry(stdout, renderer, &bootSeparators, postFilters, entry); err != nil {
 				return err
 			}
+			emitted++
 			if entry.Cursor != "" {
 				lastSeenCursor = entry.Cursor
 				return updateCursorFile(cursorControl, lastSeenCursor)
@@ -3129,6 +3260,14 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 			return nil
 		}); err != nil {
 			return err
+		}
+		if emitted > 0 {
+			pollInterval = 100 * time.Millisecond
+		} else {
+			pollInterval *= 2
+			if pollInterval > maxPollInterval {
+				pollInterval = maxPollInterval
+			}
 		}
 	}
 }
@@ -3595,25 +3734,14 @@ func printHeader(stdout io.Writer, path string, h interface {
 }
 
 func runListInvocations(input cliInput, flags *cliFlags, stdout io.Writer) error {
-	j, err := input.openJournal()
-	if err != nil {
-		return fmt.Errorf("open journal: %w", err)
-	}
-	defer j.Close()
-	if err := applyBootMatch(j, flags, optionalStringFlag{}); err != nil {
-		return err
-	}
-	if err := applySingleInvocationUnit(j, flags, "--list-invocations"); err != nil {
-		return err
-	}
-	infos, err := collectInvocations(j)
+	infos, err := collectInvocationsFromInput(input, flags, "--list-invocations")
 	if err != nil {
 		return err
 	}
 	if len(infos) == 0 {
 		return errors.New("No invocation ID found.")
 	}
-	display, firstIndex, err := selectInvocationRows(infos, flags)
+	display, err := selectInvocationRows(infos, flags)
 	if err != nil {
 		return err
 	}
@@ -3622,20 +3750,21 @@ func runListInvocations(input cliInput, flags *cliFlags, stdout io.Writer) error
 	}
 	idxWidth := 1
 	if *flags.quietFlag {
-		for i := range display {
-			idxText := fmt.Sprintf("%d", firstIndex+i)
+		for _, row := range display {
+			idxText := fmt.Sprintf("%d", row.index)
 			if len(idxText) > idxWidth {
 				idxWidth = len(idxText)
 			}
 		}
 	}
-	for i, info := range display {
+	for _, row := range display {
+		info := row.info
 		if *flags.quietFlag {
 			fmt.Fprintf(
 				stdout,
 				"%*d %s %s %s\n",
 				idxWidth,
-				firstIndex+i,
+				row.index,
 				info.id,
 				formatHeaderTimestamp(info.firstUsec),
 				formatHeaderTimestamp(info.lastUsec),
@@ -3644,7 +3773,7 @@ func runListInvocations(input cliInput, flags *cliFlags, stdout io.Writer) error
 			fmt.Fprintf(
 				stdout,
 				"%3d %-32s %s %s\n",
-				firstIndex+i,
+				row.index,
 				info.id,
 				formatHeaderTimestamp(info.firstUsec),
 				formatHeaderTimestamp(info.lastUsec),
@@ -3779,28 +3908,46 @@ func formatHeaderTimespan(usec uint64) string {
 	return fmt.Sprintf("%dd", usec/86_400_000_000)
 }
 
-func selectInvocationRows(infos []invocationInfo, flags *cliFlags) ([]invocationInfo, int, error) {
+func selectInvocationRows(infos []invocationInfo, flags *cliFlags) ([]invocationDisplayRow, error) {
+	selected := infos
+	firstIndex := 1 - len(infos)
 	if !flags.linesFlag.set {
-		return infos, 1 - len(infos), nil
+		return buildInvocationDisplayRows(selected, firstIndex, *flags.reverseFlag), nil
 	}
 	limit, err := parseLinesLimitValue(flags.linesFlag.value)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	if limit.all || limit.count >= len(infos) {
 		if limit.oldest {
-			return infos, 1, nil
+			firstIndex = 1
 		}
-		return infos, 1 - len(infos), nil
+		return buildInvocationDisplayRows(selected, firstIndex, *flags.reverseFlag), nil
 	}
 	if limit.count <= 0 {
-		return nil, 0, nil
+		return nil, nil
 	}
 	if limit.oldest {
-		return infos[:limit.count], 1, nil
+		selected = infos[:limit.count]
+		firstIndex = 1
+	} else {
+		selected = infos[len(infos)-limit.count:]
+		firstIndex = 1 - len(selected)
 	}
-	out := infos[len(infos)-limit.count:]
-	return out, 1 - len(out), nil
+	return buildInvocationDisplayRows(selected, firstIndex, *flags.reverseFlag), nil
+}
+
+func buildInvocationDisplayRows(infos []invocationInfo, firstIndex int, reverse bool) []invocationDisplayRow {
+	out := make([]invocationDisplayRow, len(infos))
+	for i, info := range infos {
+		out[i] = invocationDisplayRow{index: firstIndex + i, info: info}
+	}
+	if reverse {
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
+	return out
 }
 
 func allocatedFileBytes(path string) (uint64, error) {

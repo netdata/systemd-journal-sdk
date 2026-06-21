@@ -440,10 +440,9 @@ func cursorLocationAtOrAfter(got, want parsedCursorLocation) bool {
 			return got.realtime > want.realtime
 		}
 	}
-	if want.xorHashSet {
-		if got.xorHash != want.xorHash {
-			return got.xorHash > want.xorHash
-		}
-	}
+	// systemd uses x= for exact cursor tests, but seek-cursor positioning
+	// treats sequence/monotonic/realtime components as the ordering key.
+	// A cursor with a mismatched x= still seeks to the row matching the
+	// other components; TestCursor remains exact and checks x= above.
 	return true
 }

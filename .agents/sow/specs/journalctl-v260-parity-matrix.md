@@ -57,8 +57,8 @@ disk-image/rootfs-only, or unsafe without an explicit file/directory target.
 | `--system` | none | recognized-no-op | Recognize. With explicit file input it has no effect. With explicit directory input, filter system journal files only if repository directory metadata supports it; otherwise accept as no-op and record test evidence. Without file/directory input, return unsupported because default host journal discovery is not portable. |
 | `--user` | none | recognized-no-op | Recognize. With explicit file input it has no effect. With explicit directory input, filter current-user journal files only if repository directory metadata supports it; otherwise accept as no-op and record test evidence. Without file/directory input, return unsupported because current-user host journal discovery is not portable. |
 | `-M`, `--machine=` | string | recognized-unsupported | Requires local container or machine journal access. Never connect to a host or container. |
-| `-m`, `--merge` | none | recognized-no-op | Recognize. Interleaving multiple explicit file/directory inputs is already the portable directory/file behavior. Preserve official conflicts with `--boot` and `--list-boots`. |
-| `-D`, `--directory=` | path | file-backed-required | Open journal files from the supplied directory, including supported repository `.journal.zst` directory files. |
+| `-m`, `--merge` | none | recognized-no-op | Recognize. Interleaving multiple explicit file/directory inputs is already the portable directory/file behavior. Preserve official conflicts with specific `--boot` selectors and `--list-boots`; allow `--boot=all` with `--merge` like systemd v260.1. |
+| `-D`, `--directory=` | path | file-backed-required | Open journal files from the supplied directory, including supported repository `.journal.zst` directory files. Reject regular-file input passed through `--directory=` instead of silently treating it like `--file=`. |
 | `-i`, `--file=` | glob/path | file-backed-required | Open one or more explicit journal files. Multiple `--file=` occurrences and glob expansion must be supported. `--file=-` must be recognized; support only if a seekable stdin-backed implementation exists, otherwise return a specific unsupported message. |
 | `--root=` | path | recognized-unsupported | Requires alternate root filesystem discovery and catalog hierarchy access. Do not inspect host rootfs. |
 | `--image=` | path | recognized-unsupported | Requires disk image dissection/mounting. Do not mount or inspect images. |
@@ -69,10 +69,10 @@ disk-image/rootfs-only, or unsafe without an explicit file/directory target.
 
 | Option | Args | Classification | Required portable behavior |
 | --- | --- | --- | --- |
-| `-S`, `--since=` | timestamp | file-backed-required | Inclusive realtime lower bound. Match official timestamp grammar where practical. |
-| `-U`, `--until=` | timestamp | file-backed-required | Inclusive realtime upper bound. Reject `--since` later than `--until`. |
-| `-c`, `--cursor=` | cursor | file-backed-required | Seek to the specified cursor and include that entry when it matches filters. |
-| `--after-cursor=` | cursor | file-backed-required | Seek to the specified cursor and start after that entry when it is present. |
+| `-S`, `--since=` | timestamp | file-backed-required | Inclusive realtime lower bound. Match official timestamp grammar where practical, including stock-accepted ISO `T` forms and timezone offsets. |
+| `-U`, `--until=` | timestamp | file-backed-required | Inclusive realtime upper bound. Reject `--since` later than `--until`. Match official timestamp grammar where practical, including stock-accepted ISO `T` forms and timezone offsets. |
+| `-c`, `--cursor=` | cursor | file-backed-required | Seek to the specified cursor and include that entry when it matches filters. Match stock cursor seek ordering, including ignoring the optional `x=` hash for locating candidate entries while preserving exact cursor matching where required. |
+| `--after-cursor=` | cursor | file-backed-required | Seek to the specified cursor and start after that entry when it is present. Match stock cursor seek ordering, including ignoring the optional `x=` hash for locating candidate entries while preserving exact cursor matching where required. |
 | `--cursor-file=` | path | file-backed-required | Read cursor from the caller-provided file if present, start after it, and atomically update the file with the final cursor. |
 | `-b`, `--boot[=ID]` | optional descriptor | file-backed-required | Support no argument, `all`, numeric offsets, boot IDs, and boot ID plus offset from explicit file/directory entries. Do not use the host boot ID. |
 | `--this-boot` | none | file-backed-required | Deprecated alias for the current `--boot` selection. Resolve from explicit file/directory input, not host state. |
@@ -181,9 +181,9 @@ Every official v260.1 output mode is `file-backed-required`:
 | Time bounds | parser-required | Reject `--since=` later than `--until=`. |
 | Cursor source exclusivity | parser-required | Reject more than one of `--since=`, `--cursor=`, `--cursor-file=`, and `--after-cursor=`. |
 | Follow/reverse conflict | parser-required | Reject `--follow` with `--reverse`. |
-| Oldest-lines conflict | parser-required | Reject `--lines=+N` with `--reverse` or `--follow`. |
+| Oldest-lines conflict | parser-required | Reject `--lines=+N` with `--reverse` or `--follow` for the show action. Preserve official action-specific behavior for non-show actions. |
 | Action argument restriction | parser-required | For actions other than show, list catalog, and dump catalog, reject extraneous arguments. |
-| Boot/merge conflict | parser-required | Reject `--boot` or `--list-boots` with `--merge`. |
+| Boot/merge conflict | parser-required | Reject specific `--boot` selectors or `--list-boots` with `--merge`; allow `--boot=all` with `--merge`. |
 | Option interspersing | parser-required | Accept recognized options before or after show-action `FIELD=value`, `+`, or path-match positional arguments, matching stock argument permutation. |
 | Explicit empty boot descriptor | parser-required | Treat bare `--boot` as the current boot, but reject explicit `--boot=` as a failed empty boot descriptor like stock. |
 | Explicit empty optional values | parser-required | Reject explicit empty values where stock rejects them, including `--lines=` and `--case-sensitive=`. Bare `--lines` and bare `--case-sensitive` remain valid. |
