@@ -481,6 +481,10 @@ cargo run --manifest-path rust/Cargo.toml -p journalctl -- \
   --output json
 ```
 
+`--file`/`-i` may be repeated and accepts glob patterns, matching stock
+file-backed `journalctl`. `--file=-` is intentionally unsupported because
+portable stdin journals would need seekable mmap-capable descriptors.
+
 Repeated matches for the same field are OR alternatives. Matches for different
 fields are ANDed. A separate `+` argument creates an explicit disjunction:
 

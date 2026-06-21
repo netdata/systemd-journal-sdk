@@ -13,7 +13,10 @@ traversal, mixed-format directories, query/follow behavior, and verification.
 
 The rewrites cover file-backed query behavior only:
 
-- input selection: `--file <path>` or `--directory <path>`;
+- input selection: `--file <path-or-glob>`/`-i <path-or-glob>` or
+  `--directory <path>`; repeated `--file` inputs and glob expansion match
+  stock file-backed behavior, while `--file=-` is explicitly unsupported
+  because portable stdin journals would need seekable mmap-capable descriptors;
 - output: all stock v260.1 file-backed modes: `short`, `short-full`,
   `short-iso`, `short-iso-precise`, `short-precise`, `short-monotonic`,
   `short-delta`, `short-unix`, `verbose`, `export`, `json`,

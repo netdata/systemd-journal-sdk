@@ -706,6 +706,67 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
                     "stderr": result.stderr[-1000:],
                 }
             )
+
+    directory_file_a = fixtures["directory"] / "a.journal"
+    directory_file_b = fixtures["directory"] / "b.journal"
+    multi_file_cases = [
+        (
+            "multi-file-repeat",
+            ["--file", str(directory_file_a), "--file", str(directory_file_b), "--output=json", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "multi-file-short-repeat",
+            ["-i", str(directory_file_a), "-i", str(directory_file_b), "--output=json", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "multi-file-glob",
+            ["--file", str(fixtures["directory"] / "*.journal"), "--output=json", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+    ]
+    for case_name, args in multi_file_cases:
+        stock = run(action_command("stock", tools, args), timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = parse_messages(stock.stdout)
+        for reader in READERS:
+            cmd = action_command(reader, tools, args)
+            result = run(cmd, timeout=30)
+            actual = parse_messages(result.stdout)
+            ok = result.returncode == 0 and actual == expected
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": actual,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
+
+    no_match_args = [
+        "--file",
+        str(fixtures["directory"] / "does-not-match-*.journal"),
+        "--output=json",
+        "--boot=all",
+        "TEST_ID=journalctl-query",
+    ]
+    for reader in READERS:
+        cmd = action_command(reader, tools, no_match_args)
+        result = run(cmd, timeout=30)
+        ok = result.returncode != 0
+        results.append(
+            {
+                "test": "multi-file-glob-no-match-preserved",
+                "reader": reader,
+                "status": "PASS" if ok else "FAIL",
+                "command": " ".join(cmd),
+                "stdout": result.stdout[-1000:],
+                "stderr": result.stderr[-1000:],
+                "returncode": result.returncode,
+            }
+        )
     return results
 
 
@@ -792,6 +853,36 @@ def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
     for case_name, mode, path, args, expected_error in cases:
         for reader in ("go", "rust"):
             cmd = reader_command(reader, tools, mode, path, args)
+            result = run(cmd, timeout=30)
+            combined = result.stdout + result.stderr
+            ok = result.returncode != 0 and expected_error in combined
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected_error": expected_error,
+                    "stdout": result.stdout[-1000:],
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
+                }
+            )
+    action_error_cases = [
+        (
+            "file-stdin-unsupported",
+            ["--file=-", "--output=json"],
+            "journalctl portable mode does not support --file=-",
+        ),
+        (
+            "default-source-unsupported",
+            ["--output=json", "TEST_ID=journalctl-query"],
+            "journalctl portable mode does not support default journal source",
+        ),
+    ]
+    for case_name, args, expected_error in action_error_cases:
+        for reader in ("go", "rust"):
+            cmd = action_command(reader, tools, args)
             result = run(cmd, timeout=30)
             combined = result.stdout + result.stderr
             ok = result.returncode != 0 and expected_error in combined

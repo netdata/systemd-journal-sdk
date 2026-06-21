@@ -413,6 +413,10 @@ File-backed journalctl:
 go run ./cmd/journalctl --file ../fixtures/systemd/test-data/no-rtc/system.journal.zst --head 1 --output=json
 ```
 
+`--file`/`-i` may be repeated and accepts glob patterns, matching stock
+file-backed `journalctl`. `--file=-` is intentionally unsupported because
+portable stdin journals would need seekable mmap-capable descriptors.
+
 Repeated matches for the same field are OR alternatives. Matches for different
 fields are ANDed. A separate `+` argument creates an explicit disjunction:
 

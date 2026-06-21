@@ -520,6 +520,18 @@ Official source evidence for the output-mode chunk:
     validation/dispatch;
   - the shared query matrix now compares the exact stdout from stock
     `journalctl --output=help` against Go and Rust.
+- Implemented file source selection parity directly in Rust and Go:
+  - `--file` may be repeated and the official `-i` short option is supported;
+  - `--file` values are expanded as glob patterns with stock
+    `GLOB_NOCHECK`-style no-match preservation;
+  - multi-file inputs are opened through existing `SdJournalOpenFiles` facade
+    paths, so normal output, follow snapshots, invocation resolution,
+    `--list-invocations`, `--verify`, `--disk-usage`, and `--header` all use
+    the same resolved file set;
+  - `--file=-` returns a specific portable unsupported message because
+    seekable stdin-backed mmap-capable descriptors are not implemented;
+  - no explicit `--file` or `--directory` now returns the portable unsupported
+    default-host-journal message instead of a generic missing-input error.
 - Implemented the file-backed header, invocation, and short-label parity chunk
   directly in Rust and Go:
   - `--header` prints stock-style journal header fields from explicit file and
@@ -994,6 +1006,27 @@ Tests or equivalent validation:
   --skip-follow`: passed after the `--output=help` chunk, including the new
   exact `output-help` stock/Go/Rust comparison; report showed `failures=[]`
   and `status=PASS`.
+- `go test ./cmd/journalctl ./journal`: passed after the repeated/globbed
+  `--file` chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the repeated/globbed `--file` chunk; 26
+  Rust `journalctl` tests passed.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed after the repeated/globbed `--file` chunk, including
+  repeated long `--file`, repeated short `-i`, globbed file input, no-match
+  glob preservation failure behavior, `--file=-` unsupported behavior, and
+  default-host-source unsupported behavior; report showed `failures=[]` and
+  `status=PASS`.
+- `python3 tests/parser-parity/check_v260_manifest.py` and
+  `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after the repeated/globbed
+  `--file` chunk; Rust `ok=93 skipped=0 failed=0`, Go `ok=93 skipped=0
+  failed=0`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed after
+  the repeated/globbed `--file` chunk including live follow checks; report
+  showed `failures=[]` and `status=PASS`.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the repeated/globbed
+  `--file` docs update; validated 15 wiki markdown files.
 
 Real-use evidence:
 
@@ -1035,7 +1068,9 @@ Artifact maintenance gate:
   `--vacuum-size`/`--vacuum-files`/`--vacuum-time` behavior, and after the
   output-control/empty-result chunk to record `--all`, `--full`, `--no-full`,
   `--pager-end`, JSON threshold, and empty-result behavior, and after the
-  `--output=help` chunk to record parser-level output mode list behavior.
+  `--output=help` chunk to record parser-level output mode list behavior, and
+  after the repeated/globbed `--file` chunk to record file-source selection
+  behavior.
   `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
   `tests/parser-parity/v260-manifest.*` were updated to reclassify
   `--setup-keys` as recognized-unsupported based on official source evidence.
@@ -1050,7 +1085,8 @@ Artifact maintenance gate:
   chunk for `--vacuum-size`/`--vacuum-files`/`--vacuum-time`, and after the
   output-control/empty-result chunk for `--all`, `--full`, `--no-full`,
   `--pager-end`, and empty-result behavior, and after the `--output=help`
-  chunk for the parser-level output mode list.
+  chunk for the parser-level output mode list, and after the repeated/globbed
+  `--file` chunk for file-source selection behavior.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -1064,7 +1100,8 @@ Specs update:
   contract, then for the output-mode and `--output-fields` contract, then for
   invocation, `--list-invocations`, `--header`, and stock short-label behavior,
   then for the output-control/empty-result contract, and then for the
-  `--output=help` parser-level output mode list.
+  `--output=help` parser-level output mode list, and then for the
+  repeated/globbed `--file` source-selection contract.
   Additional product-scope updates remain pending final shipped behavior and
   ship recommendation.
 
@@ -1082,8 +1119,8 @@ End-user/operator docs update:
   unit-filter chunk, after the output-mode chunk, after the
   header/invocation/label chunk, after the explicit-directory vacuum chunk, and
   after the output-control/empty-result chunk, and after the `--output=help`
-  chunk. Final journalctl command documentation remains pending full
-  implementation.
+  chunk, and after the repeated/globbed `--file` chunk. Final journalctl
+  command documentation remains pending full implementation.
 
 End-user/operator skills update:
 

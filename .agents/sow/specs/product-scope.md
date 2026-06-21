@@ -768,6 +768,11 @@ Current Go reader feature slice:
   active;
 - libsystemd-style match tree behavior from `sd_journal_add_match()`,
   `sd_journal_add_disjunction()`, and `sd_journal_add_conjunction()`;
+- file-backed Go journalctl source selection supports `--file`/`-i`,
+  repeated `--file` inputs, stock-style glob expansion with no-match
+  preservation, and `--directory`; `--file=-` is explicitly unsupported
+  because portable stdin journals would require seekable mmap-capable file
+  descriptors;
 - file-backed Go journalctl behavior for `--file`, `--directory`,
   text/json/export output, field listing, boot listing, realtime range
   filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
@@ -893,6 +898,11 @@ Current Rust reader feature slice:
   active;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
+- file-backed Rust journalctl source selection supports `--file`/`-i`,
+  repeated `--file` inputs, stock-style glob expansion with no-match
+  preservation, and `--directory`; `--file=-` is explicitly unsupported
+  because portable stdin journals would require seekable mmap-capable file
+  descriptors;
 - file-backed Rust journalctl behavior for `--file`, `--directory`,
   text/json/export output, field listing, boot listing, realtime range
   filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode

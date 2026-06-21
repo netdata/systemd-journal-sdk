@@ -6,10 +6,10 @@ use clap::{Parser, ValueEnum};
 use journal::{
     Entry, FacadeError, FileHeader, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetEntry,
-    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalPrevious, SdJournalSeekCursor,
-    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
-    SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_string, verify_file,
-    verify_file_with_key,
+    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalOpenFiles, SdJournalPrevious,
+    SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
+    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_string,
+    verify_file, verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
 use regex::{Regex, RegexBuilder};
@@ -124,8 +124,8 @@ fn unsupported_reason(name: &str) -> &'static str {
 #[command(name = "journalctl")]
 #[command(about = "Pure-Rust file-backed journalctl subset")]
 struct Args {
-    #[arg(long = "file")]
-    file: Option<PathBuf>,
+    #[arg(short = 'i', long = "file")]
+    file: Vec<PathBuf>,
     #[arg(long = "directory")]
     directory: Option<PathBuf>,
     #[arg(long = "output", default_value = "short")]
@@ -497,39 +497,41 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    if args.disk_usage && args.file.is_none() && args.directory.is_none() {
+    if args.disk_usage && args.file.is_empty() && args.directory.is_none() {
         return Err(portable_unsupported(
             "--disk-usage",
             "requires host journal directory; pass --file or --directory to compute disk usage for explicit input",
         ));
     }
 
-    let path = args
-        .file
-        .as_ref()
-        .or(args.directory.as_ref())
-        .ok_or_else(|| anyhow!("use --file or --directory"))?;
+    let input = CliInput::from_args(&args)?;
 
     validate_path_match_arguments(&args.matches)?;
 
     if args.disk_usage {
-        return run_disk_usage(path);
+        return run_disk_usage_input(&input);
     }
 
     if has_vacuum_flags(&args) {
+        let Some(path) = args.directory.as_ref() else {
+            return Err(portable_unsupported(
+                "--vacuum-*",
+                "vacuum actions require explicit --directory= input",
+            ));
+        };
         return run_vacuum(path, &args);
     }
 
     if args.header {
-        return run_header(path);
+        return run_header_input(&input);
     }
 
     if args.list_invocations {
-        return run_list_invocations(path, &args);
+        return run_list_invocations(&input, &args);
     }
 
     if args.verify || args.verify_only || args.verify_key.is_some() {
-        return run_verify(path, args.verify_key.as_deref());
+        return run_verify_input(&input, args.verify_key.as_deref());
     }
 
     let since_usec = parse_optional_timestamp(args.since.as_deref())?;
@@ -541,7 +543,7 @@ fn run() -> Result<()> {
     if args.follow {
         let tail = parse_tail_count(args.tail.as_ref(), args.lines.as_deref()).unwrap_or(10);
         return run_follow(
-            path,
+            &input,
             &args,
             since_usec,
             until_usec,
@@ -552,7 +554,7 @@ fn run() -> Result<()> {
         );
     }
 
-    let mut journal = open_filtered_journal(path, &args)?;
+    let mut journal = open_filtered_journal(&input, &args)?;
 
     if args.list_boots {
         for boot in SdJournalListBoots(&mut journal).map_err(|err| anyhow!("list boots: {err}"))? {
@@ -693,6 +695,153 @@ fn print_output_mode_help() {
     }
 }
 
+#[derive(Debug, Clone)]
+enum CliInput {
+    Directory(PathBuf),
+    Files(Vec<PathBuf>),
+}
+
+impl CliInput {
+    fn from_args(args: &Args) -> Result<Self> {
+        if let Some(directory) = args.directory.as_ref() {
+            return Ok(Self::Directory(directory.clone()));
+        }
+        let files = resolve_file_inputs(&args.file)?;
+        if !files.is_empty() {
+            return Ok(Self::Files(files));
+        }
+        Err(portable_unsupported(
+            "default journal source",
+            "default host journal discovery is not portable; pass --file or --directory",
+        ))
+    }
+
+    fn open_journal(&self) -> Result<SdJournal> {
+        match self {
+            Self::Directory(path) => {
+                SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))
+            }
+            Self::Files(paths) => {
+                let strings: Vec<String> = paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                let refs: Vec<&str> = strings.iter().map(String::as_str).collect();
+                SdJournalOpenFiles(&refs, 0).map_err(|err| anyhow!("open: {err}"))
+            }
+        }
+    }
+
+    fn journal_files(&self, context: &str) -> Result<(Vec<PathBuf>, bool)> {
+        match self {
+            Self::Files(paths) => Ok((paths.clone(), false)),
+            Self::Directory(path) => collect_journal_files_for_verify(path)
+                .map(|files| (files, true))
+                .map_err(|err| anyhow!("{context}: read directory {}: {err}", path.display())),
+        }
+    }
+}
+
+fn resolve_file_inputs(values: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for value in values {
+        if value == Path::new("-") {
+            return Err(portable_unsupported(
+                "--file=-",
+                "stdin-backed journals require seekable mmap-capable file descriptors and are not supported in portable mode",
+            ));
+        }
+        let matches = expand_glob_path(value);
+        if matches.is_empty() {
+            files.push(value.clone());
+        } else {
+            files.extend(matches);
+        }
+    }
+    Ok(files)
+}
+
+fn expand_glob_path(pattern: &Path) -> Vec<PathBuf> {
+    let pattern_text = pattern.to_string_lossy();
+    if !is_glob_pattern(&pattern_text) {
+        return Vec::new();
+    }
+
+    let mut prefixes = Vec::<PathBuf>::new();
+    for component in pattern.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => {
+                prefixes = vec![PathBuf::from(prefix.as_os_str())];
+            }
+            std::path::Component::RootDir => {
+                if prefixes.is_empty() {
+                    prefixes.push(PathBuf::from(std::path::MAIN_SEPARATOR.to_string()));
+                } else {
+                    for prefix in &mut prefixes {
+                        prefix.push(std::path::MAIN_SEPARATOR.to_string());
+                    }
+                }
+            }
+            std::path::Component::CurDir => {
+                if prefixes.is_empty() {
+                    prefixes.push(PathBuf::from("."));
+                } else {
+                    for prefix in &mut prefixes {
+                        prefix.push(".");
+                    }
+                }
+            }
+            std::path::Component::ParentDir => {
+                if prefixes.is_empty() {
+                    prefixes.push(PathBuf::from(".."));
+                } else {
+                    for prefix in &mut prefixes {
+                        prefix.push("..");
+                    }
+                }
+            }
+            std::path::Component::Normal(component) => {
+                if prefixes.is_empty() {
+                    prefixes.push(PathBuf::new());
+                }
+                let component_pattern = component.to_string_lossy();
+                if is_glob_pattern(&component_pattern) {
+                    let mut next = Vec::new();
+                    for prefix in &prefixes {
+                        let dir = if prefix.as_os_str().is_empty() {
+                            Path::new(".")
+                        } else {
+                            prefix.as_path()
+                        };
+                        let Ok(entries) = fs::read_dir(dir) else {
+                            continue;
+                        };
+                        for entry in entries.flatten() {
+                            let name = entry.file_name();
+                            let name_text = name.to_string_lossy();
+                            if name_text.starts_with('.') && !component_pattern.starts_with('.') {
+                                continue;
+                            }
+                            if glob_pattern_matches(&component_pattern, &name_text) {
+                                let mut path = prefix.clone();
+                                path.push(name);
+                                next.push(path);
+                            }
+                        }
+                    }
+                    prefixes = next;
+                } else {
+                    for prefix in &mut prefixes {
+                        prefix.push(component);
+                    }
+                }
+            }
+        }
+    }
+    prefixes.sort();
+    prefixes
+}
+
 fn effective_quiet(args: &Args) -> bool {
     args.quiet
         || matches!(
@@ -817,7 +966,7 @@ impl CursorControl {
 
 fn enforce_source_exclusivity(args: &Args) -> Result<()> {
     let mut sources = 0usize;
-    if args.file.is_some() {
+    if !args.file.is_empty() {
         sources += 1;
     }
     if args.directory.is_some() {
@@ -958,10 +1107,9 @@ fn looks_like_lines_descriptor(value: &str) -> bool {
     !value.is_empty() && value.parse::<usize>().is_ok()
 }
 
-fn open_filtered_journal(path: &Path, args: &Args) -> Result<SdJournal> {
-    let mut journal =
-        SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
-    if let Some(invocation_id) = resolve_invocation_filter(path, args)? {
+fn open_filtered_journal(input: &CliInput, args: &Args) -> Result<SdJournal> {
+    let mut journal = input.open_journal()?;
+    if let Some(invocation_id) = resolve_invocation_filter(input, args)? {
         add_invocation_matches(&mut journal, &invocation_id)?;
     } else {
         apply_boot_match(&mut journal, args)?;
@@ -973,18 +1121,21 @@ fn open_filtered_journal(path: &Path, args: &Args) -> Result<SdJournal> {
 }
 
 fn run_verify(path: &Path, verify_key: Option<&str>) -> Result<()> {
+    let input = if path.is_dir() {
+        CliInput::Directory(path.to_path_buf())
+    } else {
+        CliInput::Files(vec![path.to_path_buf()])
+    };
+    run_verify_input(&input, verify_key)
+}
+
+fn run_verify_input(input: &CliInput, verify_key: Option<&str>) -> Result<()> {
     if verify_key.is_some_and(|key| !valid_verification_key(key)) {
         eprintln!("Failed to parse seed.");
         return Err(anyhow!("failed to parse seed"));
     }
 
-    let mut files = Vec::new();
-    let directory_input = path.is_dir();
-    if directory_input {
-        files = collect_journal_files_for_verify(path)?;
-    } else {
-        files.push(path.to_path_buf());
-    }
+    let (files, directory_input) = input.journal_files("verify")?;
 
     if files.is_empty() {
         if directory_input {
@@ -1137,8 +1288,8 @@ fn print_new_id128() {
     println!(">>> XYZ = uuid.UUID('{simple}')");
 }
 
-fn run_disk_usage(path: &Path) -> Result<()> {
-    let files = disk_usage_files(path)?;
+fn run_disk_usage_input(input: &CliInput) -> Result<()> {
+    let (files, _) = input.journal_files("disk usage")?;
     let mut bytes = 0u64;
     for file in files {
         bytes = bytes.saturating_add(allocated_file_bytes(&file)?);
@@ -1479,8 +1630,8 @@ fn system_time_to_usec(value: SystemTime) -> Option<u64> {
     )
 }
 
-fn run_header(path: &Path) -> Result<()> {
-    let files = disk_usage_files(path)?;
+fn run_header_input(input: &CliInput) -> Result<()> {
+    let (files, _) = input.journal_files("header")?;
     for (idx, file) in files.iter().enumerate() {
         if idx > 0 {
             println!();
@@ -1576,9 +1727,8 @@ fn print_header(path: &Path, header: &FileHeader, disk_usage: u64) -> Result<()>
     Ok(())
 }
 
-fn run_list_invocations(path: &Path, args: &Args) -> Result<()> {
-    let mut journal =
-        SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
+fn run_list_invocations(input: &CliInput, args: &Args) -> Result<()> {
+    let mut journal = input.open_journal()?;
     apply_boot_match(&mut journal, args)?;
     apply_single_invocation_unit(&mut journal, args, "--list-invocations")?;
     let invocations = collect_invocations(&mut journal)?;
@@ -1758,16 +1908,6 @@ fn select_invocation_rows<'a>(
             Ok((rows, 1 - rows.len() as isize))
         }
     }
-}
-
-fn disk_usage_files(path: &Path) -> Result<Vec<PathBuf>> {
-    let metadata =
-        fs::metadata(path).map_err(|err| anyhow!("disk usage: {}: {err}", path.display()))?;
-    if !metadata.is_dir() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-    collect_journal_files_for_verify(path)
-        .map_err(|err| anyhow!("disk usage: read directory {}: {err}", path.display()))
 }
 
 fn allocated_file_bytes(path: &Path) -> Result<u64> {
@@ -2784,7 +2924,7 @@ fn parse_invocation_descriptor(descriptor: &str) -> Result<Option<(String, isize
         .map_err(|_| anyhow!("failed to parse invocation descriptor: {descriptor}"))
 }
 
-fn resolve_invocation_filter(path: &Path, args: &Args) -> Result<Option<String>> {
+fn resolve_invocation_filter(input: &CliInput, args: &Args) -> Result<Option<String>> {
     let Some(descriptor) = effective_invocation_descriptor(args) else {
         return Ok(None);
     };
@@ -2792,8 +2932,7 @@ fn resolve_invocation_filter(path: &Path, args: &Args) -> Result<Option<String>>
         return Ok(None);
     };
 
-    let mut journal =
-        SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
+    let mut journal = input.open_journal()?;
     apply_boot_match(&mut journal, args)?;
     if id.is_empty() || offset != 0 {
         apply_single_invocation_unit(&mut journal, args, "-I/--invocation= with an offset")?;
@@ -3113,7 +3252,7 @@ fn duration_unit_multiplier(unit: &str) -> Result<f64> {
 }
 
 fn scan_follow_snapshot(
-    path: &Path,
+    input: &CliInput,
     args: &Args,
     since_usec: Option<u64>,
     until_usec: Option<u64>,
@@ -3121,7 +3260,7 @@ fn scan_follow_snapshot(
     cursor_control: &CursorControl,
     output_options: &OutputOptions,
 ) -> Vec<(String, Vec<u8>)> {
-    let Ok(mut journal) = open_filtered_journal(path, args) else {
+    let Ok(mut journal) = open_filtered_journal(input, args) else {
         return Vec::new();
     };
     let Ok(entries) = matching_entries(
@@ -3141,7 +3280,7 @@ fn scan_follow_snapshot(
 }
 
 fn run_follow(
-    path: &Path,
+    input: &CliInput,
     args: &Args,
     since_usec: Option<u64>,
     until_usec: Option<u64>,
@@ -3154,7 +3293,7 @@ fn run_follow(
 
     let mut seen = HashSet::new();
     let initial = scan_follow_snapshot(
-        path,
+        input,
         args,
         since_usec,
         until_usec,
@@ -3180,7 +3319,7 @@ fn run_follow(
     loop {
         thread::sleep(Duration::from_millis(100));
         let snapshot = scan_follow_snapshot(
-            path,
+            input,
             args,
             since_usec,
             until_usec,

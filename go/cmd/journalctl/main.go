@@ -112,7 +112,7 @@ type optionalStringFlag struct {
 }
 
 type cliFlags struct {
-	file       *string
+	file       multiStringFlag
 	directory  *string
 	output     *string
 	listBoots  *bool
@@ -305,7 +305,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 
 	hasVerifyKey := hasStringFlag(args, "verify-key")
-	inputPath, err := flags.inputPath()
+	input, err := flags.input()
 	if err != nil {
 		return err
 	}
@@ -313,19 +313,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 	if *flags.diskUsageFlag {
-		return runDiskUsage(inputPath, stdout)
+		return runDiskUsage(input, stdout)
 	}
 	if hasVacuumFlags(flags) {
-		return runVacuum(inputPath, flags, stderr)
+		return runVacuum(input.directory, flags, stderr)
 	}
 	if *flags.headerFlag {
-		return runHeader(inputPath, stdout)
+		return runHeader(input, stdout)
 	}
 	if *flags.listInvocationsFlag {
-		return runListInvocations(inputPath, flags, stdout)
+		return runListInvocations(input, flags, stdout)
 	}
 	if *flags.verify || *flags.verifyOnly || hasVerifyKey {
-		return runVerify(inputPath, *flags.verifyKey, hasVerifyKey, stdout, stderr)
+		return runVerify(input, *flags.verifyKey, hasVerifyKey, stdout, stderr)
 	}
 
 	sinceUsec, untilUsec, err := flags.timeBounds()
@@ -357,10 +357,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 				tail = limit.count
 			}
 		}
-		return runFollow(inputPath, fs.Args(), flags, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout, postFilters, cursorControl, outputOptions)
+		return runFollow(input, fs.Args(), flags, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout, postFilters, cursorControl, outputOptions)
 	}
 
-	j, err := openFilteredJournal(inputPath, fs.Args(), flags, *flags.output)
+	j, err := openFilteredJournal(input, fs.Args(), flags, *flags.output)
 	if err != nil {
 		return err
 	}
@@ -455,7 +455,6 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 	fs := flag.NewFlagSet("journalctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	flags := &cliFlags{
-		file:       fs.String("file", "", "journal file"),
 		directory:  fs.String("directory", "", "journal directory"),
 		output:     fs.String("output", "short", "output mode: short, short-full, short-iso, short-iso-precise, short-precise, short-monotonic, short-delta, short-unix, verbose, export, json, json-pretty, json-sse, json-seq, cat, with-unit"),
 		listBoots:  fs.Bool("list-boots", false, "list boots"),
@@ -525,6 +524,7 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 		updateCatalogFlag:      fs.Bool("update-catalog", false, "update the message catalog database (portable: unsupported)"),
 		smartRelinquishVarFlag: fs.Bool("smart-relinquish-var", false, "stop logging to disk with mount inspection (portable: unsupported)"),
 	}
+	fs.Var(&flags.file, "file", "journal file")
 	fs.Var(&flags.boot, "boot", "boot filter")
 	fs.Var(&flags.boot, "b", "boot filter")
 	fs.StringVar(flags.field, "F", "", "show values for a field")
@@ -560,7 +560,7 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 
 	fs.StringVar(flags.cursorFlag, "c", "", "start at the specified cursor (short)")
 	fs.StringVar(flags.directory, "D", "", "journal directory (short)")
-	fs.StringVar(flags.file, "i", "", "journal file (short)")
+	fs.Var(&flags.file, "i", "journal file (short)")
 	fs.StringVar(flags.machineFlag, "M", "", "operate on local container (short) (portable: unsupported)")
 	fs.StringVar(flags.output, "o", "short", "change journal output mode (short)")
 	fs.BoolVar(flags.fields, "N", false, "list all field names currently used (short)")
@@ -578,7 +578,7 @@ func (f *cliFlags) validate() error {
 	// Source exclusivity: --directory=, --file=, --machine=, --root=,
 	// --image= are mutually exclusive.
 	sources := 0
-	if *f.file != "" {
+	if len(f.file.values) > 0 {
 		sources++
 	}
 	if *f.directory != "" {
@@ -693,7 +693,7 @@ func (f *cliFlags) validate() error {
 	if *f.setupKeysFlag {
 		return portableUnsupported("--setup-keys", "FSS key pair generation requires journald integration; portable mode has no host journald")
 	}
-	if *f.diskUsageFlag && *f.file == "" && *f.directory == "" {
+	if *f.diskUsageFlag && len(f.file.values) == 0 && *f.directory == "" {
 		return portableUnsupported("--disk-usage", "requires host journal directory; pass --file or --directory to compute disk usage for explicit input")
 	}
 	if *f.vacuumSizeFlag != "" || *f.vacuumFilesFlag != "" || *f.vacuumTimeFlag != "" {
@@ -723,15 +723,66 @@ func isFalsey(value string) bool {
 	return false
 }
 
-func (f *cliFlags) inputPath() (string, error) {
-	inputPath := *f.file
-	if inputPath == "" && *f.directory != "" {
-		inputPath = *f.directory
+type cliInput struct {
+	directory string
+	files     []string
+}
+
+func (i cliInput) openJournal() (cliJournal, error) {
+	if i.directory != "" {
+		return journal.SdJournalOpenDirectory(i.directory, 0)
 	}
-	if inputPath == "" {
-		return "", errors.New("no journal file or directory specified (use --file or --directory)")
+	return journal.SdJournalOpenFiles(i.files, 0)
+}
+
+func (i cliInput) journalFiles(context string) ([]string, bool, error) {
+	if i.directory == "" {
+		return append([]string(nil), i.files...), false, nil
 	}
-	return inputPath, nil
+	files, err := collectJournalFilesForVerify(i.directory)
+	if err != nil {
+		return nil, true, fmt.Errorf("%s: read directory: %w", context, err)
+	}
+	return files, true, nil
+}
+
+func (f *cliFlags) input() (cliInput, error) {
+	if *f.directory != "" {
+		return cliInput{directory: *f.directory}, nil
+	}
+	files, err := resolveFileInputs(f.file.Values())
+	if err != nil {
+		return cliInput{}, err
+	}
+	if len(files) > 0 {
+		return cliInput{files: files}, nil
+	}
+	return cliInput{}, portableUnsupported(
+		"default journal source",
+		"default host journal discovery is not portable; pass --file or --directory",
+	)
+}
+
+func resolveFileInputs(values []string) ([]string, error) {
+	var files []string
+	for _, value := range values {
+		if value == "-" {
+			return nil, portableUnsupported(
+				"--file=-",
+				"stdin-backed journals require seekable mmap-capable file descriptors and are not supported in portable mode",
+			)
+		}
+		matches, err := filepath.Glob(value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to add paths: %w", err)
+		}
+		if len(matches) == 0 {
+			files = append(files, value)
+			continue
+		}
+		files = append(files, matches...)
+	}
+	return files, nil
 }
 
 func (f *cliFlags) timeBounds() (*uint64, *uint64, error) {
@@ -1426,8 +1477,8 @@ func (f *cliFlags) effectiveQuiet() bool {
 	}
 }
 
-func openFilteredJournal(inputPath string, matches []string, flags *cliFlags, outputMode string) (cliJournal, error) {
-	j, err := journal.SdJournalOpen(inputPath, 0)
+func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outputMode string) (cliJournal, error) {
+	j, err := input.openJournal()
 	if err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)
 	}
@@ -1438,7 +1489,7 @@ func openFilteredJournal(inputPath string, matches []string, flags *cliFlags, ou
 		}
 	}()
 
-	invocationID, useInvocation, err := resolveInvocationFilter(inputPath, flags)
+	invocationID, useInvocation, err := resolveInvocationFilter(input, flags)
 	if err != nil {
 		return nil, err
 	}
@@ -1805,7 +1856,7 @@ func parseInvocationDescriptor(descriptor string) (string, int, bool, error) {
 	return id, offset, true, nil
 }
 
-func resolveInvocationFilter(inputPath string, flags *cliFlags) (string, bool, error) {
+func resolveInvocationFilter(input cliInput, flags *cliFlags) (string, bool, error) {
 	descriptor, set := effectiveInvocationDescriptor(flags)
 	if !set {
 		return "", false, nil
@@ -1818,7 +1869,7 @@ func resolveInvocationFilter(inputPath string, flags *cliFlags) (string, bool, e
 		return "", false, nil
 	}
 
-	j, err := journal.SdJournalOpen(inputPath, 0)
+	j, err := input.openJournal()
 	if err != nil {
 		return "", false, fmt.Errorf("open journal: %w", err)
 	}
@@ -2234,8 +2285,8 @@ type followEntry struct {
 	output string
 }
 
-func scanFollowSnapshot(inputPath string, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) []followEntry {
-	j, err := openFilteredJournal(inputPath, matches, flags, outputMode)
+func scanFollowSnapshot(input cliInput, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) []followEntry {
+	j, err := openFilteredJournal(input, matches, flags, outputMode)
 	if err != nil {
 		return nil
 	}
@@ -2256,9 +2307,9 @@ func scanFollowSnapshot(inputPath string, matches []string, flags *cliFlags, out
 	return out
 }
 
-func runFollow(inputPath string, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
+func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
 	seen := make(map[string]struct{})
-	initial := scanFollowSnapshot(inputPath, matches, flags, outputMode, sinceUsec, untilUsec, postFilters, cursorControl, outputOptions)
+	initial := scanFollowSnapshot(input, matches, flags, outputMode, sinceUsec, untilUsec, postFilters, cursorControl, outputOptions)
 	for _, entry := range initial {
 		seen[entry.cursor] = struct{}{}
 	}
@@ -2273,7 +2324,7 @@ func runFollow(inputPath string, matches []string, flags *cliFlags, outputMode s
 	}
 	for {
 		time.Sleep(100 * time.Millisecond)
-		for _, entry := range scanFollowSnapshot(inputPath, matches, flags, outputMode, sinceUsec, untilUsec, postFilters, cursorControl, outputOptions) {
+		for _, entry := range scanFollowSnapshot(input, matches, flags, outputMode, sinceUsec, untilUsec, postFilters, cursorControl, outputOptions) {
 			if _, ok := seen[entry.cursor]; ok {
 				continue
 			}
@@ -2285,12 +2336,12 @@ func runFollow(inputPath string, matches []string, flags *cliFlags, outputMode s
 	}
 }
 
-func runVerify(inputPath, verifyKey string, hasVerifyKey bool, stdout, stderr io.Writer) error {
+func runVerify(input cliInput, verifyKey string, hasVerifyKey bool, stdout, stderr io.Writer) error {
 	if err := validateVerificationKeyOption(verifyKey, hasVerifyKey, stderr); err != nil {
 		return err
 	}
 
-	files, directoryInput, err := verifyInputFiles(inputPath)
+	files, directoryInput, err := input.journalFiles("verify")
 	if err != nil {
 		return err
 	}
@@ -2343,8 +2394,8 @@ func printNewID128(stdout io.Writer) error {
 	return nil
 }
 
-func runDiskUsage(inputPath string, stdout io.Writer) error {
-	files, err := diskUsageInputFiles(inputPath)
+func runDiskUsage(input cliInput, stdout io.Writer) error {
+	files, _, err := input.journalFiles("disk usage")
 	if err != nil {
 		return err
 	}
@@ -2641,8 +2692,8 @@ func saturatingAdd(a, b uint64) uint64 {
 	return a + b
 }
 
-func runHeader(inputPath string, stdout io.Writer) error {
-	files, err := diskUsageInputFiles(inputPath)
+func runHeader(input cliInput, stdout io.Writer) error {
+	files, _, err := input.journalFiles("header")
 	if err != nil {
 		return err
 	}
@@ -2739,8 +2790,8 @@ func printHeader(stdout io.Writer, path string, h interface {
 	fmt.Fprintf(stdout, "Disk usage: %s\n", formatJournalBytes(diskUsage))
 }
 
-func runListInvocations(inputPath string, flags *cliFlags, stdout io.Writer) error {
-	j, err := journal.SdJournalOpen(inputPath, 0)
+func runListInvocations(input cliInput, flags *cliFlags, stdout io.Writer) error {
+	j, err := input.openJournal()
 	if err != nil {
 		return fmt.Errorf("open journal: %w", err)
 	}
@@ -2948,21 +2999,6 @@ func selectInvocationRows(infos []invocationInfo, flags *cliFlags) ([]invocation
 	return out, 1 - len(out), nil
 }
 
-func diskUsageInputFiles(inputPath string) ([]string, error) {
-	info, err := os.Stat(inputPath)
-	if err != nil {
-		return nil, fmt.Errorf("disk usage: %w", err)
-	}
-	if !info.IsDir() {
-		return []string{inputPath}, nil
-	}
-	files, err := collectJournalFilesForVerify(inputPath)
-	if err != nil {
-		return nil, fmt.Errorf("disk usage: read directory: %w", err)
-	}
-	return files, nil
-}
-
 func allocatedFileBytes(path string) (uint64, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -3008,21 +3044,6 @@ func validateVerificationKeyOption(verifyKey string, hasVerifyKey bool, stderr i
 	}
 	fmt.Fprintln(stderr, "Failed to parse seed.")
 	return errors.New("failed to parse seed")
-}
-
-func verifyInputFiles(inputPath string) ([]string, bool, error) {
-	info, err := os.Stat(inputPath)
-	if err != nil {
-		return nil, false, fmt.Errorf("verify: %w", err)
-	}
-	if !info.IsDir() {
-		return []string{inputPath}, false, nil
-	}
-	files, err := collectJournalFilesForVerify(inputPath)
-	if err != nil {
-		return nil, true, fmt.Errorf("verify: read directory: %w", err)
-	}
-	return files, true, nil
 }
 
 func verifyOneFile(path, verifyKey string, hasVerifyKey, directoryInput bool, stderr io.Writer) error {
