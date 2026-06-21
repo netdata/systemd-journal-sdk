@@ -939,6 +939,49 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
             }
         )
 
+    extraneous_action_cases = [
+        ("action-extra-new-id128", ["--new-id128", "foo"], "foo"),
+        ("action-extra-fields", ["--file", str(fixtures["file"]), "--fields", "TEST_ID=journalctl-query"], "TEST_ID=journalctl-query"),
+        (
+            "action-extra-field",
+            ["--file", str(fixtures["file"]), "--field=MESSAGE", "TEST_ID=journalctl-query"],
+            "TEST_ID=journalctl-query",
+        ),
+        (
+            "action-extra-verify",
+            ["--file", str(fixtures["file"]), "--verify", "TEST_ID=journalctl-query"],
+            "TEST_ID=journalctl-query",
+        ),
+        (
+            "action-extra-disk-usage",
+            ["--file", str(fixtures["file"]), "--disk-usage", "TEST_ID=journalctl-query"],
+            "TEST_ID=journalctl-query",
+        ),
+        ("action-extra-sync", ["--sync", "foo"], "foo"),
+    ]
+    for case_name, args, token in extraneous_action_cases:
+        expected_error = f"Extraneous arguments starting with '{token}'"
+        stock = run(action_command("stock", tools, args), timeout=30)
+        if stock.returncode == 0 or expected_error not in (stock.stdout + stock.stderr):
+            raise AssertionError(f"stock {case_name} did not produce {expected_error!r}: {stock}")
+        for reader in ("go", "rust"):
+            cmd = action_command(reader, tools, args)
+            result = run(cmd, timeout=30)
+            combined = result.stdout + result.stderr
+            ok = result.returncode != 0 and expected_error in combined
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected_error": expected_error,
+                    "stdout": result.stdout[-1000:],
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
+                }
+            )
+
     for case_name, mode, path in (
         ("disk-usage-file", "file", fixtures["file"]),
         ("disk-usage-directory", "directory", fixtures["directory"]),

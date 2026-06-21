@@ -33,7 +33,9 @@ The rewrites cover file-backed query behavior only:
 - metadata: `--list-boots`, `--list-invocations`, `--fields`,
   `--field <NAME>` (unique values), and `--header`;
 - filtering: `FIELD=value` matches, repeated same-field matches as OR,
-  different fields as AND, and the `+` disjunction separator;
+  different fields as AND, and the `+` disjunction separator; positional
+  matches apply to the show action only, and non-show actions reject extra
+  positional arguments like stock `journalctl`;
 - journalctl filters: `--identifier`, `--priority`, `--facility`, `--grep`,
   `--case-sensitive`, `--dmesg`, `--unit`, `--user-unit`, `--invocation`,
   and `-I`;

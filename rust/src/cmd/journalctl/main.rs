@@ -378,122 +378,27 @@ fn run() -> Result<()> {
     enforce_cursor_source_exclusivity(&args)?;
     enforce_follow_reverse_conflict(&args)?;
     enforce_oldest_lines_conflict(&args)?;
-    enforce_boot_merge_conflict(&args)?;
 
-    // Reject intentionally unsupported options with the portable-mode
-    // message contract.
-    if args.machine.is_some() {
-        return Err(portable_unsupported(
-            "--machine",
-            unsupported_reason("machine"),
-        ));
-    }
-    if args.root.is_some() {
-        return Err(portable_unsupported("--root", unsupported_reason("root")));
-    }
-    if args.image.is_some() {
-        return Err(portable_unsupported("--image", unsupported_reason("image")));
-    }
-    if args.image_policy.is_some() {
-        return Err(portable_unsupported(
-            "--image-policy",
-            unsupported_reason("image-policy"),
-        ));
-    }
-    if args.namespace.is_some() {
-        return Err(portable_unsupported(
-            "--namespace",
-            unsupported_reason("namespace"),
-        ));
-    }
-    if let Some(value) = args.synchronize_on_exit.as_deref() {
-        if !value.eq_ignore_ascii_case("false") && !value.eq_ignore_ascii_case("no") {
-            return Err(portable_unsupported(
-                "--synchronize-on-exit",
-                unsupported_reason("synchronize-on-exit"),
-            ));
-        }
-        // false / no is accepted as a no-op per parity matrix.
-    }
-    if args.sync {
-        return Err(portable_unsupported("--sync", unsupported_reason("sync")));
-    }
-    if args.flush {
-        return Err(portable_unsupported("--flush", unsupported_reason("flush")));
-    }
-    if args.rotate {
-        return Err(portable_unsupported(
-            "--rotate",
-            unsupported_reason("rotate"),
-        ));
-    }
-    if args.relinquish_var {
-        return Err(portable_unsupported(
-            "--relinquish-var",
-            unsupported_reason("relinquish-var"),
-        ));
-    }
-    if args.smart_relinquish_var {
-        return Err(portable_unsupported(
-            "--smart-relinquish-var",
-            unsupported_reason("smart-relinquish-var"),
-        ));
-    }
-    if args.list_namespaces {
-        return Err(portable_unsupported(
-            "--list-namespaces",
-            unsupported_reason("list-namespaces"),
-        ));
-    }
-    if args.list_catalog {
-        return Err(portable_unsupported(
-            "--list-catalog",
-            unsupported_reason("list-catalog"),
-        ));
-    }
-    if args.dump_catalog {
-        return Err(portable_unsupported(
-            "--dump-catalog",
-            unsupported_reason("dump-catalog"),
-        ));
-    }
-    if args.update_catalog {
-        return Err(portable_unsupported(
-            "--update-catalog",
-            unsupported_reason("update-catalog"),
-        ));
-    }
-    if args.setup_keys {
-        return Err(portable_unsupported(
-            "--setup-keys",
-            "FSS key pair generation requires journald integration; portable mode has no host journald",
-        ));
-    }
-    if has_vacuum_flags(&args) {
-        // Maintenance options require --directory=.
-        if args.directory.is_none() {
-            return Err(portable_unsupported(
-                "--vacuum-*",
-                "vacuum actions require explicit --directory= input",
-            ));
-        }
-    }
-
-    // Portable utility actions that do not require a journal file:
-    // they print results and exit before any open() is attempted.
     if args.version {
         println!("journalctl (systemd-journal-sdk Rust rewrite)");
         println!("baseline: systemd v260.1 (c0a5a2516d28)");
         println!("portable file-backed mode");
         return Ok(());
     }
-    if args.new_id128 {
-        print_new_id128();
-        return Ok(());
-    }
 
     if facility_help_requested(&args.facility) {
         print_facility_help(args.quiet);
+        return Ok(());
+    }
+
+    enforce_action_argument_restriction(&args)?;
+    enforce_boot_merge_conflict(&args)?;
+    enforce_portable_unsupported(&args)?;
+
+    // Portable utility actions that do not require a journal file:
+    // they print results and exit before any open() is attempted.
+    if args.new_id128 {
+        print_new_id128();
         return Ok(());
     }
 
@@ -1044,6 +949,135 @@ fn enforce_boot_merge_conflict(args: &Args) -> Result<()> {
     if (args.boot.is_some() || args.this_boot || args.list_boots) && args.merge {
         return Err(anyhow!(
             "Using --boot or --list-boots with --merge is not supported."
+        ));
+    }
+    Ok(())
+}
+
+fn enforce_action_argument_restriction(args: &Args) -> Result<()> {
+    if args.matches.is_empty() || !action_rejects_arguments(args) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "Extraneous arguments starting with '{}'",
+        args.matches[0]
+    ))
+}
+
+fn action_rejects_arguments(args: &Args) -> bool {
+    args.new_id128
+        || args.setup_keys
+        || args.update_catalog
+        || args.header
+        || args.verify
+        || args.verify_only
+        || args.verify_key.is_some()
+        || args.disk_usage
+        || args.list_boots
+        || args.fields
+        || args.field.is_some()
+        || args.list_invocations
+        || args.list_namespaces
+        || args.flush
+        || args.relinquish_var
+        || args.smart_relinquish_var
+        || args.sync
+        || args.rotate
+        || has_vacuum_flags(args)
+}
+
+fn enforce_portable_unsupported(args: &Args) -> Result<()> {
+    if args.machine.is_some() {
+        return Err(portable_unsupported(
+            "--machine",
+            unsupported_reason("machine"),
+        ));
+    }
+    if args.root.is_some() {
+        return Err(portable_unsupported("--root", unsupported_reason("root")));
+    }
+    if args.image.is_some() {
+        return Err(portable_unsupported("--image", unsupported_reason("image")));
+    }
+    if args.image_policy.is_some() {
+        return Err(portable_unsupported(
+            "--image-policy",
+            unsupported_reason("image-policy"),
+        ));
+    }
+    if args.namespace.is_some() {
+        return Err(portable_unsupported(
+            "--namespace",
+            unsupported_reason("namespace"),
+        ));
+    }
+    if let Some(value) = args.synchronize_on_exit.as_deref() {
+        if !value.eq_ignore_ascii_case("false") && !value.eq_ignore_ascii_case("no") {
+            return Err(portable_unsupported(
+                "--synchronize-on-exit",
+                unsupported_reason("synchronize-on-exit"),
+            ));
+        }
+        // false / no is accepted as a no-op per parity matrix.
+    }
+    if args.sync {
+        return Err(portable_unsupported("--sync", unsupported_reason("sync")));
+    }
+    if args.flush {
+        return Err(portable_unsupported("--flush", unsupported_reason("flush")));
+    }
+    if args.rotate {
+        return Err(portable_unsupported(
+            "--rotate",
+            unsupported_reason("rotate"),
+        ));
+    }
+    if args.relinquish_var {
+        return Err(portable_unsupported(
+            "--relinquish-var",
+            unsupported_reason("relinquish-var"),
+        ));
+    }
+    if args.smart_relinquish_var {
+        return Err(portable_unsupported(
+            "--smart-relinquish-var",
+            unsupported_reason("smart-relinquish-var"),
+        ));
+    }
+    if args.list_namespaces {
+        return Err(portable_unsupported(
+            "--list-namespaces",
+            unsupported_reason("list-namespaces"),
+        ));
+    }
+    if args.list_catalog {
+        return Err(portable_unsupported(
+            "--list-catalog",
+            unsupported_reason("list-catalog"),
+        ));
+    }
+    if args.dump_catalog {
+        return Err(portable_unsupported(
+            "--dump-catalog",
+            unsupported_reason("dump-catalog"),
+        ));
+    }
+    if args.update_catalog {
+        return Err(portable_unsupported(
+            "--update-catalog",
+            unsupported_reason("update-catalog"),
+        ));
+    }
+    if args.setup_keys {
+        return Err(portable_unsupported(
+            "--setup-keys",
+            "FSS key pair generation requires journald integration; portable mode has no host journald",
+        ));
+    }
+    if has_vacuum_flags(args) && args.directory.is_none() {
+        return Err(portable_unsupported(
+            "--vacuum-*",
+            "vacuum actions require explicit --directory= input",
         ));
     }
     Ok(())

@@ -976,6 +976,10 @@ File-backed query semantics:
 - `--new-id128` is a portable standalone utility action and prints a new v4
   ID128 in the same string, UUID, `SD_ID128_MAKE()`, and Python constant forms
   as stock systemd v260.1.
+- Positional `FIELD=value`, path, and `+` disjunction arguments belong to the
+  show action. Non-show actions other than catalog listing/dumping reject
+  extra positional arguments with the stock `Extraneous arguments starting with
+  '<token>'` parser error before portable unsupported dispatch.
 - The long `--follow` option is supported. Existing short `-f` file aliases are
   preserved in languages that already used `-f` for `--file`.
 

@@ -285,7 +285,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	if err := flags.validate(); err != nil {
+	if err := flags.validateParserInteractions(); err != nil {
 		return err
 	}
 
@@ -295,9 +295,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, "portable file-backed mode")
 		return nil
 	}
-	if *flags.newID128Flag {
-		return printNewID128(stdout)
-	}
 
 	if facilityHelpRequested(flags.facilityFlag.Values()) {
 		printFacilityHelp(stdout, *flags.quietFlag)
@@ -305,6 +302,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 
 	hasVerifyKey := hasStringFlag(args, "verify-key")
+	fieldWasSet := flagWasSet(fs, "field") || flagWasSet(fs, "F")
+	if err := flags.validateActionArguments(fs.Args(), hasVerifyKey, fieldWasSet); err != nil {
+		return err
+	}
+	if err := flags.validatePostAction(); err != nil {
+		return err
+	}
+	if *flags.newID128Flag {
+		return printNewID128(stdout)
+	}
 	input, err := flags.input()
 	if err != nil {
 		return err
@@ -575,6 +582,13 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 }
 
 func (f *cliFlags) validate() error {
+	if err := f.validateParserInteractions(); err != nil {
+		return err
+	}
+	return f.validatePostAction()
+}
+
+func (f *cliFlags) validateParserInteractions() error {
 	// Source exclusivity: --directory=, --file=, --machine=, --root=,
 	// --image= are mutually exclusive.
 	sources := 0
@@ -638,6 +652,39 @@ func (f *cliFlags) validate() error {
 		return errors.New("--lines=+N is unsupported when --reverse or --follow is specified.")
 	}
 
+	return nil
+}
+
+func (f *cliFlags) validateActionArguments(args []string, hasVerifyKey, fieldWasSet bool) error {
+	if len(args) == 0 || !f.actionRejectsArguments(hasVerifyKey, fieldWasSet) {
+		return nil
+	}
+	return fmt.Errorf("Extraneous arguments starting with '%s'", args[0])
+}
+
+func (f *cliFlags) actionRejectsArguments(hasVerifyKey, fieldWasSet bool) bool {
+	return *f.newID128Flag ||
+		*f.setupKeysFlag ||
+		*f.updateCatalogFlag ||
+		*f.headerFlag ||
+		*f.verify ||
+		*f.verifyOnly ||
+		hasVerifyKey ||
+		*f.diskUsageFlag ||
+		*f.listBoots ||
+		*f.fields ||
+		fieldWasSet ||
+		*f.listInvocationsFlag ||
+		*f.listNamespacesFlag ||
+		*f.flush ||
+		*f.relinquish ||
+		*f.smartRelinquishVarFlag ||
+		*f.sync ||
+		*f.rotate ||
+		hasVacuumFlags(f)
+}
+
+func (f *cliFlags) validatePostAction() error {
 	// Boot/merge conflict.
 	if (f.boot.set || *f.thisBootFlag || *f.listBoots) && *f.mergeFlag {
 		return errors.New("Using --boot or --list-boots with --merge is not supported.")

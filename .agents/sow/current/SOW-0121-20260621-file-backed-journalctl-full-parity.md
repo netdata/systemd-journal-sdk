@@ -532,6 +532,21 @@ Official source evidence for the output-mode chunk:
     seekable stdin-backed mmap-capable descriptors are not implemented;
   - no explicit `--file` or `--directory` now returns the portable unsupported
     default-host-journal message instead of a generic missing-input error.
+- Implemented parser-level action argument restriction parity directly in Rust
+  and Go:
+  - official source evidence from `systemd/systemd @ c0a5a2516d28`:
+    `src/journal/journalctl.c:1112-1115` rejects extraneous positional
+    arguments for every action except show, list catalog, and dump catalog;
+    `src/journal/journalctl.h:7-27` defines the action enum that drives this
+    check;
+  - Rust and Go now run the same parser-stage order for this rule: parser
+    interaction checks first, early `--output=help`/`--version`/facility-help
+    exits where applicable, then action-extra argument rejection before
+    portable unsupported dispatch;
+  - the shared query matrix now compares stock parser errors against Go and
+    Rust for `--new-id128 foo`, `--fields TEST_ID=...`,
+    `--field=MESSAGE TEST_ID=...`, `--verify TEST_ID=...`,
+    `--disk-usage TEST_ID=...`, and `--sync foo`.
 - Implemented the file-backed header, invocation, and short-label parity chunk
   directly in Rust and Go:
   - `--header` prints stock-style journal header fields from explicit file and
@@ -1027,12 +1042,64 @@ Tests or equivalent validation:
   showed `failures=[]` and `status=PASS`.
 - `python3 tests/docs/check_wiki_docs.py`: passed after the repeated/globbed
   `--file` docs update; validated 15 wiki markdown files.
+- `GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test ./cmd/journalctl
+  ./journal`: passed after the action-argument restriction chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the action-argument restriction chunk; 26
+  Rust `journalctl` tests passed.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed after the action-argument restriction chunk,
+  including stock-oracle checks for extraneous positional arguments on
+  `--new-id128`, `--fields`, `--field`, `--verify`, `--disk-usage`, and
+  `--sync`; report showed `failures=[]` and `status=PASS`.
+- `python3 tests/parser-parity/check_v260_manifest.py` and
+  `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after the action-argument
+  restriction chunk; Rust `ok=93 skipped=0 failed=0`, Go `ok=93 skipped=0
+  failed=0`.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the action-argument
+  restriction docs update; validated 15 wiki markdown files.
+- `git diff --check`: passed after the action-argument restriction chunk.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed after
+  the action-argument restriction chunk including live follow checks; report
+  showed `failures=[]` and `status=PASS`.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after the action-argument
+  restriction docs update; 31 of 31 verified examples passed.
+- `GOOS=windows GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-windows.test.exe ./cmd/journalctl`: passed after the
+  action-argument restriction chunk.
+- `GOOS=darwin GOARCH=arm64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-darwin-arm64.test ./cmd/journalctl`: passed after
+  the action-argument restriction chunk.
+- `GOOS=freebsd GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-freebsd-amd64.test ./cmd/journalctl`: passed after
+  the action-argument restriction chunk.
+- `CRATE_CC_NO_DEFAULTS=1 CC_x86_64_pc_windows_gnu="zig cc -target
+  x86_64-windows-gnu" AR_x86_64_pc_windows_gnu="zig ar" cargo check
+  --manifest-path rust/Cargo.toml -p journalctl --target
+  x86_64-pc-windows-gnu --target-dir .local/cargo-target`: passed after the
+  action-argument restriction chunk. A plain Windows Rust cross-check first
+  failed because the workstation does not have `x86_64-w64-mingw32-gcc`; the
+  Zig-based no-install path passed.
 
 Real-use evidence:
 
 - Partial implementation evidence exists through stock-systemd comparison
   matrices using repository-local fixtures only. The whole SOW remains
   in-progress.
+- Go local cross-compilation covers Windows, macOS arm64, and FreeBSD for the
+  action-argument restriction chunk. Rust local cross-check currently covers
+  Windows via the installed `x86_64-pc-windows-gnu` target and Zig. Rust macOS
+  and FreeBSD runtime validation still requires user-authorized access to the
+  target hosts or a separate user-approved toolchain setup.
 - No external reviewer findings yet. Per project review cadence, external
   reviewers remain deferred until complete local implementation and validation
   for the whole SOW.
@@ -1070,7 +1137,8 @@ Artifact maintenance gate:
   `--pager-end`, JSON threshold, and empty-result behavior, and after the
   `--output=help` chunk to record parser-level output mode list behavior, and
   after the repeated/globbed `--file` chunk to record file-source selection
-  behavior.
+  behavior, and after the action-argument restriction chunk to record
+  non-show positional argument rejection behavior.
   `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
   `tests/parser-parity/v260-manifest.*` were updated to reclassify
   `--setup-keys` as recognized-unsupported based on official source evidence.
@@ -1086,7 +1154,9 @@ Artifact maintenance gate:
   output-control/empty-result chunk for `--all`, `--full`, `--no-full`,
   `--pager-end`, and empty-result behavior, and after the `--output=help`
   chunk for the parser-level output mode list, and after the repeated/globbed
-  `--file` chunk for file-source selection behavior.
+  `--file` chunk for file-source selection behavior, and after the
+  action-argument restriction chunk for non-show positional argument
+  rejection.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -1101,7 +1171,8 @@ Specs update:
   invocation, `--list-invocations`, `--header`, and stock short-label behavior,
   then for the output-control/empty-result contract, and then for the
   `--output=help` parser-level output mode list, and then for the
-  repeated/globbed `--file` source-selection contract.
+  repeated/globbed `--file` source-selection contract, and then for the
+  action-argument restriction contract.
   Additional product-scope updates remain pending final shipped behavior and
   ship recommendation.
 
@@ -1119,8 +1190,9 @@ End-user/operator docs update:
   unit-filter chunk, after the output-mode chunk, after the
   header/invocation/label chunk, after the explicit-directory vacuum chunk, and
   after the output-control/empty-result chunk, and after the `--output=help`
-  chunk, and after the repeated/globbed `--file` chunk. Final journalctl
-  command documentation remains pending full implementation.
+  chunk, after the repeated/globbed `--file` chunk, and after the
+  action-argument restriction chunk. Final journalctl command documentation
+  remains pending full implementation.
 
 End-user/operator skills update:
 
