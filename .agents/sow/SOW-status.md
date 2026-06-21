@@ -4,11 +4,7 @@ Last updated: 2026-06-21
 
 ## Current
 
-- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision:
-  in-progress. Activated by user goal on 2026-06-21 for 100% official systemd
-  v260.1 command-line surface recognition in Rust and Go, full file-backed
-  operational parity, and explicit portable-mode unsupported behavior for
-  daemon/host-only features.
+- None.
 
 ## Pending
 
@@ -32,6 +28,19 @@ Last updated: 2026-06-21
   high-risk and not mandatory before integration/release work.
 ## Recently Closed Or Completed
 
+- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
+  Rust and Go now recognize the full official systemd v260.1 `journalctl`
+  command-line surface and implement the accepted portable file-backed behavior
+  covered by the parity matrix. Daemon/host-only behavior remains intentionally
+  unsupported in portable mode. Final local validation passed Go tests, Rust
+  tests, parser parity with 124/124 cases for both languages, stock-oracle
+  query matrix with 403 results and zero failures against systemd
+  `260.1-2-manjaro`, docs checks, verified examples, whitespace checks, and
+  SOW audit. Five completed read-only reviewer rechecks returned
+  `PRODUCTION-GRADE: YES`; one pre-compaction reviewer transcript was
+  unavailable. Recommendation: keep both commands as product artifacts, and use
+  Go first when a single standalone non-Linux binary must be selected because
+  this SOW has broader local cross-compilation evidence for Go.
 - SOW-0094 - Rust Explorer Lazy Compressed Field Inference Experiment: closed
   without implementation by user decision on 2026-06-21. The optimization is not
   important enough to keep in the active backlog. No SDK behavior, source,

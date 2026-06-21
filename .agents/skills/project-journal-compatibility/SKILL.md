@@ -131,6 +131,15 @@ Do not use this skill for:
   `--since`/`--until` realtime ranges, `--boot` descriptors, and live
   `--follow` reads from actively appended file and directory inputs, including
   no-tail, default-tail, and boot-plus-since cases.
+- For journalctl parser or option-surface changes, run
+  `tests/parser-parity/check_v260_manifest.py` and
+  `tests/parser-parity/run_parser_parity.py`. Parser parity must cover option
+  names, short aliases, output modes, parser-required conflicts, recognized
+  options interspersed after show-action match arguments, stock short-option
+  attached values and clusters such as `-n2`, `-ball`, and `-rn2`, and
+  optional-argument edge cases where bare and explicit-empty forms differ, such
+  as `--boot` versus `--boot=`, bare `--lines` versus `--lines=`, and bare
+  `--case-sensitive` versus `--case-sensitive=`.
 - For verifier changes, run `tests/interoperability/run_verify_matrix.py` and
   require stock `journalctl --verify --file` plus Rust and Go
   verification paths to agree on positive regular, zstd/xz/lz4 DATA-compressed,

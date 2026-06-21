@@ -36,16 +36,21 @@ The rewrites cover file-backed query behavior only:
   different fields as AND, and the `+` disjunction separator; positional
   matches apply to the show action only, and non-show actions reject extra
   positional arguments like stock `journalctl`;
-- journalctl filters: `--identifier`, `--priority`, `--facility`, `--grep`,
-  `--case-sensitive`, `--dmesg`, `--unit`, `--user-unit`, `--invocation`,
-  and `-I`;
+- journalctl filters: `--identifier`, `--exclude-identifier`, `--priority`,
+  `--facility`, `--grep`, `--case-sensitive`, `--dmesg`, `--unit`,
+  `--user-unit`, `--invocation`, and `-I`;
 - unit filters: exact and glob system/user units use the same journal fields
-  and disjunction groups as stock file-backed `journalctl`;
-- time and boot windows: `--since`, `--until`, `--boot [ID]`;
+  and disjunction groups as stock file-backed `journalctl`; `--user --unit=`
+  is treated as `--user-unit=` like stock systemd;
+- time and boot windows: `--since`, `--until`, `--boot [ID]`; bare `--boot`
+  selects the current boot, while explicit empty `--boot=` is rejected like
+  stock `journalctl`;
 - cursors: `--cursor`, `--after-cursor`, `--cursor-file`, and
   `--show-cursor`, using official systemd cursor strings;
-- paging: `--head <n>`, `--tail <n>`, `--lines[=[+]N]`, `--no-tail`, and
-  `--pager-end` implicit 1000-line tail behavior;
+- paging: stock `--lines[=[+]N]`, including bare `--lines`/`-n` defaulting to
+  10 entries and explicit empty `--lines=` being rejected, `--no-tail`, and
+  `--pager-end` implicit 1000-line tail behavior, plus SDK extension aliases
+  `--head <n>` and `--tail <n>`;
 - live reads: `--follow` on actively appended files and directories;
 - utility actions: `--new-id128` and `--disk-usage` for explicit
   `--file`/`--directory` inputs;

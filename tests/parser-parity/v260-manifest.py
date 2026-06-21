@@ -267,6 +267,18 @@ def build_parser_interactions():
             "name": "boot-merge-conflict",
             "description": "Reject --boot or --list-boots with --merge.",
         },
+        {
+            "name": "interspersed-show-option",
+            "description": "Accept recognized options before or after show-action match arguments.",
+        },
+        {
+            "name": "short-attached-values",
+            "description": "Accept stock short-option attached values and clusters such as -n2, -ball, and -rn2.",
+        },
+        {
+            "name": "explicit-empty-optional-values",
+            "description": "Reject explicit empty optional values where stock rejects them, such as --lines= and --case-sensitive=.",
+        },
     ]
 
 

@@ -6,10 +6,10 @@ use clap::{Parser, ValueEnum};
 use journal::{
     Entry, FacadeError, FileHeader, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetEntry,
-    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalOpenFiles, SdJournalPrevious,
-    SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
-    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_string,
-    verify_file, verify_file_with_key,
+    SdJournalNext, SdJournalOpen, SdJournalOpenFiles, SdJournalPrevious, SdJournalSeekCursor,
+    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
+    SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_string, verify_file,
+    verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
 use regex::{Regex, RegexBuilder};
@@ -126,13 +126,13 @@ fn unsupported_reason(name: &str) -> &'static str {
 struct Args {
     #[arg(short = 'i', long = "file")]
     file: Vec<PathBuf>,
-    #[arg(long = "directory")]
+    #[arg(short = 'D', long = "directory")]
     directory: Option<PathBuf>,
-    #[arg(long = "output", default_value = "short")]
+    #[arg(short = 'o', long = "output", default_value = "short")]
     output: OutputModeArg,
     #[arg(long = "list-boots")]
     list_boots: bool,
-    #[arg(long = "fields")]
+    #[arg(short = 'N', long = "fields")]
     fields: bool,
     #[arg(short = 'F', long = "field")]
     field: Option<String>,
@@ -140,11 +140,11 @@ struct Args {
     head: Option<usize>,
     #[arg(long = "tail")]
     tail: Option<usize>,
-    #[arg(long = "follow")]
+    #[arg(short = 'f', long = "follow")]
     follow: bool,
     #[arg(long = "no-tail")]
     no_tail: bool,
-    #[arg(short = 'b', long = "boot", num_args = 0..=1, default_missing_value = "")]
+    #[arg(short = 'b', long = "boot", num_args = 0..=1, default_missing_value = "0")]
     boot: Option<String>,
     #[arg(short = 'S', long = "since")]
     since: Option<String>,
@@ -164,7 +164,6 @@ struct Args {
     verify_only: bool,
     #[arg(long = "verify-key")]
     verify_key: Option<String>,
-    #[arg(trailing_var_arg = true)]
     matches: Vec<String>,
 
     // Parser-recognized v260.1 options that the Rust CLI does not yet
@@ -177,9 +176,9 @@ struct Args {
     system: bool,
     #[arg(long = "user", hide = true)]
     user: bool,
-    #[arg(long = "machine", hide = true)]
+    #[arg(short = 'M', long = "machine", hide = true)]
     machine: Option<String>,
-    #[arg(long = "merge", hide = true)]
+    #[arg(short = 'm', long = "merge", hide = true)]
     merge: bool,
     #[arg(long = "root", hide = true)]
     root: Option<PathBuf>,
@@ -190,7 +189,7 @@ struct Args {
     #[arg(long = "namespace", hide = true)]
     namespace: Option<String>,
 
-    #[arg(long = "cursor", hide = true)]
+    #[arg(short = 'c', long = "cursor", hide = true)]
     cursor: Option<String>,
     #[arg(long = "after-cursor", hide = true)]
     after_cursor: Option<String>,
@@ -206,22 +205,22 @@ struct Args {
     invocation: Option<String>,
     #[arg(short = 'I', hide = true)]
     invocation_latest: bool,
-    #[arg(long = "identifier", hide = true)]
+    #[arg(short = 't', long = "identifier", hide = true)]
     identifier: Vec<String>,
-    #[arg(long = "exclude-identifier", hide = true)]
+    #[arg(short = 'T', long = "exclude-identifier", hide = true)]
     exclude_identifier: Vec<String>,
-    #[arg(long = "priority", hide = true)]
+    #[arg(short = 'p', long = "priority", hide = true)]
     priority: Vec<String>,
     #[arg(long = "facility", hide = true)]
     facility: Vec<String>,
-    #[arg(long = "grep", hide = true)]
+    #[arg(short = 'g', long = "grep", hide = true)]
     grep: Option<String>,
     #[arg(long = "case-sensitive", hide = true, num_args = 0..=1, default_missing_value = "true")]
     case_sensitive: Option<String>,
-    #[arg(long = "dmesg", hide = true)]
+    #[arg(short = 'k', long = "dmesg", hide = true)]
     dmesg: bool,
 
-    #[arg(short = 'n', long = "lines", hide = true, num_args = 0..=1, default_missing_value = "")]
+    #[arg(short = 'n', long = "lines", hide = true, num_args = 0..=1, default_missing_value = "10")]
     lines: Option<String>,
     #[arg(short = 'r', long = "reverse", hide = true)]
     reverse: bool,
@@ -235,7 +234,7 @@ struct Args {
     no_hostname: bool,
     #[arg(long = "no-full", hide = true)]
     no_full: bool,
-    #[arg(long = "full", hide = true)]
+    #[arg(short = 'l', long = "full", hide = true)]
     full: bool,
     #[arg(short = 'a', long = "all", hide = true)]
     all: bool,
@@ -438,6 +437,9 @@ fn run() -> Result<()> {
     if args.verify || args.verify_only || args.verify_key.is_some() {
         return run_verify_input(&input, args.verify_key.as_deref());
     }
+    if args.list_boots {
+        return run_list_boots(&input, &args);
+    }
 
     let since_usec = parse_optional_timestamp(args.since.as_deref())?;
     let until_usec = parse_optional_timestamp(args.until.as_deref())?;
@@ -460,16 +462,6 @@ fn run() -> Result<()> {
     }
 
     let mut journal = open_filtered_journal(&input, &args)?;
-
-    if args.list_boots {
-        for boot in SdJournalListBoots(&mut journal).map_err(|err| anyhow!("list boots: {err}"))? {
-            println!(
-                "{:>2} {} {} {}",
-                boot.index, boot.boot_id, boot.first_entry, boot.last_entry
-            );
-        }
-        return Ok(());
-    }
 
     if args.fields {
         let mut fields =
@@ -497,6 +489,7 @@ fn run() -> Result<()> {
     }
 
     // If --lines is set, it acts as an alternative --head / --tail.
+    let grep_tail_reverse = grep_tail_implies_reverse(&args)?;
     if let Some(limit) = parse_lines_limit(args.lines.as_deref())? {
         return match limit {
             LinesLimit::All => show_head_or_all_with_reverse(
@@ -528,7 +521,7 @@ fn run() -> Result<()> {
                 n,
                 since_usec,
                 until_usec,
-                args.reverse,
+                args.reverse || grep_tail_reverse,
                 args.show_cursor,
                 effective_quiet(&args),
                 &post_filters,
@@ -768,13 +761,14 @@ enum LinesLimit {
 }
 
 /// Parse `--lines=[+]N` per the v260.1 grammar.
-/// `--lines` with no value means the official default tail count, 10.
+/// Bare `--lines` is normalized to the official default tail count, 10.
+/// Explicit empty `--lines=` is invalid, matching systemd v260.1.
 fn parse_lines_limit(value: Option<&str>) -> Result<Option<LinesLimit>> {
     let Some(value) = value else {
         return Ok(None);
     };
     if value.is_empty() {
-        return Ok(Some(LinesLimit::Tail(10)));
+        return Err(anyhow!("Failed to parse --lines=''."));
     }
     if value == "all" {
         return Ok(Some(LinesLimit::All));
@@ -786,7 +780,7 @@ fn parse_lines_limit(value: Option<&str>) -> Result<Option<LinesLimit>> {
     };
     let n: usize = stripped
         .parse()
-        .map_err(|_| anyhow!("failed to parse --lines value: {value}"))?;
+        .map_err(|_| anyhow!("Failed to parse --lines='{value}'."))?;
     if oldest {
         Ok(Some(LinesLimit::Head(n)))
     } else {
@@ -804,6 +798,16 @@ fn parse_tail_count(tail: Option<&usize>, lines: Option<&str>) -> Option<usize> 
         Some(LinesLimit::Tail(n) | LinesLimit::Head(n)) => Some(n),
         Some(LinesLimit::All) | None => None,
     }
+}
+
+fn grep_tail_implies_reverse(args: &Args) -> Result<bool> {
+    if args.grep.is_none() || args.follow {
+        return Ok(false);
+    }
+    let Some(limit) = parse_lines_limit(args.lines.as_deref())? else {
+        return Ok(false);
+    };
+    Ok(matches!(limit, LinesLimit::Tail(_)))
 }
 
 #[derive(Debug, Clone)]
@@ -937,7 +941,11 @@ fn enforce_follow_reverse_conflict(args: &Args) -> Result<()> {
 }
 
 fn enforce_oldest_lines_conflict(args: &Args) -> Result<()> {
-    if args.lines.as_deref().is_some_and(|v| v.starts_with('+')) && (args.reverse || args.follow) {
+    if matches!(
+        parse_lines_limit(args.lines.as_deref())?,
+        Some(LinesLimit::Head(_))
+    ) && (args.reverse || args.follow)
+    {
         return Err(anyhow!(
             "--lines=+N is unsupported when --reverse or --follow is specified."
         ));
@@ -1098,7 +1106,7 @@ where
                     continue;
                 }
             }
-            out.push(format!("{arg}="));
+            out.push(format!("{arg}=0"));
             continue;
         }
         if arg == "--lines" || arg == "-n" {
@@ -1109,7 +1117,7 @@ where
                     continue;
                 }
             }
-            out.push(format!("{arg}="));
+            out.push(format!("{arg}=10"));
             continue;
         }
         out.push(arg);
@@ -1761,6 +1769,37 @@ fn print_header(path: &Path, header: &FileHeader, disk_usage: u64) -> Result<()>
     Ok(())
 }
 
+fn run_list_boots(input: &CliInput, args: &Args) -> Result<()> {
+    let mut journal = input.open_journal()?;
+    let boots = collect_boots(&mut journal)?;
+    if boots.is_empty() {
+        return Err(anyhow!("No boot found."));
+    }
+    let rows = select_boot_rows(&boots, args)?;
+    if !args.quiet {
+        println!("IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY");
+    }
+    let index_width = if args.quiet {
+        rows.iter()
+            .map(|boot| boot.index.to_string().len())
+            .max()
+            .unwrap_or(1)
+    } else {
+        3
+    };
+    for boot in &rows {
+        println!(
+            "{:>width$} {} {} {}",
+            boot.index,
+            boot.boot_id,
+            output::format_header_timestamp(boot.first_entry)?,
+            output::format_header_timestamp(boot.last_entry)?,
+            width = index_width,
+        );
+    }
+    Ok(())
+}
+
 fn run_list_invocations(input: &CliInput, args: &Args) -> Result<()> {
     let mut journal = input.open_journal()?;
     apply_boot_match(&mut journal, args)?;
@@ -2144,7 +2183,7 @@ fn add_impossible_match(journal: &mut SdJournal, reason: &str) -> Result<()> {
 }
 
 fn apply_boot_match(journal: &mut SdJournal, args: &Args) -> Result<()> {
-    let effective_boot = args.boot.as_deref().or(args.this_boot.then_some(""));
+    let effective_boot = args.boot.as_deref().or(args.this_boot.then_some("0"));
     let Some(boot) = effective_boot else {
         return Ok(());
     };
@@ -2353,7 +2392,8 @@ fn glob_pattern_to_regex(pattern: &str) -> String {
 }
 
 fn apply_cli_matches(journal: &mut SdJournal, args: &Args) -> Result<()> {
-    add_journalctl_unit_matches(journal, &args.unit, &args.user_unit)?;
+    let (system_units, user_units) = effective_unit_specs(args);
+    add_journalctl_unit_matches(journal, &system_units, &user_units)?;
 
     if args.dmesg {
         add_field_matches(journal, "_TRANSPORT", ["kernel"])?;
@@ -2382,22 +2422,49 @@ fn apply_cli_matches(journal: &mut SdJournal, args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn effective_unit_specs(args: &Args) -> (Vec<String>, Vec<String>) {
+    let mut system_units = args.unit.clone();
+    let mut user_units = args.user_unit.clone();
+    if args.user && !system_units.is_empty() {
+        user_units.extend(std::mem::take(&mut system_units));
+    }
+    (system_units, user_units)
+}
+
 #[derive(Debug)]
 struct CliPostFilters {
     grep: Option<Regex>,
+    exclude_identifiers: std::collections::HashSet<String>,
 }
 
 impl CliPostFilters {
     fn from_args(args: &Args) -> Result<Self> {
+        let exclude_identifiers = if output_uses_exclude_identifier(args.output) {
+            args.exclude_identifier.iter().cloned().collect()
+        } else {
+            std::collections::HashSet::new()
+        };
         Ok(Self {
-            // systemd v260.1 parses --exclude-identifier and stores the
-            // values, but the file-backed show path never consults them.
-            // Keep the option as a parsed no-op for baseline parity.
             grep: compile_grep_filter(args.grep.as_deref(), args.case_sensitive.as_deref())?,
+            exclude_identifiers,
         })
     }
 
     fn matches(&self, entry: &Entry) -> bool {
+        if !self.exclude_identifiers.is_empty() {
+            let mut excluded = false;
+            for_each_entry_value(entry, "SYSLOG_IDENTIFIER", |value| {
+                if self
+                    .exclude_identifiers
+                    .contains(&String::from_utf8_lossy(value).into_owned())
+                {
+                    excluded = true;
+                }
+            });
+            if excluded {
+                return false;
+            }
+        }
         if let Some(regex) = &self.grep {
             let mut matched = false;
             for_each_entry_value(entry, "MESSAGE", |value| {
@@ -2411,6 +2478,21 @@ impl CliPostFilters {
         }
         true
     }
+}
+
+fn output_uses_exclude_identifier(mode: OutputModeArg) -> bool {
+    matches!(
+        mode,
+        OutputModeArg::Short
+            | OutputModeArg::ShortFull
+            | OutputModeArg::ShortIso
+            | OutputModeArg::ShortIsoPrecise
+            | OutputModeArg::ShortPrecise
+            | OutputModeArg::ShortMonotonic
+            | OutputModeArg::ShortDelta
+            | OutputModeArg::ShortUnix
+            | OutputModeArg::WithUnit
+    )
 }
 
 fn for_each_entry_value<F>(entry: &Entry, field: &str, mut visitor: F)
@@ -2627,18 +2709,23 @@ fn show_tail_with_reverse(
         post_filters,
         cursor_control.seek.as_ref(),
     )?;
-    let start = entries.len().saturating_sub(limit);
+    let selected = if reverse {
+        &entries[..limit.min(entries.len())]
+    } else {
+        let start = entries.len().saturating_sub(limit);
+        &entries[start..]
+    };
     let mut stdout = std::io::stdout().lock();
     let mut renderer = OutputRenderer::new(output_options.clone());
     let mut last_cursor: Option<&str> = None;
-    for entry in &entries[start..] {
+    for entry in selected {
         let output = renderer.render(entry)?;
         stdout.write_all(&output)?;
         if !entry.cursor.is_empty() {
             last_cursor = Some(entry.cursor.as_str());
         }
     }
-    print_no_entries(&mut stdout, entries[start..].len(), quiet)?;
+    print_no_entries(&mut stdout, selected.len(), quiet)?;
     finish_cursor_output(
         &mut stdout,
         show_cursor,
@@ -2833,6 +2920,7 @@ fn write_cursor_file_atomic(path: &Path, cursor: &str) -> Result<()> {
 
 #[derive(Clone)]
 struct BootEntry {
+    index: isize,
     boot_id: String,
     first_entry: u64,
     last_entry: u64,
@@ -2860,6 +2948,7 @@ fn collect_boots(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
                         boot.last_entry = boot.last_entry.max(entry.realtime);
                     })
                     .or_insert(BootEntry {
+                        index: 0,
                         boot_id,
                         first_entry: entry.realtime,
                         last_entry: entry.realtime,
@@ -2873,6 +2962,39 @@ fn collect_boots(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
             .cmp(&b.first_entry)
             .then_with(|| a.boot_id.cmp(&b.boot_id))
     });
+    Ok(out)
+}
+
+fn select_boot_rows(boots: &[BootEntry], args: &Args) -> Result<Vec<BootEntry>> {
+    let mut rows = boots;
+    let mut first_index = 1 - boots.len() as isize;
+    if let Some(limit) = parse_lines_limit(args.lines.as_deref())? {
+        match limit {
+            LinesLimit::All => {}
+            LinesLimit::Head(count) => {
+                let count = count.min(boots.len());
+                rows = &boots[..count];
+                first_index = 1;
+            }
+            LinesLimit::Tail(count) => {
+                let count = count.min(boots.len());
+                rows = &boots[boots.len() - count..];
+                first_index = 1 - count as isize;
+            }
+        }
+    }
+    let mut out: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .map(|(idx, boot)| {
+            let mut boot = boot.clone();
+            boot.index = first_index + idx as isize;
+            boot
+        })
+        .collect();
+    if args.reverse {
+        out.reverse();
+    }
     Ok(out)
 }
 
@@ -2914,7 +3036,7 @@ fn resolve_boot_id(journal: &mut SdJournal, descriptor: &str) -> Result<String> 
 
 fn parse_boot_descriptor(descriptor: &str) -> Result<(String, isize)> {
     if descriptor.is_empty() {
-        return Ok((String::new(), 0));
+        return Err(anyhow!("failed to parse boot descriptor: {descriptor}"));
     }
     let (boot_id, rest) = if let Some(id) = parse_boot_id_prefix(descriptor) {
         let consumed = if descriptor.as_bytes().get(8) == Some(&b'-') {
@@ -3013,7 +3135,8 @@ fn single_invocation_unit(
     args: &Args,
     option_name: &str,
 ) -> Result<(Vec<String>, Vec<String>)> {
-    let count = args.unit.len() + args.user_unit.len();
+    let (system_specs, user_specs) = effective_unit_specs(args);
+    let count = system_specs.len() + user_specs.len();
     if count == 0 {
         return Err(anyhow!(
             "Using {option_name} requires a unit. Please specify a unit name with -u/--unit=/--user-unit=."
@@ -3024,9 +3147,9 @@ fn single_invocation_unit(
             "Using {option_name} with multiple units is not supported."
         ));
     }
-    if args.unit.len() == 1 {
-        let units = expand_unit_specs(journal, &args.unit, SYSTEM_UNIT_FIELDS_FULL)?;
-        let query = mangle_unit_name(&args.unit[0]);
+    if system_specs.len() == 1 {
+        let units = expand_unit_specs(journal, &system_specs, SYSTEM_UNIT_FIELDS_FULL)?;
+        let query = mangle_unit_name(&system_specs[0]);
         if units.is_empty() {
             return Err(anyhow!("No matching unit found for '{query}' in journal."));
         }
@@ -3037,8 +3160,8 @@ fn single_invocation_unit(
         }
         return Ok((units, Vec::new()));
     }
-    let units = expand_unit_specs(journal, &args.user_unit, USER_UNIT_FIELDS_FULL)?;
-    let query = mangle_unit_name(&args.user_unit[0]);
+    let units = expand_unit_specs(journal, &user_specs, USER_UNIT_FIELDS_FULL)?;
+    let query = mangle_unit_name(&user_specs[0]);
     if units.is_empty() {
         return Err(anyhow!("No matching unit found for '{query}' in journal."));
     }
@@ -3795,8 +3918,9 @@ mod tests {
     #[test]
     fn lines_limit_parser_preserves_systemd_direction() {
         assert_eq!(parse_lines_limit(None).unwrap(), None);
+        assert!(parse_lines_limit(Some("")).is_err());
         assert_eq!(
-            parse_lines_limit(Some("")).unwrap(),
+            parse_lines_limit(Some("10")).unwrap(),
             Some(LinesLimit::Tail(10))
         );
         assert_eq!(
@@ -3825,7 +3949,7 @@ mod tests {
             args,
             vec![
                 "journalctl".to_string(),
-                "--lines=".to_string(),
+                "--lines=10".to_string(),
                 "TEST_ID=journalctl-query".to_string()
             ]
         );

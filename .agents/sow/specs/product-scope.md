@@ -774,11 +774,14 @@ Current Go reader feature slice:
   because portable stdin journals would require seekable mmap-capable file
   descriptors;
 - file-backed Go journalctl behavior for `--file`, `--directory`,
-  text/json/export output, field listing, boot listing, realtime range
-  filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
-  with `--follow`, cursor seek/update behavior, repeated same-field OR
-  matches, `+` disjunction, syslog identifier, priority, facility, grep,
-  dmesg, system/user unit filters, invocation filters, `--list-invocations`,
+  text/json/export output, field listing, `--list-boots` stock table output
+  with `--lines` and `--reverse`, realtime range filtering with
+  `--since`/`--until`, boot filtering with `--boot`, follow mode with
+  `--follow`, cursor seek/update behavior, repeated same-field OR
+  matches, `+` disjunction, syslog identifier and short-output exclude
+  identifier filtering, priority, facility, grep including stock reverse
+  implication for tail-style `--lines`, dmesg, system/user unit filters
+  including stock `--user --unit=` rewrite, invocation filters, `--list-invocations`,
   `--header`, `--pager-end` implicit 1000-line tail behavior, explicit-input
   `--disk-usage`, and explicit-directory `--vacuum-size`/`--vacuum-files`/
   `--vacuum-time`;
@@ -904,11 +907,14 @@ Current Rust reader feature slice:
   because portable stdin journals would require seekable mmap-capable file
   descriptors;
 - file-backed Rust journalctl behavior for `--file`, `--directory`,
-  text/json/export output, field listing, boot listing, realtime range
-  filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
-  with `--follow`, cursor seek/update behavior, repeated same-field OR
-  matches, `+` disjunction, syslog identifier, priority, facility, grep,
-  dmesg, system/user unit filters, invocation filters, `--list-invocations`,
+  text/json/export output, field listing, `--list-boots` stock table output
+  with `--lines` and `--reverse`, realtime range filtering with
+  `--since`/`--until`, boot filtering with `--boot`, follow mode with
+  `--follow`, cursor seek/update behavior, repeated same-field OR
+  matches, `+` disjunction, syslog identifier and short-output exclude
+  identifier filtering, priority, facility, grep including stock reverse
+  implication for tail-style `--lines`, dmesg, system/user unit filters
+  including stock `--user --unit=` rewrite, invocation filters, `--list-invocations`,
   `--header`, `--pager-end` implicit 1000-line tail behavior, explicit-input
   `--disk-usage`, and explicit-directory `--vacuum-size`/`--vacuum-files`/
   `--vacuum-time`;
@@ -946,24 +952,35 @@ Matching semantics:
 File-backed query semantics:
 
 - `--since` and `--until` apply inclusive realtime timestamp boundaries.
-- `--boot` supports `all`, the latest boot by default, numeric offsets, boot
-  UUIDs, and boot UUID plus signed offsets for files and directories whose
-  entries contain `_BOOT_ID`.
+- `--boot` supports `all`, the latest boot by default for bare `--boot`,
+  numeric offsets, boot UUIDs, and boot UUID plus signed offsets for files and
+  directories whose entries contain `_BOOT_ID`. Explicit empty `--boot=` is a
+  parse error, matching stock `journalctl`.
 - `--follow` follows repository-supported file and directory inputs by polling
   file-backed readers and emitting newly appended entries in cursor order.
 - `--pager-end` does not spawn a pager in portable mode, but it preserves stock
   line-selection semantics by applying an implicit 1000-entry tail when no
   explicit `--lines`, `--head`, or `--tail` option is present.
+- Bare `--lines` and `-n` select the stock default 10-entry tail. Explicit
+  empty `--lines=` is a parse error, matching stock `journalctl`.
 - Empty default/verbose show results print `-- No entries --`; `--quiet` and
   auto-quiet modes such as JSON, export, and cat suppress that line.
 - `--cursor`, `--after-cursor`, `--cursor-file`, and `--show-cursor` use
   official systemd cursor strings for file-backed reads and cursor-file
   updates.
-- `--identifier`, `--priority`, `--facility`, `--grep`, `--case-sensitive`,
-  `--dmesg`, `--unit`, and `--user-unit` are file-backed filters. Unit filters
-  use the same systemd v260.1 unit-related fields, disjunction groups, unit
-  suffix mangling, and glob expansion over FIELD/DATA indexes as stock
-  file-backed `journalctl`.
+- Recognized options may appear before or after show-action match arguments,
+  matching stock argument permutation. Short options accept stock attached
+  values and clusters such as `-n2`, `-ball`, and `-rn2`, while stock-invalid
+  forms such as `-n=2` and `-b=true` remain invalid.
+- `--identifier`, `--exclude-identifier`, `--priority`, `--facility`,
+  `--grep`, `--case-sensitive`, `--dmesg`, `--unit`, and `--user-unit` are
+  file-backed filters. `--exclude-identifier` follows stock v260.1 output-mode
+  scope: short-family outputs filter matching `SYSLOG_IDENTIFIER=` entries,
+  while JSON, export, verbose, and cat remain unchanged. `--grep` with
+  tail-style `--lines=N` implies reverse traversal unless `--follow` is set.
+  Unit filters use the same systemd v260.1 unit-related fields, disjunction
+  groups, unit suffix mangling, glob expansion over FIELD/DATA indexes, and
+  `--user --unit=` rewrite as stock file-backed `journalctl`.
 - `--disk-usage` reports allocated filesystem usage for explicit
   `--file`/`--directory` journal inputs. Without explicit input, it remains an
   unsupported host-journal discovery action.

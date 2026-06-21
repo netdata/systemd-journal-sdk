@@ -509,7 +509,7 @@ func TestParseLinesLimitValuePreservesSystemdDirection(t *testing.T) {
 		value string
 		want  linesLimit
 	}{
-		{name: "no value", value: "", want: linesLimit{set: true, count: 10}},
+		{name: "default value", value: "10", want: linesLimit{set: true, count: 10}},
 		{name: "tail", value: "25", want: linesLimit{set: true, count: 25}},
 		{name: "oldest", value: "+25", want: linesLimit{set: true, oldest: true, count: 25}},
 		{name: "all", value: "all", want: linesLimit{set: true, all: true}},
@@ -527,6 +527,70 @@ func TestParseLinesLimitValuePreservesSystemdDirection(t *testing.T) {
 	}
 	if _, err := parseLinesLimitValue("not-a-number"); err == nil {
 		t.Fatal("parseLinesLimitValue accepted invalid value")
+	}
+	if _, err := parseLinesLimitValue(""); err == nil {
+		t.Fatal("parseLinesLimitValue accepted explicit empty value")
+	}
+	if _, err := parseLinesLimitValue("-1"); err == nil {
+		t.Fatal("parseLinesLimitValue accepted negative value")
+	}
+}
+
+func TestOptionalArgumentPreprocessingMatchesSystemd(t *testing.T) {
+	fs, _ := newCLIFlagSet(io.Discard)
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "bare boot",
+			args: []string{"--boot", "TEST_ID=value"},
+			want: []string{"--boot=0", "TEST_ID=value"},
+		},
+		{
+			name: "explicit empty boot",
+			args: []string{"--boot="},
+			want: []string{"--boot="},
+		},
+		{
+			name: "short attached boot",
+			args: []string{"-ball"},
+			want: []string{"-b=all"},
+		},
+		{
+			name: "short equals boot keeps equals in value",
+			args: []string{"-b=true"},
+			want: []string{"-b==true"},
+		},
+		{
+			name: "bare lines",
+			args: []string{"--lines", "TEST_ID=value"},
+			want: []string{"--lines=10", "TEST_ID=value"},
+		},
+		{
+			name: "short attached lines",
+			args: []string{"-n5"},
+			want: []string{"-n=5"},
+		},
+		{
+			name: "short equals lines keeps equals in value",
+			args: []string{"-n=5"},
+			want: []string{"-n==5"},
+		},
+		{
+			name: "short cluster with value option",
+			args: []string{"-qrn2"},
+			want: []string{"-q", "-r", "-n=2"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := preprocessOptionalArgs(normalizeShortFlags(tt.args, fs))
+			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Fatalf("preprocess = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -753,7 +817,7 @@ func TestUnrecognizedOptionIsRejected(t *testing.T) {
 // isolation.
 func parseOnlyForTest(argv []string) error {
 	fs, _ := newCLIFlagSet(io.Discard)
-	return fs.Parse(argv)
+	return fs.Parse(permuteFlagArgs(preprocessOptionalArgs(normalizeShortFlags(argv, fs)), fs))
 }
 
 func archivedJournalNameForTest(seq uint64, realtime uint64) string {

@@ -238,6 +238,106 @@ def exercise_long_option(cmd: Command, opt: dict) -> CaseResult:
     )
 
 
+def sample_value_for_option(opt: dict) -> str:
+    name = opt["name"]
+    args_type = opt["args"]
+    if name == "output":
+        return "json"
+    if name == "unit":
+        return "alpha.service"
+    if name == "identifier":
+        return "app"
+    if name == "exclude-identifier":
+        return "app"
+    if name == "priority":
+        return "err"
+    if name == "grep":
+        return "message"
+    if name == "machine":
+        return "placeholder"
+    if args_type in ("path",):
+        return "placeholder.journal"
+    if args_type in ("timestamp",):
+        return "2020-01-01"
+    if args_type in ("cursor",):
+        return "s=00000000000000000000000000000000;i=1"
+    if args_type in ("range",):
+        return "err"
+    if args_type in ("list",):
+        return "daemon"
+    if args_type in ("mode",):
+        return "json"
+    if args_type in ("unit/glob",):
+        return "alpha.service"
+    if args_type in ("pattern",):
+        return "message"
+    if args_type in ("descriptor",):
+        return "0"
+    if args_type in ("policy",):
+        return "default"
+    if args_type in ("comma list",):
+        return "MESSAGE"
+    if args_type in ("string",):
+        return "placeholder"
+    if args_type in ("key",):
+        return "placeholder"
+    if args_type in ("bytes",):
+        return "1M"
+    if args_type in ("int",):
+        return "1"
+    if args_type in ("duration",):
+        return "1s"
+    return "placeholder"
+
+
+def build_short_args(letter: str, opt: dict) -> list[str]:
+    if letter == "h":
+        return ["-h"]
+    if letter == "f":
+        return ["-f", "--version"]
+    if letter == "I":
+        return ["-I", "--file=placeholder.journal"]
+
+    args_type = opt["args"]
+    if args_type in ("none", "optional int", "optional descriptor"):
+        args = [f"-{letter}"]
+    else:
+        args = [f"-{letter}", sample_value_for_option(opt)]
+
+    if opt["expectation"] == "recognized-supported" and opt["name"] not in {
+        "directory",
+        "file",
+        "fields",
+        "field",
+    }:
+        args.append("--file=placeholder.journal")
+    return args
+
+
+def exercise_short_option(cmd: Command, short: dict, long_options: dict[str, dict]) -> CaseResult:
+    letter = short["letter"]
+    long_name = short["long"]
+    opt = long_options[long_name]
+    args = build_short_args(letter, opt)
+    name = f"-{letter}/{long_name}"
+    try:
+        result = run_command(cmd, args, timeout=20)
+    except subprocess.TimeoutExpired:
+        return CaseResult(name, "short-option", "fail", "timeout")
+    except FileNotFoundError as exc:
+        return CaseResult(name, "short-option", "fail", f"binary missing: {exc}")
+
+    combined = result.stderr + "\n" + result.stdout
+    if is_unknown_option(combined, ""):
+        return CaseResult(
+            name,
+            "short-option",
+            "fail",
+            f"unknown-option error for {args!r}: {result.stderr.strip()[:300]}",
+        )
+    return CaseResult(name, "short-option", "ok", f"parsed (rc={result.returncode})")
+
+
 def exercise_output_mode(cmd: Command, mode: str) -> CaseResult:
     """Probe whether `--output=<mode>` is accepted by the parser."""
     try:
@@ -407,13 +507,83 @@ def exercise_interaction(cmd: Command, interaction: dict) -> CaseResult:
             "fail",
             f"boot+merge not enforced: stderr={result.stderr.strip()[:300]}",
         )
+    if name == "interspersed-show-option":
+        try:
+            result = run_command(
+                cmd,
+                ["TEST_FIELD=value", "--show-cursor", "--file=placeholder.journal"],
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return CaseResult(name, "parser-required", "fail", "timeout")
+        except FileNotFoundError as exc:
+            return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+        combined = (result.stderr + "\n" + result.stdout).lower()
+        rejected_as_match = (
+            "path match argument" in combined
+            or "invalid match --show-cursor" in combined
+            or "default journal source" in combined
+            or is_unknown_option(combined, "")
+        )
+        if not rejected_as_match:
+            return CaseResult(name, "parser-required", "ok", "options accepted after matches")
+        return CaseResult(
+            name,
+            "parser-required",
+            "fail",
+            f"interspersed option not parsed: stderr={result.stderr.strip()[:300]}",
+        )
+    if name == "short-attached-values":
+        try:
+            result = run_command(
+                cmd,
+                ["-rn2", "-ball", "--file=placeholder.journal"],
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return CaseResult(name, "parser-required", "fail", "timeout")
+        except FileNotFoundError as exc:
+            return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+        combined = (result.stderr + "\n" + result.stdout).lower()
+        if not is_unknown_option(combined, "") and "parse --lines" not in combined:
+            return CaseResult(name, "parser-required", "ok", "attached short values parsed")
+        return CaseResult(
+            name,
+            "parser-required",
+            "fail",
+            f"attached short values rejected: stderr={result.stderr.strip()[:300]}",
+        )
+    if name == "explicit-empty-optional-values":
+        cases = [
+            (["--lines=", "--file=placeholder.journal"], "lines"),
+            (["--case-sensitive=", "--grep=x", "--file=placeholder.journal"], "case-sensitive"),
+        ]
+        for args, expected in cases:
+            try:
+                result = run_command(cmd, args, timeout=20)
+            except subprocess.TimeoutExpired:
+                return CaseResult(name, "parser-required", "fail", f"timeout for {args!r}")
+            except FileNotFoundError as exc:
+                return CaseResult(name, "parser-required", "fail", f"binary missing: {exc}")
+            combined = (result.stderr + "\n" + result.stdout).lower()
+            if result.returncode == 0 or expected not in combined:
+                return CaseResult(
+                    name,
+                    "parser-required",
+                    "fail",
+                    f"explicit empty {args[0]} not rejected: stderr={result.stderr.strip()[:300]}",
+                )
+        return CaseResult(name, "parser-required", "ok", "explicit empty values rejected")
     return CaseResult(name, "parser-required", "skipped", "interaction not yet exercised")
 
 
 def run_for_command(cmd: Command, manifest: dict) -> list[CaseResult]:
     results: list[CaseResult] = []
+    long_options = {opt["name"]: opt for opt in manifest["long_options"]}
     for opt in manifest["long_options"]:
         results.append(exercise_long_option(cmd, opt))
+    for short in manifest["short_options"]:
+        results.append(exercise_short_option(cmd, short, long_options))
     for mode in manifest["output_modes"]:
         results.append(exercise_output_mode(cmd, mode))
     for interaction in manifest["parser_interactions"]:

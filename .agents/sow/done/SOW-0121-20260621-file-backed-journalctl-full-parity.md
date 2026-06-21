@@ -2,11 +2,12 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: activated by user goal on 2026-06-21; implementation in progress.
+Sub-state: completed on 2026-06-21 after local implementation, local
+validation, read-only reviewer rechecks, lifecycle move, and audit.
 This SOW is release-relevant for any non-Linux package that claims an official
 portable `journalctl` command.
 
@@ -664,9 +665,9 @@ Acceptance criteria evidence:
     `json-seq`, `cat`, and `with-unit` are fully present in the matrix.
   - All 20 `JournalctlAction` enum values are represented by matrix command or
     parser rows.
-- Rust and Go implementation remains in progress.
+- Rust and Go implementation is complete for the active SOW scope.
 - Rust and Go full parser recognition is implemented and locally validated.
-- Rust and Go file-backed behavior is partially advanced for `--reverse`,
+- Rust and Go file-backed behavior is implemented and validated for `--reverse`,
   `--show-cursor`, `--lines` direction/default semantics, `--identifier`,
   `--priority`, `--facility`, `--grep`, `--case-sensitive`, `--dmesg`,
   `--this-boot`, `--cursor`, `--after-cursor`, `--cursor-file`, `--unit`,
@@ -676,13 +677,37 @@ Acceptance criteria evidence:
   `--vacuum-time`, full output-mode rendering, `--output-fields`, output
   controls (`--all`, `--full`, `--no-full`, `--pager-end`), exact stock
   empty-result output behavior, and portable path-match rejection.
-- Remaining work is final whole-SOW validation, external reviewer gates, and the
-  ship/defer decision for anything still found during final audit.
+- SOW lifecycle move, project status summary update, and local audit completed.
 
 Tests or equivalent validation:
 
-- Implementation remains partial; product validation is recorded per completed
-  chunk until the whole SOW can be reviewed and closed.
+- Latest local validation after the second-review fixes:
+  - `go test ./cmd/journalctl ./journal`: passed.
+  - `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+    .local/cargo-target`: passed; 26 Rust `journalctl` tests passed.
+  - `python3 tests/parser-parity/check_v260_manifest.py`: passed; manifest
+    matches systemd v260.1 official surface.
+  - `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+    .local/cargo-target/debug/journalctl`: passed; Rust `ok=122 skipped=0
+    failed=0`, Go `ok=122 skipped=0 failed=0`.
+  - `python3 tests/interoperability/run_journalctl_query_matrix.py
+    --skip-follow`: passed against stock `journalctl` from systemd 260
+    `(260.1-2-manjaro)`: `PASS failures=0`.
+  - `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+    against stock `journalctl` from systemd 260 `(260.1-2-manjaro)`:
+    `PASS results=384 failures=0`, including live follow checks.
+  - `python3 tests/docs/check_wiki_docs.py`: passed; validated 15 wiki markdown
+    files.
+  - `CARGO_HOME="$PWD/.local/cargo-home"
+    CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+    GOCACHE="$PWD/.local/go-build"
+    GOMODCACHE="$PWD/.local/go-mod-cache"
+    python3 tests/docs/verify_examples.py`: passed; 31 of 31 verified examples
+    passed.
+  - `python3 -m py_compile tests/parser-parity/run_parser_parity.py
+    tests/interoperability/run_journalctl_query_matrix.py
+    tests/parser-parity/v260-manifest.py`: passed.
+  - `git diff --check`: passed.
 - Matrix coverage checked with read-only Python extraction from the v260.1
   upstream source and local matrix text.
 - `python3 tests/parser-parity/check_v260_manifest.py`: passed; manifest
@@ -1089,24 +1114,237 @@ Tests or equivalent validation:
   action-argument restriction chunk. A plain Windows Rust cross-check first
   failed because the workstation does not have `x86_64-w64-mingw32-gcc`; the
   Zig-based no-install path passed.
+- `go test ./cmd/journalctl ./journal`: passed after the reviewer fix chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the reviewer fix chunk; 26 Rust
+  `journalctl` tests passed.
+- `python3 tests/parser-parity/check_v260_manifest.py`: passed after the
+  reviewer fix chunk; manifest reports 71 official long options, 28 short
+  option letters, 16 output modes, and 20 actions matching systemd v260.1.
+- `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after short-option parser
+  coverage was added; Rust `ok=121 skipped=0 failed=0`, Go `ok=121 skipped=0
+  failed=0`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed after the reviewer fix chunk; new stock-oracle cases
+  cover `--user --unit=` rewrite, grep tail reverse ordering,
+  short-output `--exclude-identifier`, and exact file-backed `--list-boots`
+  default/tail/head/reverse output.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the reviewer fix chunk;
+  validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after the reviewer fix chunk;
+  31 of 31 verified examples passed.
+- `git diff --check`: passed after the reviewer fix chunk.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed after
+  the reviewer fix chunk including live follow checks; report showed
+  `failures=[]` and `status=PASS`.
+- `go test ./cmd/journalctl ./journal`: passed after the third reviewer fix
+  chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the third reviewer fix chunk; 26 Rust
+  `journalctl` tests passed.
+- `cargo build --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the third reviewer fix chunk to refresh
+  the CLI binary used by parser parity.
+- `python3 tests/parser-parity/check_v260_manifest.py`: passed after the
+  third reviewer fix chunk; manifest reports 71 official long options, 28
+  short option letters, 16 output modes, and 20 actions matching systemd
+  v260.1.
+- `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after the third reviewer fix
+  chunk; Rust `ok=124 skipped=0 failed=0`, Go `ok=124 skipped=0 failed=0`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed after the third reviewer fix chunk.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py >
+  .local/sow-0121-query-full.json`: passed after the third reviewer fix chunk;
+  summary was `status=PASS`, `failures=0`, `results=403`, `systemd=systemd
+  260 (260.1-2-manjaro)`.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the third reviewer fix
+  chunk; validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after the third reviewer fix
+  chunk; 31 of 31 verified examples passed.
+- `python3 -m py_compile tests/parser-parity/run_parser_parity.py
+  tests/interoperability/run_journalctl_query_matrix.py
+  tests/parser-parity/v260-manifest.py`: passed after the third reviewer fix
+  chunk.
+- `python3 tests/parser-parity/v260-manifest.py | diff -u
+  tests/parser-parity/v260-manifest.json -`: passed after the third reviewer
+  fix chunk.
+- `git diff --check`: passed after the third reviewer fix chunk.
+- Final post-documentation validation before close:
+  - `python3 tests/parser-parity/check_v260_manifest.py`: passed.
+  - `python3 tests/parser-parity/v260-manifest.py | diff -u
+    tests/parser-parity/v260-manifest.json -`: passed.
+  - `python3 tests/docs/check_wiki_docs.py`: passed; validated 15 wiki
+    markdown files.
+  - `git diff --check`: passed.
+  - `.agents/sow/audit.sh`: passed after moving SOW-0121 to
+    `.agents/sow/done/`; audit reported `current: (empty)` and SOW-0121
+    status/directory consistency `OK`.
 
 Real-use evidence:
 
 - Partial implementation evidence exists through stock-systemd comparison
-  matrices using repository-local fixtures only. The whole SOW remains
-  in-progress.
+  matrices using repository-local fixtures only. The final full matrix report
+  `.local/sow-0121-query-full.json` recorded `status=PASS`, `failures=0`,
+  `results=403`, and `systemd=systemd 260 (260.1-2-manjaro)`.
 - Go local cross-compilation covers Windows, macOS arm64, and FreeBSD for the
   action-argument restriction chunk. Rust local cross-check currently covers
   Windows via the installed `x86_64-pc-windows-gnu` target and Zig. Rust macOS
   and FreeBSD runtime validation still requires user-authorized access to the
   target hosts or a separate user-approved toolchain setup.
-- No external reviewer findings yet. Per project review cadence, external
-  reviewers remain deferred until complete local implementation and validation
-  for the whole SOW.
+- First read-only reviewer pass started after complete local implementation
+  evidence. Two reviewer sessions were lost or stopped before final verdict
+  and will be rerun after local fixes. Completed reviewer outputs found real
+  parity gaps in `--user --unit=` rewriting, short-option parser coverage,
+  grep tail reverse ordering, short-output `--exclude-identifier`, and
+  `--list-boots` file-backed output. Each confirmed finding was validated
+  against `systemd/systemd @ c0a5a2516d28` and local stock `journalctl` before
+  implementation.
+- Third reviewer-cycle findings were validated against local stock `journalctl`
+  `systemd 260 (260.1-2-manjaro)` and repository-local fixture inputs before
+  implementation. The follow-up stock-oracle matrix passed with 403 results and
+  no failures.
+- Final read-only reviewer recheck results:
+  - Mimo: `PRODUCTION-GRADE: YES`; only non-blocking observations.
+  - Qwen: `PRODUCTION-GRADE: YES`; only non-blocking observations.
+  - Deepseek: `PRODUCTION-GRADE: YES`; only non-blocking observations.
+  - GLM: `PRODUCTION-GRADE: YES`; only non-blocking observations.
+  - Minimax: `PRODUCTION-GRADE: YES`; only non-blocking observations.
+  - Kimi: the pre-compaction session handle was no longer available for a final
+    transcript. The close decision is based on the five available completed
+    reviewer verdicts plus local validation and audit evidence.
 
 Reviewer findings:
 
-- Pending implementation.
+- Confirmed: `--user --unit=` was not rewritten to user-unit filters in Rust
+  or Go. Evidence: official `src/journal/journalctl.c:1121-1129` extends
+  `arg_user_units` from `arg_system_units` when the journal type is current
+  user. Fixed in both CLIs through shared effective-unit helpers that feed
+  normal filtering and invocation unit resolution. Added stock-oracle query
+  matrix case `file-user-plus-unit-rewrite`.
+- Confirmed: grep with tail-style `--lines=N` did not imply reverse traversal.
+  Evidence: official `src/journal/journalctl.c:1137-1143` sets
+  `arg_reverse = true` when `arg_pattern` is set, `arg_lines_needs_seek_end()`
+  is true, and follow is not set. Fixed Go dispatch to call reverse output for
+  this case; fixed Rust dispatch and reverse-tail slicing. Added stock-oracle
+  query matrix case `file-grep-tail-reverse`.
+- Confirmed: short-option parser parity was not exercised, and Rust missed
+  multiple official short aliases while Go missed `-g`. Added short-option
+  probes to `tests/parser-parity/run_parser_parity.py`; fixed Rust `-D`, `-o`,
+  `-N`, `-f`, `-M`, `-m`, `-c`, `-t`, `-T`, `-p`, `-g`, `-k`, and `-l`, and
+  fixed Go `-g`. Parser parity now reports Rust `ok=122 failed=0` and Go
+  `ok=122 failed=0` after adding the interspersed-option parser case.
+- Confirmed: the SOW/spec analysis for `--exclude-identifier` was wrong for
+  short-family outputs. Evidence: official `src/shared/logs-show.c:597-598`
+  skips short-output entries whose `SYSLOG_IDENTIFIER` is in the exclude set,
+  while JSON output is unchanged. Fixed Rust and Go post-filters to apply this
+  only to `short*` and `with-unit` modes. Added raw short-output stock-oracle
+  case `file-exclude-identifier-short`; kept the JSON oracle unchanged.
+- Confirmed: file-backed `--list-boots` was incomplete. Go returned unsupported
+  for explicit file input, and Rust printed a single header-derived boot with
+  raw microseconds. Evidence: official `src/journal/journalctl-misc.c:108-150`
+  prints `idx`, `boot id`, `first entry`, and `last entry` table rows. Fixed
+  Rust and Go CLIs to collect boots from explicit file/directory entries,
+  preserve official default/tail/head line selection, support `--reverse`, and
+  print stock-formatted timestamps. Added exact stock-oracle cases
+  `list-boots-file`, `list-boots-file-tail`, `list-boots-file-head`, and
+  `list-boots-file-reverse`.
+- Dispositioned as not blocking for this SOW chunk: maintainability comments
+  about large CLI files, Rust vacuum regex allocation, and cursor-file
+  directory fsync. These were explicitly rejected as required follow-up work
+  for this SOW because no reviewer tied them to a file-backed parity failure,
+  security issue, data-loss risk, or failing stock-oracle test.
+
+Second reviewer pass findings and fixes:
+
+- Completed second-pass reviewers split between production-grade verdicts and
+  process/spec findings; two sessions timed out or exited without a final
+  useful verdict. One read-only reviewer violated instructions by rebuilding
+  the already-untracked `go/journalctl` helper binary; that untracked artifact
+  is excluded from the SOW changes and commit scope.
+- Confirmed: official `journalctl` accepts recognized options before or after
+  show-action match arguments, but both rewrites rejected `FIELD=value
+  --lines=2` / `FIELD=value --show-cursor` as matches or path-match
+  unsupported errors. Fixed Go with a small argument permutation layer before
+  `flag.Parse`; fixed Rust by letting clap parse known options after positional
+  matches instead of treating every token after the first match as positional.
+  Added parser parity interaction `interspersed-show-option` and stock-oracle
+  query case `file-interspersed-lines`.
+- Confirmed: stock treats bare `--boot` as the current boot but explicit empty
+  `--boot=` as a parse error. The rewrites previously collapsed both to the
+  current boot. Fixed Go optional-argument tracking and Rust boot preprocessing
+  so bare `--boot` maps to current boot while explicit `--boot=` fails with
+  `failed to parse boot descriptor`. Added stock-oracle error case
+  `explicit-empty-boot`.
+- Dispositioned as false positive: short-output boot separator differences are
+  suppressed by stock when the matrix runs with `--quiet`, and the existing raw
+  short-output oracle intentionally compares the quiet stock path.
+- Dispositioned as documentation/spec hygiene: `--head` and `--tail` remain SDK
+  extension aliases, not official v260.1 options. `docs/Journalctl-CLI.md` now
+  labels them as SDK extension aliases while keeping stock `--lines[=[+]N]` as
+  the official paging option.
+
+Third reviewer pass findings and fixes:
+
+- Confirmed: Go accepted negative explicit `--lines=-N` values and could panic
+  in tail/list selection. Evidence: local stock `journalctl --lines=-2
+  --file=/dev/null` reports `Failed to parse --lines='-2'.`. Fixed Go lines
+  parsing to reject negative values before dispatch. Rust already rejected
+  negative values through unsigned parsing.
+- Confirmed: explicit empty `--lines=` must be rejected, while bare
+  `--lines`/`-n` defaults to the stock 10-entry tail. Evidence: local stock
+  `journalctl --lines= --file=/dev/null` reports `Failed to parse
+  --lines=''`, while bare `--lines` parses and proceeds to file open. Fixed
+  Rust and Go preprocessing so bare forms normalize to `10`, and explicit
+  empty values fail before input dispatch. Added stock-oracle error case
+  `explicit-empty-lines`.
+- Confirmed: Go treated `--case-sensitive=` as true, but stock and Rust reject
+  explicit empty boolean values. Evidence: local stock `journalctl
+  --case-sensitive= --grep=x --file=/dev/null` reports a bad
+  `--case-sensitive` argument. Fixed Go boolean parsing to reject empty values.
+  Added stock-oracle error case `explicit-empty-case-sensitive`.
+- Confirmed: Go did not parse stock short attached values and clusters such as
+  `-n2`, `-ball`, and `-rn2`. Evidence: local stock accepts these forms, while
+  stock-invalid forms such as `-n=2` and `-b=true` keep the leading `=` in the
+  value and fail. Fixed Go short-option normalization before argument
+  permutation. Added parser parity interaction `short-attached-values` and
+  stock-oracle cases `file-short-attached-lines` and
+  `file-short-cluster-reverse-lines`.
+- Confirmed: Go ignored explicit `--reverse` when `--lines=N` was set, even
+  though Rust and stock print newest-first in that combination. Fixed Go
+  dispatch to route explicit reverse plus tail-style lines through reverse
+  output. Added stock-oracle case `file-lines-reverse`.
+- Final reviewer non-blocking observations were dispositioned:
+  - Rust `--synchronize-on-exit=0` boolean spelling divergence: rejected as
+    not worth blocking close because the option is a daemon-mode portable
+    unsupported no-op and does not affect file-backed behavior.
+  - Tail/head materialization performance in journalctl output paths: rejected
+    as not worth a new SOW from this close because the CLI behavior is
+    stock-correct under the current matrix and no reviewer supplied measured
+    regression evidence. Core reader performance work remains governed by the
+    existing performance contract and completed reader-performance SOWs.
+  - Cursor-file directory fsync: rejected as not worth a new SOW from this
+    close because the cursor file itself is atomically replaced and no
+    stock-oracle or durability contract requires directory fsync for the
+    portable CLI.
+  - Missing extra tests for `-n=2`, `--list-invocations --reverse`, and
+    clustered `-l`: rejected as close blockers because the stock-oracle matrix
+    already covers the parser class, `--list-invocations` behavior, and short
+    option recognition. These are test-depth suggestions, not uncovered
+    behavior in the accepted surface.
+  - Rust `-b=true` error text strips the leading `=` in the displayed value:
+    accepted as a minor text divergence caused by clap value handling. Both
+    rewrites reject the input with the expected parse-error class, and the
+    matrix covers that class.
 
 Same-failure scan:
 
@@ -1121,10 +1359,16 @@ Artifact maintenance gate:
 
 - AGENTS.md: no update needed for this chunk; the routing exception is recorded
   in this SOW.
-- Runtime project skills: no update needed for this chunk.
-- Specs: `.agents/sow/specs/journalctl-v260-parity-matrix.md` was updated to
-  correct `--exclude-identifier=` as a v260.1 file-backed no-op based on source
-  and stock-command evidence. `.agents/sow/specs/product-scope.md` was updated
+- Runtime project skills: `.agents/skills/project-journal-compatibility/SKILL.md`
+  was updated after the second and third reviewer passes to require parser
+  parity coverage for option interspersing, stock short attached values and
+  clusters, and optional-argument edge cases in future journalctl parser
+  changes.
+- Specs: `.agents/sow/specs/journalctl-v260-parity-matrix.md` was corrected
+  after reviewer/source validation to classify `--exclude-identifier=` as
+  file-backed-required for short-family outputs and unchanged for
+  JSON/export/verbose/cat, and to require stock `--list-boots` table and
+  `--lines`/`--reverse` behavior. `.agents/sow/specs/product-scope.md` was updated
   to record that emitted cursor strings now use the official systemd cursor
   shape while seek/test still accept the older SDK cursor shape, and again
   after the unit-filter chunk to record the current file-backed filter
@@ -1142,6 +1386,11 @@ Artifact maintenance gate:
   `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
   `tests/parser-parity/v260-manifest.*` were updated to reclassify
   `--setup-keys` as recognized-unsupported based on official source evidence.
+  After the second reviewer pass they were updated again for stock option
+  interspersing and explicit empty `--boot=` parser behavior. After the third
+  reviewer pass they were updated for explicit empty `--lines=`, explicit
+  empty `--case-sensitive=`, stock short attached values/clusters, and explicit
+  reverse plus `--lines=N` behavior.
 - End-user/operator docs: `rust/README.md`, `go/README.md`, `go/API.md`, and
   `docs/Reader-APIs.md` were updated for the cursor string format contract.
   `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` were updated
@@ -1156,11 +1405,17 @@ Artifact maintenance gate:
   chunk for the parser-level output mode list, and after the repeated/globbed
   `--file` chunk for file-source selection behavior, and after the
   action-argument restriction chunk for non-show positional argument
-  rejection.
+  rejection, and after the reviewer fix chunk for `--exclude-identifier` and
+  the `--user --unit=` rewrite, and after the second reviewer pass for the
+  `--boot` versus `--boot=` distinction and SDK-extension status of
+  `--head`/`--tail`, and after the third reviewer pass for bare
+  `--lines`/`-n` defaulting and explicit empty `--lines=` rejection.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
-- SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
-- SOW-status.md: no update needed for this non-terminal chunk.
+- SOW lifecycle: SOW-0121 is marked `completed` and moved to
+  `.agents/sow/done/`.
+- SOW-status.md: updated at close to move SOW-0121 from Current to Recently
+  Closed Or Completed.
 
 Specs update:
 
@@ -1171,16 +1426,22 @@ Specs update:
   invocation, `--list-invocations`, `--header`, and stock short-label behavior,
   then for the output-control/empty-result contract, and then for the
   `--output=help` parser-level output mode list, and then for the
-  repeated/globbed `--file` source-selection contract, and then for the
-  action-argument restriction contract.
-  Additional product-scope updates remain pending final shipped behavior and
-  ship recommendation.
+  repeated/globbed `--file` source-selection contract, then for the
+  action-argument restriction contract, and then for reviewer-discovered
+  `--exclude-identifier`, grep reverse, `--user --unit=`, short-option, and
+  `--list-boots` corrections, and then for second-review option interspersing
+  and explicit empty `--boot=` behavior, and then for third-review explicit
+  empty `--lines=`, explicit empty `--case-sensitive=`, and stock short
+  attached/cluster behavior. No additional product-scope updates are pending
+  before close.
 
 Project skills update:
 
-- Parser parity workflow added under `tests/parser-parity/`. Project skill
-  update remains pending until the full SOW establishes the durable final
-  workflow and ship contract.
+- Parser parity workflow added under `tests/parser-parity/`.
+  `.agents/skills/project-journal-compatibility/SKILL.md` now requires that
+  future journalctl parser or option-surface changes run the parser parity
+  checks and cover option interspersing, stock short attached values/clusters,
+  and optional-argument edge cases.
 
 End-user/operator docs update:
 
@@ -1191,12 +1452,16 @@ End-user/operator docs update:
   header/invocation/label chunk, after the explicit-directory vacuum chunk, and
   after the output-control/empty-result chunk, and after the `--output=help`
   chunk, after the repeated/globbed `--file` chunk, and after the
-  action-argument restriction chunk. Final journalctl command documentation
-  remains pending full implementation.
+  action-argument restriction chunk, and after the reviewer fix chunk for
+  `--exclude-identifier` and the `--user --unit=` rewrite, and after the second
+  reviewer pass for `--boot`/`--boot=` and `--head`/`--tail` extension wording.
+  `docs/Journalctl-CLI.md` was updated again after the third reviewer pass for
+  bare `--lines`/`-n` defaulting and explicit empty `--lines=` rejection.
+  No final journalctl command documentation update remains pending before close.
 
 End-user/operator skills update:
 
-- No affected output/reference skills identified yet.
+- No affected output/reference skills identified.
 
 Lessons:
 
@@ -1209,23 +1474,67 @@ Lessons:
   non-stable field order. Rust and Go keep deterministic requested-field order,
   and the shared oracle compares the selected line multiset for that one stock
   nondeterministic text mode.
+- Matrix cases that force JSON output can hide text-renderer-specific stock
+  behavior. `--exclude-identifier` must be tested separately for short-family
+  output because stock v260.1 applies it in `output_short()`, not JSON/export.
+- Count-only action tests can hide format and content regressions. `--list-boots`
+  now has exact stock-oracle checks for file-backed default, tail, head, and
+  reverse output.
+- Parser parity must cover option placement, not only option names. Stock
+  `journalctl` accepts recognized options after show-action match arguments.
+- Optional-argument tests need explicit empty-value cases. Bare `--boot` and
+  explicit `--boot=` are different stock CLI inputs.
+- Optional arguments need separate tests for bare, explicit empty, attached
+  short, and stock-invalid equals forms. `--lines`, `--lines=`, `-n2`, and
+  `-n=2` are distinct stock CLI inputs.
+- Go's standard `flag` parser is not a stock `journalctl` parser. Short-option
+  clusters and attached values must be normalized before `flag.Parse` when
+  preserving systemd CLI parity.
 
 Follow-up mapping:
 
-- Remaining parity gaps are tracked inside this active SOW and must not be
-  treated as deferred outside the SOW.
+- No remaining parity gaps are deferred outside this SOW.
+- Reviewer hardening suggestions were either fixed or explicitly rejected above
+  as not required for file-backed stock parity, security, runtime purity, or
+  close readiness.
 
 ## Outcome
 
-Pending.
+Completed.
+
+Rust and Go now recognize the full official systemd v260.1 `journalctl`
+command-line surface and implement the accepted portable file-backed behavior
+covered by the parity matrix. Daemon/host-only behavior remains intentionally
+unsupported in portable mode.
+
+Ship recommendation:
+
+- Long-term-best recommendation: keep both Rust and Go `journalctl` commands as
+  product artifacts and keep them under the same parser and stock-oracle parity
+  suite.
+- Packaging recommendation when one standalone non-Linux executable must be
+  selected first: ship the Go command as the default portable binary because
+  this SOW has broader local cross-compilation evidence for Go
+  (Windows/macOS/FreeBSD), while the Rust command remains the parity peer and
+  Rust-package command.
+- Risk: Rust macOS and FreeBSD native runtime validation was not run in this SOW
+  because using those systems requires user authorization. The Linux stock
+  oracle and local Rust tests passed, so this is a packaging-validation gap, not
+  an implementation failure.
 
 ## Lessons Extracted
 
-Pending.
+- Parser parity has to test behavior classes, not only option-name existence.
+  The real bugs were in optional values, short attached forms, interspersed
+  options, and action-order validation.
+- Text-output options need raw output oracle checks. JSON-only checks can hide
+  short-renderer behavior such as `--exclude-identifier`.
+- Whole-SOW reviewer batching worked here because the final fixes were
+  validated against stock systemd and then rechecked as one full surface.
 
 ## Followup
 
-None yet.
+None required for SOW-0121 close.
 
 ## Regression Log
 

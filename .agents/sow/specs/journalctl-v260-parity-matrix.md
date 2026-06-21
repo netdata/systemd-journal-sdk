@@ -81,7 +81,7 @@ disk-image/rootfs-only, or unsafe without an explicit file/directory target.
 | `--invocation=` | ID/offset descriptor | file-backed-required | Match explicit invocation IDs and resolve offsets from explicit file/directory input when unit context is required. |
 | `-I` | none | file-backed-required | Equivalent to `--invocation=0`; require the same unit-context validation as official v260.1. |
 | `-t`, `--identifier=` | string | file-backed-required | Add `SYSLOG_IDENTIFIER=` alternatives, with repeated values ORed. |
-| `-T`, `--exclude-identifier=` | string | recognized-no-op | Recognize and preserve v260.1 file-backed behavior. `src/journal/journalctl-filter.c` stores the values in `exclude_syslog_identifiers`, but no v260.1 file-backed show path consumes them; stock `journalctl --file ... --exclude-identifier=...` output is unchanged. |
+| `-T`, `--exclude-identifier=` | string | file-backed-required | Preserve v260.1 file-backed behavior. Short-family outputs (`short*` and `with-unit`) skip entries whose `SYSLOG_IDENTIFIER=` matches an excluded value; JSON, export, verbose, and cat outputs remain unchanged. |
 | `-p`, `--priority=` | level/range | file-backed-required | Support numeric and named priorities plus `from..to` ranges, matching official inclusive expansion. |
 | `--facility=` | list | file-backed-required | Support comma-separated numeric/named syslog facilities and `help`. |
 | `-g`, `--grep=` | pattern | file-backed-required | Filter `MESSAGE=` with compatible regular expression behavior. If `--lines` searches from tail and `--follow` is not set, preserve official reverse-search behavior. |
@@ -155,7 +155,7 @@ Every official v260.1 output mode is `file-backed-required`:
 | `--new-id128` | none | portable-utility-required | Deprecated utility action; print a new ID128 without touching host state. |
 | `-N`, `--fields` | none | file-backed-required | List field names from explicit file/directory input using FIELD indexes where safe. |
 | `-F`, `--field=` | field | file-backed-required | List unique values for a field from explicit file/directory input using FIELD DATA chains where safe. |
-| `--list-boots` | none | file-backed-required | List boots from explicit file/directory entries. Preserve official conflict with `--merge`. |
+| `--list-boots` | none | file-backed-required | List boots from explicit file/directory entries with official index, boot ID, and first/last timestamp table output. Preserve official `--lines` selection, `--reverse` ordering, and conflict with `--merge`. |
 | `--list-invocations` | none | file-backed-required | List invocation IDs from explicit file/directory entries for the selected unit context. |
 | `--list-namespaces` | none | recognized-unsupported | Requires host journal namespace discovery. |
 | `--disk-usage` | none | file-backed-required | With explicit file/directory input, report disk usage for selected journal files. Without explicit input, return unsupported host journal discovery. |
@@ -184,6 +184,10 @@ Every official v260.1 output mode is `file-backed-required`:
 | Oldest-lines conflict | parser-required | Reject `--lines=+N` with `--reverse` or `--follow`. |
 | Action argument restriction | parser-required | For actions other than show, list catalog, and dump catalog, reject extraneous arguments. |
 | Boot/merge conflict | parser-required | Reject `--boot` or `--list-boots` with `--merge`. |
+| Option interspersing | parser-required | Accept recognized options before or after show-action `FIELD=value`, `+`, or path-match positional arguments, matching stock argument permutation. |
+| Explicit empty boot descriptor | parser-required | Treat bare `--boot` as the current boot, but reject explicit `--boot=` as a failed empty boot descriptor like stock. |
+| Explicit empty optional values | parser-required | Reject explicit empty values where stock rejects them, including `--lines=` and `--case-sensitive=`. Bare `--lines` and bare `--case-sensitive` remain valid. |
+| Short attached values and clusters | parser-required | Accept stock short-option attached values and clusters such as `-n2`, `-ball`, and `-rn2`; preserve stock failure behavior for forms such as `-n=2` and `-b=true`. |
 | User plus unit rewrite | parser-required | With `--user --unit=`, treat the unit as `--user-unit=` before adding filters. |
 | Grep reverse implication | parser-required | With `--grep` and tail-searching `--lines`, set reverse search unless follow is set. |
 | Default host journal | parser-required | If no explicit `--file=` or `--directory=` is supplied, only portable utility commands may run. File/query actions must return unsupported default host journal behavior. |

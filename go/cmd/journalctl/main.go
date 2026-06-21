@@ -162,6 +162,7 @@ type cliFlags struct {
 	priorityFlag          multiStringFlag
 	facilityFlag          multiStringFlag
 	grepFlag              *string
+	grepSet               bool
 	caseSensitiveFlag     optionalStringFlag
 	dmesgFlag             *bool
 
@@ -244,9 +245,6 @@ func (f *explicitStringFlag) IsBoolFlag() bool {
 
 func (f *optionalStringFlag) Set(value string) error {
 	f.set = true
-	if value == "true" {
-		value = ""
-	}
 	f.value = value
 	return nil
 }
@@ -272,14 +270,16 @@ func main() {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs, flags := newCLIFlagSet(stderr)
+	parseArgs := permuteFlagArgs(preprocessOptionalArgs(normalizeShortFlags(args, fs)), fs)
 
-	if err := fs.Parse(preprocessOptionalBootArgs(args)); err != nil {
+	if err := fs.Parse(parseArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
 	flags.invocationSet = flagWasSet(fs, "invocation") || *flags.invocationShortFlag
+	flags.grepSet = flagWasSet(fs, "grep") || flagWasSet(fs, "g")
 	if *flags.output == "help" {
 		printOutputModeHelp(stdout)
 		return nil
@@ -333,6 +333,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if *flags.verify || *flags.verifyOnly || hasVerifyKey {
 		return runVerify(input, *flags.verifyKey, hasVerifyKey, stdout, stderr)
+	}
+	if *flags.listBoots {
+		return runListBoots(input, flags, stdout)
 	}
 
 	sinceUsec, untilUsec, err := flags.timeBounds()
@@ -407,7 +410,7 @@ type linesLimit struct {
 // entries, not tail entries.
 func parseLinesLimitValue(value string) (linesLimit, error) {
 	if value == "" {
-		return linesLimit{set: true, count: 10}, nil
+		return linesLimit{}, errors.New("Failed to parse --lines=''.")
 	}
 	if value == "all" {
 		return linesLimit{set: true, all: true}, nil
@@ -415,8 +418,8 @@ func parseLinesLimitValue(value string) (linesLimit, error) {
 	oldest := strings.HasPrefix(value, "+")
 	stripped := strings.TrimPrefix(value, "+")
 	n, err := strconv.Atoi(stripped)
-	if err != nil {
-		return linesLimit{}, fmt.Errorf("failed to parse --lines value: %s", value)
+	if err != nil || n < 0 {
+		return linesLimit{}, fmt.Errorf("Failed to parse --lines='%s'.", value)
 	}
 	return linesLimit{set: true, oldest: oldest, count: n}, nil
 }
@@ -556,6 +559,7 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 
 	fs.BoolVar(flags.allFlag, "a", false, "show all fields including long/unprintable (short)")
 	fs.BoolVar(flags.follow, "f", false, "follow appended entries (short)")
+	fs.StringVar(flags.grepFlag, "g", "", "show entries with MESSAGE matching PATTERN (short)")
 	fs.BoolVar(flags.fullFlag, "l", false, "enable full-width output (short)")
 	fs.BoolVar(flags.dmesgFlag, "k", false, "show kernel message log from the current boot (short)")
 	fs.BoolVar(flags.mergeFlag, "m", false, "merge entries from available journals (short)")
@@ -647,9 +651,14 @@ func (f *cliFlags) validateParserInteractions() error {
 		return errors.New("Please specify either --reverse or --follow, not both.")
 	}
 
-	// Oldest-lines conflict.
-	if f.linesFlag.set && strings.HasPrefix(f.linesFlag.value, "+") && (*f.reverseFlag || *f.follow) {
-		return errors.New("--lines=+N is unsupported when --reverse or --follow is specified.")
+	if f.linesFlag.set {
+		limit, err := parseLinesLimitValue(f.linesFlag.value)
+		if err != nil {
+			return err
+		}
+		if limit.oldest && (*f.reverseFlag || *f.follow) {
+			return errors.New("--lines=+N is unsupported when --reverse or --follow is specified.")
+		}
 	}
 
 	return nil
@@ -864,13 +873,14 @@ func effectiveBootFlag(flags *cliFlags) optionalStringFlag {
 		return flags.boot
 	}
 	if *flags.thisBootFlag {
-		return optionalStringFlag{set: true}
+		return optionalStringFlag{set: true, value: "0"}
 	}
 	return optionalStringFlag{}
 }
 
 func applyCLIMatches(j cliJournal, flags *cliFlags) error {
-	if err := addJournalctlUnitMatches(j, flags.unitFlag.Values(), flags.userUnitFlag.Values()); err != nil {
+	systemUnits, userUnits := effectiveUnitSpecs(flags)
+	if err := addJournalctlUnitMatches(j, systemUnits, userUnits); err != nil {
 		return err
 	}
 
@@ -911,6 +921,16 @@ func applyCLIMatches(j cliJournal, flags *cliFlags) error {
 		}
 	}
 	return nil
+}
+
+func effectiveUnitSpecs(flags *cliFlags) ([]string, []string) {
+	systemUnits := flags.unitFlag.Values()
+	userUnits := flags.userUnitFlag.Values()
+	if *flags.userFlag && len(systemUnits) > 0 {
+		userUnits = append(userUnits, systemUnits...)
+		systemUnits = nil
+	}
+	return systemUnits, userUnits
 }
 
 func addFieldMatches(j cliJournal, field string, values []string) error {
@@ -1219,7 +1239,8 @@ func globPatternToRegex(pattern string) string {
 }
 
 type cliPostFilters struct {
-	grep *regexp.Regexp
+	grep               *regexp.Regexp
+	excludeIdentifiers map[string]struct{}
 }
 
 func newCLIPostFilters(flags *cliFlags) (*cliPostFilters, error) {
@@ -1227,15 +1248,29 @@ func newCLIPostFilters(flags *cliFlags) (*cliPostFilters, error) {
 	if err != nil {
 		return nil, err
 	}
-	// systemd v260.1 parses --exclude-identifier and stores the values,
-	// but the file-backed show path never consults them. Keep the option
-	// as a parsed no-op for baseline parity.
-	return &cliPostFilters{grep: grep}, nil
+	filters := &cliPostFilters{grep: grep}
+	if outputUsesExcludeIdentifier(*flags.output) {
+		values := flags.excludeIdentifierFlag.Values()
+		if len(values) > 0 {
+			filters.excludeIdentifiers = make(map[string]struct{}, len(values))
+			for _, value := range values {
+				filters.excludeIdentifiers[value] = struct{}{}
+			}
+		}
+	}
+	return filters, nil
 }
 
 func (f *cliPostFilters) matches(entry *journal.Entry) bool {
 	if f == nil {
 		return true
+	}
+	if len(f.excludeIdentifiers) > 0 {
+		for _, value := range entryValues(entry, "SYSLOG_IDENTIFIER") {
+			if _, found := f.excludeIdentifiers[string(value)]; found {
+				return false
+			}
+		}
 	}
 	if f.grep != nil {
 		matched := false
@@ -1250,6 +1285,16 @@ func (f *cliPostFilters) matches(entry *journal.Entry) bool {
 		}
 	}
 	return true
+}
+
+func outputUsesExcludeIdentifier(mode string) bool {
+	switch mode {
+	case "short", "short-full", "short-iso", "short-iso-precise", "short-precise",
+		"short-monotonic", "short-delta", "short-unix", "with-unit":
+		return true
+	default:
+		return false
+	}
 }
 
 func entryValues(entry *journal.Entry, field string) [][]byte {
@@ -1271,15 +1316,11 @@ func compileGrepFilter(pattern string, caseSensitive optionalStringFlag) (*regex
 	}
 	sensitive := hasUppercase(pattern)
 	if caseSensitive.set {
-		if caseSensitive.value == "" {
-			sensitive = true
-		} else {
-			parsed, err := parseBoolOption("--case-sensitive", caseSensitive.value)
-			if err != nil {
-				return nil, err
-			}
-			sensitive = parsed
+		parsed, err := parseBoolOption("--case-sensitive", caseSensitive.value)
+		if err != nil {
+			return nil, err
 		}
+		sensitive = parsed
 	}
 	if !sensitive {
 		pattern = "(?i)" + pattern
@@ -1304,7 +1345,7 @@ func parseBoolOption(option, value string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "y", "on":
 		return true, nil
-	case "", "0", "false", "no", "n", "off":
+	case "0", "false", "no", "n", "off":
 		return false, nil
 	default:
 		return false, fmt.Errorf("Bad %s= argument %q", option, value)
@@ -1441,6 +1482,7 @@ func parseFacility(value string) (uint8, error) {
 }
 
 func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
+	grepTailReverse := f.grepTailImpliesReverse()
 	if f.linesFlag.set {
 		limit, err := parseLinesLimitValue(f.linesFlag.value)
 		if err != nil {
@@ -1450,26 +1492,17 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 			if limit.oldest {
 				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 			}
+			if limit.count == 0 {
+				return showTail(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+			}
+			if grepTailReverse || *f.reverseFlag {
+				return showReverse(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+			}
 			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 		}
 	}
 
 	switch {
-	case *f.listBoots:
-		boots, err := j.ListBoots()
-		if err != nil {
-			return fmt.Errorf("list boots: %w", err)
-		}
-		for _, b := range boots {
-			first := time.UnixMicro(b.FirstEntry)
-			last := time.UnixMicro(b.LastEntry)
-			fmt.Fprintf(stdout, "[%4d] %s %s - %s\n",
-				b.Index, b.BootID[:8],
-				first.Format(time.DateTime),
-				last.Format(time.DateTime))
-		}
-		return nil
-
 	case *f.fields:
 		fields, err := j.EnumerateFields()
 		if err != nil {
@@ -1510,6 +1543,17 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 		}
 		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 	}
+}
+
+func (f *cliFlags) grepTailImpliesReverse() bool {
+	if !f.grepSet || *f.follow || !f.linesFlag.set {
+		return false
+	}
+	limit, err := parseLinesLimitValue(f.linesFlag.value)
+	if err != nil {
+		return false
+	}
+	return limit.set && !limit.all && !limit.oldest
 }
 
 func (f *cliFlags) effectiveQuiet() bool {
@@ -1572,7 +1616,7 @@ func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outp
 	return j, nil
 }
 
-func preprocessOptionalBootArgs(args []string) []string {
+func preprocessOptionalArgs(args []string) []string {
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -1581,13 +1625,119 @@ func preprocessOptionalBootArgs(args []string) []string {
 				out = append(out, arg+"="+args[i+1])
 				i++
 			} else {
-				out = append(out, arg+"=")
+				out = append(out, arg+"=0")
+			}
+			continue
+		}
+		if arg == "--lines" || arg == "-n" {
+			if i+1 < len(args) && looksLikeLinesDescriptor(args[i+1]) {
+				out = append(out, arg+"="+args[i+1])
+				i++
+			} else {
+				out = append(out, arg+"=10")
 			}
 			continue
 		}
 		out = append(out, arg)
 	}
 	return out
+}
+
+func normalizeShortFlags(args []string, fs *flag.FlagSet) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		if arg == "-" || strings.HasPrefix(arg, "--") || !strings.HasPrefix(arg, "-") {
+			out = append(out, arg)
+			continue
+		}
+		body := strings.TrimPrefix(arg, "-")
+		for len(body) > 0 {
+			name := body[:1]
+			flg := fs.Lookup(name)
+			if flg == nil {
+				out = append(out, "-"+body)
+				break
+			}
+			body = body[1:]
+			if flagIsBool(flg) && !flagIsOptionalString(flg) {
+				out = append(out, "-"+name)
+				continue
+			}
+			if body == "" {
+				out = append(out, "-"+name)
+			} else {
+				out = append(out, "-"+name+"="+body)
+			}
+			break
+		}
+	}
+	return out
+}
+
+func permuteFlagArgs(args []string, fs *flag.FlagSet) []string {
+	options := make([]string, 0, len(args))
+	operands := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
+		}
+		name, inlineValue, isFlag := splitFlagArg(arg)
+		if !isFlag {
+			operands = append(operands, arg)
+			continue
+		}
+		flg := fs.Lookup(name)
+		if flg == nil {
+			options = append(options, arg)
+			continue
+		}
+		options = append(options, arg)
+		if inlineValue || flagIsBool(flg) {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			options = append(options, args[i])
+		}
+	}
+	return append(options, operands...)
+}
+
+func splitFlagArg(arg string) (string, bool, bool) {
+	if arg == "-" || !strings.HasPrefix(arg, "-") {
+		return "", false, false
+	}
+	if strings.HasPrefix(arg, "--") {
+		body := strings.TrimPrefix(arg, "--")
+		if body == "" {
+			return "", false, false
+		}
+		name, _, found := strings.Cut(body, "=")
+		return name, found, true
+	}
+	body := strings.TrimPrefix(arg, "-")
+	if body == "" {
+		return "", false, false
+	}
+	name, _, found := strings.Cut(body, "=")
+	return name, found, true
+}
+
+func flagIsBool(flg *flag.Flag) bool {
+	boolFlag, ok := flg.Value.(interface{ IsBoolFlag() bool })
+	return ok && boolFlag.IsBoolFlag()
+}
+
+func flagIsOptionalString(flg *flag.Flag) bool {
+	_, ok := flg.Value.(*optionalStringFlag)
+	return ok
 }
 
 func looksLikeBootDescriptor(value string) bool {
@@ -1600,6 +1750,18 @@ func looksLikeBootDescriptor(value string) bool {
 		}
 	}
 	return false
+}
+
+func looksLikeLinesDescriptor(value string) bool {
+	if value == "all" {
+		return true
+	}
+	value = strings.TrimPrefix(value, "+")
+	if value == "" {
+		return false
+	}
+	n, err := strconv.Atoi(value)
+	return err == nil && n >= 0
 }
 
 func parseOptionalTimestampUsec(value string) (*uint64, error) {
@@ -1763,6 +1925,85 @@ type bootInfo struct {
 	index      int
 }
 
+func runListBoots(input cliInput, flags *cliFlags, stdout io.Writer) error {
+	j, err := input.openJournal()
+	if err != nil {
+		return fmt.Errorf("open journal: %w", err)
+	}
+	defer j.Close()
+	boots, err := collectBoots(j)
+	if err != nil {
+		return fmt.Errorf("list boots: %w", err)
+	}
+	if len(boots) == 0 {
+		return errors.New("No boot found.")
+	}
+	display, err := selectBootRows(boots, flags)
+	if err != nil {
+		return err
+	}
+	if !*flags.quietFlag {
+		fmt.Fprintln(stdout, "IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY")
+	}
+	idxWidth := 1
+	if *flags.quietFlag {
+		for _, boot := range display {
+			if width := len(fmt.Sprintf("%d", boot.index)); width > idxWidth {
+				idxWidth = width
+			}
+		}
+	} else {
+		idxWidth = 3
+	}
+	for _, boot := range display {
+		fmt.Fprintf(
+			stdout,
+			"%*d %s %s %s\n",
+			idxWidth,
+			boot.index,
+			boot.bootID,
+			formatHeaderTimestamp(boot.firstEntry),
+			formatHeaderTimestamp(boot.lastEntry),
+		)
+	}
+	return nil
+}
+
+func selectBootRows(boots []bootInfo, flags *cliFlags) ([]bootInfo, error) {
+	rows := boots
+	firstIndex := 1 - len(boots)
+	if flags.linesFlag.set {
+		limit, err := parseLinesLimitValue(flags.linesFlag.value)
+		if err != nil {
+			return nil, err
+		}
+		if limit.set && !limit.all {
+			count := limit.count
+			if count > len(boots) {
+				count = len(boots)
+			}
+			if limit.oldest {
+				rows = boots[:count]
+				firstIndex = 1
+			} else {
+				rows = boots[len(boots)-count:]
+				firstIndex = 1 - count
+			}
+		}
+	}
+	out := make([]bootInfo, len(rows))
+	for i, boot := range rows {
+		boot.index = firstIndex + i
+		out[i] = boot
+	}
+	if *flags.reverseFlag {
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+	}
+	return out, nil
+}
+
 func collectBoots(j cliJournal) ([]bootInfo, error) {
 	if err := j.SeekHead(); err != nil {
 		return nil, err
@@ -1858,7 +2099,7 @@ func resolveBootID(j cliJournal, descriptor string) (string, error) {
 
 func parseBootDescriptor(descriptor string) (string, int, error) {
 	if descriptor == "" {
-		return "", 0, nil
+		return "", 0, errors.New("failed to parse boot descriptor: ")
 	}
 	m := bootDescriptorRe.FindStringSubmatch(descriptor)
 	if m == nil {
@@ -1963,8 +2204,7 @@ func applySingleInvocationUnit(j cliJournal, flags *cliFlags, optionName string)
 }
 
 func singleInvocationUnit(j cliJournal, flags *cliFlags, optionName string) ([]string, []string, error) {
-	systemSpecs := flags.unitFlag.Values()
-	userSpecs := flags.userUnitFlag.Values()
+	systemSpecs, userSpecs := effectiveUnitSpecs(flags)
 	count := len(systemSpecs) + len(userSpecs)
 	if count == 0 {
 		return nil, nil, fmt.Errorf("Using %s requires a unit. Please specify a unit name with -u/--unit=/--user-unit=.", optionName)

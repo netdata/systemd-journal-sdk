@@ -555,8 +555,11 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
         ("file-all", "file", fixtures["file"], ["TEST_ID=journalctl-query"]),
         ("file-reverse", "file", fixtures["file"], ["--reverse", "TEST_ID=journalctl-query"]),
         ("file-lines-tail", "file", fixtures["file"], ["--lines=2", "TEST_ID=journalctl-query"]),
+        ("file-lines-reverse", "file", fixtures["file"], ["--reverse", "--lines=2", "--boot=all", "TEST_ID=journalctl-query"]),
         ("file-lines-oldest", "file", fixtures["file"], ["--lines=+2", "TEST_ID=journalctl-query"]),
         ("file-lines-default", "file", fixtures["file"], ["--lines", "TEST_ID=journalctl-query"]),
+        ("file-short-attached-lines", "file", fixtures["file"], ["-n2", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-short-cluster-reverse-lines", "file", fixtures["file"], ["-rn2", "-ball", "TEST_ID=journalctl-query"]),
         ("file-pager-end-default-lines", "file", fixtures["pager"], ["--pager-end", "TEST_ID=journalctl-pager-end"]),
         ("file-show-cursor", "file", fixtures["file"], ["--show-cursor", "TEST_ID=journalctl-query"]),
         ("file-cursor-first", "file", fixtures["file"], ["--cursor", file_cursors[0], "--boot=all", "TEST_ID=journalctl-query"]),
@@ -609,6 +612,13 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             ["--facility=daemon,local0", "--boot=all", "TEST_ID=journalctl-query"],
         ),
         ("file-grep-auto", "file", fixtures["file"], ["--grep=file-b", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-grep-tail-reverse", "file", fixtures["file"], ["--grep=file", "--lines=2", "--boot=all", "TEST_ID=journalctl-query"]),
+        (
+            "file-interspersed-lines",
+            "file",
+            fixtures["file"],
+            ["TEST_ID=journalctl-query", "--lines=2", "--boot=all"],
+        ),
         (
             "file-grep-case-insensitive",
             "file",
@@ -661,6 +671,12 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
         ),
         ("file-user-unit-glob", "file", fixtures["file"], ["--user-unit=user-*", "--boot=all", "TEST_ID=journalctl-query"]),
         (
+            "file-user-plus-unit-rewrite",
+            "file",
+            fixtures["file"],
+            ["--user", "--unit=user-alpha.service", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
             "file-invocation-explicit",
             "file",
             fixtures["file"],
@@ -702,6 +718,35 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
                     "actual": actual,
                     "cursor_present": "-- cursor:" in result.stdout,
                     "cursor_required": expect_cursor,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
+
+    raw_exact_cases = [
+        (
+            "file-exclude-identifier-short",
+            "file",
+            fixtures["file"],
+            ["--exclude-identifier=app-a", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+    ]
+    for case_name, mode, path, args in raw_exact_cases:
+        stock = run(raw_reader_command("stock", tools, mode, path, args), timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = stock.stdout
+        for reader in READERS:
+            cmd = raw_reader_command(reader, tools, mode, path, args)
+            result = run(cmd, timeout=30)
+            ok = result.returncode == 0 and result.stdout == expected
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": result.stdout,
                     "returncode": result.returncode,
                     "stderr": result.stderr[-1000:],
                 }
@@ -898,6 +943,61 @@ def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
                     "returncode": result.returncode,
                 }
             )
+
+    stock_error_cases = [
+        (
+            "explicit-empty-boot",
+            ["--file", str(fixtures["file"]), "--boot="],
+            "failed to parse boot descriptor",
+        ),
+        (
+            "explicit-true-boot",
+            ["--file", str(fixtures["file"]), "--boot=true"],
+            "failed to parse boot descriptor",
+        ),
+        (
+            "short-explicit-true-boot",
+            ["--file", str(fixtures["file"]), "-b=true"],
+            "failed to parse boot descriptor",
+        ),
+        (
+            "explicit-empty-lines",
+            ["--file", str(fixtures["file"]), "--lines="],
+            "failed to parse --lines",
+        ),
+        (
+            "negative-lines",
+            ["--file", str(fixtures["file"]), "--lines=-2"],
+            "failed to parse --lines",
+        ),
+        (
+            "explicit-empty-case-sensitive",
+            ["--file", str(fixtures["file"]), "--grep=file", "--case-sensitive="],
+            "case-sensitive",
+        ),
+    ]
+    for case_name, args, expected_error in stock_error_cases:
+        stock = run(action_command("stock", tools, args), timeout=30)
+        stock_combined = (stock.stdout + stock.stderr).lower()
+        if stock.returncode == 0 or expected_error not in stock_combined:
+            raise AssertionError(f"stock {case_name} did not produce {expected_error!r}: {stock}")
+        for reader in ("go", "rust"):
+            cmd = action_command(reader, tools, args)
+            result = run(cmd, timeout=30)
+            combined = (result.stdout + result.stderr).lower()
+            ok = result.returncode != 0 and expected_error in combined
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected_error": expected_error,
+                    "stdout": result.stdout[-1000:],
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
+                }
+            )
     return results
 
 
@@ -1008,6 +1108,10 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
 
     exact_action_cases = [
         ("header-file", ["--file", str(fixtures["file"]), "--header"]),
+        ("list-boots-file", ["--file", str(fixtures["file"]), "--list-boots"]),
+        ("list-boots-file-tail", ["--file", str(fixtures["file"]), "--list-boots", "--lines=2"]),
+        ("list-boots-file-head", ["--file", str(fixtures["file"]), "--list-boots", "--lines=+2"]),
+        ("list-boots-file-reverse", ["--file", str(fixtures["file"]), "--list-boots", "--reverse"]),
         (
             "list-invocations-alpha",
             ["--file", str(fixtures["file"]), "--list-invocations", "--unit=alpha.service"],
