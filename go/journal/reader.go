@@ -993,7 +993,18 @@ func (r *Reader) TestCursor(cursor string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return current == cursor, nil
+	currentSeqnumID, currentBootID, currentRealtime, currentSeqnum, err := ParseCursor(current)
+	if err != nil {
+		return false, err
+	}
+	wantSeqnumID, wantBootID, wantRealtime, wantSeqnum, err := ParseCursor(cursor)
+	if err != nil {
+		return false, nil
+	}
+	return currentSeqnumID == wantSeqnumID &&
+		currentBootID == wantBootID &&
+		currentRealtime == wantRealtime &&
+		currentSeqnum == wantSeqnum, nil
 }
 
 func (r *Reader) Step() (bool, error) {

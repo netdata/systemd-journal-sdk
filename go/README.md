@@ -77,6 +77,8 @@ Current reader scope:
   seek head/tail/realtime/cursor, next/previous/skip, match groups,
   current-entry data enumeration, field enumeration, unique value enumeration,
   realtime/monotonic/seqnum/cursor metadata, and boot listing;
+- cursor metadata is emitted in the official systemd cursor shape; cursor seek
+  and test also accept the older SDK cursor shape for compatibility;
 - `--output=export` uses systemd's size-prefixed binary field encoding and
   blank-line entry separator; `--output=json` encodes duplicate fields as
   arrays and non-printable/non-UTF-8 values as arrays of unsigned bytes;

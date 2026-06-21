@@ -5,11 +5,13 @@ use journal::{
     Entry, FacadeError, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetEntry,
     SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalPrevious, SdJournalProcessOutput,
-    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
-    SdJournalVisitUniqueValues, parse_match_string, verify_file, verify_file_with_key,
+    SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
+    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_string,
+    verify_file, verify_file_with_key,
 };
 use regex::{Regex, RegexBuilder};
-use std::io::Write;
+use std::fs;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::thread;
@@ -463,10 +465,19 @@ fn run() -> Result<()> {
     let since_usec = parse_optional_timestamp(args.since.as_deref())?;
     let until_usec = parse_optional_timestamp(args.until.as_deref())?;
     let post_filters = CliPostFilters::from_args(&args)?;
+    let cursor_control = CursorControl::from_args(&args)?;
 
     if args.follow {
         let tail = parse_tail_count(args.tail.as_ref(), args.lines.as_deref()).unwrap_or(10);
-        return run_follow(path, &args, since_usec, until_usec, tail, &post_filters);
+        return run_follow(
+            path,
+            &args,
+            since_usec,
+            until_usec,
+            tail,
+            &post_filters,
+            &cursor_control,
+        );
     }
 
     let mut journal = open_filtered_journal(path, &args)?;
@@ -517,6 +528,7 @@ fn run() -> Result<()> {
                 args.reverse,
                 args.show_cursor,
                 &post_filters,
+                &cursor_control,
             ),
             LinesLimit::Head(n) => show_head_or_all_with_reverse(
                 &mut journal,
@@ -526,6 +538,7 @@ fn run() -> Result<()> {
                 false,
                 args.show_cursor,
                 &post_filters,
+                &cursor_control,
             ),
             LinesLimit::Tail(n) => show_tail_with_reverse(
                 &mut journal,
@@ -535,6 +548,7 @@ fn run() -> Result<()> {
                 args.reverse,
                 args.show_cursor,
                 &post_filters,
+                &cursor_control,
             ),
         };
     }
@@ -549,6 +563,7 @@ fn run() -> Result<()> {
             reverse,
             args.show_cursor,
             &post_filters,
+            &cursor_control,
         )
     } else {
         show_head_or_all_with_reverse(
@@ -559,6 +574,7 @@ fn run() -> Result<()> {
             reverse,
             args.show_cursor,
             &post_filters,
+            &cursor_control,
         )
     }
 }
@@ -606,6 +622,69 @@ fn parse_tail_count(tail: Option<&usize>, lines: Option<&str>) -> Option<usize> 
     match parse_lines_limit(lines).ok().flatten() {
         Some(LinesLimit::Tail(n) | LinesLimit::Head(n)) => Some(n),
         Some(LinesLimit::All) | None => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CursorSeek {
+    cursor: String,
+    after: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CursorControl {
+    seek: Option<CursorSeek>,
+    update_file: Option<PathBuf>,
+}
+
+impl CursorControl {
+    fn from_args(args: &Args) -> Result<Self> {
+        if let Some(cursor) = args.cursor.as_ref() {
+            return Ok(Self {
+                seek: Some(CursorSeek {
+                    cursor: cursor.clone(),
+                    after: false,
+                }),
+                update_file: None,
+            });
+        }
+
+        if let Some(cursor) = args.after_cursor.as_ref() {
+            return Ok(Self {
+                seek: Some(CursorSeek {
+                    cursor: cursor.clone(),
+                    after: true,
+                }),
+                update_file: None,
+            });
+        }
+
+        let Some(path) = args.cursor_file.as_ref() else {
+            return Ok(Self {
+                seek: None,
+                update_file: None,
+            });
+        };
+
+        let cursor = match fs::read_to_string(path) {
+            Ok(content) => content.lines().next().unwrap_or("").to_string(),
+            Err(err) if err.kind() == ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                return Err(anyhow!(
+                    "Failed to read cursor file {}: {err}",
+                    path.display()
+                ));
+            }
+        };
+
+        let seek = (!cursor.is_empty()).then_some(CursorSeek {
+            cursor,
+            after: true,
+        });
+        Ok(Self {
+            seek,
+            update_file: Some(path.clone()),
+        })
     }
 }
 
@@ -1227,9 +1306,16 @@ fn show_head_or_all_with_reverse(
     reverse: bool,
     show_cursor: bool,
     post_filters: &CliPostFilters,
+    cursor_control: &CursorControl,
 ) -> Result<()> {
-    let entries =
-        matching_entries_with_direction(journal, since_usec, until_usec, reverse, post_filters)?;
+    let entries = matching_entries_with_direction(
+        journal,
+        since_usec,
+        until_usec,
+        reverse,
+        post_filters,
+        cursor_control.seek.as_ref(),
+    )?;
     let mut stdout = std::io::stdout().lock();
     let mut shown = 0usize;
     let mut last_cursor: Option<String> = None;
@@ -1245,13 +1331,12 @@ fn show_head_or_all_with_reverse(
             last_cursor = Some(entry.cursor.clone());
         }
     }
-    if show_cursor {
-        if let Some(cursor) = last_cursor {
-            stdout.write_all(b"-- cursor: ")?;
-            stdout.write_all(cursor.as_bytes())?;
-            stdout.write_all(b"\n")?;
-        }
-    }
+    finish_cursor_output(
+        &mut stdout,
+        show_cursor,
+        cursor_control.update_file.as_deref(),
+        last_cursor.as_deref(),
+    )?;
     Ok(())
 }
 
@@ -1263,9 +1348,16 @@ fn show_tail_with_reverse(
     reverse: bool,
     show_cursor: bool,
     post_filters: &CliPostFilters,
+    cursor_control: &CursorControl,
 ) -> Result<()> {
-    let entries =
-        matching_entries_with_direction(journal, since_usec, until_usec, reverse, post_filters)?;
+    let entries = matching_entries_with_direction(
+        journal,
+        since_usec,
+        until_usec,
+        reverse,
+        post_filters,
+        cursor_control.seek.as_ref(),
+    )?;
     let outputs = entries
         .iter()
         .map(|entry| SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}")))
@@ -1275,15 +1367,13 @@ fn show_tail_with_reverse(
     for entry in &outputs[start..] {
         stdout.write_all(entry)?;
     }
-    if show_cursor {
-        if let Some(cursor) = entries.last().map(|e| e.cursor.clone()) {
-            if !cursor.is_empty() {
-                stdout.write_all(b"-- cursor: ")?;
-                stdout.write_all(cursor.as_bytes())?;
-                stdout.write_all(b"\n")?;
-            }
-        }
-    }
+    let last_cursor = entries.last().map(|entry| entry.cursor.as_str());
+    finish_cursor_output(
+        &mut stdout,
+        show_cursor,
+        cursor_control.update_file.as_deref(),
+        last_cursor,
+    )?;
     Ok(())
 }
 
@@ -1292,8 +1382,16 @@ fn matching_entries(
     since_usec: Option<u64>,
     until_usec: Option<u64>,
     post_filters: &CliPostFilters,
+    cursor_seek: Option<&CursorSeek>,
 ) -> Result<Vec<Entry>> {
-    matching_entries_with_direction(journal, since_usec, until_usec, false, post_filters)
+    matching_entries_with_direction(
+        journal,
+        since_usec,
+        until_usec,
+        false,
+        post_filters,
+        cursor_seek,
+    )
 }
 
 fn matching_entries_with_direction(
@@ -1302,17 +1400,31 @@ fn matching_entries_with_direction(
     until_usec: Option<u64>,
     reverse: bool,
     post_filters: &CliPostFilters,
+    cursor_seek: Option<&CursorSeek>,
 ) -> Result<Vec<Entry>> {
     if reverse {
-        // Reverse: seek to tail and walk backwards. Bound by --until when
-        // supplied; otherwise read until head.
-        if let Some(until) = until_usec {
-            SdJournalSeekRealtimeUsec(journal, until)
-                .map_err(|err| anyhow!("seek realtime: {err}"))?;
-        } else {
-            SdJournalSeekTail(journal).map_err(|err| anyhow!("seek tail: {err}"))?;
-        }
         let mut out = Vec::new();
+        if let Some(cursor_seek) = cursor_seek {
+            if let Some(entry) = seek_cursor_start(journal, cursor_seek, true)? {
+                if since_usec.is_none_or(|since| entry.realtime >= since)
+                    && until_usec.is_none_or(|until| entry.realtime <= until)
+                    && post_filters.matches(&entry)
+                {
+                    out.push(entry);
+                }
+            } else {
+                return Ok(out);
+            }
+        } else {
+            // Reverse: seek to tail and walk backwards. Bound by --until when
+            // supplied; otherwise read until head.
+            if let Some(until) = until_usec {
+                SdJournalSeekRealtimeUsec(journal, until)
+                    .map_err(|err| anyhow!("seek realtime: {err}"))?;
+            } else {
+                SdJournalSeekTail(journal).map_err(|err| anyhow!("seek tail: {err}"))?;
+            }
+        }
         loop {
             match SdJournalPrevious(journal).map_err(|err| anyhow!("previous: {err}"))? {
                 0 => break,
@@ -1334,12 +1446,23 @@ fn matching_entries_with_direction(
         return Ok(out);
     }
 
-    if let Some(since) = since_usec {
+    let mut out = Vec::new();
+    if let Some(cursor_seek) = cursor_seek {
+        if let Some(entry) = seek_cursor_start(journal, cursor_seek, false)? {
+            if since_usec.is_none_or(|since| entry.realtime >= since)
+                && until_usec.is_none_or(|until| entry.realtime <= until)
+                && post_filters.matches(&entry)
+            {
+                out.push(entry);
+            }
+        } else {
+            return Ok(out);
+        }
+    } else if let Some(since) = since_usec {
         SdJournalSeekRealtimeUsec(journal, since).map_err(|err| anyhow!("seek realtime: {err}"))?;
     } else {
         SdJournalSeekHead(journal).map_err(|err| anyhow!("seek head: {err}"))?;
     }
-    let mut out = Vec::new();
     loop {
         match SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? {
             0 => break,
@@ -1359,6 +1482,75 @@ fn matching_entries_with_direction(
         }
     }
     Ok(out)
+}
+
+fn seek_cursor_start(
+    journal: &mut SdJournal,
+    cursor_seek: &CursorSeek,
+    reverse: bool,
+) -> Result<Option<Entry>> {
+    SdJournalSeekCursor(journal, &cursor_seek.cursor)
+        .map_err(|err| anyhow!("seek cursor: {err}"))?;
+    if cursor_seek.after {
+        match SdJournalTestCursor(journal, &cursor_seek.cursor) {
+            Ok(true) => {
+                let advanced = if reverse {
+                    SdJournalPrevious(journal).map_err(|err| anyhow!("previous: {err}"))?
+                } else {
+                    SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))?
+                };
+                if advanced == 0 {
+                    return Ok(None);
+                }
+            }
+            Ok(false) => {}
+            Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => return Ok(None),
+            Err(err) => return Err(anyhow!("test cursor: {err}")),
+        }
+    }
+
+    match SdJournalGetEntry(journal) {
+        Ok(entry) => Ok(Some(entry)),
+        Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => Ok(None),
+        Err(err) => Err(anyhow!("get entry: {err}")),
+    }
+}
+
+fn finish_cursor_output<W: Write>(
+    stdout: &mut W,
+    show_cursor: bool,
+    cursor_file: Option<&Path>,
+    cursor: Option<&str>,
+) -> Result<()> {
+    let Some(cursor) = cursor.filter(|cursor| !cursor.is_empty()) else {
+        return Ok(());
+    };
+
+    if show_cursor {
+        stdout.write_all(b"-- cursor: ")?;
+        stdout.write_all(cursor.as_bytes())?;
+        stdout.write_all(b"\n")?;
+    }
+
+    if let Some(path) = cursor_file {
+        write_cursor_file_atomic(path, cursor)?;
+    }
+
+    Ok(())
+}
+
+fn write_cursor_file_atomic(path: &Path, cursor: &str) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("invalid cursor file path: {}", path.display()))?
+        .to_string_lossy();
+    let mut tmp = path.to_path_buf();
+    tmp.set_file_name(format!(".{file_name}.tmp.{}", std::process::id()));
+    fs::write(&tmp, format!("{cursor}\n").as_bytes())
+        .map_err(|err| anyhow!("Failed to write new cursor to {}: {err}", path.display()))?;
+    fs::rename(&tmp, path)
+        .map_err(|err| anyhow!("Failed to write new cursor to {}: {err}", path.display()))?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -1626,11 +1818,18 @@ fn scan_follow_snapshot(
     since_usec: Option<u64>,
     until_usec: Option<u64>,
     post_filters: &CliPostFilters,
+    cursor_control: &CursorControl,
 ) -> Vec<(String, Vec<u8>)> {
     let Ok(mut journal) = open_filtered_journal(path, args) else {
         return Vec::new();
     };
-    let Ok(entries) = matching_entries(&mut journal, since_usec, until_usec, post_filters) else {
+    let Ok(entries) = matching_entries(
+        &mut journal,
+        since_usec,
+        until_usec,
+        post_filters,
+        cursor_control.seek.as_ref(),
+    ) else {
         return Vec::new();
     };
     entries
@@ -1649,11 +1848,19 @@ fn run_follow(
     until_usec: Option<u64>,
     tail: usize,
     post_filters: &CliPostFilters,
+    cursor_control: &CursorControl,
 ) -> Result<()> {
     use std::collections::HashSet;
 
     let mut seen = HashSet::new();
-    let initial = scan_follow_snapshot(path, args, since_usec, until_usec, post_filters);
+    let initial = scan_follow_snapshot(
+        path,
+        args,
+        since_usec,
+        until_usec,
+        post_filters,
+        cursor_control,
+    );
     for (cursor, _) in &initial {
         seen.insert(cursor.clone());
     }
@@ -1671,7 +1878,14 @@ fn run_follow(
 
     loop {
         thread::sleep(Duration::from_millis(100));
-        let snapshot = scan_follow_snapshot(path, args, since_usec, until_usec, post_filters);
+        let snapshot = scan_follow_snapshot(
+            path,
+            args,
+            since_usec,
+            until_usec,
+            post_filters,
+            cursor_control,
+        );
         let mut stdout = std::io::stdout().lock();
         for (cursor, output) in snapshot {
             if seen.insert(cursor) {

@@ -354,6 +354,14 @@ func (j *sdJournal) SeekRealtimeUsec(usec uint64) error {
 	return SdJournalSeekRealtimeUsec(j, usec)
 }
 
+func (j *sdJournal) SeekCursor(cursor string) error {
+	return SdJournalSeekCursor(j, cursor)
+}
+
+func (j *sdJournal) TestCursor(cursor string) (bool, error) {
+	return SdJournalTestCursor(j, cursor)
+}
+
 func (j *sdJournal) GetRealtimeUsec() (uint64, error) {
 	return SdJournalGetRealtimeUsec(j)
 }

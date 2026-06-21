@@ -142,6 +142,10 @@ It supports:
 - field and unique enumeration;
 - realtime, monotonic, seqnum, cursor, and boot metadata.
 
+Cursor metadata is emitted in the official systemd cursor shape. Cursor seek
+and test also accept the older SDK cursor shape for compatibility with existing
+callers.
+
 The facade should reuse the row-level borrowed-data contract. It should not
 copy every payload just because the call shape is libsystemd-like.
 

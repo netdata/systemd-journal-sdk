@@ -188,19 +188,23 @@ func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {
 }
 
 func (r *Reader) makeCursor(entryOffset uint64, hdr entryHeader) string {
-	return fmt.Sprintf("s=%s;j=%s;c=%016x;n=%d",
+	return fmt.Sprintf("s=%s;i=%x;b=%s;m=%x;t=%x;x=%x",
 		r.header.seqnumID.String(),
+		hdr.seqnum,
 		hdr.bootID.String(),
+		hdr.monotonic,
 		hdr.realtime,
-		hdr.seqnum)
+		hdr.xorHash)
 }
 
 func formatCursorFromDirectoryKey(key directoryEntryKey) string {
-	return fmt.Sprintf("s=%s;j=%s;c=%016x;n=%d",
+	return fmt.Sprintf("s=%s;i=%x;b=%s;m=%x;t=%x;x=%x",
 		key.seqnumID.String(),
+		key.seqnum,
 		key.bootID.String(),
+		key.monotonic,
 		key.realtime,
-		key.seqnum)
+		key.xorHash)
 }
 
 func (r *Reader) readDataPayloadTemp(offset uint64) ([]byte, error) {

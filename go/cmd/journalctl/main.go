@@ -43,6 +43,8 @@ type cliJournal interface {
 	SeekHead() error
 	SeekTail() error
 	SeekRealtimeUsec(uint64) error
+	SeekCursor(string) error
+	TestCursor(string) (bool, error)
 	Next() (int, error)
 	Previous() (int, error)
 	GetEntry() (*journal.Entry, error)
@@ -261,6 +263,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	cursorControl, err := newCursorControl(flags)
+	if err != nil {
+		return err
+	}
 
 	if *flags.follow {
 		tail := 10
@@ -276,7 +282,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 				tail = limit.count
 			}
 		}
-		return runFollow(inputPath, fs.Args(), flags, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout, postFilters)
+		return runFollow(inputPath, fs.Args(), flags, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout, postFilters, cursorControl)
 	}
 
 	j, err := openFilteredJournal(inputPath, fs.Args(), flags, *flags.output)
@@ -285,7 +291,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	defer j.Close()
 
-	return flags.dispatch(j, sinceUsec, untilUsec, stdout, postFilters)
+	return flags.dispatch(j, sinceUsec, untilUsec, stdout, postFilters, cursorControl)
 }
 
 type linesLimit struct {
@@ -312,6 +318,43 @@ func parseLinesLimitValue(value string) (linesLimit, error) {
 		return linesLimit{}, fmt.Errorf("failed to parse --lines value: %s", value)
 	}
 	return linesLimit{set: true, oldest: oldest, count: n}, nil
+}
+
+type cursorSeek struct {
+	cursor string
+	after  bool
+}
+
+type cursorControl struct {
+	seek       *cursorSeek
+	updateFile string
+}
+
+func newCursorControl(f *cliFlags) (cursorControl, error) {
+	if *f.cursorFlag != "" {
+		return cursorControl{seek: &cursorSeek{cursor: *f.cursorFlag}}, nil
+	}
+	if *f.afterCursorFlag != "" {
+		return cursorControl{seek: &cursorSeek{cursor: *f.afterCursorFlag, after: true}}, nil
+	}
+	if *f.cursorFileFlag == "" {
+		return cursorControl{}, nil
+	}
+
+	content, err := os.ReadFile(*f.cursorFileFlag) // nosec G304 - caller explicitly supplies --cursor-file path.
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cursorControl{updateFile: *f.cursorFileFlag}, nil
+		}
+		return cursorControl{}, fmt.Errorf("Failed to read cursor file %s: %w", *f.cursorFileFlag, err)
+	}
+	cursor := strings.SplitN(string(content), "\n", 2)[0]
+	cursor = strings.TrimSuffix(cursor, "\r")
+	control := cursorControl{updateFile: *f.cursorFileFlag}
+	if cursor != "" {
+		control.seek = &cursorSeek{cursor: cursor, after: true}
+	}
+	return control, nil
 }
 
 func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
@@ -920,7 +963,7 @@ func parseFacility(value string) (uint8, error) {
 	return 0, fmt.Errorf("Bad --facility= argument %q.", value)
 }
 
-func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer, postFilters *cliPostFilters) error {
+func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl) error {
 	if f.linesFlag.set {
 		limit, err := parseLinesLimitValue(f.linesFlag.value)
 		if err != nil {
@@ -928,9 +971,9 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 		}
 		if limit.set && !limit.all {
 			if limit.oldest {
-				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
+				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl)
 			}
-			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
+			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl)
 		}
 	}
 
@@ -973,19 +1016,19 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 		})
 
 	case *f.head > 0:
-		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl)
 
 	case *f.tail > 0:
 		if *f.reverseFlag {
-			return showReverse(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
+			return showReverse(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl)
 		}
-		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
+		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl)
 
 	default:
 		if *f.reverseFlag {
-			return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
+			return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl)
 		}
-		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl)
 	}
 }
 
@@ -1344,8 +1387,21 @@ func entryInTimeRange(entry *journal.Entry, sinceUsec, untilUsec *uint64) bool {
 	return true
 }
 
-func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, fn func(*journal.Entry) error) error {
-	if sinceUsec != nil {
+func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
+	if cursorSeek != nil {
+		entry, ok, err := seekCursorStart(j, cursorSeek, false)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
+			if err := fn(entry); err != nil {
+				return err
+			}
+		}
+	} else if sinceUsec != nil {
 		if err := j.SeekRealtimeUsec(*sinceUsec); err != nil {
 			return err
 		}
@@ -1375,10 +1431,10 @@ func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters
 	}
 }
 
-func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters) error {
+func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters, cursorControl cursorControl) error {
 	count := 0
 	var lastCursor string
-	err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, func(entry *journal.Entry) error {
+	err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
 		if limit > 0 && count >= limit {
 			return errStopIteration
 		}
@@ -1397,16 +1453,16 @@ func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 	if err != nil {
 		return err
 	}
-	return printCursor(stdout, showCursor, lastCursor)
+	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
 }
 
-func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters) error {
+func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters, cursorControl cursorControl) error {
 	type renderedEntry struct {
 		cursor string
 		output string
 	}
 	var outputs []renderedEntry
-	if err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, func(entry *journal.Entry) error {
+	if err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
 		out, err := j.ProcessOutput(entry)
 		if err != nil {
 			return err
@@ -1425,13 +1481,13 @@ func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.W
 		fmt.Fprint(stdout, out.output)
 		lastCursor = out.cursor
 	}
-	return printCursor(stdout, showCursor, lastCursor)
+	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
 }
 
-func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters) error {
+func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters, cursorControl cursorControl) error {
 	count := 0
 	var lastCursor string
-	err := previousMatchingEntries(j, sinceUsec, untilUsec, postFilters, func(entry *journal.Entry) error {
+	err := previousMatchingEntries(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
 		if limit > 0 && count >= limit {
 			return errStopIteration
 		}
@@ -1450,11 +1506,24 @@ func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 	if err != nil {
 		return err
 	}
-	return printCursor(stdout, showCursor, lastCursor)
+	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
 }
 
-func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, fn func(*journal.Entry) error) error {
-	if untilUsec != nil {
+func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
+	if cursorSeek != nil {
+		entry, ok, err := seekCursorStart(j, cursorSeek, true)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
+			if err := fn(entry); err != nil {
+				return err
+			}
+		}
+	} else if untilUsec != nil {
 		if err := j.SeekRealtimeUsec(*untilUsec); err != nil {
 			return err
 		}
@@ -1484,12 +1553,86 @@ func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFil
 	}
 }
 
-func printCursor(stdout io.Writer, enabled bool, cursor string) error {
-	if !enabled || cursor == "" {
+func seekCursorStart(j cliJournal, seek *cursorSeek, reverse bool) (*journal.Entry, bool, error) {
+	if err := j.SeekCursor(seek.cursor); err != nil {
+		return nil, false, fmt.Errorf("seek cursor: %w", err)
+	}
+	if seek.after {
+		match, err := j.TestCursor(seek.cursor)
+		if err != nil {
+			if errors.Is(err, journal.ErrNoEntry) || errors.Is(err, journal.ErrEndOfEntries) {
+				return nil, false, nil
+			}
+			return nil, false, fmt.Errorf("test cursor: %w", err)
+		}
+		if match {
+			var n int
+			var err error
+			if reverse {
+				n, err = j.Previous()
+			} else {
+				n, err = j.Next()
+			}
+			if err != nil {
+				return nil, false, err
+			}
+			if n == 0 {
+				return nil, false, nil
+			}
+		}
+	}
+
+	entry, err := j.GetEntry()
+	if err != nil {
+		if errors.Is(err, journal.ErrNoEntry) || errors.Is(err, journal.ErrEndOfEntries) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return entry, true, nil
+}
+
+func finishCursorOutput(stdout io.Writer, showCursor bool, cursorFile, cursor string) error {
+	if cursor == "" {
 		return nil
 	}
-	_, err := fmt.Fprintf(stdout, "-- cursor: %s\n", cursor)
-	return err
+	if showCursor {
+		if _, err := fmt.Fprintf(stdout, "-- cursor: %s\n", cursor); err != nil {
+			return err
+		}
+	}
+	if cursorFile != "" {
+		return writeCursorFileAtomic(cursorFile, cursor)
+	}
+	return nil
+}
+
+func writeCursorFileAtomic(path, cursor string) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, "."+base+".tmp.*")
+	if err != nil {
+		return fmt.Errorf("Failed to write new cursor to %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.WriteString(cursor + "\n"); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("Failed to write new cursor to %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("Failed to write new cursor to %s: %w", path, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("Failed to write new cursor to %s: %w", path, err)
+	}
+	ok = true
+	return nil
 }
 
 type followEntry struct {
@@ -1497,14 +1640,14 @@ type followEntry struct {
 	output string
 }
 
-func scanFollowSnapshot(inputPath string, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters) []followEntry {
+func scanFollowSnapshot(inputPath string, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorControl cursorControl) []followEntry {
 	j, err := openFilteredJournal(inputPath, matches, flags, outputMode)
 	if err != nil {
 		return nil
 	}
 	defer j.Close()
 	var out []followEntry
-	_ = nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, func(entry *journal.Entry) error {
+	_ = nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
 		if entry.Cursor == "" {
 			return nil
 		}
@@ -1518,9 +1661,9 @@ func scanFollowSnapshot(inputPath string, matches []string, flags *cliFlags, out
 	return out
 }
 
-func runFollow(inputPath string, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters) error {
+func runFollow(inputPath string, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl) error {
 	seen := make(map[string]struct{})
-	initial := scanFollowSnapshot(inputPath, matches, flags, outputMode, sinceUsec, untilUsec, postFilters)
+	initial := scanFollowSnapshot(inputPath, matches, flags, outputMode, sinceUsec, untilUsec, postFilters, cursorControl)
 	for _, entry := range initial {
 		seen[entry.cursor] = struct{}{}
 	}
@@ -1535,7 +1678,7 @@ func runFollow(inputPath string, matches []string, flags *cliFlags, outputMode s
 	}
 	for {
 		time.Sleep(100 * time.Millisecond)
-		for _, entry := range scanFollowSnapshot(inputPath, matches, flags, outputMode, sinceUsec, untilUsec, postFilters) {
+		for _, entry := range scanFollowSnapshot(inputPath, matches, flags, outputMode, sinceUsec, untilUsec, postFilters, cursorControl) {
 			if _, ok := seen[entry.cursor]; ok {
 				continue
 			}

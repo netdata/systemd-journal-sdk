@@ -81,7 +81,9 @@ libsystemd/Netdata `jf` needed by Netdata readers:
 
 `SdJournalSeekCursor` accepts a syntactically valid cursor as a seek location
 even when no exact entry exists. Use `SdJournalTestCursor` to check whether the
-current entry exactly matches a cursor.
+current entry exactly matches a cursor. Cursor metadata is emitted in the
+official systemd cursor shape; seek and test also accept the older SDK cursor
+shape for compatibility.
 
 Stateful data and unique enumeration return full `FIELD=value` payloads and are
 binary-safe. `SdJournalGetData` returns the first value for a repeated field;

@@ -113,6 +113,8 @@ Current reader scope:
   realtime/monotonic/seqnum/cursor metadata, and boot listing;
 - facade cursor seeking follows libsystemd semantics: valid missing cursors are
   accepted as seek locations, while `test_cursor` checks exact current position;
+- cursor metadata is emitted in the official systemd cursor shape; cursor seek
+  and test also accept the older SDK cursor shape for compatibility;
 - current-entry facade data enumeration returns borrowed `FIELD=value` bytes
   for the current DATA object, matching libsystemd-style validity until the
   current row is reset or the reader advances; uncompressed DATA is returned

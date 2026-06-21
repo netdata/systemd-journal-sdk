@@ -739,12 +739,24 @@ fn missing_cursor_positions_after_original(
     cursor_realtime: u64,
 ) -> Result<bool, journal::FacadeError> {
     SdJournalSeekCursor(journal, cursor)?;
-    let Some((cursor_prefix, _)) = cursor.rsplit_once("n=") else {
-        return Ok(false);
-    };
-    SdJournalSeekCursor(journal, &format!("{cursor_prefix}n=999999"))?;
+    SdJournalSeekCursor(journal, &cursor_with_missing_seqnum(cursor))?;
     Ok(!SdJournalTestCursor(journal, cursor)?
         && SdJournalGetRealtimeUsec(journal)? >= cursor_realtime)
+}
+
+fn cursor_with_missing_seqnum(cursor: &str) -> String {
+    let mut parts: Vec<String> = cursor.split(';').map(ToString::to_string).collect();
+    for part in &mut parts {
+        if part.starts_with("i=") {
+            *part = "i=f423f".to_string();
+            return parts.join(";");
+        }
+        if part.starts_with("n=") {
+            *part = "n=999999".to_string();
+            return parts.join(";");
+        }
+    }
+    cursor.to_string()
 }
 
 fn test_corruption(tc: &TestCase, start: Instant) -> AdapterResult {

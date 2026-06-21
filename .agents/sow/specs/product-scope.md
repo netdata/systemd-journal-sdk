@@ -650,6 +650,11 @@ Accepted reader API layers:
   syntactically valid cursor is accepted as a seek location even when no current
   entry has that exact cursor. Invalid cursor syntax fails. `test_cursor()`
   remains the exact-current-position check.
+- `get_cursor()`, JSON output, export output, and file-backed `journalctl`
+  cursor files emit official systemd cursor strings with `s=`, `i=`, `b=`,
+  `m=`, `t=`, and `x=` fields. `seek_cursor()` and `test_cursor()` accept both
+  official systemd cursor strings and the older SDK cursor shape with `s=`,
+  `j=`, `c=`, and `n=` fields for compatibility with pre-existing SDK callers.
 - Current-entry data enumeration and query-unique stateful enumeration are
   binary-safe and preserve repeated values. `GetData` returns the first value
   for a repeated field; callers that need every repeated value use

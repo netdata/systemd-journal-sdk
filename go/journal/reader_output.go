@@ -282,26 +282,45 @@ func ParseCursor(cursor string) (seqnumID string, bootID string, realtime uint64
 		values[key] = value
 	}
 
-	s, okS := values["s"]
-	j, okJ := values["j"]
-	c, okC := values["c"]
-	nstr, okN := values["n"]
-	if !okS || !okJ || !okC || !okN || s == "" || j == "" {
+	s := normalizeCursorID(values["s"])
+	if s == "" {
 		return "", "", 0, 0, errors.New("invalid cursor format")
 	}
 	seqnumID = s
-	bootID = j
 
-	realtime, err = strconv.ParseUint(c, 16, 64)
+	if values["j"] != "" || values["c"] != "" || values["n"] != "" {
+		bootID = normalizeCursorID(values["j"])
+		if bootID == "" || values["c"] == "" || values["n"] == "" {
+			return "", "", 0, 0, errors.New("invalid cursor format")
+		}
+		realtime, err = strconv.ParseUint(values["c"], 16, 64)
+		if err != nil {
+			return "", "", 0, 0, errors.New("invalid cursor format: bad realtime")
+		}
+		seqnum, err = strconv.ParseUint(values["n"], 10, 64)
+		if err != nil {
+			return "", "", 0, 0, errors.New("invalid cursor format: bad seqnum")
+		}
+		return seqnumID, bootID, realtime, seqnum, nil
+	}
+
+	bootID = normalizeCursorID(values["b"])
+	if bootID == "" || values["t"] == "" || values["i"] == "" {
+		return "", "", 0, 0, errors.New("invalid cursor format")
+	}
+	realtime, err = strconv.ParseUint(values["t"], 16, 64)
 	if err != nil {
 		return "", "", 0, 0, errors.New("invalid cursor format: bad realtime")
 	}
 
-	seqnumVal, err := strconv.ParseUint(nstr, 10, 64)
+	seqnum, err = strconv.ParseUint(values["i"], 16, 64)
 	if err != nil {
 		return "", "", 0, 0, errors.New("invalid cursor format: bad seqnum")
 	}
-	seqnum = seqnumVal
 
 	return seqnumID, bootID, realtime, seqnum, nil
+}
+
+func normalizeCursorID(value string) string {
+	return strings.ToLower(strings.ReplaceAll(value, "-", ""))
 }

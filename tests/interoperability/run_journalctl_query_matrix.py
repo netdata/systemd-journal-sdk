@@ -3,7 +3,7 @@
 
 Generates repo-local fixtures and compares stock journalctl with the Rust and
 Go journalctl rewrites for --since, --until, --boot, --lines, --reverse,
---show-cursor, field filters, grep filters, and --follow behavior.
+--show-cursor, cursor seeking, field filters, grep filters, and --follow behavior.
 Runtime artifacts stay under .local/interoperability/.
 """
 
@@ -265,7 +265,34 @@ def parse_messages(output: str) -> list[str]:
     return messages
 
 
+def parse_cursors(output: str) -> list[str]:
+    cursors = []
+    for line in output.splitlines():
+        if not line.startswith("{"):
+            continue
+        obj = json.loads(line)
+        cursor = obj.get("__CURSOR")
+        if isinstance(cursor, str) and cursor:
+            cursors.append(cursor)
+    return cursors
+
+
 def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
+    cursor_probe = run(
+        reader_command(
+            "stock",
+            tools,
+            "file",
+            fixtures["file"],
+            ["--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        timeout=30,
+    )
+    require_ok(cursor_probe, "stock cursor probe")
+    file_cursors = parse_cursors(cursor_probe.stdout)
+    if len(file_cursors) != len(FILE_ROWS):
+        raise RuntimeError(f"expected {len(FILE_ROWS)} file cursors, got {len(file_cursors)}")
+
     cases = [
         ("directory-all", "directory", fixtures["directory"], ["TEST_ID=journalctl-query"]),
         ("directory-reverse", "directory", fixtures["directory"], ["--reverse", "TEST_ID=journalctl-query"]),
@@ -302,6 +329,19 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
         ("file-lines-oldest", "file", fixtures["file"], ["--lines=+2", "TEST_ID=journalctl-query"]),
         ("file-lines-default", "file", fixtures["file"], ["--lines", "TEST_ID=journalctl-query"]),
         ("file-show-cursor", "file", fixtures["file"], ["--show-cursor", "TEST_ID=journalctl-query"]),
+        ("file-cursor-first", "file", fixtures["file"], ["--cursor", file_cursors[0], "--boot=all", "TEST_ID=journalctl-query"]),
+        (
+            "file-after-cursor-first",
+            "file",
+            fixtures["file"],
+            ["--after-cursor", file_cursors[0], "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-after-cursor-filtered-first",
+            "file",
+            fixtures["file"],
+            ["--after-cursor", file_cursors[0], "--identifier=app-b", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
         ("file-boot-latest", "file", fixtures["file"], ["--boot=0", "TEST_ID=journalctl-query"]),
         ("file-this-boot", "file", fixtures["file"], ["--this-boot", "TEST_ID=journalctl-query"]),
         ("file-boot-first", "file", fixtures["file"], ["--boot=1", "TEST_ID=journalctl-query"]),
@@ -376,6 +416,74 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
                     "actual": actual,
                     "cursor_present": "-- cursor:" in result.stdout,
                     "cursor_required": expect_cursor,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
+    return results
+
+
+def run_cursor_file_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
+    cursor_probe = run(
+        reader_command(
+            "stock",
+            tools,
+            "file",
+            fixtures["file"],
+            ["--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        timeout=30,
+    )
+    require_ok(cursor_probe, "stock cursor-file probe")
+    file_cursors = parse_cursors(cursor_probe.stdout)
+    if len(file_cursors) != len(FILE_ROWS):
+        raise RuntimeError(f"expected {len(FILE_ROWS)} file cursors, got {len(file_cursors)}")
+
+    cases = [
+        ("file-cursor-file-existing", file_cursors[0]),
+        ("file-cursor-file-missing", None),
+    ]
+    results: list[dict[str, object]] = []
+    for case_name, initial_cursor in cases:
+        expected_messages: list[str] | None = None
+        expected_cursor: str | None = None
+        for reader in READERS:
+            cursor_file = FIXTURE_DIR / f"{case_name}-{reader}.cursor"
+            if cursor_file.exists():
+                cursor_file.unlink()
+            if initial_cursor is not None:
+                cursor_file.write_text(initial_cursor, encoding="utf-8")
+            cmd = reader_command(
+                reader,
+                tools,
+                "file",
+                fixtures["file"],
+                ["--cursor-file", str(cursor_file), "--boot=all", "TEST_ID=journalctl-query"],
+            )
+            result = run(cmd, timeout=30)
+            actual = parse_messages(result.stdout)
+            written_cursor = cursor_file.read_text(encoding="utf-8") if cursor_file.exists() else ""
+            if reader == "stock":
+                expected_messages = actual
+                expected_cursor = written_cursor
+                ok = result.returncode == 0 and bool(written_cursor)
+            else:
+                ok = (
+                    result.returncode == 0
+                    and actual == expected_messages
+                    and written_cursor == expected_cursor
+                    and bool(written_cursor)
+                )
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected_messages,
+                    "actual": actual,
+                    "expected_cursor": expected_cursor,
+                    "actual_cursor": written_cursor,
                     "returncode": result.returncode,
                     "stderr": result.stderr[-1000:],
                 }
@@ -593,6 +701,7 @@ def main() -> int:
     tools = build_tools()
     fixtures = make_fixtures()
     results = run_static_cases(tools, fixtures)
+    results.extend(run_cursor_file_cases(tools, fixtures))
     results.extend(run_portable_error_cases(tools, fixtures))
     if not args.skip_follow:
         results.extend(run_follow_cases(tools, fixtures))

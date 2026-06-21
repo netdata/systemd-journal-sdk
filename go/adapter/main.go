@@ -666,11 +666,7 @@ func checkCursorValidation(ops cursorTestOps, cursor string) error {
 }
 
 func checkMissingCursorSeek(ops cursorTestOps, cursor string, cursorRealtime uint64) error {
-	idx := strings.LastIndex(cursor, "n=")
-	if idx < 0 {
-		return errors.New("cursor missing seqnum segment")
-	}
-	if err := ops.seekCursor(cursor[:idx] + "n=999999"); err != nil {
+	if err := ops.seekCursor(cursorWithMissingSeqnum(cursor)); err != nil {
 		return err
 	}
 	missingMatch, err := ops.testCursor(cursor)
@@ -688,6 +684,21 @@ func checkMissingCursorSeek(ops cursorTestOps, cursor string, cursorRealtime uin
 		return errors.New("missing seek moved before requested cursor")
 	}
 	return nil
+}
+
+func cursorWithMissingSeqnum(cursor string) string {
+	parts := strings.Split(cursor, ";")
+	for i, part := range parts {
+		if strings.HasPrefix(part, "i=") {
+			parts[i] = "i=f423f"
+			return strings.Join(parts, ";")
+		}
+		if strings.HasPrefix(part, "n=") {
+			parts[i] = "n=999999"
+			return strings.Join(parts, ";")
+		}
+	}
+	return cursor
 }
 
 func runEnumerationTest(tc *TestCase) Result {

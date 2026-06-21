@@ -607,8 +607,7 @@ fn assert_stateful_facade_cursor_navigation(journal: &mut SdJournal) {
     SdJournalSeekCursor(journal, &cursor).expect("seek cursor back to second");
     let entry = SdJournalGetEntry(journal).expect("entry after cursor seek");
     assert_eq!(entry.get_str("MESSAGE"), Some("second"));
-    let (cursor_prefix, _) = first_cursor.rsplit_once("n=").expect("cursor has seqnum");
-    let missing_cursor = format!("{cursor_prefix}n=999999");
+    let missing_cursor = cursor_with_missing_seqnum(&first_cursor);
     SdJournalSeekCursor(journal, &missing_cursor)
         .expect("valid missing cursor is accepted as a seek location");
     assert!(
@@ -621,6 +620,21 @@ fn assert_stateful_facade_cursor_navigation(journal: &mut SdJournal) {
     );
     let entry = SdJournalGetEntry(journal).expect("entry after missing cursor seek");
     assert_eq!(entry.get_str("MESSAGE"), Some("second"));
+}
+
+fn cursor_with_missing_seqnum(cursor: &str) -> String {
+    let mut parts: Vec<String> = cursor.split(';').map(ToString::to_string).collect();
+    for part in &mut parts {
+        if part.starts_with("i=") {
+            *part = "i=f423f".to_string();
+            return parts.join(";");
+        }
+        if part.starts_with("n=") {
+            *part = "n=999999".to_string();
+            return parts.join(";");
+        }
+    }
+    panic!("cursor has seqnum segment: {cursor}");
 }
 
 fn assert_stateful_facade_multi_file_navigation(dir: &tempfile::TempDir, path: &Path) {
@@ -673,10 +687,7 @@ fn assert_stateful_facade_multi_file_navigation(dir: &tempfile::TempDir, path: &
     );
     let entry = SdJournalGetEntry(&mut cursor_multi).expect("directory entry after cursor seek");
     assert_eq!(entry.get_str("MESSAGE"), Some("third"));
-    let (cursor_prefix, _) = multi_first_cursor
-        .rsplit_once("n=")
-        .expect("multi cursor has seqnum");
-    let missing_cursor = format!("{cursor_prefix}n=999999");
+    let missing_cursor = cursor_with_missing_seqnum(&multi_first_cursor);
     SdJournalSeekCursor(&mut cursor_multi, &missing_cursor)
         .expect("directory valid missing cursor is accepted as a seek location");
     assert!(

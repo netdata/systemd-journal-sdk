@@ -33,11 +33,13 @@ pub(super) fn build_cursor(
 
 pub(super) fn format_cursor_from_key(key: DirectoryEntryKey) -> String {
     format!(
-        "s={};j={};c={:016x};n={}",
+        "s={};i={:x};b={};m={:x};t={:x};x={:x}",
         hex::encode(key.seqnum_id),
+        key.seqnum,
         hex::encode(key.boot_id),
+        key.monotonic,
         key.realtime,
-        key.seqnum
+        key.xor_hash
     )
 }
 

@@ -710,7 +710,13 @@ impl FileReader {
     }
 
     pub fn test_cursor(&self, cursor: &str) -> Result<bool> {
-        Ok(self.get_cursor()? == cursor)
+        let current = self.get_cursor()?;
+        let current =
+            parse_cursor(&current).map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        let Ok(want) = parse_cursor(cursor) else {
+            return Ok(false);
+        };
+        Ok(current == want)
     }
 
     pub fn add_match(&mut self, data: &[u8]) {

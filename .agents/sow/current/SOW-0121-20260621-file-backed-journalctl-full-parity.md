@@ -408,6 +408,21 @@ Failure handling:
   that set. Stock `journalctl --file ... --exclude-identifier=...` output is
   unchanged, so the portable commands now preserve that no-op behavior for
   official v260.1 parity.
+- Implemented the next file-backed cursor chunk directly in Rust and Go:
+  - `--cursor=` / `-c` starts at the supplied cursor and includes that entry
+    when it matches filters;
+  - `--after-cursor=` starts after the supplied cursor only when the current
+    filtered entry still tests equal to that cursor, preserving the v260.1
+    filtered-skip rule from `src/journal/journalctl-show.c`;
+  - `--cursor-file=` reads the first line if present, starts after it, and
+    atomically writes the final emitted cursor with the stock trailing newline;
+  - live follow snapshots honor cursor starts;
+  - Rust and Go facade cursor parsing now accepts official systemd cursor
+    strings (`s=`, `i=`, `b=`, `m=`, `t=`, `x=`) while preserving older SDK
+    cursor input compatibility (`s=`, `j=`, `c=`, `n=`);
+  - Rust and Go cursor emitters now produce official systemd cursor strings for
+    facade `get_cursor()`, JSON/export metadata, and file-backed journalctl
+    cursor output.
 
 ## Validation
 
@@ -430,13 +445,14 @@ Acceptance criteria evidence:
 - Rust and Go file-backed behavior is partially advanced for `--reverse`,
   `--show-cursor`, `--lines` direction/default semantics, `--identifier`,
   `--priority`, `--facility`, `--grep`, `--case-sensitive`, `--dmesg`,
-  `--this-boot`, and portable path-match rejection.
+  `--this-boot`, `--cursor`, `--after-cursor`, `--cursor-file`, and portable
+  path-match rejection.
 - Remaining file-backed parity is still pending, including full short-family
   formatting, verbose/cat/with-unit/JSON variant exact framing,
-  `--output-fields`, cursor seeking/cursor-file mutation, unit/user-unit and
-  invocation filters, `--header`, `--disk-usage`, `--list-invocations`,
-  `--new-id128`, `--setup-keys`, exact empty-result exit semantics, and
-  directory vacuum actions where approved by the parity matrix.
+  `--output-fields`, unit/user-unit and invocation filters, `--header`,
+  `--disk-usage`, `--list-invocations`, `--new-id128`, `--setup-keys`, exact
+  empty-result exit semantics, and directory vacuum actions where approved by
+  the parity matrix.
 
 Tests or equivalent validation:
 
@@ -469,6 +485,31 @@ Tests or equivalent validation:
   against stock `journalctl` from systemd 260 `(260.1-2-manjaro)`: `PASS
   results=119 failures=0`, including live follow checks after the filter-path
   changes.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl -p
+  systemd-journal-sdk --target-dir .local/cargo-target`: passed after the
+  cursor chunk; 24 Rust `journalctl` tests and 121 Rust SDK tests passed,
+  including official systemd cursor parser coverage.
+- `cd go && GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test ./cmd/journalctl
+  ./journal ./adapter`: passed after the cursor chunk, including official
+  systemd cursor parser coverage and cursor adapter coverage.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)`: `PASS results=122 failures=0`, including official
+  `--cursor`, `--after-cursor`, filtered after-cursor skip, and
+  `--cursor-file` byte-parity cases.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+  against stock `journalctl` from systemd 260 `(260.1-2-manjaro)`: `PASS
+  results=134 failures=0`, including live follow checks after the cursor-path
+  changes.
+- `python3 tests/docs/check_wiki_docs.py`: passed after cursor documentation
+  updates; validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after cursor documentation
+  updates; 31 of 31 verified examples passed.
 - `python3 tests/interoperability/run_directory_matrix.py`: passed against
   stock `journalctl` from systemd 260 `(260.1-2-manjaro)`: `PASS checks=34`.
 - `python3 tests/interoperability/run_verify_matrix.py`: passed against stock
@@ -476,9 +517,10 @@ Tests or equivalent validation:
   failures=0`.
 - `git diff --check`: passed.
 - Sensitive string scan over changed durable artifacts and candidate code:
-  passed; the only match was the existing sanitized sensitive-data policy text
-  in this SOW.
-- `.agents/sow/audit.sh`: passed after the direct filter chunk.
+  passed after the cursor chunk; the only match was the existing sanitized
+  sensitive-data policy text in this SOW.
+- `.agents/sow/audit.sh`: passed after the direct filter chunk and again after
+  the cursor chunk.
 
 Real-use evidence:
 
@@ -509,9 +551,11 @@ Artifact maintenance gate:
 - Runtime project skills: no update needed for this chunk.
 - Specs: `.agents/sow/specs/journalctl-v260-parity-matrix.md` was updated to
   correct `--exclude-identifier=` as a v260.1 file-backed no-op based on source
-  and stock-command evidence.
-- End-user/operator docs: no product behavior changed yet; docs update is
-  required when this SOW implements or changes command behavior.
+  and stock-command evidence. `.agents/sow/specs/product-scope.md` was updated
+  to record that emitted cursor strings now use the official systemd cursor
+  shape while seek/test still accept the older SDK cursor shape.
+- End-user/operator docs: `rust/README.md`, `go/README.md`, `go/API.md`, and
+  `docs/Reader-APIs.md` were updated for the cursor string format contract.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -520,8 +564,9 @@ Artifact maintenance gate:
 Specs update:
 
 - Added `.agents/sow/specs/journalctl-v260-parity-matrix.md` for the active
-  SOW implementation contract. Product-scope update remains pending final
-  shipped behavior and ship recommendation.
+  SOW implementation contract. Updated `.agents/sow/specs/product-scope.md`
+  for the shipped cursor string contract change. Additional product-scope
+  updates remain pending final shipped behavior and ship recommendation.
 
 Project skills update:
 
@@ -531,8 +576,9 @@ Project skills update:
 
 End-user/operator docs update:
 
-- Pending full implementation. No end-user docs update yet because this chunk
-  is not the final shipped command contract.
+- Updated `rust/README.md`, `go/README.md`, `go/API.md`, and
+  `docs/Reader-APIs.md` for the cursor string format contract. Final
+  journalctl command documentation remains pending full implementation.
 
 End-user/operator skills update:
 

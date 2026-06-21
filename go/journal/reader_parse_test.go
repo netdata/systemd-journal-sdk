@@ -53,6 +53,23 @@ func TestParseCursor(t *testing.T) {
 	}
 	_ = bootID
 	_ = realtime
+
+	seqnumID, bootID, realtime, seqnum, err = ParseCursor("s=ABC123;i=2a;b=01234567-89ab-cdef-0123-456789abcdef;m=9;t=10;x=ff")
+	if err != nil {
+		t.Fatalf("official ParseCursor error: %v", err)
+	}
+	if seqnumID != "abc123" {
+		t.Errorf("official seqnumID = %q, want %q", seqnumID, "abc123")
+	}
+	if bootID != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("official bootID = %q", bootID)
+	}
+	if realtime != 16 {
+		t.Errorf("official realtime = %d, want 16", realtime)
+	}
+	if seqnum != 42 {
+		t.Errorf("official seqnum = %d, want 42", seqnum)
+	}
 }
 
 func TestUnsupportedDaemonCommands(t *testing.T) {

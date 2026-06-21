@@ -14,19 +14,22 @@ pub fn parse_cursor(cursor: &str) -> std::result::Result<ParsedCursor, ParseErro
     let mut seqnum = None;
 
     for part in cursor.split(';') {
-        let split = part.split_once('=');
-        if split.is_none() {
+        let Some((key, value)) = part.split_once('=') else {
             return Err("invalid cursor: malformed segment".into());
-        }
-        let (key, value) = split.unwrap();
+        };
         if key.is_empty() {
             return Err("invalid cursor: empty key".into());
         }
         match key {
-            "s" => seqnum_id = value.to_string(),
-            "j" => boot_id = value.to_string(),
+            "s" => seqnum_id = normalize_id(value),
+            // Legacy SDK cursor shape.
+            "j" => boot_id = normalize_id(value),
             "c" => realtime = Some(u64::from_str_radix(value, 16)?),
             "n" => seqnum = Some(value.parse()?),
+            // Official systemd cursor shape.
+            "b" => boot_id = normalize_id(value),
+            "t" => realtime = Some(u64::from_str_radix(value, 16)?),
+            "i" => seqnum = Some(u64::from_str_radix(value, 16)?),
             _ => {}
         }
     }
@@ -41,6 +44,10 @@ pub fn parse_cursor(cursor: &str) -> std::result::Result<ParsedCursor, ParseErro
         realtime.ok_or("invalid cursor: missing realtime")?,
         seqnum.ok_or("invalid cursor: missing seqnum")?,
     ))
+}
+
+fn normalize_id(value: &str) -> String {
+    value.replace('-', "").to_ascii_lowercase()
 }
 
 pub fn parse_match_bytes(data: &[u8]) -> std::result::Result<Vec<u8>, ParseError> {
@@ -59,4 +66,32 @@ pub fn parse_match_bytes(data: &[u8]) -> std::result::Result<Vec<u8>, ParseError
         }
     }
     return Ok(data.to_vec());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cursor;
+
+    #[test]
+    fn parse_cursor_accepts_legacy_sdk_shape() {
+        let parsed = parse_cursor("s=abc123;j=def456;c=0000000000000001;n=42")
+            .expect("legacy cursor parses");
+        assert_eq!(parsed, ("abc123".to_string(), "def456".to_string(), 1, 42));
+    }
+
+    #[test]
+    fn parse_cursor_accepts_official_systemd_shape() {
+        let parsed =
+            parse_cursor("s=ABC123;i=2a;b=01234567-89ab-cdef-0123-456789abcdef;m=9;t=10;x=ff")
+                .expect("official cursor parses");
+        assert_eq!(
+            parsed,
+            (
+                "abc123".to_string(),
+                "0123456789abcdef0123456789abcdef".to_string(),
+                16,
+                42,
+            )
+        );
+    }
 }
