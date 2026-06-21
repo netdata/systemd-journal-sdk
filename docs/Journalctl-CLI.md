@@ -23,6 +23,9 @@ The rewrites cover file-backed query behavior only:
   suppresses only the hostname component;
 - field projection: `--output-fields` for `verbose`, `export`, `json*`, and
   `cat`, with stock metadata retention for JSON/export modes;
+- output controls: full-width text output is the default; `--no-full`, `--all`,
+  and empty-result messages follow stock v260.1 behavior, including JSON large
+  field `null` thresholding without `--all`;
 - metadata: `--list-boots`, `--list-invocations`, `--fields`,
   `--field <NAME>` (unique values), and `--header`;
 - filtering: `FIELD=value` matches, repeated same-field matches as OR,
@@ -35,7 +38,8 @@ The rewrites cover file-backed query behavior only:
 - time and boot windows: `--since`, `--until`, `--boot [ID]`;
 - cursors: `--cursor`, `--after-cursor`, `--cursor-file`, and
   `--show-cursor`, using official systemd cursor strings;
-- paging: `--head <n>`, `--tail <n>`, `--no-tail`;
+- paging: `--head <n>`, `--tail <n>`, `--lines[=[+]N]`, `--no-tail`, and
+  `--pager-end` implicit 1000-line tail behavior;
 - live reads: `--follow` on actively appended files and directories;
 - utility actions: `--new-id128` and `--disk-usage` for explicit
   `--file`/`--directory` inputs;

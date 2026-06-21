@@ -18,16 +18,26 @@ type outputOptions struct {
 	outputFieldsSet bool
 	utc             bool
 	noHostname      bool
+	fullWidth       bool
+	showAll         bool
 	truncateNewline bool
 }
 
-func newOutputOptions(flags *cliFlags, outputFieldsSet bool) outputOptions {
+const (
+	printCharThreshold = 300
+	jsonThreshold      = 4096
+	defaultColumns     = 80
+)
+
+func newOutputOptions(flags *cliFlags, outputFieldsSet bool, fullWidth bool) outputOptions {
 	return outputOptions{
 		mode:            *flags.output,
 		outputFields:    parseOutputFields(*flags.outputFieldsFlag),
 		outputFieldsSet: outputFieldsSet,
 		utc:             *flags.utcFlag,
 		noHostname:      *flags.noHostnameFlag,
+		fullWidth:       fullWidth,
+		showAll:         *flags.allFlag,
 		truncateNewline: *flags.truncateNewlineFlag,
 	}
 }
@@ -113,7 +123,8 @@ func (r *outputRenderer) renderShort(entry *journal.Entry, mode timestampMode) (
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s %s: %s\n", timestamp, entryLabel(entry, r.options), displayMessage(entry, r.options.truncateNewline)), nil
+	prefix := fmt.Sprintf("%s %s: ", timestamp, entryLabel(entry, r.options))
+	return prefix + displayMessage(entry, r.options, len(prefix)) + "\n", nil
 }
 
 func (r *outputRenderer) renderWithUnit(entry *journal.Entry) (string, error) {
@@ -126,7 +137,8 @@ func (r *outputRenderer) renderWithUnit(entry *journal.Entry) (string, error) {
 		label = baseEntryLabel(entry)
 	}
 	label = formatEntryLabel(entry, label, r.options)
-	return fmt.Sprintf("%s %s: %s\n", timestamp, label, displayMessage(entry, r.options.truncateNewline)), nil
+	prefix := fmt.Sprintf("%s %s: ", timestamp, label)
+	return prefix + displayMessage(entry, r.options, len(prefix)) + "\n", nil
 }
 
 func (r *outputRenderer) renderShortDelta(entry *journal.Entry) (string, error) {
@@ -146,7 +158,8 @@ func (r *outputRenderer) renderShortDelta(entry *journal.Entry) (string, error) 
 		delta = fmt.Sprintf(" <%s%s>", formatMonotonic(diff), marker)
 	}
 	r.previousDelta = &deltaState{realtime: entry.Realtime, monotonic: entry.Monotonic, bootID: entry.BootID}
-	return fmt.Sprintf("[%s%s] %s: %s\n", monotonic, delta, entryLabel(entry, r.options), displayMessage(entry, r.options.truncateNewline)), nil
+	prefix := fmt.Sprintf("[%s%s] %s: ", monotonic, delta, entryLabel(entry, r.options))
+	return prefix + displayMessage(entry, r.options, len(prefix)) + "\n", nil
 }
 
 func absDiff(a, b uint64) uint64 {
@@ -182,7 +195,7 @@ func (r *outputRenderer) renderVerbose(entry *journal.Entry) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s [%s]\n", timestamp, entry.Cursor)
 	for _, field := range verboseFields(entry, r.options) {
-		fmt.Fprintf(&b, "    %s=%s\n", field.name, displayValue(field.value, false))
+		fmt.Fprintf(&b, "    %s=%s\n", field.name, displayVerboseValue(field.name, field.value, r.options))
 	}
 	return b.String(), nil
 }
@@ -306,12 +319,23 @@ func unitLabel(entry *journal.Entry) string {
 	return ""
 }
 
-func displayMessage(entry *journal.Entry, truncateNewline bool) string {
+func displayMessage(entry *journal.Entry, options outputOptions, prefixColumns int) string {
 	values := entryValues(entry, "MESSAGE")
 	if len(values) == 0 {
 		return ""
 	}
-	return displayValue(values[0], truncateNewline)
+	value := values[0]
+	if options.truncateNewline {
+		value = truncateAtNewline(value)
+	}
+	if !options.showAll && !journalTextPrintable(value) {
+		return blobData(len(value))
+	}
+	out := cStringBytes(value)
+	if !options.showAll && !options.fullWidth {
+		out = ellipsizeLine(out, prefixColumns)
+	}
+	return string(out)
 }
 
 func firstString(entry *journal.Entry, name string) string {
@@ -324,11 +348,65 @@ func firstString(entry *journal.Entry, name string) string {
 
 func displayValue(value []byte, truncateNewline bool) string {
 	if truncateNewline {
-		if idx := bytes.IndexByte(value, '\n'); idx >= 0 {
-			value = value[:idx]
-		}
+		value = truncateAtNewline(value)
 	}
 	return string(value)
+}
+
+func displayVerboseValue(name string, value []byte, options outputOptions) string {
+	if options.showAll {
+		return string(cStringBytes(value))
+	}
+	if !journalTextPrintable(value) || (!options.fullWidth && len(name)+1+len(value) >= printCharThreshold) {
+		return blobData(len(value))
+	}
+	return string(value)
+}
+
+func truncateAtNewline(value []byte) []byte {
+	if idx := bytes.IndexByte(value, '\n'); idx >= 0 {
+		return value[:idx]
+	}
+	return value
+}
+
+func cStringBytes(value []byte) []byte {
+	if idx := bytes.IndexByte(value, 0); idx >= 0 {
+		return value[:idx]
+	}
+	return value
+}
+
+func ellipsizeLine(value []byte, prefixColumns int) []byte {
+	limit := defaultColumns - prefixColumns - 1
+	if limit < 0 {
+		limit = 0
+	}
+	if len(value) <= limit {
+		return value
+	}
+	out := make([]byte, 0, limit+len("…"))
+	out = append(out, value[:limit]...)
+	out = append(out, "…"...)
+	return out
+}
+
+func journalTextPrintable(value []byte) bool {
+	text := string(value)
+	if !utf8.ValidString(text) {
+		return false
+	}
+	for _, ch := range text {
+		cp := uint32(ch)
+		if (cp < 0x20 && ch != '\t' && ch != '\n') || (cp >= 0x7f && cp <= 0x9f) {
+			return false
+		}
+	}
+	return true
+}
+
+func blobData(size int) string {
+	return fmt.Sprintf("[%s blob data]", formatJournalBytes(uint64(size)))
 }
 
 type outputField struct {
@@ -393,16 +471,16 @@ func selectedNamedFields(entry *journal.Entry, names []string) []outputField {
 func jsonObject(entry *journal.Entry, options outputOptions) map[string]any {
 	object := make(map[string]any)
 	for _, field := range metadataFields(entry) {
-		addJSONValue(object, field.name, field.value)
+		addJSONValue(object, field.name, field.value, options.showAll)
 	}
 	for _, field := range selectedOutputFields(entry, options) {
-		addJSONValue(object, field.name, field.value)
+		addJSONValue(object, field.name, field.value, options.showAll)
 	}
 	return object
 }
 
-func addJSONValue(object map[string]any, name string, value []byte) {
-	encoded := jsonValueForBytes(value)
+func addJSONValue(object map[string]any, name string, value []byte, showAll bool) {
+	encoded := jsonValueForBytes(name, value, showAll)
 	if existing, ok := object[name]; ok {
 		if values, ok := existing.([]any); ok {
 			object[name] = append(values, encoded)
@@ -414,7 +492,10 @@ func addJSONValue(object map[string]any, name string, value []byte) {
 	object[name] = encoded
 }
 
-func jsonValueForBytes(value []byte) any {
+func jsonValueForBytes(name string, value []byte, showAll bool) any {
+	if !showAll && len(name)+1+len(value) >= jsonThreshold {
+		return nil
+	}
 	if utf8.Valid(value) {
 		text := string(value)
 		printable := true

@@ -759,6 +759,12 @@ Current Go reader feature slice:
 - `--output-fields` is supported for `verbose`, `export`, JSON modes, and
   `cat`; JSON/export preserve stock metadata fields such as cursor, realtime,
   monotonic, seqnum, seqnum ID, and boot ID;
+- output controls preserve stock v260.1 behavior: full-width text output is the
+  default, `--no-full` enables stock text ellipsization and blob suppression,
+  `--all` exposes long/non-printable text where stock does, JSON applies the
+  stock non-`--all` large-field `null` threshold, and empty default/verbose
+  results print `-- No entries --` unless quiet or an auto-quiet output mode is
+  active;
 - libsystemd-style match tree behavior from `sd_journal_add_match()`,
   `sd_journal_add_disjunction()`, and `sd_journal_add_conjunction()`;
 - file-backed Go journalctl behavior for `--file`, `--directory`,
@@ -767,8 +773,9 @@ Current Go reader feature slice:
   with `--follow`, cursor seek/update behavior, repeated same-field OR
   matches, `+` disjunction, syslog identifier, priority, facility, grep,
   dmesg, system/user unit filters, invocation filters, `--list-invocations`,
-  `--header`, explicit-input `--disk-usage`, and explicit-directory
-  `--vacuum-size`/`--vacuum-files`/`--vacuum-time`;
+  `--header`, `--pager-end` implicit 1000-line tail behavior, explicit-input
+  `--disk-usage`, and explicit-directory `--vacuum-size`/`--vacuum-files`/
+  `--vacuum-time`;
 - Go conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, and file-backed journalctl cases.
 
@@ -876,6 +883,12 @@ Current Rust reader feature slice:
 - `--output-fields` is supported for `verbose`, `export`, JSON modes, and
   `cat`; JSON/export preserve stock metadata fields such as cursor, realtime,
   monotonic, seqnum, seqnum ID, and boot ID;
+- output controls preserve stock v260.1 behavior: full-width text output is the
+  default, `--no-full` enables stock text ellipsization and blob suppression,
+  `--all` exposes long/non-printable text where stock does, JSON applies the
+  stock non-`--all` large-field `null` threshold, and empty default/verbose
+  results print `-- No entries --` unless quiet or an auto-quiet output mode is
+  active;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
 - file-backed Rust journalctl behavior for `--file`, `--directory`,
@@ -884,8 +897,9 @@ Current Rust reader feature slice:
   with `--follow`, cursor seek/update behavior, repeated same-field OR
   matches, `+` disjunction, syslog identifier, priority, facility, grep,
   dmesg, system/user unit filters, invocation filters, `--list-invocations`,
-  `--header`, explicit-input `--disk-usage`, and explicit-directory
-  `--vacuum-size`/`--vacuum-files`/`--vacuum-time`;
+  `--header`, `--pager-end` implicit 1000-line tail behavior, explicit-input
+  `--disk-usage`, and explicit-directory `--vacuum-size`/`--vacuum-files`/
+  `--vacuum-time`;
 - Rust conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, header parsing, and file-backed
   journalctl cases.
@@ -925,6 +939,11 @@ File-backed query semantics:
   entries contain `_BOOT_ID`.
 - `--follow` follows repository-supported file and directory inputs by polling
   file-backed readers and emitting newly appended entries in cursor order.
+- `--pager-end` does not spawn a pager in portable mode, but it preserves stock
+  line-selection semantics by applying an implicit 1000-entry tail when no
+  explicit `--lines`, `--head`, or `--tail` option is present.
+- Empty default/verbose show results print `-- No entries --`; `--quiet` and
+  auto-quiet modes such as JSON, export, and cat suppress that line.
 - `--cursor`, `--after-cursor`, `--cursor-file`, and `--show-cursor` use
   official systemd cursor strings for file-backed reads and cursor-file
   updates.

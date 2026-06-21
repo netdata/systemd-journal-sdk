@@ -430,8 +430,10 @@ inputs.
 `--vacuum-size`, `--vacuum-files`, and `--vacuum-time` operate on explicit
 `--directory` inputs, deleting only stock-recognized archived `.journal` and
 `.journal~` files while protecting active/current and unknown files.
-The CLI implements the stock v260.1 output-mode family and `--output-fields`
-projection for `verbose`, `export`, JSON modes, and `cat`.
+The CLI implements the stock v260.1 output-mode family, `--output-fields`
+projection for `verbose`, `export`, JSON modes, and `cat`, and stock output
+controls such as `--all`, `--full`, `--no-full`, empty-result messages, and
+`--pager-end` implicit 1000-line tail behavior.
 
 Realtime ranges, boot filters, and follow mode are supported for file-backed
 inputs:

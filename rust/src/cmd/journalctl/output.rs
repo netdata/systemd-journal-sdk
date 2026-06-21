@@ -1,4 +1,4 @@
-use super::{Args, OutputModeArg};
+use super::{Args, OutputModeArg, format_journal_bytes};
 use anyhow::{Result, anyhow};
 use chrono::{Local, TimeZone, Utc};
 use journal::Entry;
@@ -13,17 +13,25 @@ pub(crate) struct OutputOptions {
     output_fields_set: bool,
     utc: bool,
     no_hostname: bool,
+    full_width: bool,
+    show_all: bool,
     truncate_newline: bool,
 }
 
+const PRINT_CHAR_THRESHOLD: usize = 300;
+const JSON_THRESHOLD: usize = 4096;
+const DEFAULT_COLUMNS: usize = 80;
+
 impl OutputOptions {
-    pub(crate) fn from_args(args: &Args) -> Self {
+    pub(crate) fn from_args(args: &Args, full_width: bool) -> Self {
         Self {
             mode: args.output.clone(),
             output_fields: parse_output_fields(args.output_fields.as_deref()),
             output_fields_set: args.output_fields.is_some(),
             utc: args.utc,
             no_hostname: args.no_hostname,
+            full_width,
+            show_all: args.all,
             truncate_newline: args.truncate_newline,
         }
     }
@@ -70,8 +78,11 @@ impl OutputRenderer {
     fn render_short(&mut self, entry: &Entry, timestamp_mode: TimestampMode) -> Result<Vec<u8>> {
         let timestamp = format_timestamp(entry, timestamp_mode, self.options.utc)?;
         let label = entry_label(entry, &self.options);
-        let message = display_message(entry, self.options.truncate_newline);
-        Ok(format!("{timestamp} {label}: {message}\n").into_bytes())
+        let prefix = format!("{timestamp} {label}: ");
+        let mut out = prefix.clone().into_bytes();
+        out.extend_from_slice(&display_message(entry, &self.options, prefix.len()));
+        out.push(b'\n');
+        Ok(out)
     }
 
     fn render_with_unit(&mut self, entry: &Entry) -> Result<Vec<u8>> {
@@ -81,12 +92,14 @@ impl OutputRenderer {
             &unit_label(entry).unwrap_or_else(|| base_entry_label(entry)),
             &self.options,
         );
-        let message = display_message(entry, self.options.truncate_newline);
-        Ok(format!("{timestamp} {label}: {message}\n").into_bytes())
+        let prefix = format!("{timestamp} {label}: ");
+        let mut out = prefix.clone().into_bytes();
+        out.extend_from_slice(&display_message(entry, &self.options, prefix.len()));
+        out.push(b'\n');
+        Ok(out)
     }
 
     fn render_short_delta(&mut self, entry: &Entry) -> Result<Vec<u8>> {
-        let message = display_message(entry, self.options.truncate_newline);
         let label = entry_label(entry, &self.options);
         let current = (entry.realtime, entry.monotonic, entry.boot_id);
         let monotonic = format_monotonic(entry.monotonic);
@@ -102,7 +115,11 @@ impl OutputRenderer {
             None => "                ".to_string(),
         };
         self.previous_delta = Some(current);
-        Ok(format!("[{monotonic}{delta}] {label}: {message}\n").into_bytes())
+        let prefix = format!("[{monotonic}{delta}] {label}: ");
+        let mut out = prefix.clone().into_bytes();
+        out.extend_from_slice(&display_message(entry, &self.options, prefix.len()));
+        out.push(b'\n');
+        Ok(out)
     }
 
     fn render_cat(&self, entry: &Entry) -> Vec<u8> {
@@ -135,7 +152,7 @@ impl OutputRenderer {
         );
         for (name, value) in verbose_fields(entry, &self.options) {
             out.extend_from_slice(format!("    {name}=").as_bytes());
-            out.extend_from_slice(&display_value(value, false));
+            out.extend_from_slice(&display_verbose_value(&name, value, &self.options));
             out.push(b'\n');
         }
         Ok(out)
@@ -362,10 +379,24 @@ fn unit_label(entry: &Entry) -> Option<String> {
     None
 }
 
-fn display_message(entry: &Entry, truncate_newline: bool) -> String {
+fn display_message(entry: &Entry, options: &OutputOptions, prefix_columns: usize) -> Vec<u8> {
     values_for_name(entry, "MESSAGE")
         .first()
-        .map(|value| String::from_utf8_lossy(&display_value(value, truncate_newline)).into_owned())
+        .map(|value| {
+            let value = if options.truncate_newline {
+                truncate_at_newline(value)
+            } else {
+                *value
+            };
+            if !options.show_all && !journal_text_printable(value) {
+                return blob_data(value.len()).into_bytes();
+            }
+            let mut out = c_string_bytes(value).to_vec();
+            if !options.show_all && !options.full_width {
+                out = ellipsize_line(&out, prefix_columns);
+            }
+            out
+        })
         .unwrap_or_default()
 }
 
@@ -392,11 +423,59 @@ fn display_value(value: &[u8], truncate_newline: bool) -> Vec<u8> {
     if !truncate_newline {
         return value.to_vec();
     }
+    truncate_at_newline(value).to_vec()
+}
+
+fn display_verbose_value(name: &str, value: &[u8], options: &OutputOptions) -> Vec<u8> {
+    if options.show_all {
+        return c_string_bytes(value).to_vec();
+    }
+    if !journal_text_printable(value)
+        || (!options.full_width && name.len() + 1 + value.len() >= PRINT_CHAR_THRESHOLD)
+    {
+        return blob_data(value.len()).into_bytes();
+    }
+    value.to_vec()
+}
+
+fn truncate_at_newline(value: &[u8]) -> &[u8] {
     let end = value
         .iter()
         .position(|byte| *byte == b'\n')
         .unwrap_or(value.len());
-    value[..end].to_vec()
+    &value[..end]
+}
+
+fn c_string_bytes(value: &[u8]) -> &[u8] {
+    let end = value
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(value.len());
+    &value[..end]
+}
+
+fn ellipsize_line(value: &[u8], prefix_columns: usize) -> Vec<u8> {
+    let limit = DEFAULT_COLUMNS.saturating_sub(prefix_columns + 1);
+    if value.len() <= limit {
+        return value.to_vec();
+    }
+    let mut out = value[..limit].to_vec();
+    out.extend_from_slice("…".as_bytes());
+    out
+}
+
+fn journal_text_printable(value: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(value) else {
+        return false;
+    };
+    text.chars().all(|ch| {
+        let cp = ch as u32;
+        (cp >= 0x20 || ch == '\t' || ch == '\n') && !(0x7f..=0x9f).contains(&cp)
+    })
+}
+
+fn blob_data(size: usize) -> String {
+    format!("[{} blob data]", format_journal_bytes(size as u64))
 }
 
 fn metadata_fields(entry: &Entry) -> Vec<(String, Vec<u8>)> {
@@ -477,16 +556,16 @@ fn selected_entry_fields<'a>(entry: &'a Entry, names: &[String]) -> Vec<(String,
 fn json_object(entry: &Entry, options: &OutputOptions) -> Map<String, Value> {
     let mut map = Map::new();
     for (name, value) in metadata_fields(entry) {
-        add_json_value(&mut map, name, &value);
+        add_json_value(&mut map, name, &value, options.show_all);
     }
     for (name, value) in entry_fields(entry, options) {
-        add_json_value(&mut map, name, value);
+        add_json_value(&mut map, name, value, options.show_all);
     }
     map
 }
 
-fn add_json_value(map: &mut Map<String, Value>, name: String, value: &[u8]) {
-    let value = json_value_for_bytes(value);
+fn add_json_value(map: &mut Map<String, Value>, name: String, value: &[u8], show_all: bool) {
+    let value = json_value_for_bytes(&name, value, show_all);
     match map.remove(&name) {
         Some(Value::Array(mut values)) => {
             values.push(value);
@@ -501,7 +580,10 @@ fn add_json_value(map: &mut Map<String, Value>, name: String, value: &[u8]) {
     }
 }
 
-fn json_value_for_bytes(value: &[u8]) -> Value {
+fn json_value_for_bytes(name: &str, value: &[u8], show_all: bool) -> Value {
+    if !show_all && name.len() + 1 + value.len() >= JSON_THRESHOLD {
+        return Value::Null;
+    }
     if let Ok(text) = std::str::from_utf8(value) {
         if text.chars().all(|ch| {
             let cp = ch as u32;

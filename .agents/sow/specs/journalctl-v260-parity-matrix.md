@@ -103,16 +103,16 @@ disk-image/rootfs-only, or unsafe without an explicit file/directory target.
 | `--utc` | none | file-backed-required | Render applicable timestamps in UTC. |
 | `-x`, `--catalog` | none | recognized-no-op | Recognize. Portable commands do not read host catalog databases. If no portable catalog database is configured, output entries without explanations. |
 | `-W`, `--no-hostname` | none | file-backed-required | Suppress hostname in short-style output modes. |
-| `--no-full` | none | file-backed-required | Disable full-width output. |
-| `-l`, `--full` | none | file-backed-required | Hidden/legacy alias that enables full-width output. |
-| `-a`, `--all` | none | file-backed-required | Show all fields, including long or non-printable fields where the selected output mode supports them. |
+| `--no-full` | none | file-backed-required | Disable full-width output. Short-style text output uses stock ellipsization; verbose output hides long or non-printable values as blob data. |
+| `-l`, `--full` | none | file-backed-required | Hidden/legacy alias that enables full-width output. Full-width output is the stock default. |
+| `-a`, `--all` | none | file-backed-required | Show all fields, including long or non-printable fields where the selected output mode supports them. Preserve stock text-display behavior for NUL-containing values and JSON binary arrays. |
 | `-f`, `--follow` | none | file-backed-required | Follow explicit file/directory inputs only. Never open default host journals. |
 | `--no-tail` | none | file-backed-required | With follow, show all existing matching entries before following. |
 | `--truncate-newline` | none | file-backed-required | Truncate displayed message text at the first newline where official output does. |
-| `-q`, `--quiet` | none | file-backed-required | Suppress informational messages and boot separator output where applicable. |
+| `-q`, `--quiet` | none | file-backed-required | Suppress informational messages, boot separator output, and the stock empty-result `-- No entries --` line where applicable. |
 | `--synchronize-on-exit=` | bool | recognized-unsupported | Requires journald Varlink synchronization on signal exit. Parse and reject when true; false may be accepted as no-op. |
 | `--no-pager` | none | recognized-no-op | Portable commands do not spawn a pager. |
-| `-e`, `--pager-end` | none | file-backed-required | Do not spawn a pager, but preserve official default-line side effects for file-backed output. |
+| `-e`, `--pager-end` | none | file-backed-required | Do not spawn a pager, but preserve official default-line side effects for file-backed output: when no explicit line limit exists, show the last 1000 matching entries. |
 
 ## Output Modes
 

@@ -319,7 +319,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	outputOptions := newOutputOptions(flags, flagWasSet(fs, "output-fields"))
+	outputOptions := newOutputOptions(flags, flagWasSet(fs, "output-fields"), resolveFullWidth(args))
 
 	if *flags.follow {
 		tail := 10
@@ -345,6 +345,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	defer j.Close()
 
 	return flags.dispatch(j, sinceUsec, untilUsec, stdout, postFilters, cursorControl, outputOptions)
+}
+
+func resolveFullWidth(args []string) bool {
+	fullWidth := true
+	for _, arg := range args {
+		switch arg {
+		case "--no-full":
+			fullWidth = false
+		case "--full", "-l":
+			fullWidth = true
+		}
+	}
+	return fullWidth
 }
 
 type linesLimit struct {
@@ -1309,9 +1322,9 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 		}
 		if limit.set && !limit.all {
 			if limit.oldest {
-				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl, outputOptions)
+				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 			}
-			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl, outputOptions)
+			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 		}
 	}
 
@@ -1354,19 +1367,34 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 		})
 
 	case *f.head > 0:
-		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl, outputOptions)
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 
 	case *f.tail > 0:
 		if *f.reverseFlag {
-			return showReverse(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl, outputOptions)
+			return showReverse(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 		}
-		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl, outputOptions)
+		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 
 	default:
-		if *f.reverseFlag {
-			return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl, outputOptions)
+		if *f.pagerEndFlag {
+			return showTail(j, 1000, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 		}
-		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters, cursorControl, outputOptions)
+		if *f.reverseFlag {
+			return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+		}
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+	}
+}
+
+func (f *cliFlags) effectiveQuiet() bool {
+	if *f.quietFlag {
+		return true
+	}
+	switch *f.output {
+	case "export", "json", "json-pretty", "json-sse", "json-seq", "cat":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1961,7 +1989,7 @@ func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters
 	}
 }
 
-func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
+func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, quiet bool, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
 	count := 0
 	var lastCursor string
 	renderer := newOutputRenderer(outputOptions)
@@ -1984,10 +2012,11 @@ func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 	if err != nil {
 		return err
 	}
+	printNoEntries(stdout, count, quiet)
 	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
 }
 
-func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
+func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, quiet bool, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
 	var entries []*journal.Entry
 	if err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
 		entries = append(entries, entry)
@@ -2009,10 +2038,11 @@ func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.W
 		fmt.Fprint(stdout, out)
 		lastCursor = entry.Cursor
 	}
+	printNoEntries(stdout, len(entries[start:]), quiet)
 	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
 }
 
-func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
+func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, quiet bool, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
 	count := 0
 	var lastCursor string
 	renderer := newOutputRenderer(outputOptions)
@@ -2035,7 +2065,14 @@ func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 	if err != nil {
 		return err
 	}
+	printNoEntries(stdout, count, quiet)
 	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
+}
+
+func printNoEntries(stdout io.Writer, count int, quiet bool) {
+	if count == 0 && !quiet {
+		fmt.Fprintln(stdout, "-- No entries --")
+	}
 }
 
 func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {

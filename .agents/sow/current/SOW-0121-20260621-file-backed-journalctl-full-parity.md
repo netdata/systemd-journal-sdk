@@ -639,11 +639,11 @@ Acceptance criteria evidence:
   `--user-unit`, `--invocation`, `-I`, `--list-invocations`, `--header`,
   stock short labels including `--no-hostname`, `--new-id128`, explicit-input
   `--disk-usage`, explicit-directory `--vacuum-size`/`--vacuum-files`/
-  `--vacuum-time`, full output-mode rendering, `--output-fields`, and
-  portable path-match rejection.
-- Remaining file-backed parity is still pending, including exact empty-result
-  exit semantics and final whole-SOW cross-platform/reviewer/ship-decision
-  gates.
+  `--vacuum-time`, full output-mode rendering, `--output-fields`, output
+  controls (`--all`, `--full`, `--no-full`, `--pager-end`), exact stock
+  empty-result output behavior, and portable path-match rejection.
+- Remaining work is final whole-SOW validation, external reviewer gates, and the
+  ship/defer decision for anything still found during final audit.
 
 Tests or equivalent validation:
 
@@ -916,6 +916,66 @@ Tests or equivalent validation:
   the explicit-directory vacuum chunk with repo-local Go caches.
 - `git diff --check`: passed after the explicit-directory vacuum chunk.
 - `.agents/sow/audit.sh`: passed after the explicit-directory vacuum chunk.
+- `go test ./cmd/journalctl`: passed after the output-control/empty-result
+  chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the output-control/empty-result chunk; 26
+  Rust `journalctl` tests passed.
+- Manual repo-local stock probes against systemd 260 `(260.1-2-manjaro)` passed
+  for binary-message blob output, `--all` NUL-containing text behavior,
+  `--no-full` short ellipsization and verbose blob suppression, JSON large-field
+  thresholding, empty-result output, and `--pager-end` selecting entries
+  `pager-0005` through `pager-1004` from a 1005-entry fixture.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)` after the output-control/empty-result chunk, including
+  binary/long output-control cases, empty-result cases, and `--pager-end`
+  implicit 1000-line tail behavior; report `/tmp/journalctl-query-matrix-output-control.json`
+  recorded `PASS results=319 failures=0`.
+- `go test ./cmd/journalctl ./journal`: passed after the output-control/
+  empty-result docs/spec update.
+- `cargo fmt --manifest-path rust/Cargo.toml -p journalctl --all` followed by
+  `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after aligning Rust `--pager-end` dispatch with
+  explicit `--head`; 26 Rust `journalctl` tests passed.
+- `python3 tests/parser-parity/check_v260_manifest.py` and
+  `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after the
+  output-control/empty-result chunk; Rust `ok=93 skipped=0 failed=0`, Go
+  `ok=93 skipped=0 failed=0`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed after
+  the output-control/empty-result chunk including live follow checks; report
+  `/tmp/journalctl-query-matrix-output-control-full.json` recorded `PASS
+  results=331 failures=0`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: rerun after the Rust `--pager-end` dispatch alignment passed
+  with `PASS results=319 failures=0`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: final rerun
+  after the Rust `--pager-end` dispatch alignment passed including live follow
+  checks; report `/tmp/journalctl-query-matrix-output-control-final.json`
+  recorded `PASS results=331 failures=0`.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the
+  output-control/empty-result docs update; validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after the
+  output-control/empty-result docs update; 31 of 31 verified examples passed.
+- `GOOS=windows GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-windows.test.exe ./cmd/journalctl`: passed after the
+  output-control/empty-result chunk.
+- `GOOS=darwin GOARCH=arm64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-darwin-arm64.test ./cmd/journalctl`: passed after the
+  output-control/empty-result chunk.
+- `GOOS=freebsd GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-freebsd-amd64.test ./cmd/journalctl`: passed after the
+  output-control/empty-result chunk.
+- `git diff --check`: passed after the output-control/empty-result chunk.
+- `.agents/sow/audit.sh`: passed after the output-control/empty-result chunk.
 
 Real-use evidence:
 
@@ -953,8 +1013,10 @@ Artifact maintenance gate:
   contract, after the output-mode chunk to record full output-mode and
   `--output-fields` behavior, and after the header/invocation/label chunk to
   record invocation, `--list-invocations`, `--header`, and stock short-label
-  behavior, and after the explicit-directory vacuum chunk to record
-  `--vacuum-size`/`--vacuum-files`/`--vacuum-time` behavior.
+  behavior, after the explicit-directory vacuum chunk to record
+  `--vacuum-size`/`--vacuum-files`/`--vacuum-time` behavior, and after the
+  output-control/empty-result chunk to record `--all`, `--full`, `--no-full`,
+  `--pager-end`, JSON threshold, and empty-result behavior.
   `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
   `tests/parser-parity/v260-manifest.*` were updated to reclassify
   `--setup-keys` as recognized-unsupported based on official source evidence.
@@ -965,8 +1027,10 @@ Artifact maintenance gate:
   after the output-mode chunk for output rendering and `--output-fields`, and
   after the header/invocation/label chunk for invocation filters,
   `--list-invocations`, `--header`, stock short labels, and the
-  `--setup-keys` unsupported behavior, and after the explicit-directory vacuum
-  chunk for `--vacuum-size`/`--vacuum-files`/`--vacuum-time`.
+  `--setup-keys` unsupported behavior, after the explicit-directory vacuum
+  chunk for `--vacuum-size`/`--vacuum-files`/`--vacuum-time`, and after the
+  output-control/empty-result chunk for `--all`, `--full`, `--no-full`,
+  `--pager-end`, and empty-result behavior.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -977,9 +1041,9 @@ Specs update:
 - Added `.agents/sow/specs/journalctl-v260-parity-matrix.md` for the active
   SOW implementation contract. Updated `.agents/sow/specs/product-scope.md`
   for the shipped cursor string contract change and current file-backed filter
-  contract, then for the output-mode and `--output-fields` contract, and then
-  for invocation, `--list-invocations`, `--header`, and stock short-label
-  behavior.
+  contract, then for the output-mode and `--output-fields` contract, then for
+  invocation, `--list-invocations`, `--header`, and stock short-label behavior,
+  and then for the output-control/empty-result contract.
   Additional product-scope updates remain pending final shipped behavior and
   ship recommendation.
 
@@ -994,10 +1058,10 @@ End-user/operator docs update:
 - Updated `rust/README.md`, `go/README.md`, `go/API.md`, and
   `docs/Reader-APIs.md` for the cursor string format contract. Updated
   `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` after the
-  unit-filter chunk, after the output-mode chunk, and after the
-  header/invocation/label chunk, and after the explicit-directory vacuum
-  chunk. Final journalctl command documentation remains pending full
-  implementation.
+  unit-filter chunk, after the output-mode chunk, after the
+  header/invocation/label chunk, after the explicit-directory vacuum chunk, and
+  after the output-control/empty-result chunk. Final journalctl command
+  documentation remains pending full implementation.
 
 End-user/operator skills update:
 

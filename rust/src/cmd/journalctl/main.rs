@@ -342,7 +342,9 @@ fn portable_unsupported(feature: &str, reason: &str) -> anyhow::Error {
 
 fn run() -> Result<()> {
     // nosemgrep: rust.lang.security.args.args -- CLI entry point parses argv; not an authorization boundary.
-    let args = Args::parse_from(preprocess_optional_boot_args(std::env::args()));
+    let raw_args: Vec<String> = std::env::args().collect();
+    let full_width = resolve_full_width(&raw_args);
+    let args = Args::parse_from(preprocess_optional_boot_args(raw_args));
 
     // Enforce the v260.1 parser-required interaction rules. These run
     // before any dispatch so the user sees an explicit conflict error.
@@ -509,7 +511,7 @@ fn run() -> Result<()> {
     let until_usec = parse_optional_timestamp(args.until.as_deref())?;
     let post_filters = CliPostFilters::from_args(&args)?;
     let cursor_control = CursorControl::from_args(&args)?;
-    let output_options = OutputOptions::from_args(&args);
+    let output_options = OutputOptions::from_args(&args, full_width);
 
     if args.follow {
         let tail = parse_tail_count(args.tail.as_ref(), args.lines.as_deref()).unwrap_or(10);
@@ -572,6 +574,7 @@ fn run() -> Result<()> {
                 until_usec,
                 args.reverse,
                 args.show_cursor,
+                effective_quiet(&args),
                 &post_filters,
                 &cursor_control,
                 &output_options,
@@ -583,6 +586,7 @@ fn run() -> Result<()> {
                 until_usec,
                 false,
                 args.show_cursor,
+                effective_quiet(&args),
                 &post_filters,
                 &cursor_control,
                 &output_options,
@@ -594,6 +598,7 @@ fn run() -> Result<()> {
                 until_usec,
                 args.reverse,
                 args.show_cursor,
+                effective_quiet(&args),
                 &post_filters,
                 &cursor_control,
                 &output_options,
@@ -610,11 +615,26 @@ fn run() -> Result<()> {
             until_usec,
             reverse,
             args.show_cursor,
+            effective_quiet(&args),
             &post_filters,
             &cursor_control,
             &output_options,
         )
     } else {
+        if args.pager_end && args.head.is_none() {
+            return show_tail_with_reverse(
+                &mut journal,
+                1000,
+                since_usec,
+                until_usec,
+                false,
+                args.show_cursor,
+                effective_quiet(&args),
+                &post_filters,
+                &cursor_control,
+                &output_options,
+            );
+        }
         show_head_or_all_with_reverse(
             &mut journal,
             args.head,
@@ -622,11 +642,37 @@ fn run() -> Result<()> {
             until_usec,
             reverse,
             args.show_cursor,
+            effective_quiet(&args),
             &post_filters,
             &cursor_control,
             &output_options,
         )
     }
+}
+
+fn resolve_full_width(args: &[String]) -> bool {
+    let mut full_width = true;
+    for arg in args {
+        match arg.as_str() {
+            "--no-full" => full_width = false,
+            "--full" | "-l" => full_width = true,
+            _ => {}
+        }
+    }
+    full_width
+}
+
+fn effective_quiet(args: &Args) -> bool {
+    args.quiet
+        || matches!(
+            args.output,
+            OutputModeArg::Export
+                | OutputModeArg::Json
+                | OutputModeArg::JsonPretty
+                | OutputModeArg::JsonSse
+                | OutputModeArg::JsonSeq
+                | OutputModeArg::Cat
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2318,6 +2364,7 @@ fn show_head_or_all_with_reverse(
     until_usec: Option<u64>,
     reverse: bool,
     show_cursor: bool,
+    quiet: bool,
     post_filters: &CliPostFilters,
     cursor_control: &CursorControl,
     output_options: &OutputOptions,
@@ -2345,6 +2392,7 @@ fn show_head_or_all_with_reverse(
             last_cursor = Some(entry.cursor.clone());
         }
     }
+    print_no_entries(&mut stdout, shown, quiet)?;
     finish_cursor_output(
         &mut stdout,
         show_cursor,
@@ -2361,6 +2409,7 @@ fn show_tail_with_reverse(
     until_usec: Option<u64>,
     reverse: bool,
     show_cursor: bool,
+    quiet: bool,
     post_filters: &CliPostFilters,
     cursor_control: &CursorControl,
     output_options: &OutputOptions,
@@ -2384,12 +2433,20 @@ fn show_tail_with_reverse(
             last_cursor = Some(entry.cursor.as_str());
         }
     }
+    print_no_entries(&mut stdout, entries[start..].len(), quiet)?;
     finish_cursor_output(
         &mut stdout,
         show_cursor,
         cursor_control.update_file.as_deref(),
         last_cursor,
     )?;
+    Ok(())
+}
+
+fn print_no_entries<W: Write>(stdout: &mut W, count: usize, quiet: bool) -> Result<()> {
+    if count == 0 && !quiet {
+        stdout.write_all(b"-- No entries --\n")?;
+    }
     Ok(())
 }
 

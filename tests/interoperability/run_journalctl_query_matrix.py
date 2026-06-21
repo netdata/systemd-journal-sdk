@@ -3,7 +3,8 @@
 
 Generates repo-local fixtures and compares stock journalctl with the Rust and
 Go journalctl rewrites for --since, --until, --boot, --lines, --reverse,
---show-cursor, cursor seeking, field filters, grep filters, and --follow behavior.
+--pager-end, --show-cursor, cursor seeking, field filters, grep filters,
+output-control behavior, empty results, and --follow behavior.
 Runtime artifacts stay under .local/interoperability/.
 """
 
@@ -242,6 +243,9 @@ def make_fixtures() -> dict[str, Path]:
         shutil.rmtree(FIXTURE_DIR)
     directory = FIXTURE_DIR / "directory"
     single_file = FIXTURE_DIR / "multi-boot-file.journal"
+    output_special = FIXTURE_DIR / "output-special.journal"
+    output_long = FIXTURE_DIR / "output-long.journal"
+    pager = FIXTURE_DIR / "pager.journal"
     follow = FIXTURE_DIR / "follow"
     directory.mkdir(parents=True)
     follow.mkdir(parents=True)
@@ -249,7 +253,17 @@ def make_fixtures() -> dict[str, Path]:
     for row in STATIC_ROWS:
         write_journal(directory / row.path, [row])
     write_journal(single_file, FILE_ROWS)
-    return {"directory": directory, "file": single_file, "follow": follow}
+    write_output_special_journal(output_special)
+    write_output_long_journal(output_long)
+    write_pager_journal(pager)
+    return {
+        "directory": directory,
+        "file": single_file,
+        "output_special": output_special,
+        "output_long": output_long,
+        "pager": pager,
+        "follow": follow,
+    }
 
 
 def archived_journal_name(seqnum: int, realtime_usec: int) -> str:
@@ -294,6 +308,78 @@ def write_journal(path: Path, rows: list[Row]) -> None:
                 + list(row.fields),
             }
             for i, row in enumerate(rows, start=1)
+        ],
+    )
+
+
+def write_output_special_journal(path: Path) -> None:
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_A,
+        seqnum_id=VACUUM_SEQNUM_ID,
+        entries=[
+            {
+                "realtime_usec": 1_700_005_000_000_000,
+                "monotonic_usec": 1,
+                "boot_id": BOOT_A,
+                "fields": [
+                    ("MESSAGE", b"hello\x00world"),
+                    ("TEST_ID", "journalctl-output-special"),
+                    ("_BOOT_ID", BOOT_A),
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("SYSLOG_IDENTIFIER", "special"),
+                    ("LONG_FIELD", "L" * 500),
+                    ("BINARY_FIELD", b"a\x00b"),
+                ],
+            }
+        ],
+    )
+
+
+def write_output_long_journal(path: Path) -> None:
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_A,
+        seqnum_id=VACUUM_SEQNUM_ID,
+        entries=[
+            {
+                "realtime_usec": 1_700_005_000_000_000,
+                "monotonic_usec": 1,
+                "boot_id": BOOT_A,
+                "fields": [
+                    ("MESSAGE", "M" * 500),
+                    ("TEST_ID", "journalctl-output-long"),
+                    ("_BOOT_ID", BOOT_A),
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("SYSLOG_IDENTIFIER", "special"),
+                    ("HUGE_FIELD", "H" * 5000),
+                ],
+            }
+        ],
+    )
+
+
+def write_pager_journal(path: Path) -> None:
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_A,
+        seqnum_id=VACUUM_SEQNUM_ID,
+        entries=[
+            {
+                "realtime_usec": 1_700_006_000_000_000 + i,
+                "monotonic_usec": i + 1,
+                "boot_id": BOOT_A,
+                "fields": [
+                    ("MESSAGE", f"pager-{i:04d}"),
+                    ("TEST_ID", "journalctl-pager-end"),
+                    ("_BOOT_ID", BOOT_A),
+                    ("_MACHINE_ID", MACHINE_ID),
+                ],
+            }
+            for i in range(1005)
         ],
     )
 
@@ -471,6 +557,7 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
         ("file-lines-tail", "file", fixtures["file"], ["--lines=2", "TEST_ID=journalctl-query"]),
         ("file-lines-oldest", "file", fixtures["file"], ["--lines=+2", "TEST_ID=journalctl-query"]),
         ("file-lines-default", "file", fixtures["file"], ["--lines", "TEST_ID=journalctl-query"]),
+        ("file-pager-end-default-lines", "file", fixtures["pager"], ["--pager-end", "TEST_ID=journalctl-pager-end"]),
         ("file-show-cursor", "file", fixtures["file"], ["--show-cursor", "TEST_ID=journalctl-query"]),
         ("file-cursor-first", "file", fixtures["file"], ["--cursor", file_cursors[0], "--boot=all", "TEST_ID=journalctl-query"]),
         (
@@ -890,6 +977,81 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
                 }
             )
 
+    control_text_cases = [
+        (
+            "output-short-binary-default",
+            fixtures["output_special"],
+            ["--output=short", "--boot=all", "TEST_ID=journalctl-output-special"],
+            "exact",
+        ),
+        (
+            "output-short-binary-all",
+            fixtures["output_special"],
+            ["--all", "--output=short", "--boot=all", "TEST_ID=journalctl-output-special"],
+            "exact",
+        ),
+        (
+            "output-short-long-no-full",
+            fixtures["output_long"],
+            ["--no-full", "--output=short", "--boot=all", "TEST_ID=journalctl-output-long"],
+            "exact",
+        ),
+        (
+            "output-verbose-binary-default",
+            fixtures["output_special"],
+            ["--output=verbose", "--boot=all", "TEST_ID=journalctl-output-special"],
+            "exact",
+        ),
+        (
+            "output-verbose-binary-all",
+            fixtures["output_special"],
+            ["--all", "--output=verbose", "--boot=all", "TEST_ID=journalctl-output-special"],
+            "exact",
+        ),
+        (
+            "output-verbose-binary-no-full",
+            fixtures["output_special"],
+            ["--no-full", "--output=verbose", "--boot=all", "TEST_ID=journalctl-output-special"],
+            "exact",
+        ),
+        (
+            "output-verbose-long-no-full",
+            fixtures["output_long"],
+            ["--no-full", "--output=verbose", "--boot=all", "TEST_ID=journalctl-output-long"],
+            "exact",
+        ),
+        (
+            "output-cat-binary-raw",
+            fixtures["output_special"],
+            ["--output=cat", "--boot=all", "TEST_ID=journalctl-output-special"],
+            "exact",
+        ),
+    ]
+    for case_name, path, args, comparison in control_text_cases:
+        stock_cmd = raw_reader_command("stock", tools, "file", path, args)
+        stock = run(stock_cmd, timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = stock.stdout
+        expected_cmp = sorted(expected.splitlines()) if comparison == "line-multiset" else expected
+        for reader in READERS:
+            cmd = raw_reader_command(reader, tools, "file", path, args)
+            result = run(cmd, timeout=30)
+            actual_cmp = sorted(result.stdout.splitlines()) if comparison == "line-multiset" else result.stdout
+            ok = result.returncode == 0 and actual_cmp == expected_cmp
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": result.stdout,
+                    "comparison": comparison,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
+
     json_modes = ["json", "json-pretty", "json-sse", "json-seq"]
     for mode in json_modes:
         for suffix, extra_args in (
@@ -925,6 +1087,97 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
                         "stderr": result.stderr[-1000:],
                     }
                 )
+    json_control_cases = [
+        (
+            "output-json-binary-default",
+            fixtures["output_special"],
+            ["--output=json", "--boot=all", "TEST_ID=journalctl-output-special"],
+        ),
+        (
+            "output-json-binary-all",
+            fixtures["output_special"],
+            ["--all", "--output=json", "--boot=all", "TEST_ID=journalctl-output-special"],
+        ),
+        (
+            "output-json-long-threshold",
+            fixtures["output_long"],
+            ["--output=json", "--boot=all", "TEST_ID=journalctl-output-long"],
+        ),
+        (
+            "output-json-long-threshold-all",
+            fixtures["output_long"],
+            ["--all", "--output=json", "--boot=all", "TEST_ID=journalctl-output-long"],
+        ),
+    ]
+    for case_name, path, args in json_control_cases:
+        stock_cmd = raw_reader_command("stock", tools, "file", path, args)
+        stock = run(stock_cmd, timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = parse_json_output("json", stock.stdout)
+        for reader in READERS:
+            cmd = raw_reader_command(reader, tools, "file", path, args)
+            result = run(cmd, timeout=30)
+            try:
+                actual = parse_json_output("json", result.stdout)
+                parse_error = ""
+            except Exception as err:  # noqa: BLE001 - failure detail belongs in matrix report.
+                actual = []
+                parse_error = str(err)
+            ok = result.returncode == 0 and actual == expected and not parse_error
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": actual,
+                    "parse_error": parse_error,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
+    return results
+
+
+def run_empty_result_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
+    cases = [
+        ("empty-default", [], "-- No entries --\n"),
+        ("empty-quiet", ["--quiet"], ""),
+        ("empty-json", ["--output=json"], ""),
+        ("empty-cat", ["--output=cat"], ""),
+        ("empty-export", ["--output=export"], ""),
+        ("empty-verbose", ["--output=verbose"], "-- No entries --\n"),
+    ]
+    results: list[dict[str, object]] = []
+    path = fixtures["file"]
+    for case_name, extra_args, _expected_hint in cases:
+        args = [*extra_args, "--boot=all", "TEST_ID=journalctl-empty-result"]
+        stock_cmd = ["journalctl", "--file", str(path), "--no-pager", *args]
+        stock = run(stock_cmd, timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = stock.stdout
+        for reader in READERS:
+            if reader == "stock":
+                cmd = stock_cmd
+            elif reader == "go":
+                cmd = [tools["go_journalctl"], "--file", str(path), "--no-pager", *args]
+            else:
+                cmd = [tools["rust_journalctl"], "--file", str(path), "--no-pager", *args]
+            result = run(cmd, timeout=30)
+            ok = result.returncode == 0 and result.stdout == expected
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": result.stdout,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
     return results
 
 
@@ -1109,6 +1362,7 @@ def main() -> int:
     results.extend(run_portable_error_cases(tools, fixtures))
     results.extend(run_utility_action_cases(tools, fixtures))
     results.extend(run_output_mode_cases(tools, fixtures))
+    results.extend(run_empty_result_cases(tools, fixtures))
     if not args.skip_follow:
         results.extend(run_follow_cases(tools, fixtures))
 
