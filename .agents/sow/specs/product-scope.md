@@ -753,6 +753,9 @@ Current Go reader feature slice:
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
   `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
   `cat`, and `with-unit`;
+- short-style output renders stock-compatible hostname, identifier/unit, and
+  PID labels where the corresponding journal fields are present, and
+  `--no-hostname` suppresses the hostname component;
 - `--output-fields` is supported for `verbose`, `export`, JSON modes, and
   `cat`; JSON/export preserve stock metadata fields such as cursor, realtime,
   monotonic, seqnum, seqnum ID, and boot ID;
@@ -763,7 +766,8 @@ Current Go reader feature slice:
   filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
   with `--follow`, cursor seek/update behavior, repeated same-field OR
   matches, `+` disjunction, syslog identifier, priority, facility, grep,
-  dmesg, and system/user unit filters;
+  dmesg, system/user unit filters, invocation filters, `--list-invocations`,
+  `--header`, and explicit-input `--disk-usage`;
 - Go conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, and file-backed journalctl cases.
 
@@ -865,6 +869,9 @@ Current Rust reader feature slice:
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
   `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
   `cat`, and `with-unit`;
+- short-style output renders stock-compatible hostname, identifier/unit, and
+  PID labels where the corresponding journal fields are present, and
+  `--no-hostname` suppresses the hostname component;
 - `--output-fields` is supported for `verbose`, `export`, JSON modes, and
   `cat`; JSON/export preserve stock metadata fields such as cursor, realtime,
   monotonic, seqnum, seqnum ID, and boot ID;
@@ -875,7 +882,8 @@ Current Rust reader feature slice:
   filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
   with `--follow`, cursor seek/update behavior, repeated same-field OR
   matches, `+` disjunction, syslog identifier, priority, facility, grep,
-  dmesg, and system/user unit filters;
+  dmesg, system/user unit filters, invocation filters, `--list-invocations`,
+  `--header`, and explicit-input `--disk-usage`;
 - Rust conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, header parsing, and file-backed
   journalctl cases.

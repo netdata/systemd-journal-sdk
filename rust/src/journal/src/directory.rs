@@ -723,14 +723,14 @@ fn build_directory_boot_newest(files: &[FileReader]) -> HashMap<[u8; 16], Direct
         }
         let replace = match newest.get(&header.header.tail_entry_boot_id) {
             None => true,
-            Some(current) => header.tail_entry_monotonic > current.monotonic,
+            Some(current) => header.header.tail_entry_monotonic > current.monotonic,
         };
         if replace {
             newest.insert(
                 header.header.tail_entry_boot_id,
                 DirectoryBootNewest {
-                    machine_id: header.machine_id,
-                    monotonic: header.tail_entry_monotonic,
+                    machine_id: header.header.machine_id,
+                    monotonic: header.header.tail_entry_monotonic,
                     realtime: header.header.tail_entry_realtime,
                 },
             );

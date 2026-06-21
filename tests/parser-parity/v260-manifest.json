@@ -327,22 +327,22 @@
     {
       "name": "interval",
       "args": "duration",
-      "classification": "portable-utility-required",
-      "expectation": "recognized-supported",
+      "classification": "recognized-no-op",
+      "expectation": "recognized-no-op",
       "short_alias": null
     },
     {
       "name": "force",
       "args": "none",
-      "classification": "portable-utility-required",
-      "expectation": "recognized-supported",
+      "classification": "recognized-no-op",
+      "expectation": "recognized-no-op",
       "short_alias": null
     },
     {
       "name": "setup-keys",
       "args": "none",
-      "classification": "portable-utility-required",
-      "expectation": "recognized-supported",
+      "classification": "recognized-unsupported",
+      "expectation": "recognized-unsupported",
       "short_alias": null
     },
     {

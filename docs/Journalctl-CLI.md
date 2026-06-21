@@ -18,13 +18,18 @@ The rewrites cover file-backed query behavior only:
   `short-iso`, `short-iso-precise`, `short-precise`, `short-monotonic`,
   `short-delta`, `short-unix`, `verbose`, `export`, `json`,
   `json-pretty`, `json-sse`, `json-seq`, `cat`, and `with-unit`;
+- short-style labels: hostname, identifier/unit, and PID are rendered from
+  journal fields like stock file-backed `journalctl`; `--no-hostname`
+  suppresses only the hostname component;
 - field projection: `--output-fields` for `verbose`, `export`, `json*`, and
   `cat`, with stock metadata retention for JSON/export modes;
-- metadata: `--list-boots`, `--fields`, `--field <NAME>` (unique values);
+- metadata: `--list-boots`, `--list-invocations`, `--fields`,
+  `--field <NAME>` (unique values), and `--header`;
 - filtering: `FIELD=value` matches, repeated same-field matches as OR,
   different fields as AND, and the `+` disjunction separator;
 - journalctl filters: `--identifier`, `--priority`, `--facility`, `--grep`,
-  `--case-sensitive`, `--dmesg`, `--unit`, and `--user-unit`;
+  `--case-sensitive`, `--dmesg`, `--unit`, `--user-unit`, `--invocation`,
+  and `-I`;
 - unit filters: exact and glob system/user units use the same journal fields
   and disjunction groups as stock file-backed `journalctl`;
 - time and boot windows: `--since`, `--until`, `--boot [ID]`;
@@ -39,9 +44,9 @@ The rewrites cover file-backed query behavior only:
   produced when sealing was set up (the same value stock
   `journalctl --verify-key` accepts).
 
-Daemon-only operations are out of scope by design. `--sync`, `--flush`,
-`--rotate`, and `--relinquish-var` return a controlled error in every
-language.
+Host and daemon operations are out of scope by design. `--sync`, `--flush`,
+`--rotate`, `--relinquish-var`, and `--setup-keys` return a controlled error
+in every language.
 
 ## Running Each Rewrite
 

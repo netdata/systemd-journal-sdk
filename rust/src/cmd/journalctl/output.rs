@@ -12,6 +12,7 @@ pub(crate) struct OutputOptions {
     output_fields: Vec<String>,
     output_fields_set: bool,
     utc: bool,
+    no_hostname: bool,
     truncate_newline: bool,
 }
 
@@ -22,6 +23,7 @@ impl OutputOptions {
             output_fields: parse_output_fields(args.output_fields.as_deref()),
             output_fields_set: args.output_fields.is_some(),
             utc: args.utc,
+            no_hostname: args.no_hostname,
             truncate_newline: args.truncate_newline,
         }
     }
@@ -29,7 +31,7 @@ impl OutputOptions {
 
 pub(crate) struct OutputRenderer {
     options: OutputOptions,
-    previous_delta: Option<(u64, [u8; 16])>,
+    previous_delta: Option<(u64, u64, [u8; 16])>,
 }
 
 impl OutputRenderer {
@@ -67,30 +69,33 @@ impl OutputRenderer {
 
     fn render_short(&mut self, entry: &Entry, timestamp_mode: TimestampMode) -> Result<Vec<u8>> {
         let timestamp = format_timestamp(entry, timestamp_mode, self.options.utc)?;
-        let label = entry_label(entry);
+        let label = entry_label(entry, &self.options);
         let message = display_message(entry, self.options.truncate_newline);
         Ok(format!("{timestamp} {label}: {message}\n").into_bytes())
     }
 
     fn render_with_unit(&mut self, entry: &Entry) -> Result<Vec<u8>> {
         let timestamp = format_timestamp(entry, TimestampMode::ShortFull, self.options.utc)?;
-        let label = unit_label(entry).unwrap_or_else(|| entry_label(entry));
+        let label = format_entry_label(
+            entry,
+            &unit_label(entry).unwrap_or_else(|| base_entry_label(entry)),
+            &self.options,
+        );
         let message = display_message(entry, self.options.truncate_newline);
         Ok(format!("{timestamp} {label}: {message}\n").into_bytes())
     }
 
     fn render_short_delta(&mut self, entry: &Entry) -> Result<Vec<u8>> {
         let message = display_message(entry, self.options.truncate_newline);
-        let label = entry_label(entry);
-        let current = (entry.realtime, entry.boot_id);
+        let label = entry_label(entry, &self.options);
+        let current = (entry.realtime, entry.monotonic, entry.boot_id);
         let monotonic = format_monotonic(entry.monotonic);
         let delta = match self.previous_delta {
-            Some((previous_realtime, previous_boot)) => {
-                let diff = entry.realtime.abs_diff(previous_realtime);
-                let marker = if previous_boot == entry.boot_id {
-                    " "
+            Some((previous_realtime, previous_monotonic, previous_boot)) => {
+                let (diff, marker) = if previous_boot == entry.boot_id {
+                    (entry.monotonic.abs_diff(previous_monotonic), " ")
                 } else {
-                    "*"
+                    (entry.realtime.abs_diff(previous_realtime), "*")
                 };
                 format!(" <{}{}>", format_monotonic(diff), marker)
             }
@@ -259,6 +264,21 @@ fn format_timestamp(entry: &Entry, mode: TimestampMode, utc: bool) -> Result<Str
     Ok(formatted)
 }
 
+pub(crate) fn format_header_timestamp(usec: u64) -> Result<String> {
+    if usec == 0 {
+        return Ok("n/a".to_string());
+    }
+    let secs = (usec / 1_000_000) as i64;
+    let nanos = ((usec % 1_000_000) * 1000) as u32;
+    let dt = Local
+        .timestamp_opt(secs, nanos)
+        .single()
+        .ok_or_else(|| anyhow!("invalid realtime timestamp"))?;
+    let formatted = dt.format("%a %Y-%m-%d %H:%M:%S").to_string();
+    let zone = local_timezone_name(secs).unwrap_or_else(|| dt.format("%Z").to_string());
+    Ok(format!("{formatted} {zone}"))
+}
+
 fn format_monotonic(usec: u64) -> String {
     format!("{:>5}.{:06}", usec / 1_000_000, usec % 1_000_000)
 }
@@ -290,11 +310,40 @@ fn local_timezone_name(_secs: i64) -> Option<String> {
     None
 }
 
-fn entry_label(entry: &Entry) -> String {
+fn entry_label(entry: &Entry, options: &OutputOptions) -> String {
+    format_entry_label(entry, &base_entry_label(entry), options)
+}
+
+fn base_entry_label(entry: &Entry) -> String {
     first_string(entry, "SYSLOG_IDENTIFIER")
         .or_else(|| first_string(entry, "_COMM"))
         .or_else(|| first_string(entry, "_EXE"))
-        .unwrap_or_else(|| "-".to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_entry_label(entry: &Entry, label: &str, options: &OutputOptions) -> String {
+    let mut parts = Vec::new();
+    if !options.no_hostname {
+        if let Some(hostname) = first_string(entry, "_HOSTNAME") {
+            parts.push(hostname);
+        }
+    }
+    let mut label = if label.is_empty() {
+        "unknown".to_string()
+    } else {
+        label.to_string()
+    };
+    if let Some(pid) = first_string(entry, "_PID") {
+        label.push('[');
+        label.push_str(&pid);
+        label.push(']');
+    } else if let Some(pid) = first_string(entry, "SYSLOG_PID") {
+        label.push('[');
+        label.push_str(&pid);
+        label.push(']');
+    }
+    parts.push(label);
+    parts.join(" ")
 }
 
 fn unit_label(entry: &Entry) -> Option<String> {

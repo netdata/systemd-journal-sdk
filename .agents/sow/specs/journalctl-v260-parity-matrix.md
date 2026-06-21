@@ -142,9 +142,9 @@ Every official v260.1 output mode is `file-backed-required`:
 | Option | Args | Classification | Required portable behavior |
 | --- | --- | --- | --- |
 | `--verify-key=` | key | file-backed-required | Verify sealed journal files when combined with `--verify` or implied verification. Invalid seed/key text must fail with official-style parse errors. |
-| `--interval=` | duration | portable-utility-required | Parse for `--setup-keys`. Reject outside `--setup-keys` with the same action/option rules as official v260.1. |
-| `--force` | none | portable-utility-required | Parse for `--setup-keys`; no effect elsewhere except official option interactions. |
-| `--setup-keys` | none | portable-utility-required | Generate an FSS key pair without touching host journal state. If implementation cannot produce systemd-compatible keys in both languages, recognize and fail with a specific unsupported FSS setup message until completed. |
+| `--interval=` | duration | recognized-no-op | Parse for `--setup-keys`; no portable behavior exists without `--setup-keys`, so it is accepted as a no-op elsewhere. |
+| `--force` | none | recognized-no-op | Parse for `--setup-keys`; no portable behavior exists without `--setup-keys`, so it is accepted as a no-op elsewhere. |
+| `--setup-keys` | none | recognized-unsupported | Official v260.1 checks `/var/log/journal`, reads host machine and boot IDs, and writes `/var/log/journal/<machine-id>/fss`; portable file-backed commands must reject it instead of mutating host journal state. Evidence: `systemd/systemd @ c0a5a2516d28`, `src/journal/journalctl-authenticate.c:80`, `src/journal/journalctl-authenticate.c:89`, `src/journal/journalctl-authenticate.c:93`, `src/journal/journalctl-authenticate.c:97`, `src/journal/journalctl-authenticate.c:139`. |
 
 ## Commands And Actions
 

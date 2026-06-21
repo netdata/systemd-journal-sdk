@@ -21,6 +21,16 @@ import (
 
 // HEADER_COMPATIBLE_SEALED from systemd journal-def.h
 const compatibleSealed = 1
+const compatibleTailEntryBootID = 1 << 1
+const compatibleSealedContinuous = 1 << 2
+const incompatibleCompressedXZ = 1 << 0
+const incompatibleCompressedLZ4 = 1 << 1
+const incompatibleKeyedHash = 1 << 2
+const incompatibleCompressedZSTD = 1 << 3
+const incompatibleCompact = 1 << 4
+const hashItemSizeBytes = 16
+const journalHeaderSize = 272
+const headerChainDepthMax = 100
 const coredumpMessageID = "fc2e22bc6ee647b6b90729ab34a250b1"
 
 var (
@@ -122,6 +132,8 @@ type cliFlags struct {
 	unitFlag              multiStringFlag
 	userUnitFlag          multiStringFlag
 	invocationFlag        *string
+	invocationShortFlag   *bool
+	invocationSet         bool
 	identifierFlag        multiStringFlag
 	excludeIdentifierFlag multiStringFlag
 	priorityFlag          multiStringFlag
@@ -244,6 +256,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
+	flags.invocationSet = flagWasSet(fs, "invocation") || *flags.invocationShortFlag
 
 	if err := flags.validate(); err != nil {
 		return err
@@ -274,6 +287,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if *flags.diskUsageFlag {
 		return runDiskUsage(inputPath, stdout)
+	}
+	if *flags.headerFlag {
+		return runHeader(inputPath, stdout)
+	}
+	if *flags.listInvocationsFlag {
+		return runListInvocations(inputPath, flags, stdout)
 	}
 	if *flags.verify || *flags.verifyOnly || hasVerifyKey {
 		return runVerify(inputPath, *flags.verifyKey, hasVerifyKey, stdout, stderr)
@@ -416,13 +435,14 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 		imagePolicyFlag: fs.String("image-policy", "", "disk image dissection policy (portable: unsupported)"),
 		namespaceFlag:   fs.String("namespace", "", "journal namespace (portable: unsupported)"),
 
-		cursorFlag:      fs.String("cursor", "", "start at the specified cursor"),
-		afterCursorFlag: fs.String("after-cursor", "", "start after the specified cursor"),
-		cursorFileFlag:  fs.String("cursor-file", "", "use cursor from FILE and update FILE"),
-		thisBootFlag:    fs.Bool("this-boot", false, "deprecated alias for --boot"),
-		invocationFlag:  fs.String("invocation", "", "show logs from the matching invocation ID"),
-		grepFlag:        fs.String("grep", "", "show entries with MESSAGE matching PATTERN"),
-		dmesgFlag:       fs.Bool("dmesg", false, "show kernel message log from the current boot"),
+		cursorFlag:          fs.String("cursor", "", "start at the specified cursor"),
+		afterCursorFlag:     fs.String("after-cursor", "", "start after the specified cursor"),
+		cursorFileFlag:      fs.String("cursor-file", "", "use cursor from FILE and update FILE"),
+		thisBootFlag:        fs.Bool("this-boot", false, "deprecated alias for --boot"),
+		invocationFlag:      fs.String("invocation", "", "show logs from the matching invocation ID"),
+		invocationShortFlag: fs.Bool("I", false, "show logs from the latest invocation of unit"),
+		grepFlag:            fs.String("grep", "", "show entries with MESSAGE matching PATTERN"),
+		dmesgFlag:           fs.Bool("dmesg", false, "show kernel message log from the current boot"),
 
 		outputFieldsFlag:    fs.String("output-fields", "", "select fields to print in verbose/export/json modes"),
 		reverseFlag:         fs.Bool("reverse", false, "show newest entries first"),
@@ -624,12 +644,6 @@ func (f *cliFlags) validate() error {
 	if *f.setupKeysFlag {
 		return portableUnsupported("--setup-keys", "FSS key pair generation requires journald integration; portable mode has no host journald")
 	}
-	if *f.headerFlag {
-		return portableUnsupported("--header", "header printing requires the journal facade to expose header information for explicit file/directory input")
-	}
-	if *f.listInvocationsFlag {
-		return portableUnsupported("--list-invocations", "invocation listing requires explicit unit context and journal facade integration")
-	}
 	if *f.diskUsageFlag && *f.file == "" && *f.directory == "" {
 		return portableUnsupported("--disk-usage", "requires host journal directory; pass --file or --directory to compute disk usage for explicit input")
 	}
@@ -768,12 +782,52 @@ func addFieldMatches(j cliJournal, field string, values []string) error {
 	return nil
 }
 
+func addInvocationMatches(j cliJournal, id string) error {
+	fields := []string{
+		"_SYSTEMD_INVOCATION_ID",
+		"OBJECT_SYSTEMD_INVOCATION_ID",
+		"INVOCATION_ID",
+		"USER_INVOCATION_ID",
+	}
+	for i, field := range fields {
+		if i > 0 {
+			j.AddDisjunction()
+		}
+		if err := addMatchPair(j, field, id); err != nil {
+			return err
+		}
+	}
+	j.AddConjunction()
+	return nil
+}
+
 func addMatchPair(j cliJournal, field, value string) error {
 	match, err := journal.ParseMatchString(field + "=" + value)
 	if err != nil {
 		return err
 	}
 	j.AddMatch(match)
+	return nil
+}
+
+func applyBootMatch(j cliJournal, flags *cliFlags) error {
+	boot := effectiveBootFlag(flags)
+	if !boot.set || strings.TrimSpace(boot.value) == "all" {
+		return nil
+	}
+	bootID, err := resolveBootID(j, strings.TrimSpace(boot.value))
+	if err != nil {
+		return err
+	}
+	if bootID == "" {
+		return nil
+	}
+	match, err := journal.ParseMatchString("_BOOT_ID=" + bootID)
+	if err != nil {
+		return err
+	}
+	j.AddMatch(match)
+	j.AddConjunction()
 	return nil
 }
 
@@ -1321,24 +1375,21 @@ func openFilteredJournal(inputPath string, matches []string, flags *cliFlags, ou
 		}
 	}()
 
-	boot := effectiveBootFlag(flags)
-	if boot.set && strings.TrimSpace(boot.value) != "all" {
-		bootID, err := resolveBootID(j, strings.TrimSpace(boot.value))
-		if err != nil {
+	invocationID, useInvocation, err := resolveInvocationFilter(inputPath, flags)
+	if err != nil {
+		return nil, err
+	}
+	if useInvocation {
+		if err := addInvocationMatches(j, invocationID); err != nil {
 			return nil, err
 		}
-		if bootID != "" {
-			match, err := journal.ParseMatchString("_BOOT_ID=" + bootID)
-			if err != nil {
-				return nil, err
-			}
-			j.AddMatch(match)
-			j.AddConjunction()
+	} else {
+		if err := applyBootMatch(j, flags); err != nil {
+			return nil, err
 		}
-	}
-
-	if err := applyCLIMatches(j, flags); err != nil {
-		return nil, err
+		if err := applyCLIMatches(j, flags); err != nil {
+			return nil, err
+		}
 	}
 
 	for _, arg := range matches {
@@ -1652,6 +1703,191 @@ func parseBootDescriptor(descriptor string) (string, int, error) {
 		}
 	}
 	return bootID, offset, nil
+}
+
+type invocationInfo struct {
+	id        string
+	firstUsec uint64
+	lastUsec  uint64
+}
+
+func effectiveInvocationDescriptor(flags *cliFlags) (string, bool) {
+	if !flags.invocationSet {
+		return "", false
+	}
+	if *flags.invocationFlag != "" {
+		return strings.TrimSpace(*flags.invocationFlag), true
+	}
+	return "0", true
+}
+
+func parseInvocationDescriptor(descriptor string) (string, int, bool, error) {
+	if descriptor == "all" {
+		return "", 0, false, nil
+	}
+	id, offset, err := parseBootDescriptor(descriptor)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("failed to parse invocation descriptor: %s", descriptor)
+	}
+	return id, offset, true, nil
+}
+
+func resolveInvocationFilter(inputPath string, flags *cliFlags) (string, bool, error) {
+	descriptor, set := effectiveInvocationDescriptor(flags)
+	if !set {
+		return "", false, nil
+	}
+	id, offset, active, err := parseInvocationDescriptor(descriptor)
+	if err != nil {
+		return "", false, err
+	}
+	if !active {
+		return "", false, nil
+	}
+
+	j, err := journal.SdJournalOpen(inputPath, 0)
+	if err != nil {
+		return "", false, fmt.Errorf("open journal: %w", err)
+	}
+	defer j.Close()
+
+	if err := applyBootMatch(j, flags); err != nil {
+		return "", false, err
+	}
+	if id == "" || offset != 0 {
+		if err := applySingleInvocationUnit(j, flags, "-I/--invocation= with an offset"); err != nil {
+			return "", false, err
+		}
+	}
+
+	infos, err := collectInvocations(j)
+	if err != nil {
+		return "", false, err
+	}
+	target := -1
+	if id != "" {
+		for i, info := range infos {
+			if info.id == id {
+				target = i + offset
+				break
+			}
+		}
+	} else if offset > 0 {
+		target = offset - 1
+	} else {
+		target = len(infos) - 1 + offset
+	}
+	if target < 0 || target >= len(infos) {
+		return "", false, fmt.Errorf("No journal entry found for the invocation (%s%+d).", id, offset)
+	}
+	return infos[target].id, true, nil
+}
+
+func applySingleInvocationUnit(j cliJournal, flags *cliFlags, optionName string) error {
+	systemUnits, userUnits, err := singleInvocationUnit(j, flags, optionName)
+	if err != nil {
+		return err
+	}
+	return addJournalctlUnitMatches(j, systemUnits, userUnits)
+}
+
+func singleInvocationUnit(j cliJournal, flags *cliFlags, optionName string) ([]string, []string, error) {
+	systemSpecs := flags.unitFlag.Values()
+	userSpecs := flags.userUnitFlag.Values()
+	count := len(systemSpecs) + len(userSpecs)
+	if count == 0 {
+		return nil, nil, fmt.Errorf("Using %s requires a unit. Please specify a unit name with -u/--unit=/--user-unit=.", optionName)
+	}
+	if count > 1 {
+		return nil, nil, fmt.Errorf("Using %s with multiple units is not supported.", optionName)
+	}
+	if len(systemSpecs) == 1 {
+		units, err := expandUnitSpecs(j, systemSpecs, systemUnitFieldsFull)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(units) == 0 {
+			return nil, nil, fmt.Errorf("No matching unit found for '%s' in journal.", mangleUnitName(systemSpecs[0]))
+		}
+		if len(units) > 1 {
+			return nil, nil, fmt.Errorf("Multiple matching units found for '%s' in journal.", mangleUnitName(systemSpecs[0]))
+		}
+		return units, nil, nil
+	}
+	units, err := expandUnitSpecs(j, userSpecs, userUnitFieldsFull)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(units) == 0 {
+		return nil, nil, fmt.Errorf("No matching unit found for '%s' in journal.", mangleUnitName(userSpecs[0]))
+	}
+	if len(units) > 1 {
+		return nil, nil, fmt.Errorf("Multiple matching units found for '%s' in journal.", mangleUnitName(userSpecs[0]))
+	}
+	return nil, units, nil
+}
+
+func collectInvocations(j cliJournal) ([]invocationInfo, error) {
+	if err := j.SeekHead(); err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*invocationInfo)
+	for {
+		ok, err := j.Next()
+		if err != nil {
+			return nil, err
+		}
+		if ok == 0 {
+			break
+		}
+		entry, err := j.GetEntry()
+		if err != nil {
+			return nil, err
+		}
+		id, hasInvocation := entryInvocationID(entry)
+		if !hasInvocation {
+			continue
+		}
+		info := byID[id]
+		if info == nil {
+			byID[id] = &invocationInfo{id: id, firstUsec: entry.Realtime, lastUsec: entry.Realtime}
+			continue
+		}
+		if entry.Realtime < info.firstUsec {
+			info.firstUsec = entry.Realtime
+		}
+		if entry.Realtime > info.lastUsec {
+			info.lastUsec = entry.Realtime
+		}
+	}
+	out := make([]invocationInfo, 0, len(byID))
+	for _, info := range byID {
+		out = append(out, *info)
+	}
+	sort.Slice(out, func(i, k int) bool {
+		if out[i].firstUsec != out[k].firstUsec {
+			return out[i].firstUsec < out[k].firstUsec
+		}
+		return out[i].id < out[k].id
+	})
+	return out, nil
+}
+
+func entryInvocationID(entry *journal.Entry) (string, bool) {
+	for _, field := range []string{
+		"_SYSTEMD_INVOCATION_ID",
+		"OBJECT_SYSTEMD_INVOCATION_ID",
+		"INVOCATION_ID",
+		"USER_INVOCATION_ID",
+	} {
+		for _, value := range entryValues(entry, field) {
+			id, err := journal.ParseUUID(string(value))
+			if err == nil && strings.Trim(id.String(), "0") != "" {
+				return id.String(), true
+			}
+		}
+	}
+	return "", false
 }
 
 func entryInTimeRange(entry *journal.Entry, sinceUsec, untilUsec *uint64) bool {
@@ -2044,6 +2280,313 @@ func runDiskUsage(inputPath string, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "Archived and active journals take up %s in the file system.\n", formatJournalBytes(bytes))
 	return nil
+}
+
+func runHeader(inputPath string, stdout io.Writer) error {
+	files, err := diskUsageInputFiles(inputPath)
+	if err != nil {
+		return err
+	}
+	for i, path := range files {
+		reader, err := journal.OpenFile(path)
+		if err != nil {
+			return fmt.Errorf("header: %s: %w", path, err)
+		}
+		header := reader.Header()
+		closeErr := reader.Close()
+		if i > 0 {
+			fmt.Fprintln(stdout)
+		}
+		usage, err := allocatedFileBytes(path)
+		if err != nil {
+			return err
+		}
+		printHeader(stdout, path, header, usage)
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
+}
+
+func printHeader(stdout io.Writer, path string, h interface {
+	FileID() journal.UUID
+	MachineID() journal.UUID
+	TailEntryBootID() journal.UUID
+	SeqnumID() journal.UUID
+	State() uint8
+	CompatibleFlags() uint32
+	IncompatibleFlags() uint32
+	HeaderSize() uint64
+	ArenaSize() uint64
+	DataHashTableSize() uint64
+	FieldHashTableSize() uint64
+	HeadEntrySeqnum() uint64
+	TailEntrySeqnum() uint64
+	HeadEntryRealtime() uint64
+	TailEntryRealtime() uint64
+	TailEntryMonotonic() uint64
+	NObjects() uint64
+	NEntries() uint64
+	NData() uint64
+	NFields() uint64
+	NTags() uint64
+	NEntryArrays() uint64
+	DataHashChainDepth() uint64
+	FieldHashChainDepth() uint64
+}, diskUsage uint64) {
+	dataBuckets := h.DataHashTableSize() / hashItemSizeBytes
+	fieldBuckets := h.FieldHashTableSize() / hashItemSizeBytes
+	fmt.Fprintf(stdout, "File path: %s\n", path)
+	fmt.Fprintf(stdout, "File ID: %s\n", h.FileID())
+	fmt.Fprintf(stdout, "Machine ID: %s\n", h.MachineID())
+	fmt.Fprintf(stdout, "Boot ID: %s\n", h.TailEntryBootID())
+	fmt.Fprintf(stdout, "Sequential number ID: %s\n", h.SeqnumID())
+	fmt.Fprintf(stdout, "State: %s\n", headerStateName(h.State()))
+	fmt.Fprintf(stdout, "Compatible flags:%s\n", compatibleFlagText(h.CompatibleFlags()))
+	fmt.Fprintf(stdout, "Incompatible flags:%s\n", incompatibleFlagText(h.IncompatibleFlags()))
+	fmt.Fprintf(stdout, "Header size: %d\n", h.HeaderSize())
+	fmt.Fprintf(stdout, "Arena size: %d\n", h.ArenaSize())
+	fmt.Fprintf(stdout, "Data hash table size: %d\n", dataBuckets)
+	fmt.Fprintf(stdout, "Field hash table size: %d\n", fieldBuckets)
+	fmt.Fprintf(stdout, "Rotate suggested: %s\n", yesNo(headerRotateSuggested(h, dataBuckets, fieldBuckets)))
+	fmt.Fprintf(stdout, "Head sequential number: %d (%x)\n", h.HeadEntrySeqnum(), h.HeadEntrySeqnum())
+	fmt.Fprintf(stdout, "Tail sequential number: %d (%x)\n", h.TailEntrySeqnum(), h.TailEntrySeqnum())
+	fmt.Fprintf(stdout, "Head realtime timestamp: %s (%x)\n", formatHeaderTimestamp(h.HeadEntryRealtime()), h.HeadEntryRealtime())
+	fmt.Fprintf(stdout, "Tail realtime timestamp: %s (%x)\n", formatHeaderTimestamp(h.TailEntryRealtime()), h.TailEntryRealtime())
+	fmt.Fprintf(stdout, "Tail monotonic timestamp: %s (%x)\n", formatHeaderTimespan(h.TailEntryMonotonic()), h.TailEntryMonotonic())
+	fmt.Fprintf(stdout, "Objects: %d\n", h.NObjects())
+	fmt.Fprintf(stdout, "Entry objects: %d\n", h.NEntries())
+	if headerContains(h.HeaderSize(), 216) {
+		fmt.Fprintf(stdout, "Data objects: %d\n", h.NData())
+		fmt.Fprintf(stdout, "Data hash table fill: %.1f%%\n", fillPercent(h.NData(), dataBuckets))
+	}
+	if headerContains(h.HeaderSize(), 224) {
+		fmt.Fprintf(stdout, "Field objects: %d\n", h.NFields())
+		fmt.Fprintf(stdout, "Field hash table fill: %.1f%%\n", fillPercent(h.NFields(), fieldBuckets))
+	}
+	if headerContains(h.HeaderSize(), 232) {
+		fmt.Fprintf(stdout, "Tag objects: %d\n", h.NTags())
+	}
+	if headerContains(h.HeaderSize(), 240) {
+		fmt.Fprintf(stdout, "Entry array objects: %d\n", h.NEntryArrays())
+	}
+	if headerContains(h.HeaderSize(), 256) {
+		fmt.Fprintf(stdout, "Deepest field hash chain: %d\n", h.FieldHashChainDepth())
+	}
+	if headerContains(h.HeaderSize(), 248) {
+		fmt.Fprintf(stdout, "Deepest data hash chain: %d\n", h.DataHashChainDepth())
+	}
+	fmt.Fprintf(stdout, "Disk usage: %s\n", formatJournalBytes(diskUsage))
+}
+
+func runListInvocations(inputPath string, flags *cliFlags, stdout io.Writer) error {
+	j, err := journal.SdJournalOpen(inputPath, 0)
+	if err != nil {
+		return fmt.Errorf("open journal: %w", err)
+	}
+	defer j.Close()
+	if err := applyBootMatch(j, flags); err != nil {
+		return err
+	}
+	if err := applySingleInvocationUnit(j, flags, "--list-invocations"); err != nil {
+		return err
+	}
+	infos, err := collectInvocations(j)
+	if err != nil {
+		return err
+	}
+	if len(infos) == 0 {
+		return errors.New("No invocation ID found.")
+	}
+	display, firstIndex, err := selectInvocationRows(infos, flags)
+	if err != nil {
+		return err
+	}
+	if !*flags.quietFlag {
+		fmt.Fprintln(stdout, "IDX INVOCATION ID                    FIRST ENTRY                 LAST ENTRY")
+	}
+	idxWidth := 1
+	if *flags.quietFlag {
+		for i := range display {
+			idxText := fmt.Sprintf("%d", firstIndex+i)
+			if len(idxText) > idxWidth {
+				idxWidth = len(idxText)
+			}
+		}
+	}
+	for i, info := range display {
+		if *flags.quietFlag {
+			fmt.Fprintf(
+				stdout,
+				"%*d %s %s %s\n",
+				idxWidth,
+				firstIndex+i,
+				info.id,
+				formatHeaderTimestamp(info.firstUsec),
+				formatHeaderTimestamp(info.lastUsec),
+			)
+		} else {
+			fmt.Fprintf(
+				stdout,
+				"%3d %-32s %s %s\n",
+				firstIndex+i,
+				info.id,
+				formatHeaderTimestamp(info.firstUsec),
+				formatHeaderTimestamp(info.lastUsec),
+			)
+		}
+	}
+	return nil
+}
+
+func headerStateName(state uint8) string {
+	switch state {
+	case 0:
+		return "OFFLINE"
+	case 1:
+		return "ONLINE"
+	case 2:
+		return "ARCHIVED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func compatibleFlagText(flags uint32) string {
+	var parts []string
+	if flags&compatibleSealed != 0 {
+		parts = append(parts, "SEALED")
+	}
+	if flags&compatibleSealedContinuous != 0 {
+		parts = append(parts, "SEALED_CONTINUOUS")
+	}
+	if flags&compatibleTailEntryBootID != 0 {
+		parts = append(parts, "TAIL_ENTRY_BOOT_ID")
+	}
+	if flags&^(compatibleSealed|compatibleSealedContinuous|compatibleTailEntryBootID) != 0 {
+		parts = append(parts, "???")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
+}
+
+func incompatibleFlagText(flags uint32) string {
+	var parts []string
+	if flags&incompatibleCompressedXZ != 0 {
+		parts = append(parts, "COMPRESSED-XZ")
+	}
+	if flags&incompatibleCompressedLZ4 != 0 {
+		parts = append(parts, "COMPRESSED-LZ4")
+	}
+	if flags&incompatibleCompressedZSTD != 0 {
+		parts = append(parts, "COMPRESSED-ZSTD")
+	}
+	if flags&incompatibleKeyedHash != 0 {
+		parts = append(parts, "KEYED-HASH")
+	}
+	if flags&incompatibleCompact != 0 {
+		parts = append(parts, "COMPACT")
+	}
+	if flags&^(incompatibleCompressedXZ|incompatibleCompressedLZ4|incompatibleCompressedZSTD|incompatibleKeyedHash|incompatibleCompact) != 0 {
+		parts = append(parts, "???")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
+}
+
+func headerContains(headerSize uint64, end int) bool {
+	return headerSize >= uint64(end)
+}
+
+func fillPercent(count, buckets uint64) float64 {
+	if buckets == 0 {
+		return 0
+	}
+	return 100 * float64(count) / float64(buckets)
+}
+
+func headerRotateSuggested(h interface {
+	HeaderSize() uint64
+	NData() uint64
+	NFields() uint64
+	DataHashChainDepth() uint64
+	FieldHashChainDepth() uint64
+}, dataBuckets, fieldBuckets uint64) bool {
+	if h.HeaderSize() < journalHeaderSize {
+		return true
+	}
+	if dataBuckets > 0 && h.NData()*4 > dataBuckets*3 {
+		return true
+	}
+	if fieldBuckets > 0 && h.NFields()*4 > fieldBuckets*3 {
+		return true
+	}
+	if h.DataHashChainDepth() > headerChainDepthMax || h.FieldHashChainDepth() > headerChainDepthMax {
+		return true
+	}
+	return h.NData() > 0 && h.NFields() == 0
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
+func formatHeaderTimestamp(usec uint64) string {
+	if usec == 0 {
+		return "n/a"
+	}
+	return time.Unix(0, int64(usec)*1000).Local().Format("Mon 2006-01-02 15:04:05 MST")
+}
+
+func formatHeaderTimespan(usec uint64) string {
+	if usec < 1000 {
+		return fmt.Sprintf("%dus", usec)
+	}
+	if usec < 1_000_000 {
+		return fmt.Sprintf("%dms", usec/1000)
+	}
+	if usec < 60_000_000 {
+		return fmt.Sprintf("%ds", usec/1_000_000)
+	}
+	if usec < 3_600_000_000 {
+		return fmt.Sprintf("%dmin", usec/60_000_000)
+	}
+	if usec < 86_400_000_000 {
+		return fmt.Sprintf("%dh", usec/3_600_000_000)
+	}
+	return fmt.Sprintf("%dd", usec/86_400_000_000)
+}
+
+func selectInvocationRows(infos []invocationInfo, flags *cliFlags) ([]invocationInfo, int, error) {
+	if !flags.linesFlag.set {
+		return infos, 1 - len(infos), nil
+	}
+	limit, err := parseLinesLimitValue(flags.linesFlag.value)
+	if err != nil {
+		return nil, 0, err
+	}
+	if limit.all || limit.count >= len(infos) {
+		if limit.oldest {
+			return infos, 1, nil
+		}
+		return infos, 1 - len(infos), nil
+	}
+	if limit.count <= 0 {
+		return nil, 0, nil
+	}
+	if limit.oldest {
+		return infos[:limit.count], 1, nil
+	}
+	out := infos[len(infos)-limit.count:]
+	return out, 1 - len(out), nil
 }
 
 func diskUsageInputFiles(inputPath string) ([]string, error) {

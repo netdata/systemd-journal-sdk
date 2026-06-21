@@ -342,6 +342,22 @@ func (h *journalHeader) State() uint8 {
 	return h.state
 }
 
+func (h *journalHeader) FileID() UUID {
+	return h.fileID
+}
+
+func (h *journalHeader) MachineID() UUID {
+	return h.machineID
+}
+
+func (h *journalHeader) TailEntryBootID() UUID {
+	return h.tailEntryBootID
+}
+
+func (h *journalHeader) SeqnumID() UUID {
+	return h.seqnumID
+}
+
 func (h *journalHeader) CompatibleFlags() uint32 {
 	return h.compatibleFlags
 }
@@ -352,6 +368,70 @@ func (h *journalHeader) IncompatibleFlags() uint32 {
 
 func (h *journalHeader) HeaderSize() uint64 {
 	return h.headerSize
+}
+
+func (h *journalHeader) ArenaSize() uint64 {
+	return h.arenaSize
+}
+
+func (h *journalHeader) DataHashTableSize() uint64 {
+	return h.dataHashTableSize
+}
+
+func (h *journalHeader) FieldHashTableSize() uint64 {
+	return h.fieldHashTableSize
+}
+
+func (h *journalHeader) NObjects() uint64 {
+	return h.nObjects
+}
+
+func (h *journalHeader) NEntries() uint64 {
+	return h.nEntries
+}
+
+func (h *journalHeader) HeadEntryRealtime() uint64 {
+	return h.headEntryRealtime
+}
+
+func (h *journalHeader) TailEntryRealtime() uint64 {
+	return h.tailEntryRealtime
+}
+
+func (h *journalHeader) TailEntryMonotonic() uint64 {
+	return h.tailEntryMonotonic
+}
+
+func (h *journalHeader) HeadEntrySeqnum() uint64 {
+	return h.headEntrySeqnum
+}
+
+func (h *journalHeader) TailEntrySeqnum() uint64 {
+	return h.tailEntrySeqnum
+}
+
+func (h *journalHeader) NData() uint64 {
+	return h.nData
+}
+
+func (h *journalHeader) NFields() uint64 {
+	return h.nFields
+}
+
+func (h *journalHeader) NTags() uint64 {
+	return h.nTags
+}
+
+func (h *journalHeader) NEntryArrays() uint64 {
+	return h.nEntryArrays
+}
+
+func (h *journalHeader) DataHashChainDepth() uint64 {
+	return h.dataHashChainDepth
+}
+
+func (h *journalHeader) FieldHashChainDepth() uint64 {
+	return h.fieldHashChainDepth
 }
 
 func (r *Reader) readAt(dst []byte, offset uint64) error {

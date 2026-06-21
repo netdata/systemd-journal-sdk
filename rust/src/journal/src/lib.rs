@@ -300,21 +300,32 @@ pub struct FileHeader {
     pub compatible_flags: u32,
     pub incompatible_flags: u32,
     pub state: u8,
+    pub file_id: [u8; 16],
+    pub machine_id: [u8; 16],
     pub header_size: u64,
+    pub arena_size: u64,
+    pub data_hash_table_size: u64,
+    pub field_hash_table_size: u64,
+    pub n_objects: u64,
     pub n_entries: u64,
     pub head_entry_realtime: u64,
     pub tail_entry_realtime: u64,
+    pub tail_entry_monotonic: u64,
     pub head_entry_seqnum: u64,
     pub tail_entry_seqnum: u64,
     pub tail_entry_boot_id: [u8; 16],
     pub seqnum_id: [u8; 16],
+    pub n_data: u64,
+    pub n_fields: u64,
+    pub n_tags: u64,
+    pub n_entry_arrays: u64,
+    pub data_hash_chain_depth: u64,
+    pub field_hash_chain_depth: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FileHeaderSnapshot {
     pub(crate) header: FileHeader,
-    pub(crate) machine_id: [u8; 16],
-    pub(crate) tail_entry_monotonic: u64,
 }
 
 impl FileHeaderSnapshot {
@@ -326,17 +337,34 @@ impl FileHeaderSnapshot {
                 compatible_flags: header.compatible_flags,
                 incompatible_flags: header.incompatible_flags,
                 state: header.state,
+                file_id: header.file_id,
+                machine_id: header.machine_id,
                 header_size: header.header_size,
+                arena_size: header.arena_size,
+                data_hash_table_size: header
+                    .data_hash_table_size
+                    .map(|value| value.get())
+                    .unwrap_or(0),
+                field_hash_table_size: header
+                    .field_hash_table_size
+                    .map(|value| value.get())
+                    .unwrap_or(0),
+                n_objects: header.n_objects,
                 n_entries: header.n_entries,
                 head_entry_realtime: header.head_entry_realtime,
                 tail_entry_realtime: header.tail_entry_realtime,
+                tail_entry_monotonic: header.tail_entry_monotonic,
                 head_entry_seqnum: header.head_entry_seqnum,
                 tail_entry_seqnum: header.tail_entry_seqnum,
                 tail_entry_boot_id: header.tail_entry_boot_id,
                 seqnum_id: header.seqnum_id,
+                n_data: header.n_data,
+                n_fields: header.n_fields,
+                n_tags: header.n_tags,
+                n_entry_arrays: header.n_entry_arrays,
+                data_hash_chain_depth: header.data_hash_chain_depth,
+                field_hash_chain_depth: header.field_hash_chain_depth,
             },
-            machine_id: header.machine_id,
-            tail_entry_monotonic: header.tail_entry_monotonic,
         }
     }
 }

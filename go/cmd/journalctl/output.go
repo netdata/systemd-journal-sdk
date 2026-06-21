@@ -17,6 +17,7 @@ type outputOptions struct {
 	outputFields    []string
 	outputFieldsSet bool
 	utc             bool
+	noHostname      bool
 	truncateNewline bool
 }
 
@@ -26,6 +27,7 @@ func newOutputOptions(flags *cliFlags, outputFieldsSet bool) outputOptions {
 		outputFields:    parseOutputFields(*flags.outputFieldsFlag),
 		outputFieldsSet: outputFieldsSet,
 		utc:             *flags.utcFlag,
+		noHostname:      *flags.noHostnameFlag,
 		truncateNewline: *flags.truncateNewlineFlag,
 	}
 }
@@ -47,8 +49,9 @@ type outputRenderer struct {
 }
 
 type deltaState struct {
-	realtime uint64
-	bootID   journal.UUID
+	realtime  uint64
+	monotonic uint64
+	bootID    journal.UUID
 }
 
 func newOutputRenderer(options outputOptions) *outputRenderer {
@@ -110,7 +113,7 @@ func (r *outputRenderer) renderShort(entry *journal.Entry, mode timestampMode) (
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s %s: %s\n", timestamp, entryLabel(entry), displayMessage(entry, r.options.truncateNewline)), nil
+	return fmt.Sprintf("%s %s: %s\n", timestamp, entryLabel(entry, r.options), displayMessage(entry, r.options.truncateNewline)), nil
 }
 
 func (r *outputRenderer) renderWithUnit(entry *journal.Entry) (string, error) {
@@ -120,8 +123,9 @@ func (r *outputRenderer) renderWithUnit(entry *journal.Entry) (string, error) {
 	}
 	label := unitLabel(entry)
 	if label == "" {
-		label = entryLabel(entry)
+		label = baseEntryLabel(entry)
 	}
+	label = formatEntryLabel(entry, label, r.options)
 	return fmt.Sprintf("%s %s: %s\n", timestamp, label, displayMessage(entry, r.options.truncateNewline)), nil
 }
 
@@ -129,18 +133,27 @@ func (r *outputRenderer) renderShortDelta(entry *journal.Entry) (string, error) 
 	monotonic := formatMonotonic(entry.Monotonic)
 	delta := "                "
 	if r.previousDelta != nil {
-		diff := entry.Realtime - r.previousDelta.realtime
-		if r.previousDelta.realtime > entry.Realtime {
-			diff = r.previousDelta.realtime - entry.Realtime
-		}
 		marker := " "
 		if r.previousDelta.bootID != entry.BootID {
 			marker = "*"
 		}
+		var diff uint64
+		if marker == "*" {
+			diff = absDiff(entry.Realtime, r.previousDelta.realtime)
+		} else {
+			diff = absDiff(entry.Monotonic, r.previousDelta.monotonic)
+		}
 		delta = fmt.Sprintf(" <%s%s>", formatMonotonic(diff), marker)
 	}
-	r.previousDelta = &deltaState{realtime: entry.Realtime, bootID: entry.BootID}
-	return fmt.Sprintf("[%s%s] %s: %s\n", monotonic, delta, entryLabel(entry), displayMessage(entry, r.options.truncateNewline)), nil
+	r.previousDelta = &deltaState{realtime: entry.Realtime, monotonic: entry.Monotonic, bootID: entry.BootID}
+	return fmt.Sprintf("[%s%s] %s: %s\n", monotonic, delta, entryLabel(entry, r.options), displayMessage(entry, r.options.truncateNewline)), nil
+}
+
+func absDiff(a, b uint64) uint64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
 
 func (r *outputRenderer) renderCat(entry *journal.Entry) string {
@@ -252,13 +265,36 @@ func formatMonotonic(usec uint64) string {
 	return fmt.Sprintf("%5d.%06d", usec/1_000_000, usec%1_000_000)
 }
 
-func entryLabel(entry *journal.Entry) string {
+func entryLabel(entry *journal.Entry, options outputOptions) string {
+	return formatEntryLabel(entry, baseEntryLabel(entry), options)
+}
+
+func baseEntryLabel(entry *journal.Entry) string {
 	for _, name := range []string{"SYSLOG_IDENTIFIER", "_COMM", "_EXE"} {
 		if value := firstString(entry, name); value != "" {
 			return value
 		}
 	}
-	return "-"
+	return "unknown"
+}
+
+func formatEntryLabel(entry *journal.Entry, label string, options outputOptions) string {
+	var parts []string
+	if !options.noHostname {
+		if hostname := firstString(entry, "_HOSTNAME"); hostname != "" {
+			parts = append(parts, hostname)
+		}
+	}
+	if label == "" {
+		label = "unknown"
+	}
+	if pid := firstString(entry, "_PID"); pid != "" {
+		label += "[" + pid + "]"
+	} else if pid := firstString(entry, "SYSLOG_PID"); pid != "" {
+		label += "[" + pid + "]"
+	}
+	parts = append(parts, label)
+	return strings.Join(parts, " ")
 }
 
 func unitLabel(entry *journal.Entry) string {

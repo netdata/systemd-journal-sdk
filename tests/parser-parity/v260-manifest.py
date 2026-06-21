@@ -110,9 +110,9 @@ def build_long_options():
         ("pager-end", "none", "file-backed-required", "recognized-supported", "e"),
         # FSS options
         ("verify-key", "key", "file-backed-required", "recognized-supported", None),
-        ("interval", "duration", "portable-utility-required", "recognized-supported", None),
-        ("force", "none", "portable-utility-required", "recognized-supported", None),
-        ("setup-keys", "none", "portable-utility-required", "recognized-supported", None),
+        ("interval", "duration", "recognized-no-op", "recognized-no-op", None),
+        ("force", "none", "recognized-no-op", "recognized-no-op", None),
+        ("setup-keys", "none", "recognized-unsupported", "recognized-unsupported", None),
         # Commands and actions
         ("help", "none", "portable-utility-required", "recognized-supported", "h"),
         ("version", "none", "portable-utility-required", "recognized-supported", None),

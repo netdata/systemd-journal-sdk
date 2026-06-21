@@ -82,17 +82,37 @@ FILE_ROWS = [
         1_700_004_100_000_000,
         (
             ("SYSLOG_IDENTIFIER", "app-a"),
+            ("SYSLOG_PID", "9001"),
             ("PRIORITY", "3"),
             ("SYSLOG_FACILITY", "3"),
             ("_TRANSPORT", "syslog"),
+            ("_HOSTNAME", "fixture-host-a"),
+            ("_PID", "101"),
             ("_SYSTEMD_UNIT", "alpha.service"),
             ("_SYSTEMD_CGROUP", "/init.scope"),
+            ("_SYSTEMD_INVOCATION_ID", "11111111111111111111111111111111"),
             ("UNIT", "manager-alpha.service"),
             ("_UID", "0"),
             ("OBJECT_SYSTEMD_UNIT", "object-alpha.service"),
             ("MESSAGE_ID", COREDUMP_MESSAGE_ID),
             ("COREDUMP_UNIT", "crash-alpha.service"),
             ("_SYSTEMD_SLICE", "app-alpha.slice"),
+        ),
+    ),
+    Row(
+        "multi-boot-file.journal",
+        BOOT_B,
+        "file-alpha-second",
+        1_700_004_100_000_500,
+        (
+            ("SYSLOG_IDENTIFIER", "app-a"),
+            ("SYSLOG_PID", "9002"),
+            ("PRIORITY", "5"),
+            ("SYSLOG_FACILITY", "3"),
+            ("_TRANSPORT", "syslog"),
+            ("_HOSTNAME", "fixture-host-b"),
+            ("_SYSTEMD_UNIT", "alpha.service"),
+            ("_SYSTEMD_INVOCATION_ID", "22222222222222222222222222222222"),
         ),
     ),
     Row(
@@ -110,6 +130,7 @@ FILE_ROWS = [
             ("OBJECT_SYSTEMD_USER_UNIT", "user-object-alpha.service"),
             ("COREDUMP_USER_UNIT", "user-crash-alpha.service"),
             ("_SYSTEMD_USER_SLICE", "user-alpha.slice"),
+            ("USER_INVOCATION_ID", "33333333333333333333333333333333"),
             ("_UID", HOST_UID),
         ),
     ),
@@ -124,6 +145,7 @@ FILE_ROWS = [
             ("SYSLOG_FACILITY", "3"),
             ("_TRANSPORT", "kernel"),
             ("_SYSTEMD_UNIT", "beta.service"),
+            ("_SYSTEMD_INVOCATION_ID", "44444444444444444444444444444444"),
         ),
     ),
 ]
@@ -296,9 +318,9 @@ def action_command(reader: str, tools: dict[str, str], args: list[str]) -> list[
     if reader == "stock":
         return ["journalctl", "--no-pager", "--quiet", *args]
     if reader == "go":
-        return [tools["go_journalctl"], *args]
+        return [tools["go_journalctl"], "--quiet", *args]
     if reader == "rust":
-        return [tools["rust_journalctl"], *args]
+        return [tools["rust_journalctl"], "--quiet", *args]
     raise ValueError(reader)
 
 
@@ -529,6 +551,24 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             ["--user-unit=user-alpha.slice", "--boot=all", "TEST_ID=journalctl-query"],
         ),
         ("file-user-unit-glob", "file", fixtures["file"], ["--user-unit=user-*", "--boot=all", "TEST_ID=journalctl-query"]),
+        (
+            "file-invocation-explicit",
+            "file",
+            fixtures["file"],
+            ["--invocation=11111111111111111111111111111111", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-invocation-latest-unit",
+            "file",
+            fixtures["file"],
+            ["-I", "--unit=alpha.service", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-invocation-all-unit",
+            "file",
+            fixtures["file"],
+            ["--invocation=all", "--unit=alpha.service", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
     ]
 
     results: list[dict[str, object]] = []
@@ -704,6 +744,42 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
                 }
             )
 
+    exact_action_cases = [
+        ("header-file", ["--file", str(fixtures["file"]), "--header"]),
+        (
+            "list-invocations-alpha",
+            ["--file", str(fixtures["file"]), "--list-invocations", "--unit=alpha.service"],
+        ),
+        (
+            "list-invocations-alpha-tail",
+            ["--file", str(fixtures["file"]), "--list-invocations", "--unit=alpha.service", "--lines=1"],
+        ),
+        (
+            "list-invocations-alpha-head",
+            ["--file", str(fixtures["file"]), "--list-invocations", "--unit=alpha.service", "--lines=+1"],
+        ),
+    ]
+    for case_name, args in exact_action_cases:
+        stock = run(action_command("stock", tools, args), timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = stock.stdout
+        for reader in ("go", "rust"):
+            cmd = action_command(reader, tools, args)
+            result = run(cmd, timeout=30)
+            ok = result.returncode == 0 and result.stdout == expected
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": result.stdout,
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
+                }
+            )
+
     return results
 
 
@@ -711,6 +787,7 @@ def run_output_mode_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> l
     base_args = ["--boot=all", "TEST_ID=journalctl-query"]
     text_cases = [
         ("output-short", ["--output=short", *base_args], "exact"),
+        ("output-short-no-hostname", ["--no-hostname", "--output=short", *base_args], "exact"),
         ("output-short-full", ["--output=short-full", *base_args], "exact"),
         ("output-short-full-utc", ["--utc", "--output=short-full", *base_args], "exact"),
         ("output-short-iso", ["--output=short-iso", *base_args], "exact"),

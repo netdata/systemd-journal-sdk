@@ -513,6 +513,61 @@ Official source evidence for the output-mode chunk:
   `go/README.md`, and `rust/README.md` so the documented file-backed
   `journalctl` contract includes the full output-mode family and
   `--output-fields`.
+- Implemented the file-backed header, invocation, and short-label parity chunk
+  directly in Rust and Go:
+  - `--header` prints stock-style journal header fields from explicit file and
+    directory inputs, using reader-exposed header metadata in both languages;
+  - `--invocation=` and `-I` resolve explicit invocation IDs and unit-context
+    invocation offsets from explicit file/directory input, with
+    `--invocation=all` preserving stock no-filter behavior;
+  - invocation filters add the official OR field set for
+    `_SYSTEMD_INVOCATION_ID`, `OBJECT_SYSTEMD_INVOCATION_ID`, `INVOCATION_ID`,
+    and `USER_INVOCATION_ID`;
+  - `--list-invocations` lists invocation IDs for the selected unit context,
+    including stock `--lines` row selection, header suppression under
+    `--quiet`, and stock quiet-mode index padding;
+  - short-style output now renders stock-compatible hostname,
+    identifier/unit, and PID labels from journal fields, with `--no-hostname`
+    suppressing only the hostname component;
+  - `--setup-keys` was reclassified from portable utility work to
+    recognized-unsupported because the official v260.1 action checks
+    `/var/log/journal`, reads host machine and boot IDs, and writes
+    `/var/log/journal/<machine-id>/fss`.
+
+Official source evidence for the header/invocation/label chunk:
+
+- `systemd/systemd @ c0a5a2516d28`
+  - `src/journal/journalctl-misc.c:22`: `action_print_header()` opens the
+    journal and prints headers.
+  - `src/libsystemd/sd-journal/sd-journal.c:3285`: header printing iterates
+    journal files.
+  - `src/libsystemd/sd-journal/journal-file.c:3888`: stock header field output
+    shape.
+  - `src/journal/journalctl-filter.c:426`: invocation filters replace the
+    normal boot/unit filter path when an invocation descriptor is selected.
+  - `src/shared/logs-show.c:1670`: invocation match fields.
+  - `src/journal/journalctl-util.c:180`: unit-context validation for
+    invocation offset/list actions.
+  - `src/shared/logs-show.c:2271`: invocation/boot ID listing helper.
+  - `src/shared/logs-show.c:552`: short output parses `_PID`.
+  - `src/shared/logs-show.c:557`: short output parses `_HOSTNAME`.
+  - `src/shared/logs-show.c:558`: short output parses `SYSLOG_PID`.
+  - `src/shared/logs-show.c:625`: `OUTPUT_NO_HOSTNAME` suppresses hostname.
+  - `src/journal/journalctl-authenticate.c:80`: `--setup-keys` checks
+    `/var/log/journal`.
+  - `src/journal/journalctl-authenticate.c:89`: `--setup-keys` reads the host
+    machine ID.
+  - `src/journal/journalctl-authenticate.c:93`: `--setup-keys` reads the host
+    boot ID.
+  - `src/journal/journalctl-authenticate.c:97`: `--setup-keys` writes the host
+    FSS path under `/var/log/journal/<machine-id>/fss`.
+- Updated `.agents/sow/specs/journalctl-v260-parity-matrix.md`,
+  `tests/parser-parity/v260-manifest.py`,
+  `tests/parser-parity/v260-manifest.json`,
+  `.agents/sow/specs/product-scope.md`, `docs/Journalctl-CLI.md`,
+  `go/README.md`, and `rust/README.md` so the documented file-backed
+  `journalctl` contract includes header, invocation, stock short labels, and
+  the corrected `--setup-keys` unsupported classification.
 
 ## Validation
 
@@ -530,17 +585,19 @@ Acceptance criteria evidence:
     `json-seq`, `cat`, and `with-unit` are fully present in the matrix.
   - All 20 `JournalctlAction` enum values are represented by matrix command or
     parser rows.
-- Rust and Go implementation pending.
+- Rust and Go implementation remains in progress.
 - Rust and Go full parser recognition is implemented and locally validated.
 - Rust and Go file-backed behavior is partially advanced for `--reverse`,
   `--show-cursor`, `--lines` direction/default semantics, `--identifier`,
   `--priority`, `--facility`, `--grep`, `--case-sensitive`, `--dmesg`,
   `--this-boot`, `--cursor`, `--after-cursor`, `--cursor-file`, `--unit`,
-  `--user-unit`, `--new-id128`, explicit-input `--disk-usage`, full
-  output-mode rendering, `--output-fields`, and portable path-match rejection.
-- Remaining file-backed parity is still pending, including invocation filters,
-  `--header`, `--list-invocations`, `--setup-keys`, exact empty-result exit
-  semantics, and directory vacuum actions where approved by the parity matrix.
+  `--user-unit`, `--invocation`, `-I`, `--list-invocations`, `--header`,
+  stock short labels including `--no-hostname`, `--new-id128`, explicit-input
+  `--disk-usage`, full output-mode rendering, `--output-fields`, and portable
+  path-match rejection.
+- Remaining file-backed parity is still pending, including exact empty-result
+  exit semantics, directory vacuum actions where approved by the parity matrix,
+  and final whole-SOW cross-platform/reviewer/ship-decision gates.
 
 Tests or equivalent validation:
 
@@ -740,6 +797,35 @@ Tests or equivalent validation:
   paths/phrasing, parser token wording, accounting terminology, source-name
   text, and sanitized SOW policy text.
 - `.agents/sow/audit.sh`: passed after the output-mode chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the header/invocation/label chunk; 24
+  Rust `journalctl` tests passed.
+- `cd go && GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test ./cmd/journalctl
+  ./journal`: passed after the header/invocation/label chunk.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)` after the header/invocation/label chunk, with
+  `failures=[]` and status `PASS`, including `--header`,
+  `--list-invocations`, `--invocation`, `-I`, stock short hostname/PID labels,
+  `--no-hostname`, and the previously covered output/query cases.
+- `python3 tests/parser-parity/check_v260_manifest.py`: passed after
+  reclassifying `--setup-keys`; manifest still matches the official systemd
+  v260.1 surface.
+- `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after reclassifying
+  `--setup-keys`; Rust `ok=93 skipped=0 failed=0`, Go `ok=93 skipped=0
+  failed=0`.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the
+  header/invocation/label docs update; validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after the
+  header/invocation/label docs update; 31 of 31 verified examples passed.
+- `git diff --check`: passed after the header/invocation/label chunk.
+- `.agents/sow/audit.sh`: passed after the header/invocation/label chunk.
 
 Real-use evidence:
 
@@ -774,13 +860,20 @@ Artifact maintenance gate:
   to record that emitted cursor strings now use the official systemd cursor
   shape while seek/test still accept the older SDK cursor shape, and again
   after the unit-filter chunk to record the current file-backed filter
-  contract, and after the output-mode chunk to record full output-mode and
-  `--output-fields` behavior.
+  contract, after the output-mode chunk to record full output-mode and
+  `--output-fields` behavior, and after the header/invocation/label chunk to
+  record invocation, `--list-invocations`, `--header`, and stock short-label
+  behavior. `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
+  `tests/parser-parity/v260-manifest.*` were updated to reclassify
+  `--setup-keys` as recognized-unsupported based on official source evidence.
 - End-user/operator docs: `rust/README.md`, `go/README.md`, `go/API.md`, and
   `docs/Reader-APIs.md` were updated for the cursor string format contract.
   `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` were updated
   after the unit-filter chunk for current file-backed filter behavior and again
-  after the output-mode chunk for output rendering and `--output-fields`.
+  after the output-mode chunk for output rendering and `--output-fields`, and
+  after the header/invocation/label chunk for invocation filters,
+  `--list-invocations`, `--header`, stock short labels, and the
+  `--setup-keys` unsupported behavior.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -791,7 +884,9 @@ Specs update:
 - Added `.agents/sow/specs/journalctl-v260-parity-matrix.md` for the active
   SOW implementation contract. Updated `.agents/sow/specs/product-scope.md`
   for the shipped cursor string contract change and current file-backed filter
-  contract, then for the output-mode and `--output-fields` contract.
+  contract, then for the output-mode and `--output-fields` contract, and then
+  for invocation, `--list-invocations`, `--header`, and stock short-label
+  behavior.
   Additional product-scope updates remain pending final shipped behavior and
   ship recommendation.
 
@@ -806,8 +901,9 @@ End-user/operator docs update:
 - Updated `rust/README.md`, `go/README.md`, `go/API.md`, and
   `docs/Reader-APIs.md` for the cursor string format contract. Updated
   `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` after the
-  unit-filter chunk and after the output-mode chunk. Final journalctl command
-  documentation remains pending full implementation.
+  unit-filter chunk, after the output-mode chunk, and after the
+  header/invocation/label chunk. Final journalctl command documentation remains
+  pending full implementation.
 
 End-user/operator skills update:
 

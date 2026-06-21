@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 use clap::{Parser, ValueEnum};
 use journal::{
-    Entry, FacadeError, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
+    Entry, FacadeError, FileHeader, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetEntry,
     SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalPrevious, SdJournalSeekCursor,
     SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
@@ -22,6 +22,16 @@ use std::time::Duration;
 
 // HEADER_COMPATIBLE_SEALED from systemd journal-def.h
 const COMPATIBLE_SEALED: u32 = 1;
+const COMPATIBLE_TAIL_ENTRY_BOOT_ID: u32 = 1 << 1;
+const COMPATIBLE_SEALED_CONTINUOUS: u32 = 1 << 2;
+const INCOMPATIBLE_COMPRESSED_XZ: u32 = 1 << 0;
+const INCOMPATIBLE_COMPRESSED_LZ4: u32 = 1 << 1;
+const INCOMPATIBLE_KEYED_HASH: u32 = 1 << 2;
+const INCOMPATIBLE_COMPRESSED_ZSTD: u32 = 1 << 3;
+const INCOMPATIBLE_COMPACT: u32 = 1 << 4;
+const HASH_ITEM_SIZE: u64 = 16;
+const JOURNAL_HEADER_SIZE: u64 = 272;
+const HEADER_CHAIN_DEPTH_MAX: u64 = 100;
 const COREDUMP_MESSAGE_ID: &str = "fc2e22bc6ee647b6b90729ab34a250b1";
 const SYSTEM_UNIT_FIELDS_FULL: &[&str] = &[
     "_SYSTEMD_UNIT",
@@ -175,6 +185,8 @@ struct Args {
     user_unit: Vec<String>,
     #[arg(long = "invocation", hide = true)]
     invocation: Option<String>,
+    #[arg(short = 'I', hide = true)]
+    invocation_latest: bool,
     #[arg(long = "identifier", hide = true)]
     identifier: Vec<String>,
     #[arg(long = "exclude-identifier", hide = true)]
@@ -429,18 +441,6 @@ fn run() -> Result<()> {
             "FSS key pair generation requires journald integration; portable mode has no host journald",
         ));
     }
-    if args.header {
-        return Err(portable_unsupported(
-            "--header",
-            "header printing requires the journal facade to expose header information for explicit file/directory input",
-        ));
-    }
-    if args.list_invocations {
-        return Err(portable_unsupported(
-            "--list-invocations",
-            "invocation listing requires explicit unit context and journal facade integration",
-        ));
-    }
     if args.vacuum_size.is_some() || args.vacuum_files.is_some() || args.vacuum_time.is_some() {
         // Maintenance options require --directory=.
         if args.directory.is_none() {
@@ -490,6 +490,14 @@ fn run() -> Result<()> {
 
     if args.disk_usage {
         return run_disk_usage(path);
+    }
+
+    if args.header {
+        return run_header(path);
+    }
+
+    if args.list_invocations {
+        return run_list_invocations(path, &args);
     }
 
     if args.verify || args.verify_only || args.verify_key.is_some() {
@@ -875,21 +883,12 @@ fn looks_like_lines_descriptor(value: &str) -> bool {
 fn open_filtered_journal(path: &Path, args: &Args) -> Result<SdJournal> {
     let mut journal =
         SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
-    let effective_boot = args.boot.as_deref().or(args.this_boot.then_some(""));
-    if let Some(boot) = effective_boot {
-        if boot.trim() != "all" {
-            let boot_id = resolve_boot_id(&mut journal, boot.trim())?;
-            if !boot_id.is_empty() {
-                let data = parse_match_string(&format!("_BOOT_ID={boot_id}"))
-                    .map_err(|err| anyhow!("invalid boot match: {err}"))?;
-                SdJournalAddMatch(&mut journal, &data)
-                    .map_err(|err| anyhow!("add boot match: {err}"))?;
-                SdJournalAddConjunction(&mut journal)
-                    .map_err(|err| anyhow!("add boot conjunction: {err}"))?;
-            }
-        }
+    if let Some(invocation_id) = resolve_invocation_filter(path, args)? {
+        add_invocation_matches(&mut journal, &invocation_id)?;
+    } else {
+        apply_boot_match(&mut journal, args)?;
+        apply_cli_matches(&mut journal, args)?;
     }
-    apply_cli_matches(&mut journal, args)?;
     apply_matches(&mut journal, &args.matches)?;
     SdJournalSetOutputMode(&mut journal, args.output.clone().into());
     Ok(journal)
@@ -1073,6 +1072,287 @@ fn run_disk_usage(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn run_header(path: &Path) -> Result<()> {
+    let files = disk_usage_files(path)?;
+    for (idx, file) in files.iter().enumerate() {
+        if idx > 0 {
+            println!();
+        }
+        let reader =
+            FileReader::open(file).map_err(|err| anyhow!("header: {}: {err}", file.display()))?;
+        let usage = allocated_file_bytes(file)?;
+        print_header(file, &reader.header(), usage)?;
+    }
+    Ok(())
+}
+
+fn print_header(path: &Path, header: &FileHeader, disk_usage: u64) -> Result<()> {
+    let data_buckets = header.data_hash_table_size / HASH_ITEM_SIZE;
+    let field_buckets = header.field_hash_table_size / HASH_ITEM_SIZE;
+    println!("File path: {}", path.display());
+    println!("File ID: {}", hex::encode(header.file_id));
+    println!("Machine ID: {}", hex::encode(header.machine_id));
+    println!("Boot ID: {}", hex::encode(header.tail_entry_boot_id));
+    println!("Sequential number ID: {}", hex::encode(header.seqnum_id));
+    println!("State: {}", header_state_name(header.state));
+    println!(
+        "Compatible flags:{}",
+        compatible_flag_text(header.compatible_flags)
+    );
+    println!(
+        "Incompatible flags:{}",
+        incompatible_flag_text(header.incompatible_flags)
+    );
+    println!("Header size: {}", header.header_size);
+    println!("Arena size: {}", header.arena_size);
+    println!("Data hash table size: {data_buckets}");
+    println!("Field hash table size: {field_buckets}");
+    println!(
+        "Rotate suggested: {}",
+        yes_no(header_rotate_suggested(header, data_buckets, field_buckets))
+    );
+    println!(
+        "Head sequential number: {} ({:x})",
+        header.head_entry_seqnum, header.head_entry_seqnum
+    );
+    println!(
+        "Tail sequential number: {} ({:x})",
+        header.tail_entry_seqnum, header.tail_entry_seqnum
+    );
+    println!(
+        "Head realtime timestamp: {} ({:x})",
+        output::format_header_timestamp(header.head_entry_realtime)?,
+        header.head_entry_realtime
+    );
+    println!(
+        "Tail realtime timestamp: {} ({:x})",
+        output::format_header_timestamp(header.tail_entry_realtime)?,
+        header.tail_entry_realtime
+    );
+    println!(
+        "Tail monotonic timestamp: {} ({:x})",
+        format_header_timespan(header.tail_entry_monotonic),
+        header.tail_entry_monotonic
+    );
+    println!("Objects: {}", header.n_objects);
+    println!("Entry objects: {}", header.n_entries);
+    if header_contains(header.header_size, 216) {
+        println!("Data objects: {}", header.n_data);
+        println!(
+            "Data hash table fill: {:.1}%",
+            fill_percent(header.n_data, data_buckets)
+        );
+    }
+    if header_contains(header.header_size, 224) {
+        println!("Field objects: {}", header.n_fields);
+        println!(
+            "Field hash table fill: {:.1}%",
+            fill_percent(header.n_fields, field_buckets)
+        );
+    }
+    if header_contains(header.header_size, 232) {
+        println!("Tag objects: {}", header.n_tags);
+    }
+    if header_contains(header.header_size, 240) {
+        println!("Entry array objects: {}", header.n_entry_arrays);
+    }
+    if header_contains(header.header_size, 256) {
+        println!(
+            "Deepest field hash chain: {}",
+            header.field_hash_chain_depth
+        );
+    }
+    if header_contains(header.header_size, 248) {
+        println!("Deepest data hash chain: {}", header.data_hash_chain_depth);
+    }
+    println!("Disk usage: {}", format_journal_bytes(disk_usage));
+    Ok(())
+}
+
+fn run_list_invocations(path: &Path, args: &Args) -> Result<()> {
+    let mut journal =
+        SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
+    apply_boot_match(&mut journal, args)?;
+    apply_single_invocation_unit(&mut journal, args, "--list-invocations")?;
+    let invocations = collect_invocations(&mut journal)?;
+    if invocations.is_empty() {
+        return Err(anyhow!("No invocation ID found."));
+    }
+    let (rows, first_index) = select_invocation_rows(&invocations, args)?;
+    if !args.quiet {
+        println!("IDX INVOCATION ID                    FIRST ENTRY                 LAST ENTRY");
+    }
+    let quiet_index_width = if args.quiet {
+        rows.iter()
+            .enumerate()
+            .map(|(idx, _)| (first_index + idx as isize).to_string().len())
+            .max()
+            .unwrap_or(1)
+    } else {
+        1
+    };
+    for (idx, entry) in rows.iter().enumerate() {
+        if args.quiet {
+            println!(
+                "{:>width$} {} {} {}",
+                first_index + idx as isize,
+                entry.id,
+                output::format_header_timestamp(entry.first_usec)?,
+                output::format_header_timestamp(entry.last_usec)?,
+                width = quiet_index_width,
+            );
+        } else {
+            println!(
+                "{:>3} {:<32} {} {}",
+                first_index + idx as isize,
+                entry.id,
+                output::format_header_timestamp(entry.first_usec)?,
+                output::format_header_timestamp(entry.last_usec)?,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn header_state_name(state: u8) -> &'static str {
+    match state {
+        0 => "OFFLINE",
+        1 => "ONLINE",
+        2 => "ARCHIVED",
+        _ => "UNKNOWN",
+    }
+}
+
+fn compatible_flag_text(flags: u32) -> String {
+    let mut parts = Vec::new();
+    if flags & COMPATIBLE_SEALED != 0 {
+        parts.push("SEALED");
+    }
+    if flags & COMPATIBLE_SEALED_CONTINUOUS != 0 {
+        parts.push("SEALED_CONTINUOUS");
+    }
+    if flags & COMPATIBLE_TAIL_ENTRY_BOOT_ID != 0 {
+        parts.push("TAIL_ENTRY_BOOT_ID");
+    }
+    if flags & !(COMPATIBLE_SEALED | COMPATIBLE_SEALED_CONTINUOUS | COMPATIBLE_TAIL_ENTRY_BOOT_ID)
+        != 0
+    {
+        parts.push("???");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" "))
+    }
+}
+
+fn incompatible_flag_text(flags: u32) -> String {
+    let mut parts = Vec::new();
+    if flags & INCOMPATIBLE_COMPRESSED_XZ != 0 {
+        parts.push("COMPRESSED-XZ");
+    }
+    if flags & INCOMPATIBLE_COMPRESSED_LZ4 != 0 {
+        parts.push("COMPRESSED-LZ4");
+    }
+    if flags & INCOMPATIBLE_COMPRESSED_ZSTD != 0 {
+        parts.push("COMPRESSED-ZSTD");
+    }
+    if flags & INCOMPATIBLE_KEYED_HASH != 0 {
+        parts.push("KEYED-HASH");
+    }
+    if flags & INCOMPATIBLE_COMPACT != 0 {
+        parts.push("COMPACT");
+    }
+    if flags
+        & !(INCOMPATIBLE_COMPRESSED_XZ
+            | INCOMPATIBLE_COMPRESSED_LZ4
+            | INCOMPATIBLE_COMPRESSED_ZSTD
+            | INCOMPATIBLE_KEYED_HASH
+            | INCOMPATIBLE_COMPACT)
+        != 0
+    {
+        parts.push("???");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" "))
+    }
+}
+
+fn header_contains(header_size: u64, end: u64) -> bool {
+    header_size >= end
+}
+
+fn fill_percent(count: u64, buckets: u64) -> f64 {
+    if buckets == 0 {
+        return 0.0;
+    }
+    100.0 * count as f64 / buckets as f64
+}
+
+fn header_rotate_suggested(header: &FileHeader, data_buckets: u64, field_buckets: u64) -> bool {
+    if header.header_size < JOURNAL_HEADER_SIZE {
+        return true;
+    }
+    if data_buckets > 0 && header.n_data.saturating_mul(4) > data_buckets.saturating_mul(3) {
+        return true;
+    }
+    if field_buckets > 0 && header.n_fields.saturating_mul(4) > field_buckets.saturating_mul(3) {
+        return true;
+    }
+    if header.data_hash_chain_depth > HEADER_CHAIN_DEPTH_MAX
+        || header.field_hash_chain_depth > HEADER_CHAIN_DEPTH_MAX
+    {
+        return true;
+    }
+    header.n_data > 0 && header.n_fields == 0
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn format_header_timespan(usec: u64) -> String {
+    if usec < 1_000 {
+        return format!("{usec}us");
+    }
+    if usec < 1_000_000 {
+        return format!("{}ms", usec / 1_000);
+    }
+    if usec < 60_000_000 {
+        return format!("{}s", usec / 1_000_000);
+    }
+    if usec < 3_600_000_000 {
+        return format!("{}min", usec / 60_000_000);
+    }
+    if usec < 86_400_000_000 {
+        return format!("{}h", usec / 3_600_000_000);
+    }
+    format!("{}d", usec / 86_400_000_000)
+}
+
+fn select_invocation_rows<'a>(
+    invocations: &'a [InvocationEntry],
+    args: &Args,
+) -> Result<(&'a [InvocationEntry], isize)> {
+    let Some(limit) = parse_lines_limit(args.lines.as_deref())? else {
+        return Ok((invocations, 1 - invocations.len() as isize));
+    };
+    match limit {
+        LinesLimit::All => Ok((invocations, 1 - invocations.len() as isize)),
+        LinesLimit::Head(count) => {
+            let count = count.min(invocations.len());
+            Ok((&invocations[..count], 1))
+        }
+        LinesLimit::Tail(count) => {
+            let count = count.min(invocations.len());
+            let rows = &invocations[invocations.len() - count..];
+            Ok((rows, 1 - rows.len() as isize))
+        }
+    }
+}
+
 fn disk_usage_files(path: &Path) -> Result<Vec<PathBuf>> {
     let metadata =
         fs::metadata(path).map_err(|err| anyhow!("disk usage: {}: {err}", path.display()))?;
@@ -1223,6 +1503,26 @@ where
     Ok(())
 }
 
+fn add_invocation_matches(journal: &mut SdJournal, id: &str) -> Result<()> {
+    for (idx, field) in [
+        "_SYSTEMD_INVOCATION_ID",
+        "OBJECT_SYSTEMD_INVOCATION_ID",
+        "INVOCATION_ID",
+        "USER_INVOCATION_ID",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if idx > 0 {
+            SdJournalAddDisjunction(journal)
+                .map_err(|err| anyhow!("add invocation disjunction: {err}"))?;
+        }
+        add_match_pair(journal, field, id)?;
+    }
+    SdJournalAddConjunction(journal).map_err(|err| anyhow!("add invocation conjunction: {err}"))?;
+    Ok(())
+}
+
 fn add_match_pair(journal: &mut SdJournal, field: &str, value: &str) -> Result<()> {
     let data = parse_match_string(&format!("{field}={value}"))
         .map_err(|err| anyhow!("invalid {field} match: {err}"))?;
@@ -1260,6 +1560,24 @@ fn current_uid_string() -> Option<String> {
 fn add_impossible_match(journal: &mut SdJournal, reason: &str) -> Result<()> {
     add_match_pair(journal, "__JOURNALCTL_NEVER_MATCH", reason)?;
     add_unit_conjunction(journal)
+}
+
+fn apply_boot_match(journal: &mut SdJournal, args: &Args) -> Result<()> {
+    let effective_boot = args.boot.as_deref().or(args.this_boot.then_some(""));
+    let Some(boot) = effective_boot else {
+        return Ok(());
+    };
+    if boot.trim() == "all" {
+        return Ok(());
+    }
+    let boot_id = resolve_boot_id(journal, boot.trim())?;
+    if !boot_id.is_empty() {
+        let data = parse_match_string(&format!("_BOOT_ID={boot_id}"))
+            .map_err(|err| anyhow!("invalid boot match: {err}"))?;
+        SdJournalAddMatch(journal, &data).map_err(|err| anyhow!("add boot match: {err}"))?;
+        SdJournalAddConjunction(journal).map_err(|err| anyhow!("add boot conjunction: {err}"))?;
+    }
+    Ok(())
 }
 
 fn add_journalctl_unit_matches(
@@ -2023,6 +2341,192 @@ fn parse_boot_descriptor(descriptor: &str) -> Result<(String, isize)> {
             .map_err(|_| anyhow!("failed to parse boot descriptor: {descriptor}"))?
     };
     Ok((boot_id, offset))
+}
+
+#[derive(Clone)]
+struct InvocationEntry {
+    id: String,
+    first_usec: u64,
+    last_usec: u64,
+}
+
+fn effective_invocation_descriptor(args: &Args) -> Option<&str> {
+    if let Some(value) = args.invocation.as_deref() {
+        return Some(value.trim());
+    }
+    args.invocation_latest.then_some("0")
+}
+
+fn parse_invocation_descriptor(descriptor: &str) -> Result<Option<(String, isize)>> {
+    if descriptor == "all" {
+        return Ok(None);
+    }
+    parse_boot_descriptor(descriptor)
+        .map(Some)
+        .map_err(|_| anyhow!("failed to parse invocation descriptor: {descriptor}"))
+}
+
+fn resolve_invocation_filter(path: &Path, args: &Args) -> Result<Option<String>> {
+    let Some(descriptor) = effective_invocation_descriptor(args) else {
+        return Ok(None);
+    };
+    let Some((id, offset)) = parse_invocation_descriptor(descriptor)? else {
+        return Ok(None);
+    };
+
+    let mut journal =
+        SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
+    apply_boot_match(&mut journal, args)?;
+    if id.is_empty() || offset != 0 {
+        apply_single_invocation_unit(&mut journal, args, "-I/--invocation= with an offset")?;
+    }
+
+    let invocations = collect_invocations(&mut journal)?;
+    let target = if !id.is_empty() {
+        invocations
+            .iter()
+            .position(|entry| entry.id == id)
+            .map(|base| base as isize + offset)
+    } else if offset > 0 {
+        Some(offset - 1)
+    } else {
+        Some(invocations.len() as isize - 1 + offset)
+    };
+
+    let Some(target) = target else {
+        return Err(anyhow!(
+            "No journal entry found for the invocation ({}{offset:+}).",
+            id
+        ));
+    };
+    if target < 0 || target as usize >= invocations.len() {
+        return Err(anyhow!(
+            "No journal entry found for the invocation ({}{offset:+}).",
+            id
+        ));
+    }
+    Ok(Some(invocations[target as usize].id.clone()))
+}
+
+fn apply_single_invocation_unit(
+    journal: &mut SdJournal,
+    args: &Args,
+    option_name: &str,
+) -> Result<()> {
+    let (system_units, user_units) = single_invocation_unit(journal, args, option_name)?;
+    add_journalctl_unit_matches(journal, &system_units, &user_units)
+}
+
+fn single_invocation_unit(
+    journal: &mut SdJournal,
+    args: &Args,
+    option_name: &str,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let count = args.unit.len() + args.user_unit.len();
+    if count == 0 {
+        return Err(anyhow!(
+            "Using {option_name} requires a unit. Please specify a unit name with -u/--unit=/--user-unit=."
+        ));
+    }
+    if count > 1 {
+        return Err(anyhow!(
+            "Using {option_name} with multiple units is not supported."
+        ));
+    }
+    if args.unit.len() == 1 {
+        let units = expand_unit_specs(journal, &args.unit, SYSTEM_UNIT_FIELDS_FULL)?;
+        let query = mangle_unit_name(&args.unit[0]);
+        if units.is_empty() {
+            return Err(anyhow!("No matching unit found for '{query}' in journal."));
+        }
+        if units.len() > 1 {
+            return Err(anyhow!(
+                "Multiple matching units found for '{query}' in journal."
+            ));
+        }
+        return Ok((units, Vec::new()));
+    }
+    let units = expand_unit_specs(journal, &args.user_unit, USER_UNIT_FIELDS_FULL)?;
+    let query = mangle_unit_name(&args.user_unit[0]);
+    if units.is_empty() {
+        return Err(anyhow!("No matching unit found for '{query}' in journal."));
+    }
+    if units.len() > 1 {
+        return Err(anyhow!(
+            "Multiple matching units found for '{query}' in journal."
+        ));
+    }
+    Ok((Vec::new(), units))
+}
+
+fn collect_invocations(journal: &mut SdJournal) -> Result<Vec<InvocationEntry>> {
+    use std::collections::HashMap;
+
+    SdJournalSeekHead(journal).map_err(|err| anyhow!("seek head: {err}"))?;
+    let mut by_id: HashMap<String, InvocationEntry> = HashMap::new();
+    loop {
+        match SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? {
+            0 => break,
+            _ => {
+                let entry =
+                    SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
+                let Some(id) = entry_invocation_id(&entry) else {
+                    continue;
+                };
+                by_id
+                    .entry(id.clone())
+                    .and_modify(|current| {
+                        current.first_usec = current.first_usec.min(entry.realtime);
+                        current.last_usec = current.last_usec.max(entry.realtime);
+                    })
+                    .or_insert(InvocationEntry {
+                        id,
+                        first_usec: entry.realtime,
+                        last_usec: entry.realtime,
+                    });
+            }
+        }
+    }
+    let mut out: Vec<_> = by_id.into_values().collect();
+    out.sort_by(|a, b| {
+        a.first_usec
+            .cmp(&b.first_usec)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(out)
+}
+
+fn entry_invocation_id(entry: &Entry) -> Option<String> {
+    for field in [
+        "_SYSTEMD_INVOCATION_ID",
+        "OBJECT_SYSTEMD_INVOCATION_ID",
+        "INVOCATION_ID",
+        "USER_INVOCATION_ID",
+    ] {
+        for value in values_for_entry_field(entry, field) {
+            let Ok(text) = std::str::from_utf8(value) else {
+                continue;
+            };
+            let Some(id) = parse_boot_id_prefix(text) else {
+                continue;
+            };
+            if !id.chars().all(|ch| ch == '0') {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+fn values_for_entry_field<'a>(entry: &'a Entry, field: &str) -> Vec<&'a [u8]> {
+    if let Some(values) = entry.field_values.get(field) {
+        return values.iter().map(Vec::as_slice).collect();
+    }
+    entry
+        .fields
+        .get(field)
+        .map(|value| vec![value.as_slice()])
+        .unwrap_or_default()
 }
 
 fn parse_boot_id_prefix(value: &str) -> Option<String> {
