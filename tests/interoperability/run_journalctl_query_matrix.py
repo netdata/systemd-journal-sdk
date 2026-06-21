@@ -31,6 +31,8 @@ MACHINE_ID = "00112233445566778899aabbccddeeff"
 BOOT_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 BOOT_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 BOOT_C = "cccccccccccccccccccccccccccccccc"
+HOST_UID = str(os.getuid()) if hasattr(os, "getuid") else "0"
+COREDUMP_MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,14 @@ FILE_ROWS = [
             ("PRIORITY", "3"),
             ("SYSLOG_FACILITY", "3"),
             ("_TRANSPORT", "syslog"),
+            ("_SYSTEMD_UNIT", "alpha.service"),
+            ("_SYSTEMD_CGROUP", "/init.scope"),
+            ("UNIT", "manager-alpha.service"),
+            ("_UID", "0"),
+            ("OBJECT_SYSTEMD_UNIT", "object-alpha.service"),
+            ("MESSAGE_ID", COREDUMP_MESSAGE_ID),
+            ("COREDUMP_UNIT", "crash-alpha.service"),
+            ("_SYSTEMD_SLICE", "app-alpha.slice"),
         ),
     ),
     Row(
@@ -83,6 +93,12 @@ FILE_ROWS = [
             ("PRIORITY", "4"),
             ("SYSLOG_FACILITY", "16"),
             ("_TRANSPORT", "syslog"),
+            ("_SYSTEMD_USER_UNIT", "user-alpha.service"),
+            ("USER_UNIT", "user-manager-alpha.service"),
+            ("OBJECT_SYSTEMD_USER_UNIT", "user-object-alpha.service"),
+            ("COREDUMP_USER_UNIT", "user-crash-alpha.service"),
+            ("_SYSTEMD_USER_SLICE", "user-alpha.slice"),
+            ("_UID", HOST_UID),
         ),
     ),
     Row(
@@ -95,6 +111,7 @@ FILE_ROWS = [
             ("PRIORITY", "7"),
             ("SYSLOG_FACILITY", "3"),
             ("_TRANSPORT", "kernel"),
+            ("_SYSTEMD_UNIT", "beta.service"),
         ),
     ),
 ]
@@ -392,6 +409,44 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             ["--grep=file-B", "--case-sensitive=true", "--boot=all", "TEST_ID=journalctl-query"],
         ),
         ("file-dmesg", "file", fixtures["file"], ["--dmesg", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-unit-direct", "file", fixtures["file"], ["--unit=alpha.service", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-unit-short-mangled", "file", fixtures["file"], ["-u", "alpha", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-unit-manager", "file", fixtures["file"], ["--unit=manager-alpha.service", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-unit-object", "file", fixtures["file"], ["--unit=object-alpha.service", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-unit-coredump", "file", fixtures["file"], ["--unit=crash-alpha.service", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-unit-slice", "file", fixtures["file"], ["--unit=app-alpha.slice", "--boot=all", "TEST_ID=journalctl-query"]),
+        ("file-unit-glob", "file", fixtures["file"], ["--unit=*.service", "--boot=all", "TEST_ID=journalctl-query"]),
+        (
+            "file-user-unit-direct",
+            "file",
+            fixtures["file"],
+            ["--user-unit=user-alpha.service", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-user-unit-manager",
+            "file",
+            fixtures["file"],
+            ["--user-unit=user-manager-alpha.service", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-user-unit-object",
+            "file",
+            fixtures["file"],
+            ["--user-unit=user-object-alpha.service", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-user-unit-coredump",
+            "file",
+            fixtures["file"],
+            ["--user-unit=user-crash-alpha.service", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-user-unit-slice",
+            "file",
+            fixtures["file"],
+            ["--user-unit=user-alpha.slice", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        ("file-user-unit-glob", "file", fixtures["file"], ["--user-unit=user-*", "--boot=all", "TEST_ID=journalctl-query"]),
     ]
 
     results: list[dict[str, object]] = []

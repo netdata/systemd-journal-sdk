@@ -18,7 +18,13 @@ The rewrites cover file-backed query behavior only:
 - metadata: `--list-boots`, `--fields`, `--field <NAME>` (unique values);
 - filtering: `FIELD=value` matches, repeated same-field matches as OR,
   different fields as AND, and the `+` disjunction separator;
+- journalctl filters: `--identifier`, `--priority`, `--facility`, `--grep`,
+  `--case-sensitive`, `--dmesg`, `--unit`, and `--user-unit`;
+- unit filters: exact and glob system/user units use the same journal fields
+  and disjunction groups as stock file-backed `journalctl`;
 - time and boot windows: `--since`, `--until`, `--boot [ID]`;
+- cursors: `--cursor`, `--after-cursor`, `--cursor-file`, and
+  `--show-cursor`, using official systemd cursor strings;
 - paging: `--head <n>`, `--tail <n>`, `--no-tail`;
 - live reads: `--follow` on actively appended files and directories;
 - integrity: `--verify`, and `--verify-key <key>` for sealed files, where

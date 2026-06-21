@@ -19,6 +19,7 @@ import (
 
 // HEADER_COMPATIBLE_SEALED from systemd journal-def.h
 const compatibleSealed = 1
+const coredumpMessageID = "fc2e22bc6ee647b6b90729ab34a250b1"
 
 var (
 	errStopIteration = errors.New("stop iteration")
@@ -33,6 +34,21 @@ var (
 		regexp.MustCompile(`^[0-9A-Fa-f]{32}([+-]\d+)?$`),
 		regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}([+-]\d+)?$`),
 	}
+	unitSuffixes = []string{
+		".automount",
+		".device",
+		".mount",
+		".path",
+		".scope",
+		".service",
+		".slice",
+		".socket",
+		".swap",
+		".target",
+		".timer",
+	}
+	systemUnitFieldsFull = []string{"_SYSTEMD_UNIT", "UNIT", "OBJECT_SYSTEMD_UNIT", "COREDUMP_UNIT", "_SYSTEMD_SLICE"}
+	userUnitFieldsFull   = []string{"_SYSTEMD_USER_UNIT", "USER_UNIT", "OBJECT_SYSTEMD_USER_UNIT", "COREDUMP_USER_UNIT", "_SYSTEMD_USER_SLICE"}
 )
 
 type cliJournal interface {
@@ -687,6 +703,10 @@ func effectiveBootFlag(flags *cliFlags) optionalStringFlag {
 }
 
 func applyCLIMatches(j cliJournal, flags *cliFlags) error {
+	if err := addJournalctlUnitMatches(j, flags.unitFlag.Values(), flags.userUnitFlag.Values()); err != nil {
+		return err
+	}
+
 	if *flags.dmesgFlag {
 		if err := addFieldMatches(j, "_TRANSPORT", []string{"kernel"}); err != nil {
 			return err
@@ -739,6 +759,256 @@ func addFieldMatches(j cliJournal, field string, values []string) error {
 	}
 	j.AddConjunction()
 	return nil
+}
+
+func addMatchPair(j cliJournal, field, value string) error {
+	match, err := journal.ParseMatchString(field + "=" + value)
+	if err != nil {
+		return err
+	}
+	j.AddMatch(match)
+	return nil
+}
+
+func addMatchGroup(j cliJournal, pairs [][2]string) error {
+	for _, pair := range pairs {
+		if err := addMatchPair(j, pair[0], pair[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addImpossibleMatch(j cliJournal, reason string) error {
+	if err := addMatchPair(j, "__JOURNALCTL_NEVER_MATCH", reason); err != nil {
+		return err
+	}
+	j.AddConjunction()
+	return nil
+}
+
+func addJournalctlUnitMatches(j cliJournal, systemUnits, userUnits []string) error {
+	if len(systemUnits) == 0 && len(userUnits) == 0 {
+		return nil
+	}
+
+	added := false
+	expandedSystemUnits, err := expandUnitSpecs(j, systemUnits, systemUnitFieldsFull)
+	if err != nil {
+		return err
+	}
+	for _, unit := range expandedSystemUnits {
+		if err := addSystemUnitMatchGroups(j, unit); err != nil {
+			return err
+		}
+		added = true
+	}
+
+	expandedUserUnits, err := expandUnitSpecs(j, userUnits, userUnitFieldsFull)
+	if err != nil {
+		return err
+	}
+	uid, uidOK := currentUIDString()
+	for _, unit := range expandedUserUnits {
+		if err := addUserUnitMatchGroups(j, unit, uid, uidOK); err != nil {
+			return err
+		}
+		added = true
+	}
+
+	if !added {
+		return addImpossibleMatch(j, "unit-glob")
+	}
+	j.AddConjunction()
+	return nil
+}
+
+func addSystemUnitMatchGroups(j cliJournal, unit string) error {
+	if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_UNIT", unit}}); err != nil {
+		return err
+	}
+	j.AddDisjunction()
+
+	if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_CGROUP", "/init.scope"}, {"UNIT", unit}}); err != nil {
+		return err
+	}
+	j.AddDisjunction()
+
+	if err := addMatchGroup(j, [][2]string{{"_UID", "0"}, {"OBJECT_SYSTEMD_UNIT", unit}}); err != nil {
+		return err
+	}
+	j.AddDisjunction()
+
+	if err := addMatchGroup(j, [][2]string{{"MESSAGE_ID", coredumpMessageID}, {"COREDUMP_UNIT", unit}}); err != nil {
+		return err
+	}
+
+	if strings.HasSuffix(unit, ".slice") {
+		j.AddDisjunction()
+		if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_SLICE", unit}}); err != nil {
+			return err
+		}
+	}
+
+	j.AddDisjunction()
+	return nil
+}
+
+func addUserUnitMatchGroups(j cliJournal, unit, uid string, uidOK bool) error {
+	if err := addUserUnitMatchGroup(j, [][2]string{{"_SYSTEMD_USER_UNIT", unit}}, uid, uidOK, false); err != nil {
+		return err
+	}
+	j.AddDisjunction()
+
+	if err := addUserUnitMatchGroup(j, [][2]string{{"USER_UNIT", unit}}, uid, uidOK, false); err != nil {
+		return err
+	}
+	j.AddDisjunction()
+
+	if err := addUserUnitMatchGroup(j, [][2]string{{"OBJECT_SYSTEMD_USER_UNIT", unit}}, uid, uidOK, true); err != nil {
+		return err
+	}
+	j.AddDisjunction()
+
+	if err := addUserUnitMatchGroup(j, [][2]string{{"COREDUMP_USER_UNIT", unit}}, uid, uidOK, true); err != nil {
+		return err
+	}
+
+	if strings.HasSuffix(unit, ".slice") {
+		j.AddDisjunction()
+		if err := addUserUnitMatchGroup(j, [][2]string{{"_SYSTEMD_USER_SLICE", unit}}, uid, uidOK, false); err != nil {
+			return err
+		}
+	}
+
+	j.AddDisjunction()
+	return nil
+}
+
+func addUserUnitMatchGroup(j cliJournal, pairs [][2]string, uid string, uidOK, includeRootUID bool) error {
+	if err := addMatchGroup(j, pairs); err != nil {
+		return err
+	}
+	if uidOK {
+		if err := addMatchPair(j, "_UID", uid); err != nil {
+			return err
+		}
+		if includeRootUID {
+			if err := addMatchPair(j, "_UID", "0"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func expandUnitSpecs(j cliJournal, specs []string, fields []string) ([]string, error) {
+	var out []string
+	seen := make(map[string]struct{})
+	var patterns []string
+
+	for _, spec := range specs {
+		unit := mangleUnitName(spec)
+		if isGlobPattern(unit) {
+			patterns = append(patterns, unit)
+			continue
+		}
+		if _, ok := seen[unit]; !ok {
+			seen[unit] = struct{}{}
+			out = append(out, unit)
+		}
+	}
+
+	if len(patterns) == 0 {
+		return out, nil
+	}
+
+	for _, field := range fields {
+		err := j.VisitUnique(field, func(value []byte) error {
+			unit := string(value)
+			if !matchesAnyGlob(patterns, unit) {
+				return nil
+			}
+			if _, ok := seen[unit]; ok {
+				return nil
+			}
+			seen[unit] = struct{}{}
+			out = append(out, unit)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("query possible units for %s: %w", field, err)
+		}
+	}
+
+	return out, nil
+}
+
+func mangleUnitName(value string) string {
+	value = strings.TrimSpace(value)
+	for _, suffix := range unitSuffixes {
+		if strings.HasSuffix(value, suffix) {
+			return value
+		}
+	}
+	return value + ".service"
+}
+
+func isGlobPattern(value string) bool {
+	return strings.ContainsAny(value, "*?[")
+}
+
+func matchesAnyGlob(patterns []string, value string) bool {
+	for _, pattern := range patterns {
+		if globPatternMatches(pattern, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func globPatternMatches(pattern, value string) bool {
+	re, err := regexp.Compile(globPatternToRegex(pattern))
+	return err == nil && re.MatchString(value)
+}
+
+func globPatternToRegex(pattern string) string {
+	var b strings.Builder
+	b.WriteString("^")
+	runes := []rune(pattern)
+	for i := 0; i < len(runes); i++ {
+		switch runes[i] {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteByte('.')
+		case '[':
+			class := []rune{'['}
+			closed := false
+			if i+1 < len(runes) && (runes[i+1] == '!' || runes[i+1] == '^') {
+				i++
+				class = append(class, '^')
+			}
+			for i+1 < len(runes) {
+				i++
+				class = append(class, runes[i])
+				if runes[i] == ']' {
+					closed = true
+					break
+				}
+			}
+			if closed {
+				b.WriteString(string(class))
+			} else {
+				b.WriteString(`\[`)
+				b.WriteString(regexp.QuoteMeta(string(class[1:])))
+			}
+		default:
+			b.WriteString(regexp.QuoteMeta(string(runes[i])))
+		}
+	}
+	b.WriteString("$")
+	return b.String()
 }
 
 type cliPostFilters struct {

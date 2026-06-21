@@ -423,6 +423,47 @@ Failure handling:
   - Rust and Go cursor emitters now produce official systemd cursor strings for
     facade `get_cursor()`, JSON/export metadata, and file-backed journalctl
     cursor output.
+- Implemented the next file-backed unit filter chunk directly in Rust and Go:
+  - `--unit=` / `-u` now adds the official v260.1 file-backed system-unit
+    match groups for `_SYSTEMD_UNIT`, PID 1 `UNIT` messages under
+    `_SYSTEMD_CGROUP=/init.scope`, root-owned `OBJECT_SYSTEMD_UNIT` messages,
+    coredump `COREDUMP_UNIT` messages with `MESSAGE_ID=fc2e...`, and
+    `_SYSTEMD_SLICE` for `.slice` units;
+  - `--user-unit=` now adds the official v260.1 user-unit match groups for
+    `_SYSTEMD_USER_UNIT`, `USER_UNIT`, `OBJECT_SYSTEMD_USER_UNIT`,
+    `COREDUMP_USER_UNIT`, and `_SYSTEMD_USER_SLICE`;
+  - repeated exact unit arguments and glob unit patterns are expanded from the
+    existing unit-related FIELD/DATA indexes and ORed like stock
+    `journalctl`;
+  - unit names without a recognized unit suffix are mangled to `.service`,
+    matching the tested stock behavior for `-u alpha`;
+  - `--user-unit` uses the current process UID in the CLI compatibility layer
+    on Unix hosts, matching stock `journalctl`; non-Unix builds compile with a
+    no-host-UID fallback that omits UID restrictions because stock
+    `journalctl` has no non-Unix UID oracle.
+
+Official source evidence for the unit-filter chunk:
+
+- `systemd/systemd @ c0a5a2516d28`
+  - `src/journal/journalctl-filter.c:75`: `journal_add_unit_matches()` expands
+    exact and glob system/user units, adds each group as a disjunction, and
+    finishes with a conjunction.
+  - `src/journal/journalctl-filter.c:184`: file/directory inputs clear
+    `MATCH_UNIT_COREDUMP_UID`, so file-backed system coredump unit matching
+    does not depend on the host `systemd-coredump` UID.
+  - `src/shared/logs-show.c:1726`: `add_matches_for_unit_full()` match groups
+    for `_SYSTEMD_UNIT`, `UNIT`, `OBJECT_SYSTEMD_UNIT`, `COREDUMP_UNIT`, and
+    `_SYSTEMD_SLICE`.
+  - `src/shared/logs-show.c:1767`: `add_matches_for_user_unit_full()` match
+    groups for `_SYSTEMD_USER_UNIT`, `USER_UNIT`,
+    `OBJECT_SYSTEMD_USER_UNIT`, `COREDUMP_USER_UNIT`, and
+    `_SYSTEMD_USER_SLICE`, with the current UID default.
+  - `src/journal/journalctl-util.h:8`: official possible-unit field lists for
+    system and user glob expansion.
+- Updated `.agents/sow/specs/product-scope.md`, `docs/Journalctl-CLI.md`,
+  `go/README.md`, and `rust/README.md` so the documented file-backed
+  `journalctl` contract includes the implemented cursor, identifier, priority,
+  facility, grep, dmesg, and system/user unit filter behavior.
 
 ## Validation
 
@@ -445,14 +486,13 @@ Acceptance criteria evidence:
 - Rust and Go file-backed behavior is partially advanced for `--reverse`,
   `--show-cursor`, `--lines` direction/default semantics, `--identifier`,
   `--priority`, `--facility`, `--grep`, `--case-sensitive`, `--dmesg`,
-  `--this-boot`, `--cursor`, `--after-cursor`, `--cursor-file`, and portable
-  path-match rejection.
+  `--this-boot`, `--cursor`, `--after-cursor`, `--cursor-file`, `--unit`,
+  `--user-unit`, and portable path-match rejection.
 - Remaining file-backed parity is still pending, including full short-family
   formatting, verbose/cat/with-unit/JSON variant exact framing,
-  `--output-fields`, unit/user-unit and invocation filters, `--header`,
-  `--disk-usage`, `--list-invocations`, `--new-id128`, `--setup-keys`, exact
-  empty-result exit semantics, and directory vacuum actions where approved by
-  the parity matrix.
+  `--output-fields`, invocation filters, `--header`, `--disk-usage`,
+  `--list-invocations`, `--new-id128`, `--setup-keys`, exact empty-result exit
+  semantics, and directory vacuum actions where approved by the parity matrix.
 
 Tests or equivalent validation:
 
@@ -521,6 +561,48 @@ Tests or equivalent validation:
   sensitive-data policy text in this SOW.
 - `.agents/sow/audit.sh`: passed after the direct filter chunk and again after
   the cursor chunk.
+- `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
+  .local/cargo-target`: passed after the unit-filter chunk; 24 Rust
+  `journalctl` tests passed.
+- `cd go && GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test ./cmd/journalctl
+  ./journal`: passed after the unit-filter chunk.
+- `python3 tests/parser-parity/check_v260_manifest.py`: passed after the
+  unit-filter chunk; manifest still matches the official systemd v260.1
+  surface.
+- `python3 tests/parser-parity/run_parser_parity.py --rust-bin
+  .local/cargo-target/debug/journalctl`: passed after the unit-filter chunk;
+  Rust `ok=93 skipped=0 failed=0`, Go `ok=93 skipped=0 failed=0`.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)` after the unit-filter chunk, including exact system
+  units, short `-u` mangling, system unit glob expansion, PID 1 unit messages,
+  root-owned object unit messages, coredump unit messages, slice unit messages,
+  exact user units, user-unit glob expansion, user manager/object/coredump
+  groups, and user slices.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+  against stock `journalctl` from systemd 260 `(260.1-2-manjaro)` after the
+  unit-filter chunk, including the live follow checks.
+- `GOOS=windows GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-windows.test.exe ./cmd/journalctl`: passed after the
+  unit-filter chunk.
+- `GOOS=darwin GOARCH=arm64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-darwin-arm64.test ./cmd/journalctl`: passed after
+  the unit-filter chunk.
+- `GOOS=freebsd GOARCH=amd64 GOCACHE="$PWD/../.local/go-build"
+  GOMODCACHE="$PWD/../.local/go-mod-cache" go test -c -o
+  ../.local/go-journalctl-freebsd-amd64.test ./cmd/journalctl`: passed after
+  the unit-filter chunk.
+- `python3 tests/docs/check_wiki_docs.py`: passed after the unit-filter docs
+  update; validated 15 wiki markdown files.
+- `CARGO_HOME="$PWD/.local/cargo-home"
+  CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+  GOCACHE="$PWD/.local/go-build"
+  GOMODCACHE="$PWD/.local/go-mod-cache"
+  python3 tests/docs/verify_examples.py`: passed after the unit-filter docs
+  update; 31 of 31 verified examples passed.
 
 Real-use evidence:
 
@@ -553,9 +635,13 @@ Artifact maintenance gate:
   correct `--exclude-identifier=` as a v260.1 file-backed no-op based on source
   and stock-command evidence. `.agents/sow/specs/product-scope.md` was updated
   to record that emitted cursor strings now use the official systemd cursor
-  shape while seek/test still accept the older SDK cursor shape.
+  shape while seek/test still accept the older SDK cursor shape, and again
+  after the unit-filter chunk to record the current file-backed filter
+  contract.
 - End-user/operator docs: `rust/README.md`, `go/README.md`, `go/API.md`, and
   `docs/Reader-APIs.md` were updated for the cursor string format contract.
+  `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` were updated
+  after the unit-filter chunk for current file-backed filter behavior.
 - End-user/operator skills: no affected output/reference skills identified for
   this chunk.
 - SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
@@ -565,8 +651,9 @@ Specs update:
 
 - Added `.agents/sow/specs/journalctl-v260-parity-matrix.md` for the active
   SOW implementation contract. Updated `.agents/sow/specs/product-scope.md`
-  for the shipped cursor string contract change. Additional product-scope
-  updates remain pending final shipped behavior and ship recommendation.
+  for the shipped cursor string contract change and current file-backed filter
+  contract. Additional product-scope updates remain pending final shipped
+  behavior and ship recommendation.
 
 Project skills update:
 
@@ -577,8 +664,10 @@ Project skills update:
 End-user/operator docs update:
 
 - Updated `rust/README.md`, `go/README.md`, `go/API.md`, and
-  `docs/Reader-APIs.md` for the cursor string format contract. Final
-  journalctl command documentation remains pending full implementation.
+  `docs/Reader-APIs.md` for the cursor string format contract. Updated
+  `docs/Journalctl-CLI.md`, `go/README.md`, and `rust/README.md` after the
+  unit-filter chunk. Final journalctl command documentation remains pending
+  full implementation.
 
 End-user/operator skills update:
 

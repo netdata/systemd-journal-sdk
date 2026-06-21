@@ -412,6 +412,10 @@ fields are ANDed. A separate `+` argument creates an explicit disjunction:
 go run ./cmd/journalctl --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAGE=boot
 ```
 
+Syslog identifier, priority, facility, grep, dmesg, cursor, system unit, and
+user unit filters are supported for file-backed inputs. Unit filters support
+exact units and glob expansion over journal unit fields.
+
 Realtime ranges, boot filters, and follow mode are supported for file-backed
 inputs:
 

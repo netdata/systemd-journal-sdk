@@ -19,6 +19,34 @@ use std::time::Duration;
 
 // HEADER_COMPATIBLE_SEALED from systemd journal-def.h
 const COMPATIBLE_SEALED: u32 = 1;
+const COREDUMP_MESSAGE_ID: &str = "fc2e22bc6ee647b6b90729ab34a250b1";
+const SYSTEM_UNIT_FIELDS_FULL: &[&str] = &[
+    "_SYSTEMD_UNIT",
+    "UNIT",
+    "OBJECT_SYSTEMD_UNIT",
+    "COREDUMP_UNIT",
+    "_SYSTEMD_SLICE",
+];
+const USER_UNIT_FIELDS_FULL: &[&str] = &[
+    "_SYSTEMD_USER_UNIT",
+    "USER_UNIT",
+    "OBJECT_SYSTEMD_USER_UNIT",
+    "COREDUMP_USER_UNIT",
+    "_SYSTEMD_USER_SLICE",
+];
+const UNIT_SUFFIXES: &[&str] = &[
+    ".automount",
+    ".device",
+    ".mount",
+    ".path",
+    ".scope",
+    ".service",
+    ".slice",
+    ".socket",
+    ".swap",
+    ".target",
+    ".timer",
+];
 
 // Reasons used by the portable-mode unsupported contract.
 fn unsupported_reason(name: &str) -> &'static str {
@@ -138,7 +166,7 @@ struct Args {
     cursor_file: Option<PathBuf>,
     #[arg(long = "this-boot", hide = true)]
     this_boot: bool,
-    #[arg(long = "unit", hide = true)]
+    #[arg(short = 'u', long = "unit", hide = true)]
     unit: Vec<String>,
     #[arg(long = "user-unit", hide = true)]
     user_unit: Vec<String>,
@@ -1090,7 +1118,239 @@ where
     Ok(())
 }
 
+fn add_match_pair(journal: &mut SdJournal, field: &str, value: &str) -> Result<()> {
+    let data = parse_match_string(&format!("{field}={value}"))
+        .map_err(|err| anyhow!("invalid {field} match: {err}"))?;
+    SdJournalAddMatch(journal, &data).map_err(|err| anyhow!("add {field} match: {err}"))?;
+    Ok(())
+}
+
+fn add_match_group(journal: &mut SdJournal, pairs: &[(&str, &str)]) -> Result<()> {
+    for (field, value) in pairs {
+        add_match_pair(journal, field, value)?;
+    }
+    Ok(())
+}
+
+fn add_unit_disjunction(journal: &mut SdJournal) -> Result<()> {
+    SdJournalAddDisjunction(journal).map_err(|err| anyhow!("add unit disjunction: {err}"))
+}
+
+fn add_unit_conjunction(journal: &mut SdJournal) -> Result<()> {
+    SdJournalAddConjunction(journal).map_err(|err| anyhow!("add unit conjunction: {err}"))
+}
+
+fn current_uid_string() -> Option<String> {
+    #[cfg(unix)]
+    {
+        // CLI compatibility only: stock --user-unit defaults to the current UID.
+        Some(unsafe { libc::getuid() }.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+fn add_impossible_match(journal: &mut SdJournal, reason: &str) -> Result<()> {
+    add_match_pair(journal, "__JOURNALCTL_NEVER_MATCH", reason)?;
+    add_unit_conjunction(journal)
+}
+
+fn add_journalctl_unit_matches(
+    journal: &mut SdJournal,
+    system_units: &[String],
+    user_units: &[String],
+) -> Result<()> {
+    if system_units.is_empty() && user_units.is_empty() {
+        return Ok(());
+    }
+
+    let mut added = false;
+    let system_units = expand_unit_specs(journal, system_units, SYSTEM_UNIT_FIELDS_FULL)?;
+    for unit in &system_units {
+        add_system_unit_match_groups(journal, unit)?;
+        added = true;
+    }
+
+    let user_units = expand_unit_specs(journal, user_units, USER_UNIT_FIELDS_FULL)?;
+    let uid = current_uid_string();
+    for unit in &user_units {
+        add_user_unit_match_groups(journal, unit, uid.as_deref())?;
+        added = true;
+    }
+
+    if added {
+        add_unit_conjunction(journal)
+    } else {
+        add_impossible_match(journal, "unit-glob")
+    }
+}
+
+fn add_system_unit_match_groups(journal: &mut SdJournal, unit: &str) -> Result<()> {
+    add_match_group(journal, &[("_SYSTEMD_UNIT", unit)])?;
+    add_unit_disjunction(journal)?;
+
+    add_match_group(
+        journal,
+        &[("_SYSTEMD_CGROUP", "/init.scope"), ("UNIT", unit)],
+    )?;
+    add_unit_disjunction(journal)?;
+
+    add_match_group(journal, &[("_UID", "0"), ("OBJECT_SYSTEMD_UNIT", unit)])?;
+    add_unit_disjunction(journal)?;
+
+    add_match_group(
+        journal,
+        &[("MESSAGE_ID", COREDUMP_MESSAGE_ID), ("COREDUMP_UNIT", unit)],
+    )?;
+
+    if unit.ends_with(".slice") {
+        add_unit_disjunction(journal)?;
+        add_match_group(journal, &[("_SYSTEMD_SLICE", unit)])?;
+    }
+
+    add_unit_disjunction(journal)
+}
+
+fn add_user_unit_match_groups(
+    journal: &mut SdJournal,
+    unit: &str,
+    uid: Option<&str>,
+) -> Result<()> {
+    add_user_unit_match_group(journal, &[("_SYSTEMD_USER_UNIT", unit)], uid, false)?;
+    add_unit_disjunction(journal)?;
+
+    add_user_unit_match_group(journal, &[("USER_UNIT", unit)], uid, false)?;
+    add_unit_disjunction(journal)?;
+
+    add_user_unit_match_group(journal, &[("OBJECT_SYSTEMD_USER_UNIT", unit)], uid, true)?;
+    add_unit_disjunction(journal)?;
+
+    add_user_unit_match_group(journal, &[("COREDUMP_USER_UNIT", unit)], uid, true)?;
+
+    if unit.ends_with(".slice") {
+        add_unit_disjunction(journal)?;
+        add_user_unit_match_group(journal, &[("_SYSTEMD_USER_SLICE", unit)], uid, false)?;
+    }
+
+    add_unit_disjunction(journal)
+}
+
+fn add_user_unit_match_group(
+    journal: &mut SdJournal,
+    pairs: &[(&str, &str)],
+    uid: Option<&str>,
+    include_root_uid: bool,
+) -> Result<()> {
+    add_match_group(journal, pairs)?;
+    if let Some(uid) = uid {
+        add_match_pair(journal, "_UID", uid)?;
+        if include_root_uid {
+            add_match_pair(journal, "_UID", "0")?;
+        }
+    }
+    Ok(())
+}
+
+fn expand_unit_specs(
+    journal: &mut SdJournal,
+    specs: &[String],
+    fields: &[&str],
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut patterns = Vec::new();
+
+    for spec in specs {
+        let unit = mangle_unit_name(spec);
+        if is_glob_pattern(&unit) {
+            patterns.push(unit);
+        } else if seen.insert(unit.clone()) {
+            out.push(unit);
+        }
+    }
+
+    if patterns.is_empty() {
+        return Ok(out);
+    }
+
+    for field in fields {
+        SdJournalVisitUniqueValues(journal, field, |value| {
+            let value = String::from_utf8_lossy(value);
+            if patterns
+                .iter()
+                .any(|pattern| glob_pattern_matches(pattern, &value))
+                && seen.insert(value.to_string())
+            {
+                out.push(value.to_string());
+            }
+            Ok(())
+        })
+        .map_err(|err| anyhow!("query possible units for {field}: {err}"))?;
+    }
+
+    Ok(out)
+}
+
+fn mangle_unit_name(value: &str) -> String {
+    let value = value.trim();
+    if UNIT_SUFFIXES.iter().any(|suffix| value.ends_with(suffix)) {
+        value.to_string()
+    } else {
+        format!("{value}.service")
+    }
+}
+
+fn is_glob_pattern(value: &str) -> bool {
+    value.contains(['*', '?', '['])
+}
+
+fn glob_pattern_matches(pattern: &str, value: &str) -> bool {
+    Regex::new(&glob_pattern_to_regex(pattern)).is_ok_and(|regex| regex.is_match(value))
+}
+
+fn glob_pattern_to_regex(pattern: &str) -> String {
+    let mut out = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '*' => out.push_str(".*"),
+            '?' => out.push('.'),
+            '[' => {
+                let mut class = String::from("[");
+                let mut closed = false;
+                if chars
+                    .peek()
+                    .is_some_and(|next| *next == '!' || *next == '^')
+                {
+                    chars.next();
+                    class.push('^');
+                }
+                while let Some(next) = chars.next() {
+                    class.push(next);
+                    if next == ']' {
+                        closed = true;
+                        break;
+                    }
+                }
+                if closed {
+                    out.push_str(&class);
+                } else {
+                    out.push_str("\\[");
+                    out.push_str(&regex::escape(&class[1..]));
+                }
+            }
+            _ => out.push_str(&regex::escape(&ch.to_string())),
+        }
+    }
+    out.push('$');
+    out
+}
+
 fn apply_cli_matches(journal: &mut SdJournal, args: &Args) -> Result<()> {
+    add_journalctl_unit_matches(journal, &args.unit, &args.user_unit)?;
+
     if args.dmesg {
         add_field_matches(journal, "_TRANSPORT", ["kernel"])?;
     }

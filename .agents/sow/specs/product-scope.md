@@ -753,7 +753,9 @@ Current Go reader feature slice:
 - file-backed Go journalctl behavior for `--file`, `--directory`,
   text/json/export output, field listing, boot listing, realtime range
   filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
-  with `--follow`, repeated same-field OR matches, and `+` disjunction;
+  with `--follow`, cursor seek/update behavior, repeated same-field OR
+  matches, `+` disjunction, syslog identifier, priority, facility, grep,
+  dmesg, and system/user unit filters;
 - Go conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, and file-backed journalctl cases.
 
@@ -855,7 +857,9 @@ Current Rust reader feature slice:
 - file-backed Rust journalctl behavior for `--file`, `--directory`,
   text/json/export output, field listing, boot listing, realtime range
   filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
-  with `--follow`, repeated same-field OR matches, and `+` disjunction;
+  with `--follow`, cursor seek/update behavior, repeated same-field OR
+  matches, `+` disjunction, syslog identifier, priority, facility, grep,
+  dmesg, and system/user unit filters;
 - Rust conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, header parsing, and file-backed
   journalctl cases.
@@ -895,6 +899,14 @@ File-backed query semantics:
   entries contain `_BOOT_ID`.
 - `--follow` follows repository-supported file and directory inputs by polling
   file-backed readers and emitting newly appended entries in cursor order.
+- `--cursor`, `--after-cursor`, `--cursor-file`, and `--show-cursor` use
+  official systemd cursor strings for file-backed reads and cursor-file
+  updates.
+- `--identifier`, `--priority`, `--facility`, `--grep`, `--case-sensitive`,
+  `--dmesg`, `--unit`, and `--user-unit` are file-backed filters. Unit filters
+  use the same systemd v260.1 unit-related fields, disjunction groups, unit
+  suffix mangling, and glob expansion over FIELD/DATA indexes as stock
+  file-backed `journalctl`.
 - The long `--follow` option is supported. Existing short `-f` file aliases are
   preserved in languages that already used `-f` for `--file`.
 
