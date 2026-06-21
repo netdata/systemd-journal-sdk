@@ -18,4 +18,5 @@ node_modules/
 
 # Go build artifacts
 go/adapter/adapter
+go/journalctl
 experiments/python/*.egg-info/
