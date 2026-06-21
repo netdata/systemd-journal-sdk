@@ -3,7 +3,7 @@
 
 Generates repo-local fixtures and compares stock journalctl with the Rust and
 Go journalctl rewrites for --since, --until, --boot, --lines, --reverse,
---show-cursor, and --follow behavior.
+--show-cursor, field filters, grep filters, and --follow behavior.
 Runtime artifacts stay under .local/interoperability/.
 """
 
@@ -44,6 +44,7 @@ class Row:
     boot_id: str
     message: str
     realtime: int
+    fields: tuple[tuple[str, str], ...] = ()
 
 
 READERS = {
@@ -60,9 +61,42 @@ STATIC_ROWS = [
 ]
 
 FILE_ROWS = [
-    Row("multi-boot-file.journal", BOOT_A, "file-a", 1_700_004_100_000_000),
-    Row("multi-boot-file.journal", BOOT_B, "file-b", 1_700_004_100_001_000),
-    Row("multi-boot-file.journal", BOOT_C, "file-c", 1_700_004_100_002_000),
+    Row(
+        "multi-boot-file.journal",
+        BOOT_A,
+        "file-a",
+        1_700_004_100_000_000,
+        (
+            ("SYSLOG_IDENTIFIER", "app-a"),
+            ("PRIORITY", "3"),
+            ("SYSLOG_FACILITY", "3"),
+            ("_TRANSPORT", "syslog"),
+        ),
+    ),
+    Row(
+        "multi-boot-file.journal",
+        BOOT_B,
+        "file-B",
+        1_700_004_100_001_000,
+        (
+            ("SYSLOG_IDENTIFIER", "app-b"),
+            ("PRIORITY", "4"),
+            ("SYSLOG_FACILITY", "16"),
+            ("_TRANSPORT", "syslog"),
+        ),
+    ),
+    Row(
+        "multi-boot-file.journal",
+        BOOT_C,
+        "file-c",
+        1_700_004_100_002_000,
+        (
+            ("SYSLOG_IDENTIFIER", "app-a"),
+            ("PRIORITY", "7"),
+            ("SYSLOG_FACILITY", "3"),
+            ("_TRANSPORT", "kernel"),
+        ),
+    ),
 ]
 
 
@@ -183,7 +217,8 @@ def write_journal(path: Path, rows: list[Row]) -> None:
                     ("TEST_ID", "journalctl-query"),
                     ("_BOOT_ID", row.boot_id),
                     ("_MACHINE_ID", MACHINE_ID),
-                ],
+                ]
+                + list(row.fields),
             }
             for i, row in enumerate(rows, start=1)
         ],
@@ -268,6 +303,7 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
         ("file-lines-default", "file", fixtures["file"], ["--lines", "TEST_ID=journalctl-query"]),
         ("file-show-cursor", "file", fixtures["file"], ["--show-cursor", "TEST_ID=journalctl-query"]),
         ("file-boot-latest", "file", fixtures["file"], ["--boot=0", "TEST_ID=journalctl-query"]),
+        ("file-this-boot", "file", fixtures["file"], ["--this-boot", "TEST_ID=journalctl-query"]),
         ("file-boot-first", "file", fixtures["file"], ["--boot=1", "TEST_ID=journalctl-query"]),
         (
             "file-since-until",
@@ -275,6 +311,47 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             fixtures["file"],
             ["--since", "@1700004100.000001", "--until", "@1700004100.001", "TEST_ID=journalctl-query"],
         ),
+        ("file-identifier", "file", fixtures["file"], ["--identifier=app-a", "--boot=all", "TEST_ID=journalctl-query"]),
+        (
+            "file-identifier-or",
+            "file",
+            fixtures["file"],
+            ["--identifier=app-a", "--identifier=app-b", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-exclude-identifier",
+            "file",
+            fixtures["file"],
+            ["--exclude-identifier=app-a", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        ("file-priority-named", "file", fixtures["file"], ["--priority=err", "--boot=all", "TEST_ID=journalctl-query"]),
+        (
+            "file-priority-range",
+            "file",
+            fixtures["file"],
+            ["--priority=err..warning", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        ("file-facility", "file", fixtures["file"], ["--facility=daemon", "--boot=all", "TEST_ID=journalctl-query"]),
+        (
+            "file-facility-list",
+            "file",
+            fixtures["file"],
+            ["--facility=daemon,local0", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        ("file-grep-auto", "file", fixtures["file"], ["--grep=file-b", "--boot=all", "TEST_ID=journalctl-query"]),
+        (
+            "file-grep-case-insensitive",
+            "file",
+            fixtures["file"],
+            ["--grep=FILE-B", "--case-sensitive=false", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        (
+            "file-grep-case-sensitive",
+            "file",
+            fixtures["file"],
+            ["--grep=file-B", "--case-sensitive=true", "--boot=all", "TEST_ID=journalctl-query"],
+        ),
+        ("file-dmesg", "file", fixtures["file"], ["--dmesg", "--boot=all", "TEST_ID=journalctl-query"]),
     ]
 
     results: list[dict[str, object]] = []
@@ -301,6 +378,39 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
                     "cursor_required": expect_cursor,
                     "returncode": result.returncode,
                     "stderr": result.stderr[-1000:],
+                }
+            )
+    return results
+
+
+def run_portable_error_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
+    cases = [
+        (
+            "file-path-match-unsupported",
+            "file",
+            fixtures["file"],
+            ["./some/path"],
+            "journalctl portable mode does not support path match argument",
+        ),
+    ]
+
+    results: list[dict[str, object]] = []
+    for case_name, mode, path, args, expected_error in cases:
+        for reader in ("go", "rust"):
+            cmd = reader_command(reader, tools, mode, path, args)
+            result = run(cmd, timeout=30)
+            combined = result.stdout + result.stderr
+            ok = result.returncode != 0 and expected_error in combined
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected_error": expected_error,
+                    "stdout": result.stdout[-1000:],
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
                 }
             )
     return results
@@ -483,6 +593,7 @@ def main() -> int:
     tools = build_tools()
     fixtures = make_fixtures()
     results = run_static_cases(tools, fixtures)
+    results.extend(run_portable_error_cases(tools, fixtures))
     if not args.skip_follow:
         results.extend(run_follow_cases(tools, fixtures))
 

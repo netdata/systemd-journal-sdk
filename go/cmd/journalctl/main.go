@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/netdata/systemd-journal-sdk/go/journal"
 )
@@ -235,9 +236,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	}
 
+	if facilityHelpRequested(flags.facilityFlag.Values()) {
+		printFacilityHelp(stdout, *flags.quietFlag)
+		return nil
+	}
+
 	hasVerifyKey := hasStringFlag(args, "verify-key")
 	inputPath, err := flags.inputPath()
 	if err != nil {
+		return err
+	}
+	if err := validatePathMatchArguments(fs.Args()); err != nil {
 		return err
 	}
 	if *flags.verify || *flags.verifyOnly || hasVerifyKey {
@@ -245,6 +254,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 
 	sinceUsec, untilUsec, err := flags.timeBounds()
+	if err != nil {
+		return err
+	}
+	postFilters, err := newCLIPostFilters(flags)
 	if err != nil {
 		return err
 	}
@@ -263,16 +276,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 				tail = limit.count
 			}
 		}
-		return runFollow(inputPath, fs.Args(), flags.boot, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout)
+		return runFollow(inputPath, fs.Args(), flags, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout, postFilters)
 	}
 
-	j, err := openFilteredJournal(inputPath, fs.Args(), flags.boot, *flags.output)
+	j, err := openFilteredJournal(inputPath, fs.Args(), flags, *flags.output)
 	if err != nil {
 		return err
 	}
 	defer j.Close()
 
-	return flags.dispatch(j, sinceUsec, untilUsec, stdout)
+	return flags.dispatch(j, sinceUsec, untilUsec, stdout, postFilters)
 }
 
 type linesLimit struct {
@@ -608,7 +621,306 @@ func (f *cliFlags) timeBounds() (*uint64, *uint64, error) {
 	return sinceUsec, untilUsec, nil
 }
 
-func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer) error {
+func validatePathMatchArguments(matches []string) error {
+	for _, item := range matches {
+		if item != "+" && !strings.Contains(item, "=") {
+			return portableUnsupported(
+				"path match argument",
+				"portable mode supports FIELD=VALUE matches and '+' disjunctions only; path matches require host filesystem metadata inspection",
+			)
+		}
+	}
+	return nil
+}
+
+func effectiveBootFlag(flags *cliFlags) optionalStringFlag {
+	if flags.boot.set {
+		return flags.boot
+	}
+	if *flags.thisBootFlag {
+		return optionalStringFlag{set: true}
+	}
+	return optionalStringFlag{}
+}
+
+func applyCLIMatches(j cliJournal, flags *cliFlags) error {
+	if *flags.dmesgFlag {
+		if err := addFieldMatches(j, "_TRANSPORT", []string{"kernel"}); err != nil {
+			return err
+		}
+	}
+	if identifiers := flags.identifierFlag.Values(); len(identifiers) > 0 {
+		if err := addFieldMatches(j, "SYSLOG_IDENTIFIER", identifiers); err != nil {
+			return err
+		}
+	}
+	priorities, err := parsePriorityFilter(flags.priorityFlag.Values())
+	if err != nil {
+		return err
+	}
+	if len(priorities) > 0 {
+		values := make([]string, 0, len(priorities))
+		for _, priority := range priorities {
+			values = append(values, strconv.Itoa(int(priority)))
+		}
+		if err := addFieldMatches(j, "PRIORITY", values); err != nil {
+			return err
+		}
+	}
+	facilities, err := parseFacilityFilter(flags.facilityFlag.Values())
+	if err != nil {
+		return err
+	}
+	if len(facilities) > 0 {
+		values := make([]string, 0, len(facilities))
+		for _, facility := range facilities {
+			values = append(values, strconv.Itoa(int(facility)))
+		}
+		if err := addFieldMatches(j, "SYSLOG_FACILITY", values); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addFieldMatches(j cliJournal, field string, values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	for _, value := range values {
+		match, err := journal.ParseMatchString(field + "=" + value)
+		if err != nil {
+			return err
+		}
+		j.AddMatch(match)
+	}
+	j.AddConjunction()
+	return nil
+}
+
+type cliPostFilters struct {
+	grep *regexp.Regexp
+}
+
+func newCLIPostFilters(flags *cliFlags) (*cliPostFilters, error) {
+	grep, err := compileGrepFilter(*flags.grepFlag, flags.caseSensitiveFlag)
+	if err != nil {
+		return nil, err
+	}
+	// systemd v260.1 parses --exclude-identifier and stores the values,
+	// but the file-backed show path never consults them. Keep the option
+	// as a parsed no-op for baseline parity.
+	return &cliPostFilters{grep: grep}, nil
+}
+
+func (f *cliPostFilters) matches(entry *journal.Entry) bool {
+	if f == nil {
+		return true
+	}
+	if f.grep != nil {
+		matched := false
+		for _, value := range entryValues(entry, "MESSAGE") {
+			if f.grep.MatchString(string(value)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func entryValues(entry *journal.Entry, field string) [][]byte {
+	if entry == nil {
+		return nil
+	}
+	if len(entry.FieldValues[field]) > 0 {
+		return entry.FieldValues[field]
+	}
+	if value, ok := entry.Fields[field]; ok {
+		return [][]byte{value}
+	}
+	return nil
+}
+
+func compileGrepFilter(pattern string, caseSensitive optionalStringFlag) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	sensitive := hasUppercase(pattern)
+	if caseSensitive.set {
+		if caseSensitive.value == "" {
+			sensitive = true
+		} else {
+			parsed, err := parseBoolOption("--case-sensitive", caseSensitive.value)
+			if err != nil {
+				return nil, err
+			}
+			sensitive = parsed
+		}
+	}
+	if !sensitive {
+		pattern = "(?i)" + pattern
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("Bad pattern %q: %w", pattern, err)
+	}
+	return re, nil
+}
+
+func hasUppercase(value string) bool {
+	for _, ch := range value {
+		if unicode.IsUpper(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseBoolOption(option, value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true, nil
+	case "", "0", "false", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("Bad %s= argument %q", option, value)
+	}
+}
+
+func parsePriorityFilter(values []string) ([]uint8, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	value := values[len(values)-1]
+	if strings.Contains(value, "..") {
+		parts := strings.SplitN(value, "..", 2)
+		from, err := parsePriorityLevel(parts[0])
+		if err != nil {
+			return nil, err
+		}
+		to, err := parsePriorityLevel(parts[1])
+		if err != nil {
+			return nil, err
+		}
+		if from > to {
+			from, to = to, from
+		}
+		out := make([]uint8, 0, int(to-from)+1)
+		for priority := from; priority <= to; priority++ {
+			out = append(out, priority)
+		}
+		return out, nil
+	}
+	highest, err := parsePriorityLevel(value)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uint8, 0, int(highest)+1)
+	for priority := uint8(0); priority <= highest; priority++ {
+		out = append(out, priority)
+	}
+	return out, nil
+}
+
+func parsePriorityLevel(value string) (uint8, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "emerg", "panic":
+		return 0, nil
+	case "alert":
+		return 1, nil
+	case "crit", "critical":
+		return 2, nil
+	case "err", "error":
+		return 3, nil
+	case "warning", "warn":
+		return 4, nil
+	case "notice":
+		return 5, nil
+	case "info":
+		return 6, nil
+	case "debug":
+		return 7, nil
+	}
+	number, err := strconv.Atoi(value)
+	if err == nil && number >= 0 && number <= 7 {
+		return uint8(number), nil
+	}
+	return 0, fmt.Errorf("Unknown log level %s", value)
+}
+
+var facilityNames = map[string]uint8{
+	"kern": 0, "user": 1, "mail": 2, "daemon": 3,
+	"auth": 4, "syslog": 5, "lpr": 6, "news": 7,
+	"uucp": 8, "cron": 9, "authpriv": 10, "ftp": 11,
+	"local0": 16, "local1": 17, "local2": 18, "local3": 19,
+	"local4": 20, "local5": 21, "local6": 22, "local7": 23,
+}
+
+var facilityHelpNames = []string{
+	"kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news",
+	"uucp", "cron", "authpriv", "ftp", "12", "13", "14", "15",
+	"local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7",
+}
+
+func facilityHelpRequested(values []string) bool {
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			if strings.TrimSpace(item) == "help" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func printFacilityHelp(stdout io.Writer, quiet bool) {
+	if !quiet {
+		fmt.Fprintln(stdout, "Available facilities:")
+	}
+	for _, name := range facilityHelpNames {
+		fmt.Fprintln(stdout, name)
+	}
+}
+
+func parseFacilityFilter(values []string) ([]uint8, error) {
+	seen := make(map[uint8]struct{})
+	var facilities []uint8
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" || item == "help" {
+				continue
+			}
+			facility, err := parseFacility(item)
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := seen[facility]; ok {
+				continue
+			}
+			seen[facility] = struct{}{}
+			facilities = append(facilities, facility)
+		}
+	}
+	sort.Slice(facilities, func(i, j int) bool { return facilities[i] < facilities[j] })
+	return facilities, nil
+}
+
+func parseFacility(value string) (uint8, error) {
+	if number, err := strconv.Atoi(value); err == nil && number >= 0 && number <= 23 {
+		return uint8(number), nil
+	}
+	if facility, ok := facilityNames[value]; ok {
+		return facility, nil
+	}
+	return 0, fmt.Errorf("Bad --facility= argument %q.", value)
+}
+
+func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer, postFilters *cliPostFilters) error {
 	if f.linesFlag.set {
 		limit, err := parseLinesLimitValue(f.linesFlag.value)
 		if err != nil {
@@ -616,9 +928,9 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 		}
 		if limit.set && !limit.all {
 			if limit.oldest {
-				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
 			}
-			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
 		}
 	}
 
@@ -661,23 +973,23 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 		})
 
 	case *f.head > 0:
-		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
 
 	case *f.tail > 0:
 		if *f.reverseFlag {
-			return showReverse(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+			return showReverse(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
 		}
-		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
 
 	default:
 		if *f.reverseFlag {
-			return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+			return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
 		}
-		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag)
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, postFilters)
 	}
 }
 
-func openFilteredJournal(inputPath string, matches []string, boot optionalStringFlag, outputMode string) (cliJournal, error) {
+func openFilteredJournal(inputPath string, matches []string, flags *cliFlags, outputMode string) (cliJournal, error) {
 	j, err := journal.SdJournalOpen(inputPath, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)
@@ -689,6 +1001,7 @@ func openFilteredJournal(inputPath string, matches []string, boot optionalString
 		}
 	}()
 
+	boot := effectiveBootFlag(flags)
 	if boot.set && strings.TrimSpace(boot.value) != "all" {
 		bootID, err := resolveBootID(j, strings.TrimSpace(boot.value))
 		if err != nil {
@@ -702,6 +1015,10 @@ func openFilteredJournal(inputPath string, matches []string, boot optionalString
 			j.AddMatch(match)
 			j.AddConjunction()
 		}
+	}
+
+	if err := applyCLIMatches(j, flags); err != nil {
+		return nil, err
 	}
 
 	for _, arg := range matches {
@@ -1027,7 +1344,7 @@ func entryInTimeRange(entry *journal.Entry, sinceUsec, untilUsec *uint64) bool {
 	return true
 }
 
-func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, fn func(*journal.Entry) error) error {
+func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, fn func(*journal.Entry) error) error {
 	if sinceUsec != nil {
 		if err := j.SeekRealtimeUsec(*sinceUsec); err != nil {
 			return err
@@ -1050,7 +1367,7 @@ func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, fn func(*jo
 		if untilUsec != nil && entry.Realtime > *untilUsec {
 			return nil
 		}
-		if entryInTimeRange(entry, sinceUsec, untilUsec) {
+		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
 			if err := fn(entry); err != nil {
 				return err
 			}
@@ -1058,10 +1375,10 @@ func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, fn func(*jo
 	}
 }
 
-func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool) error {
+func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters) error {
 	count := 0
 	var lastCursor string
-	err := nextMatchingEntries(j, sinceUsec, untilUsec, func(entry *journal.Entry) error {
+	err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, func(entry *journal.Entry) error {
 		if limit > 0 && count >= limit {
 			return errStopIteration
 		}
@@ -1083,13 +1400,13 @@ func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 	return printCursor(stdout, showCursor, lastCursor)
 }
 
-func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool) error {
+func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters) error {
 	type renderedEntry struct {
 		cursor string
 		output string
 	}
 	var outputs []renderedEntry
-	if err := nextMatchingEntries(j, sinceUsec, untilUsec, func(entry *journal.Entry) error {
+	if err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, func(entry *journal.Entry) error {
 		out, err := j.ProcessOutput(entry)
 		if err != nil {
 			return err
@@ -1111,10 +1428,10 @@ func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.W
 	return printCursor(stdout, showCursor, lastCursor)
 }
 
-func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool) error {
+func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, postFilters *cliPostFilters) error {
 	count := 0
 	var lastCursor string
-	err := previousMatchingEntries(j, sinceUsec, untilUsec, func(entry *journal.Entry) error {
+	err := previousMatchingEntries(j, sinceUsec, untilUsec, postFilters, func(entry *journal.Entry) error {
 		if limit > 0 && count >= limit {
 			return errStopIteration
 		}
@@ -1136,7 +1453,7 @@ func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 	return printCursor(stdout, showCursor, lastCursor)
 }
 
-func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, fn func(*journal.Entry) error) error {
+func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, fn func(*journal.Entry) error) error {
 	if untilUsec != nil {
 		if err := j.SeekRealtimeUsec(*untilUsec); err != nil {
 			return err
@@ -1159,7 +1476,7 @@ func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, fn func
 		if sinceUsec != nil && entry.Realtime < *sinceUsec {
 			return nil
 		}
-		if entryInTimeRange(entry, sinceUsec, untilUsec) {
+		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
 			if err := fn(entry); err != nil {
 				return err
 			}
@@ -1180,14 +1497,14 @@ type followEntry struct {
 	output string
 }
 
-func scanFollowSnapshot(inputPath string, matches []string, boot optionalStringFlag, outputMode string, sinceUsec, untilUsec *uint64) []followEntry {
-	j, err := openFilteredJournal(inputPath, matches, boot, outputMode)
+func scanFollowSnapshot(inputPath string, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters) []followEntry {
+	j, err := openFilteredJournal(inputPath, matches, flags, outputMode)
 	if err != nil {
 		return nil
 	}
 	defer j.Close()
 	var out []followEntry
-	_ = nextMatchingEntries(j, sinceUsec, untilUsec, func(entry *journal.Entry) error {
+	_ = nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, func(entry *journal.Entry) error {
 		if entry.Cursor == "" {
 			return nil
 		}
@@ -1201,9 +1518,9 @@ func scanFollowSnapshot(inputPath string, matches []string, boot optionalStringF
 	return out
 }
 
-func runFollow(inputPath string, matches []string, boot optionalStringFlag, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer) error {
+func runFollow(inputPath string, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters) error {
 	seen := make(map[string]struct{})
-	initial := scanFollowSnapshot(inputPath, matches, boot, outputMode, sinceUsec, untilUsec)
+	initial := scanFollowSnapshot(inputPath, matches, flags, outputMode, sinceUsec, untilUsec, postFilters)
 	for _, entry := range initial {
 		seen[entry.cursor] = struct{}{}
 	}
@@ -1218,7 +1535,7 @@ func runFollow(inputPath string, matches []string, boot optionalStringFlag, outp
 	}
 	for {
 		time.Sleep(100 * time.Millisecond)
-		for _, entry := range scanFollowSnapshot(inputPath, matches, boot, outputMode, sinceUsec, untilUsec) {
+		for _, entry := range scanFollowSnapshot(inputPath, matches, flags, outputMode, sinceUsec, untilUsec, postFilters) {
 			if _, ok := seen[entry.cursor]; ok {
 				continue
 			}

@@ -81,7 +81,7 @@ disk-image/rootfs-only, or unsafe without an explicit file/directory target.
 | `--invocation=` | ID/offset descriptor | file-backed-required | Match explicit invocation IDs and resolve offsets from explicit file/directory input when unit context is required. |
 | `-I` | none | file-backed-required | Equivalent to `--invocation=0`; require the same unit-context validation as official v260.1. |
 | `-t`, `--identifier=` | string | file-backed-required | Add `SYSLOG_IDENTIFIER=` alternatives, with repeated values ORed. |
-| `-T`, `--exclude-identifier=` | string | file-backed-required | Exclude matching `SYSLOG_IDENTIFIER=` values. |
+| `-T`, `--exclude-identifier=` | string | recognized-no-op | Recognize and preserve v260.1 file-backed behavior. `src/journal/journalctl-filter.c` stores the values in `exclude_syslog_identifiers`, but no v260.1 file-backed show path consumes them; stock `journalctl --file ... --exclude-identifier=...` output is unchanged. |
 | `-p`, `--priority=` | level/range | file-backed-required | Support numeric and named priorities plus `from..to` ranges, matching official inclusive expansion. |
 | `--facility=` | list | file-backed-required | Support comma-separated numeric/named syslog facilities and `help`. |
 | `-g`, `--grep=` | pattern | file-backed-required | Filter `MESSAGE=` with compatible regular expression behavior. If `--lines` searches from tail and `--follow` is not set, preserve official reverse-search behavior. |

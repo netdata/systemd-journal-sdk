@@ -1202,6 +1202,7 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "regex",
  "ruzstd",
  "systemd-journal-sdk",
  "systemd-journal-sdk-core",

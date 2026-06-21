@@ -8,6 +8,7 @@ use journal::{
     SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
     SdJournalVisitUniqueValues, parse_match_string, verify_file, verify_file_with_key,
 };
+use regex::{Regex, RegexBuilder};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -442,11 +443,18 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    if facility_help_requested(&args.facility) {
+        print_facility_help(args.quiet);
+        return Ok(());
+    }
+
     let path = args
         .file
         .as_ref()
         .or(args.directory.as_ref())
         .ok_or_else(|| anyhow!("use --file or --directory"))?;
+
+    validate_path_match_arguments(&args.matches)?;
 
     if args.verify || args.verify_only || args.verify_key.is_some() {
         return run_verify(path, args.verify_key.as_deref());
@@ -454,10 +462,11 @@ fn run() -> Result<()> {
 
     let since_usec = parse_optional_timestamp(args.since.as_deref())?;
     let until_usec = parse_optional_timestamp(args.until.as_deref())?;
+    let post_filters = CliPostFilters::from_args(&args)?;
 
     if args.follow {
         let tail = parse_tail_count(args.tail.as_ref(), args.lines.as_deref()).unwrap_or(10);
-        return run_follow(path, &args, since_usec, until_usec, tail);
+        return run_follow(path, &args, since_usec, until_usec, tail, &post_filters);
     }
 
     let mut journal = open_filtered_journal(path, &args)?;
@@ -507,6 +516,7 @@ fn run() -> Result<()> {
                 until_usec,
                 args.reverse,
                 args.show_cursor,
+                &post_filters,
             ),
             LinesLimit::Head(n) => show_head_or_all_with_reverse(
                 &mut journal,
@@ -515,6 +525,7 @@ fn run() -> Result<()> {
                 until_usec,
                 false,
                 args.show_cursor,
+                &post_filters,
             ),
             LinesLimit::Tail(n) => show_tail_with_reverse(
                 &mut journal,
@@ -523,6 +534,7 @@ fn run() -> Result<()> {
                 until_usec,
                 args.reverse,
                 args.show_cursor,
+                &post_filters,
             ),
         };
     }
@@ -536,6 +548,7 @@ fn run() -> Result<()> {
             until_usec,
             reverse,
             args.show_cursor,
+            &post_filters,
         )
     } else {
         show_head_or_all_with_reverse(
@@ -545,6 +558,7 @@ fn run() -> Result<()> {
             until_usec,
             reverse,
             args.show_cursor,
+            &post_filters,
         )
     }
 }
@@ -741,7 +755,8 @@ fn looks_like_lines_descriptor(value: &str) -> bool {
 fn open_filtered_journal(path: &Path, args: &Args) -> Result<SdJournal> {
     let mut journal =
         SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
-    if let Some(boot) = args.boot.as_deref() {
+    let effective_boot = args.boot.as_deref().or(args.this_boot.then_some(""));
+    if let Some(boot) = effective_boot {
         if boot.trim() != "all" {
             let boot_id = resolve_boot_id(&mut journal, boot.trim())?;
             if !boot_id.is_empty() {
@@ -754,6 +769,7 @@ fn open_filtered_journal(path: &Path, args: &Args) -> Result<SdJournal> {
             }
         }
     }
+    apply_cli_matches(&mut journal, args)?;
     apply_matches(&mut journal, &args.matches)?;
     SdJournalSetOutputMode(&mut journal, args.output.clone().into());
     Ok(journal)
@@ -964,6 +980,245 @@ fn apply_matches(journal: &mut SdJournal, matches: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn validate_path_match_arguments(matches: &[String]) -> Result<()> {
+    for item in matches {
+        if item != "+" && !item.contains('=') {
+            return Err(portable_unsupported(
+                "path match argument",
+                "portable mode supports FIELD=VALUE matches and '+' disjunctions only; path matches require host filesystem metadata inspection",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn add_field_matches<I, S>(journal: &mut SdJournal, field: &str, values: I) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut added = false;
+    for value in values {
+        let data = parse_match_string(&format!("{field}={}", value.as_ref()))
+            .map_err(|err| anyhow!("invalid {field} match: {err}"))?;
+        SdJournalAddMatch(journal, &data).map_err(|err| anyhow!("add {field} match: {err}"))?;
+        added = true;
+    }
+    if added {
+        SdJournalAddConjunction(journal)
+            .map_err(|err| anyhow!("add {field} conjunction: {err}"))?;
+    }
+    Ok(())
+}
+
+fn apply_cli_matches(journal: &mut SdJournal, args: &Args) -> Result<()> {
+    if args.dmesg {
+        add_field_matches(journal, "_TRANSPORT", ["kernel"])?;
+    }
+    if !args.identifier.is_empty() {
+        add_field_matches(
+            journal,
+            "SYSLOG_IDENTIFIER",
+            args.identifier.iter().map(String::as_str),
+        )?;
+    }
+
+    let priorities = parse_priority_filter(&args.priority)?;
+    if !priorities.is_empty() {
+        add_field_matches(journal, "PRIORITY", priorities.iter().map(u8::to_string))?;
+    }
+
+    let facilities = parse_facility_filter(&args.facility)?;
+    if !facilities.is_empty() {
+        add_field_matches(
+            journal,
+            "SYSLOG_FACILITY",
+            facilities.iter().map(u8::to_string),
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CliPostFilters {
+    grep: Option<Regex>,
+}
+
+impl CliPostFilters {
+    fn from_args(args: &Args) -> Result<Self> {
+        Ok(Self {
+            // systemd v260.1 parses --exclude-identifier and stores the
+            // values, but the file-backed show path never consults them.
+            // Keep the option as a parsed no-op for baseline parity.
+            grep: compile_grep_filter(args.grep.as_deref(), args.case_sensitive.as_deref())?,
+        })
+    }
+
+    fn matches(&self, entry: &Entry) -> bool {
+        if let Some(regex) = &self.grep {
+            let mut matched = false;
+            for_each_entry_value(entry, "MESSAGE", |value| {
+                if regex.is_match(&String::from_utf8_lossy(value)) {
+                    matched = true;
+                }
+            });
+            if !matched {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn for_each_entry_value<F>(entry: &Entry, field: &str, mut visitor: F)
+where
+    F: FnMut(&[u8]),
+{
+    if let Some(values) = entry.field_values.get(field) {
+        for value in values {
+            visitor(value);
+        }
+        return;
+    }
+    if let Some(value) = entry.fields.get(field) {
+        visitor(value);
+    }
+}
+
+fn compile_grep_filter(
+    pattern: Option<&str>,
+    case_sensitive: Option<&str>,
+) -> Result<Option<Regex>> {
+    let Some(pattern) = pattern else {
+        return Ok(None);
+    };
+    let sensitive = match case_sensitive {
+        Some(value) => parse_bool_option("--case-sensitive", value)?,
+        None => pattern.chars().any(char::is_uppercase),
+    };
+    RegexBuilder::new(pattern)
+        .case_insensitive(!sensitive)
+        .build()
+        .map(Some)
+        .map_err(|err| anyhow!("Bad pattern \"{pattern}\": {err}"))
+}
+
+fn parse_bool_option(option: &str, value: &str) -> Result<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Ok(true),
+        "0" | "false" | "no" | "n" | "off" => Ok(false),
+        _ => Err(anyhow!("Bad {option}= argument \"{value}\"")),
+    }
+}
+
+fn parse_priority_filter(values: &[String]) -> Result<Vec<u8>> {
+    let Some(value) = values.last() else {
+        return Ok(Vec::new());
+    };
+    if let Some((from, to)) = value.split_once("..") {
+        let from = parse_priority_level(from)?;
+        let to = parse_priority_level(to)?;
+        let start = from.min(to);
+        let end = from.max(to);
+        return Ok((start..=end).collect());
+    }
+
+    let highest = parse_priority_level(value)?;
+    Ok((0..=highest).collect())
+}
+
+fn parse_priority_level(value: &str) -> Result<u8> {
+    let normalized = value.trim().to_ascii_lowercase();
+    let level = match normalized.as_str() {
+        "emerg" | "panic" => Some(0),
+        "alert" => Some(1),
+        "crit" | "critical" => Some(2),
+        "err" | "error" => Some(3),
+        "warning" | "warn" => Some(4),
+        "notice" => Some(5),
+        "info" => Some(6),
+        "debug" => Some(7),
+        _ => normalized.parse::<u8>().ok().filter(|value| *value <= 7),
+    };
+    level.ok_or_else(|| anyhow!("Unknown log level {value}"))
+}
+
+const FACILITY_NAMES: [(&str, u8); 20] = [
+    ("kern", 0),
+    ("user", 1),
+    ("mail", 2),
+    ("daemon", 3),
+    ("auth", 4),
+    ("syslog", 5),
+    ("lpr", 6),
+    ("news", 7),
+    ("uucp", 8),
+    ("cron", 9),
+    ("authpriv", 10),
+    ("ftp", 11),
+    ("local0", 16),
+    ("local1", 17),
+    ("local2", 18),
+    ("local3", 19),
+    ("local4", 20),
+    ("local5", 21),
+    ("local6", 22),
+    ("local7", 23),
+];
+
+fn facility_help_requested(values: &[String]) -> bool {
+    values
+        .iter()
+        .flat_map(|value| value.split(','))
+        .any(|item| item.trim() == "help")
+}
+
+fn print_facility_help(quiet: bool) {
+    if !quiet {
+        println!("Available facilities:");
+    }
+    for number in 0..=23 {
+        if let Some((name, _)) = FACILITY_NAMES
+            .iter()
+            .find(|(_, facility)| *facility == number)
+        {
+            println!("{name}");
+        } else {
+            println!("{number}");
+        }
+    }
+}
+
+fn parse_facility_filter(values: &[String]) -> Result<Vec<u8>> {
+    let mut facilities = Vec::new();
+    for value in values {
+        for item in value.split(',') {
+            let item = item.trim();
+            if item.is_empty() || item == "help" {
+                continue;
+            }
+            let facility = parse_facility(item)?;
+            if !facilities.contains(&facility) {
+                facilities.push(facility);
+            }
+        }
+    }
+    facilities.sort_unstable();
+    Ok(facilities)
+}
+
+fn parse_facility(value: &str) -> Result<u8> {
+    if let Ok(number) = value.parse::<u8>() {
+        if number <= 23 {
+            return Ok(number);
+        }
+    }
+    FACILITY_NAMES
+        .iter()
+        .find_map(|(name, number)| (*name == value).then_some(*number))
+        .ok_or_else(|| anyhow!("Bad --facility= argument \"{value}\"."))
+}
+
 fn show_head_or_all_with_reverse(
     journal: &mut SdJournal,
     limit: Option<usize>,
@@ -971,8 +1226,10 @@ fn show_head_or_all_with_reverse(
     until_usec: Option<u64>,
     reverse: bool,
     show_cursor: bool,
+    post_filters: &CliPostFilters,
 ) -> Result<()> {
-    let entries = matching_entries_with_direction(journal, since_usec, until_usec, reverse)?;
+    let entries =
+        matching_entries_with_direction(journal, since_usec, until_usec, reverse, post_filters)?;
     let mut stdout = std::io::stdout().lock();
     let mut shown = 0usize;
     let mut last_cursor: Option<String> = None;
@@ -1005,8 +1262,10 @@ fn show_tail_with_reverse(
     until_usec: Option<u64>,
     reverse: bool,
     show_cursor: bool,
+    post_filters: &CliPostFilters,
 ) -> Result<()> {
-    let entries = matching_entries_with_direction(journal, since_usec, until_usec, reverse)?;
+    let entries =
+        matching_entries_with_direction(journal, since_usec, until_usec, reverse, post_filters)?;
     let outputs = entries
         .iter()
         .map(|entry| SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}")))
@@ -1032,8 +1291,9 @@ fn matching_entries(
     journal: &mut SdJournal,
     since_usec: Option<u64>,
     until_usec: Option<u64>,
+    post_filters: &CliPostFilters,
 ) -> Result<Vec<Entry>> {
-    matching_entries_with_direction(journal, since_usec, until_usec, false)
+    matching_entries_with_direction(journal, since_usec, until_usec, false, post_filters)
 }
 
 fn matching_entries_with_direction(
@@ -1041,6 +1301,7 @@ fn matching_entries_with_direction(
     since_usec: Option<u64>,
     until_usec: Option<u64>,
     reverse: bool,
+    post_filters: &CliPostFilters,
 ) -> Result<Vec<Entry>> {
     if reverse {
         // Reverse: seek to tail and walk backwards. Bound by --until when
@@ -1063,6 +1324,7 @@ fn matching_entries_with_direction(
                     }
                     if since_usec.is_none_or(|since| entry.realtime >= since)
                         && until_usec.is_none_or(|until| entry.realtime <= until)
+                        && post_filters.matches(&entry)
                     {
                         out.push(entry);
                     }
@@ -1089,6 +1351,7 @@ fn matching_entries_with_direction(
                 }
                 if since_usec.is_none_or(|since| entry.realtime >= since)
                     && until_usec.is_none_or(|until| entry.realtime <= until)
+                    && post_filters.matches(&entry)
                 {
                     out.push(entry);
                 }
@@ -1362,11 +1625,12 @@ fn scan_follow_snapshot(
     args: &Args,
     since_usec: Option<u64>,
     until_usec: Option<u64>,
+    post_filters: &CliPostFilters,
 ) -> Vec<(String, Vec<u8>)> {
     let Ok(mut journal) = open_filtered_journal(path, args) else {
         return Vec::new();
     };
-    let Ok(entries) = matching_entries(&mut journal, since_usec, until_usec) else {
+    let Ok(entries) = matching_entries(&mut journal, since_usec, until_usec, post_filters) else {
         return Vec::new();
     };
     entries
@@ -1384,11 +1648,12 @@ fn run_follow(
     since_usec: Option<u64>,
     until_usec: Option<u64>,
     tail: usize,
+    post_filters: &CliPostFilters,
 ) -> Result<()> {
     use std::collections::HashSet;
 
     let mut seen = HashSet::new();
-    let initial = scan_follow_snapshot(path, args, since_usec, until_usec);
+    let initial = scan_follow_snapshot(path, args, since_usec, until_usec, post_filters);
     for (cursor, _) in &initial {
         seen.insert(cursor.clone());
     }
@@ -1406,7 +1671,7 @@ fn run_follow(
 
     loop {
         thread::sleep(Duration::from_millis(100));
-        let snapshot = scan_follow_snapshot(path, args, since_usec, until_usec);
+        let snapshot = scan_follow_snapshot(path, args, since_usec, until_usec, post_filters);
         let mut stdout = std::io::stdout().lock();
         for (cursor, output) in snapshot {
             if seen.insert(cursor) {

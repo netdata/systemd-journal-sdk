@@ -280,6 +280,15 @@ User decision on 2026-06-21:
   file-backed operational parity, full command-line understanding, and proper
   unsupported messages for impossible daemon/host-only features.
 
+User routing decision on 2026-06-21:
+
+- The user explicitly requested direct implementation by the project manager for
+  this SOW and explicitly requested no delegated implementation.
+- Implementation for SOW-0121 will be performed locally in this session instead
+  of using the default external implementer routing.
+- External reviewers remain planned after complete local implementation and
+  validation, following the whole-SOW review cadence.
+
 Implications:
 
 - This is not SOW-0097 or SOW-0098 cleanup; it is product/release-relevant
@@ -307,9 +316,9 @@ Implications:
 
 Implementer:
 
-- Activated by user goal on 2026-06-21. Default project routing applies:
-  implementation delegated to `llm-netdata-cloud/minimax-m3-coder` unless the
-  user changes routing or the SOW records a fallback.
+- Activated by user goal on 2026-06-21. The user changed the default routing on
+  2026-06-21 and requested direct local implementation by the project manager,
+  with no delegated implementation for this SOW.
 
 Reviewers:
 
@@ -380,6 +389,25 @@ Failure handling:
   `--lines TEST_ID=...` must not consume the match as the optional lines
   argument. Rust now consumes the next token only when it looks like `all`, `N`,
   or `+N`.
+- User changed implementation routing and explicitly requested direct local
+  implementation for this SOW with no delegated implementation.
+- Implemented the next file-backed filter chunk directly in Rust and Go:
+  - `--identifier=` / `-t` as `SYSLOG_IDENTIFIER=` alternatives with repeated
+    values ORed;
+  - `--priority=` / `-p` numeric, named, and `from..to` expansion;
+  - `--facility=` numeric/named comma lists and `help`;
+  - `--grep=` / `-g` with v260.1 case auto-detection and
+    `--case-sensitive[=BOOL]`;
+  - `--dmesg` / `-k` as `_TRANSPORT=kernel`;
+  - `--this-boot` as the file-backed current-boot alias;
+  - portable unsupported handling for positional path match arguments, without
+    inspecting host filesystem metadata.
+- Corrected the parity matrix for `--exclude-identifier=` / `-T`: verified
+  `systemd/systemd @ c0a5a2516d28` stores `exclude_syslog_identifiers` in
+  `src/journal/journalctl-filter.c`, but no v260.1 file-backed show path uses
+  that set. Stock `journalctl --file ... --exclude-identifier=...` output is
+  unchanged, so the portable commands now preserve that no-op behavior for
+  official v260.1 parity.
 
 ## Validation
 
@@ -400,17 +428,20 @@ Acceptance criteria evidence:
 - Rust and Go implementation pending.
 - Rust and Go full parser recognition is implemented and locally validated.
 - Rust and Go file-backed behavior is partially advanced for `--reverse`,
-  `--show-cursor`, and `--lines` direction/default semantics.
+  `--show-cursor`, `--lines` direction/default semantics, `--identifier`,
+  `--priority`, `--facility`, `--grep`, `--case-sensitive`, `--dmesg`,
+  `--this-boot`, and portable path-match rejection.
 - Remaining file-backed parity is still pending, including full short-family
   formatting, verbose/cat/with-unit/JSON variant exact framing,
-  `--output-fields`, cursor seeking/cursor-file mutation, unit/user-unit/
-  identifier/priority/facility/grep/dmesg filters, `--header`, `--disk-usage`,
-  `--list-invocations`, `--new-id128`, `--setup-keys`, and directory vacuum
-  actions where approved by the parity matrix.
+  `--output-fields`, cursor seeking/cursor-file mutation, unit/user-unit and
+  invocation filters, `--header`, `--disk-usage`, `--list-invocations`,
+  `--new-id128`, `--setup-keys`, exact empty-result exit semantics, and
+  directory vacuum actions where approved by the parity matrix.
 
 Tests or equivalent validation:
 
-- SOW activation only; product validation pending implementation.
+- Implementation remains partial; product validation is recorded per completed
+  chunk until the whole SOW can be reviewed and closed.
 - Matrix coverage checked with read-only Python extraction from the v260.1
   upstream source and local matrix text.
 - `python3 tests/parser-parity/check_v260_manifest.py`: passed; manifest
@@ -418,16 +449,26 @@ Tests or equivalent validation:
   and action enum.
 - `python3 tests/parser-parity/run_parser_parity.py --rust-bin
   .local/cargo-target/debug/journalctl`: passed; Rust `ok=93 skipped=0
-  failed=0`, Go `ok=93 skipped=0 failed=0`.
+  failed=0`, Go `ok=93 skipped=0 failed=0`. Rerun after the direct filter
+  chunk stayed clean.
 - `cargo test --manifest-path rust/Cargo.toml -p journalctl --target-dir
   .local/cargo-target`: passed; 24 Rust `journalctl` tests passed.
 - `cd go && GOCACHE="$PWD/../.local/go-build"
   GOMODCACHE="$PWD/../.local/go-mod-cache" go test ./cmd/journalctl
-  ./journal`: passed in local validation.
+  ./journal`: passed in local validation after the direct filter chunk.
 - `python3 tests/interoperability/run_journalctl_query_matrix.py
   --skip-follow`: passed against stock `journalctl` from systemd 260
   `(260.1-2-manjaro)`: `PASS results=69 failures=0`, including the new
   reverse, lines, oldest-lines, no-value lines, and show-cursor cases.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py
+  --skip-follow`: passed against stock `journalctl` from systemd 260
+  `(260.1-2-manjaro)`: `PASS results=107 failures=0`, including identifier,
+  priority, facility, grep/case-sensitive, dmesg, this-boot, and portable
+  path-match unsupported cases.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py`: passed
+  against stock `journalctl` from systemd 260 `(260.1-2-manjaro)`: `PASS
+  results=119 failures=0`, including live follow checks after the filter-path
+  changes.
 - `python3 tests/interoperability/run_directory_matrix.py`: passed against
   stock `journalctl` from systemd 260 `(260.1-2-manjaro)`: `PASS checks=34`.
 - `python3 tests/interoperability/run_verify_matrix.py`: passed against stock
@@ -435,15 +476,18 @@ Tests or equivalent validation:
   failures=0`.
 - `git diff --check`: passed.
 - Sensitive string scan over changed durable artifacts and candidate code:
-  passed.
-- `.agents/sow/audit.sh`: passed.
+  passed; the only match was the existing sanitized sensitive-data policy text
+  in this SOW.
+- `.agents/sow/audit.sh`: passed after the direct filter chunk.
 
 Real-use evidence:
 
-- Pending implementation.
-- First implementation chunk has no external reviewer findings yet. Per project
-  review cadence, external reviewers remain deferred until complete local
-  implementation and validation for the whole SOW.
+- Partial implementation evidence exists through stock-systemd comparison
+  matrices using repository-local fixtures only. The whole SOW remains
+  in-progress.
+- No external reviewer findings yet. Per project review cadence, external
+  reviewers remain deferred until complete local implementation and validation
+  for the whole SOW.
 
 Reviewer findings:
 
@@ -460,16 +504,18 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed for SOW creation.
-- Runtime project skills: no update needed for SOW creation.
-- Specs: no product behavior changed yet; spec update is required when this SOW
-  implements or changes the command contract.
+- AGENTS.md: no update needed for this chunk; the routing exception is recorded
+  in this SOW.
+- Runtime project skills: no update needed for this chunk.
+- Specs: `.agents/sow/specs/journalctl-v260-parity-matrix.md` was updated to
+  correct `--exclude-identifier=` as a v260.1 file-backed no-op based on source
+  and stock-command evidence.
 - End-user/operator docs: no product behavior changed yet; docs update is
   required when this SOW implements or changes command behavior.
 - End-user/operator skills: no affected output/reference skills identified for
-  SOW creation.
-- SOW lifecycle: new open SOW created under `.agents/sow/pending/`.
-- SOW-status.md: updated with new pending SOW.
+  this chunk.
+- SOW lifecycle: active SOW remains `in-progress` under `.agents/sow/current/`.
+- SOW-status.md: no update needed for this non-terminal chunk.
 
 Specs update:
 
