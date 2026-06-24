@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-19
+Last updated: 2026-06-24
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
@@ -10,6 +10,11 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 ## Pending
 
+- `SOW-0123-20260624-event-time-lane-fresh-clock-seed.md` - open. Fresh-journal
+  event-time realtime-clock seed gap analysis and implementation plan are
+  complete. External read-only reviewer verification returned ready-to-implement
+  votes from glm, minimax, kimi, mimo, deepseek, and qwen; Rust/Go
+  implementation remains pending.
 - `SOW-0115-20260616-portable-writer-identity-helpers.md` - open, blocked-on-user-decisions after repeat external review. Strict OS-agnostic writer contract where `_MACHINE_ID`, `_BOOT_ID`, and generated-entry `__MONOTONIC_TIMESTAMP` are mandatory caller-provided anchors, plus a separate optional Layer-3 helper API/package for local-host values on Linux/FreeBSD/macOS/Windows when that is the caller's intended identity source. User accepted FreeBSD locked state-backed boot-id synthesis under `/var/run` by default with caller path override, Rust/Go product scope after SOW-0116, and hard native-only/no-subprocess policy. Initial external review on 2026-06-16 returned 7/7 NOT READY TO IMPLEMENT votes; repeat review after SOW hardening returned 6/7 NOT READY TO IMPLEMENT votes and 1/7 READY vote before the language-scope reduction. The SOW must resolve non-Linux boot-id strategy, state-file locking/security, Rust helper relocation/clock semantics, and breaking-change migration before implementation.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable Rust/Go `v1.0.0` SDK with Rust registry publication where applicable, Go module tags, and clean consumer install validation after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
 - `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.

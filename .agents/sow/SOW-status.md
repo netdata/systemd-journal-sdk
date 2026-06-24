@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-21
+Last updated: 2026-06-24
 
 ## Current
 
@@ -30,6 +30,11 @@ Last updated: 2026-06-21
   SOW-0121 performance follow-up for indexed `--list-invocations`, portable
   `--follow` scalability, and large-fixture performance evidence before any
   large-archive performance claim.
+- SOW-0123 - Event-Time Lane Fresh-Journal Realtime Clock Seed: open. Records
+  the Rust fresh-lazy realtime floor gap and Go parity/documentation gap for
+  event-time-ordered journals. Project-manager diagnosis and implementation
+  plan are complete; glm, minimax, kimi, mimo, deepseek, and qwen returned
+  ready-to-implement verification. Rust/Go implementation remains pending.
 ## Recently Closed Or Completed
 
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed
