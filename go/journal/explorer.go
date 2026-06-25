@@ -278,18 +278,17 @@ type ExplorerProgress struct {
 }
 
 type ExplorerControl struct {
-	deadline       *time.Time
-	cancellation   func() bool
-	progress       func(ExplorerProgress)
-	candidateRow   func(uint64) bool
-	adjustRealtime func(uint64) uint64
-	matchedRow     func(uint64, uint64) bool
-	sampling       *explorerSamplingState
-	progressEvery  time.Duration
-	started        time.Time
-	lastProgress   time.Time
-	nextCheckRows  uint64
-	stopReason     ExplorerStopReason
+	deadline      *time.Time
+	cancellation  func() bool
+	progress      func(ExplorerProgress)
+	candidateRow  func(uint64) bool
+	matchedRow    func(uint64, uint64) bool
+	sampling      *explorerSamplingState
+	progressEvery time.Duration
+	started       time.Time
+	lastProgress  time.Time
+	nextCheckRows uint64
+	stopReason    ExplorerStopReason
 }
 
 func NewExplorerControl() *ExplorerControl {
@@ -320,10 +319,6 @@ func (c *ExplorerControl) SetProgressCallback(callback func(ExplorerProgress)) {
 
 func (c *ExplorerControl) setCandidateRowCallback(callback func(uint64) bool) {
 	c.candidateRow = callback
-}
-
-func (c *ExplorerControl) setRealtimeAdjustCallback(callback func(uint64) uint64) {
-	c.adjustRealtime = callback
 }
 
 func (c *ExplorerControl) SetMatchedRowCallback(callback func(uint64, uint64) bool) {
@@ -392,13 +387,6 @@ func (c *ExplorerControl) emitProgress(stats ExplorerStats, now time.Time) {
 
 func (c *ExplorerControl) emitMatchedRow(realtimeUsec, rowsMatched uint64) bool {
 	return c != nil && c.matchedRow != nil && c.matchedRow(realtimeUsec, rowsMatched)
-}
-
-func (c *ExplorerControl) adjust(realtimeUsec uint64) uint64 {
-	if c != nil && c.adjustRealtime != nil {
-		return c.adjustRealtime(realtimeUsec)
-	}
-	return realtimeUsec
 }
 
 type explorerSamplingDecisionKind int
@@ -2122,9 +2110,7 @@ func handleRowValueClass(valueIndex int, acc *explorerAccumulator, rowID uint64,
 func acceptedEffectiveRealtime(query ExplorerQuery, scan rowScan, commitRealtime uint64, stats *ExplorerStats, control *ExplorerControl) (uint64, bool) {
 	effective := effectiveRealtimeFromScan(scan.timestamp, commitRealtime)
 	recordSourceRealtimeDelta(stats, scan.timestamp, commitRealtime)
-	if control != nil {
-		effective = control.adjust(effective)
-	}
+	_ = control
 	return effective, timestampInRange(query, effective) && !rowRejectedByFTS(query, scan)
 }
 

@@ -284,6 +284,206 @@ func TestNetdataPageWindowTailAnchorUsesStopSide(t *testing.T) {
 	}
 }
 
+func testNetdataLocatedRowInFile(filePath string, realtimeUsec uint64, cursor string) netdataLocatedRow {
+	return netdataLocatedRow{
+		FilePath: filePath,
+		Row: ExplorerRow{
+			RealtimeUsec: realtimeUsec,
+			Cursor:       cursor,
+		},
+	}
+}
+
+func TestNetdataSortAndLimitRetainsFullRawBoundaryGroupWhenLastCutsThroughIt(t *testing.T) {
+	rows := []netdataLocatedRow{
+		testNetdataLocatedRowInFile("c.journal", 100, "c0"),
+		testNetdataLocatedRowInFile("b.journal", 100, "b0"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a0"),
+	}
+	sortRowsByRawRealtime(rows, DirectionBackward)
+	retainBoundaryGroup(&rows, DirectionBackward, 2)
+	makeRowTimestampsUniqueSameFile(rows, DirectionBackward)
+
+	if got := len(rows); got != 3 {
+		t.Fatalf("backward boundary rows = %d, want 3", got)
+	}
+	gotOrder := []string{
+		rows[0].FilePath, rows[1].FilePath, rows[2].FilePath,
+	}
+	wantOrder := []string{"a.journal", "b.journal", "c.journal"}
+	for index := range gotOrder {
+		if gotOrder[index] != wantOrder[index] {
+			t.Fatalf("backward boundary order = %v, want %v", gotOrder, wantOrder)
+		}
+	}
+}
+
+func TestNetdataSortAndLimitRetainsFullRawBoundaryGroupForForwardQuery(t *testing.T) {
+	rows := []netdataLocatedRow{
+		testNetdataLocatedRowInFile("c.journal", 100, "c0"),
+		testNetdataLocatedRowInFile("b.journal", 100, "b0"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a0"),
+	}
+	sortRowsByRawRealtime(rows, DirectionForward)
+	retainBoundaryGroup(&rows, DirectionForward, 2)
+	makeRowTimestampsUniqueSameFile(rows, DirectionForward)
+
+	if got := len(rows); got != 3 {
+		t.Fatalf("forward boundary rows = %d, want 3", got)
+	}
+}
+
+func TestNetdataSortAndLimitKeepsCrossFileEqualTimestampsForAnchorContinuity(t *testing.T) {
+	rows := []netdataLocatedRow{
+		testNetdataLocatedRowInFile("c.journal", 100, "c0"),
+		testNetdataLocatedRowInFile("b.journal", 100, "b0"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a0"),
+		testNetdataLocatedRowInFile("d.journal", 90, "d0"),
+	}
+	sortRowsByRawRealtime(rows, DirectionBackward)
+	makeRowTimestampsUniqueSameFile(rows, DirectionBackward)
+
+	boundaryCount := 0
+	for _, row := range rows {
+		if row.Row.RealtimeUsec == 100 {
+			boundaryCount++
+		}
+	}
+	if boundaryCount != 3 {
+		t.Fatalf("cross-file boundary rows = %d, want 3", boundaryCount)
+	}
+}
+
+func TestNetdataSortAndLimitKeepsSameFileDuplicateDisplayAdjustment(t *testing.T) {
+	rows := []netdataLocatedRow{
+		testNetdataLocatedRowInFile("a.journal", 100, "a0"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a1"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a2"),
+		testNetdataLocatedRowInFile("a.journal", 90, "a3"),
+	}
+	sortRowsByRawRealtime(rows, DirectionBackward)
+	makeRowTimestampsUniqueSameFile(rows, DirectionBackward)
+
+	want := []uint64{100, 99, 98, 90}
+	if len(rows) != len(want) {
+		t.Fatalf("same-file rows = %d, want %d", len(rows), len(want))
+	}
+	for index := range want {
+		if rows[index].Row.RealtimeUsec != want[index] {
+			t.Fatalf("same-file timestamps = %v, want %v", timestampsOf(rows), want)
+		}
+	}
+}
+
+func TestNetdataSortAndLimitClearsRowsWhenLimitIsZero(t *testing.T) {
+	rows := []netdataLocatedRow{
+		testNetdataLocatedRowInFile("a.journal", 100, "a0"),
+		testNetdataLocatedRowInFile("b.journal", 90, "b0"),
+	}
+	sortRowsByRawRealtime(rows, DirectionBackward)
+	retainBoundaryGroup(&rows, DirectionBackward, 0)
+
+	if len(rows) != 0 {
+		t.Fatalf("rows after zero limit = %d, want 0", len(rows))
+	}
+
+	rows = []netdataLocatedRow{
+		testNetdataLocatedRowInFile("a.journal", 100, "a0"),
+		testNetdataLocatedRowInFile("b.journal", 90, "b0"),
+	}
+	retainBoundaryGroup(&rows, DirectionBackward, -1)
+	if len(rows) != 0 {
+		t.Fatalf("rows after negative limit = %d, want 0", len(rows))
+	}
+}
+
+func TestNetdataBackwardRealtimeAnchorIsExclusiveForNonDataOnlyRequests(t *testing.T) {
+	parsed, err := parseNetdataRequest(map[string]any{
+		"after":     float64(1_700_000_000),
+		"before":    float64(1_700_000_010),
+		"anchor":    float64(1_700_000_005_000_000),
+		"direction": "backward",
+		"last":      float64(5),
+	}, SystemdJournalNetdataFunctionConfig())
+	if err != nil {
+		t.Fatalf("parseNetdataRequest() error = %v", err)
+	}
+	query := parsed.toExplorerQuery(1, nil, netdataJournalRealtimeDeltaDefault)
+	if query.BeforeRealtimeUsec == nil || *query.BeforeRealtimeUsec != 1_700_000_004_999_999 {
+		t.Fatalf("effective before = %v, want 1700000004999999", query.BeforeRealtimeUsec)
+	}
+	if query.Anchor.Kind != ExplorerAnchorAuto {
+		t.Fatalf("anchor kind = %v, want auto", query.Anchor.Kind)
+	}
+}
+
+func TestNetdataBackwardRealtimeAnchorRemainsExclusiveForDataOnlyRequests(t *testing.T) {
+	parsed, err := parseNetdataRequest(map[string]any{
+		"after":     float64(1_700_000_000),
+		"before":    float64(1_700_000_010),
+		"anchor":    float64(1_700_000_005_000_000),
+		"data_only": true,
+		"direction": "backward",
+		"last":      float64(5),
+	}, SystemdJournalNetdataFunctionConfig())
+	if err != nil {
+		t.Fatalf("parseNetdataRequest() error = %v", err)
+	}
+	query := parsed.toExplorerQuery(1, nil, netdataJournalRealtimeDeltaDefault)
+	if query.BeforeRealtimeUsec == nil || *query.BeforeRealtimeUsec != 1_700_000_004_999_999 {
+		t.Fatalf("effective before = %v, want 1700000004999999", query.BeforeRealtimeUsec)
+	}
+	if query.Anchor.Kind != ExplorerAnchorAuto {
+		t.Fatalf("anchor kind = %v, want auto", query.Anchor.Kind)
+	}
+}
+
+func timestampsOf(rows []netdataLocatedRow) []uint64 {
+	out := make([]uint64, len(rows))
+	for i, row := range rows {
+		out[i] = row.Row.RealtimeUsec
+	}
+	return out
+}
+
+func TestNetdataDuplicateRowTimestampsMatchPluginDirectionAdjustment(t *testing.T) {
+	backward := []netdataLocatedRow{
+		testNetdataLocatedRowInFile("a.journal", 100, "a0"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a1"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a2"),
+		testNetdataLocatedRowInFile("a.journal", 90, "a3"),
+	}
+	makeRowTimestampsUniqueSameFile(backward, DirectionBackward)
+	wantBackward := []uint64{100, 99, 98, 90}
+	if got := timestampsOf(backward); !equalUint64Slice(got, wantBackward) {
+		t.Fatalf("backward same-file timestamps = %v, want %v", got, wantBackward)
+	}
+
+	forward := []netdataLocatedRow{
+		testNetdataLocatedRowInFile("a.journal", 90, "a0"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a1"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a2"),
+		testNetdataLocatedRowInFile("a.journal", 100, "a3"),
+	}
+	makeRowTimestampsUniqueSameFile(forward, DirectionForward)
+	wantForward := []uint64{90, 100, 101, 102}
+	if got := timestampsOf(forward); !equalUint64Slice(got, wantForward) {
+		t.Fatalf("forward same-file timestamps = %v, want %v", got, wantForward)
+	}
+}
+
+func equalUint64Slice(got, want []uint64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func parseNetdataRequestFixture(t *testing.T) netdataRequest {
 	t.Helper()
 	request := map[string]any{
@@ -472,17 +672,6 @@ func TestNetdataDynamicProcessNameMatchesPluginFallbackOrder(t *testing.T) {
 	}
 }
 
-func TestNetdataRealtimeAdjustment(t *testing.T) {
-	forward := newNetdataRealtimeAdjuster(DirectionForward)
-	if got := []uint64{forward.adjust(10), forward.adjust(10), forward.adjust(10)}; got[0] != 10 || got[1] != 11 || got[2] != 12 {
-		t.Fatalf("forward realtime adjustment = %v, want 10/11/12", got)
-	}
-	backward := newNetdataRealtimeAdjuster(DirectionBackward)
-	if got := []uint64{backward.adjust(10), backward.adjust(10), backward.adjust(10)}; got[0] != 10 || got[1] != 9 || got[2] != 8 {
-		t.Fatalf("backward realtime adjustment = %v, want 10/9/8", got)
-	}
-}
-
 func TestNetdataDataOnlyDeltaTailSamplingAndNoChangeModes(t *testing.T) {
 	path := createExplorerManyJournal(t, 500)
 	dir := filepath.Dir(path)
@@ -629,6 +818,50 @@ func TestNetdataFunctionPagesWithAnchorWithoutDuplicateOrMissingRows(t *testing.
 		startRealtime + 4,
 		startRealtime + 6,
 	})
+}
+
+func TestNetdataFunctionBoundaryExpansionDoesNotReportMoreRows(t *testing.T) {
+	dir := t.TempDir()
+	for _, item := range []struct {
+		name    string
+		message string
+	}{
+		{name: "a.journal", message: "source-a"},
+		{name: "b.journal", message: "source-b"},
+		{name: "c.journal", message: "source-c"},
+	} {
+		writeNetdataTestJournalAt(t, filepath.Join(dir, item.name), item.message)
+	}
+
+	for _, direction := range []string{"backward", "forward"} {
+		response := runNetdataContractRequest(t, dir, map[string]any{
+			"after":     float64(1_700_000_000),
+			"before":    float64(1_700_000_001),
+			"last":      float64(2),
+			"direction": direction,
+			"facets":    []any{"PRIORITY"},
+			"histogram": "PRIORITY",
+		})
+		if got := numericUint64(response["status"]); got != 200 {
+			t.Fatalf("%s status = %d, want 200 (response=%#v)", direction, got, response)
+		}
+		if got := len(responseColumnUint64s(t, response, "timestamp")); got != 3 {
+			t.Fatalf("%s returned rows = %d, want 3", direction, got)
+		}
+		items := anyMap(t, response["items"])
+		if got := numericUint64(items["returned"]); got != 3 {
+			t.Fatalf("%s items.returned = %d, want 3", direction, got)
+		}
+		if got := numericUint64(items["max_to_return"]); got != 2 {
+			t.Fatalf("%s items.max_to_return = %d, want 2", direction, got)
+		}
+		if got := numericUint64(items["after"]); got != 0 {
+			t.Fatalf("%s items.after = %d, want 0", direction, got)
+		}
+		if got := numericUint64(items["before"]); got != 0 {
+			t.Fatalf("%s items.before = %d, want 0", direction, got)
+		}
+	}
 }
 
 func TestNetdataFunctionTailPollsReturnOnlyRowsAfterAnchorThen304(t *testing.T) {

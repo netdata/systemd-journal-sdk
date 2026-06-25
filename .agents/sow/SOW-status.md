@@ -4,16 +4,7 @@ Last updated: 2026-06-25
 
 ## Current
 
-- SOW-0124 - Netdata Query-Wide Anchor Regression: in-progress. Test-first
-  reproduction is active for the regression between the Netdata UI's single
-  ordered query-level anchor contract and the SDK Netdata wrappers' current
-  per-file anchor application plus after-the-fact timestamp merge. The current
-  surgical SDK repair plan is reviewer-verified READY TO IMPLEMENT by glm,
-  minimax, kimi, mimo, deepseek, and qwen after round-2 review. The plan keeps
-  the scalar anchor API and per-file batched retrieval, removes early
-  display-time timestamp mutation, makes non-tail backward anchors exclusive,
-  and makes final retention include the whole cross-file boundary timestamp
-  group.
+- None.
 
 ## Pending
 
@@ -50,6 +41,20 @@ Last updated: 2026-06-25
   decisions. Not executable until the user explicitly resumes it.
 ## Recently Closed Or Completed
 
+- SOW-0124 - Netdata Query-Wide Anchor Regression: completed. Rust and Go
+  Netdata SDK wrappers now preserve the current scalar `anchor` plus
+  `pagination.column = "timestamp"` wire contract while applying anchors
+  query-wide across selected journal files. The repair removes early
+  display-time timestamp mutation, makes non-tail backward anchors exclusive
+  for data-only and non-data-only requests, preserves per-file batched
+  retrieval plus global merge, retains the full equal-timestamp boundary group,
+  and fixes `items.after` / `items.before` reporting for boundary expansion.
+  Option 1B is documented as future reference only, not implemented. Validation
+  passed Rust library tests, full Go module tests, Python Netdata helper tests,
+  rebuilt Rust and Go wrappers, the shared anchor regression runner across
+  Rust/Go and four scenarios, whitespace checks, SOW audit, and second-round
+  read-only reviewer votes from glm, kimi, mimo, deepseek, and qwen all voting
+  `READY TO COMPLETE: YES`.
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed
   after strict P0/P1/P2 reviewer-gate repair. Rust and Go portable
   `journalctl` now recognize the full official systemd v260.1 option/action

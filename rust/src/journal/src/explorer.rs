@@ -304,7 +304,6 @@ pub struct ExplorerControl<'a> {
     cancellation: Option<&'a dyn Fn() -> bool>,
     progress: Option<&'a mut dyn FnMut(ExplorerProgress)>,
     candidate_row: Option<&'a mut dyn FnMut(u64) -> bool>,
-    adjust_realtime: Option<&'a mut dyn FnMut(u64) -> u64>,
     matched_row: Option<&'a mut dyn FnMut(u64, u64) -> bool>,
     sampling: Option<&'a mut ExplorerSamplingState>,
     progress_interval: Duration,
@@ -322,7 +321,6 @@ impl<'a> ExplorerControl<'a> {
             cancellation: None,
             progress: None,
             candidate_row: None,
-            adjust_realtime: None,
             matched_row: None,
             sampling: None,
             progress_interval: Duration::from_millis(250),
@@ -350,13 +348,6 @@ impl<'a> ExplorerControl<'a> {
         candidate_row: Option<&'a mut dyn FnMut(u64) -> bool>,
     ) {
         self.candidate_row = candidate_row;
-    }
-
-    pub(crate) fn set_realtime_adjust_callback(
-        &mut self,
-        adjust_realtime: Option<&'a mut dyn FnMut(u64) -> u64>,
-    ) {
-        self.adjust_realtime = adjust_realtime;
     }
 
     pub fn set_matched_row_callback(
@@ -422,14 +413,6 @@ impl<'a> ExplorerControl<'a> {
             return matched_row(realtime_usec, rows_matched);
         }
         false
-    }
-
-    fn adjust_realtime(&mut self, realtime_usec: u64) -> u64 {
-        self.adjust_realtime
-            .as_deref_mut()
-            .map_or(realtime_usec, |adjust_realtime| {
-                adjust_realtime(realtime_usec)
-            })
     }
 }
 
@@ -1605,11 +1588,9 @@ impl FileReader {
         stats: &mut ExplorerStats,
         control: Option<&mut ExplorerControl<'_>>,
     ) -> Option<u64> {
-        let mut effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
+        let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
         record_source_realtime_delta(stats, scan.timestamp, commit_realtime);
-        if let Some(control) = control {
-            effective_realtime = control.adjust_realtime(effective_realtime);
-        }
+        let _ = control;
         (timestamp_in_range(query, effective_realtime) && !row_rejected_by_fts(query, scan))
             .then_some(effective_realtime)
     }

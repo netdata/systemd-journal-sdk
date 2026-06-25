@@ -34,6 +34,16 @@ SCENARIOS = {
         "page1": REQUEST_DIR / "same-anchor-boundary-page1.json",
         "page2": REQUEST_DIR / "same-anchor-boundary-page2-anchor.json",
     },
+    "same-anchor-boundary-non-data-only": {
+        "fixture": FIXTURE_DIR / "same-anchor-boundary.json",
+        "page1": REQUEST_DIR / "same-anchor-boundary-non-data-only-page1.json",
+        "page2": REQUEST_DIR / "same-anchor-boundary-non-data-only-page2-anchor.json",
+    },
+    "same-anchor-boundary-forward": {
+        "fixture": FIXTURE_DIR / "same-anchor-boundary.json",
+        "page1": REQUEST_DIR / "same-anchor-boundary-forward-page1.json",
+        "page2": REQUEST_DIR / "same-anchor-boundary-forward-page2-anchor.json",
+    },
 }
 
 

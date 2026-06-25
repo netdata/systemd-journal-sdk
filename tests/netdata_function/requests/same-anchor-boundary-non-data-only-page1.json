@@ -1,0 +1,11 @@
+{
+  "after": 1700000000,
+  "before": 1700000001,
+  "last": 2,
+  "direction": "backward",
+  "data_only": false,
+  "facets": [
+    "PRIORITY"
+  ],
+  "histogram": "PRIORITY"
+}

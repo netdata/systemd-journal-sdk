@@ -481,7 +481,6 @@ where
         combined.sampling_enabled = query.sampling.is_some();
         let mut sampling_state =
             ExplorerSamplingState::for_query(&query, histogram_bucket_count_for_query(&query));
-        let realtime_adjuster = RefCell::new(NetdataRealtimeAdjuster::new(request.direction));
         let started = Instant::now();
         let total_files = files.len();
         for (file_index, file) in files.iter().enumerate() {
@@ -511,7 +510,6 @@ where
                 &combined,
                 &page_window,
                 sampling_state.as_mut(),
-                &realtime_adjuster,
                 progress_context(file_index, total_files, started),
                 file.order.journal_vs_realtime_delta_usec,
             );
@@ -570,7 +568,6 @@ where
         combined: &CombinedResult,
         page_window: &RefCell<NetdataPageWindow>,
         sampling_state: Option<&mut ExplorerSamplingState>,
-        realtime_adjuster: &RefCell<NetdataRealtimeAdjuster>,
         progress: ProgressContext,
         realtime_delta_usec: u64,
     ) -> Result<(ExplorerResult, Option<ExplorerStopReason>)> {
@@ -588,9 +585,6 @@ where
         let mut candidate_row =
             |realtime_usec| page_window.borrow().candidate_to_keep(realtime_usec);
         control.set_candidate_row_callback(Some(&mut candidate_row));
-        let mut adjust_realtime =
-            |realtime_usec| realtime_adjuster.borrow_mut().adjust(realtime_usec);
-        control.set_realtime_adjust_callback(Some(&mut adjust_realtime));
         let mut matched_row = |realtime_usec, rows_matched| {
             delta_scan_can_stop(
                 request,
@@ -1524,8 +1518,7 @@ impl NetdataRequest {
     ) -> ExplorerQuery {
         let analysis_enabled = !self.data_only || self.delta;
         let tail_anchor = self.tail && matches!(self.anchor, ExplorerAnchor::Realtime(_));
-        let backward_page_anchor = self.data_only
-            && !tail_anchor
+        let backward_page_anchor = !tail_anchor
             && self.direction == Direction::Backward
             && matches!(self.anchor, ExplorerAnchor::Realtime(_));
         let after_realtime_usec = if tail_anchor {
@@ -1667,52 +1660,6 @@ impl NetdataRequest {
 struct LocatedRow {
     file_path: PathBuf,
     row: ExplorerRow,
-}
-
-#[derive(Debug)]
-struct NetdataRealtimeAdjuster {
-    direction: Direction,
-    last_realtime_from: u64,
-    last_realtime_to: u64,
-}
-
-impl NetdataRealtimeAdjuster {
-    fn new(direction: Direction) -> Self {
-        Self {
-            direction,
-            last_realtime_from: 0,
-            last_realtime_to: 0,
-        }
-    }
-
-    fn adjust(&mut self, realtime_usec: u64) -> u64 {
-        match self.direction {
-            Direction::Backward => {
-                if realtime_usec >= self.last_realtime_from
-                    && realtime_usec <= self.last_realtime_to
-                {
-                    self.last_realtime_from = self.last_realtime_from.saturating_sub(1);
-                    self.last_realtime_from
-                } else {
-                    self.last_realtime_from = realtime_usec;
-                    self.last_realtime_to = realtime_usec;
-                    realtime_usec
-                }
-            }
-            Direction::Forward => {
-                if realtime_usec >= self.last_realtime_from
-                    && realtime_usec <= self.last_realtime_to
-                {
-                    self.last_realtime_to = self.last_realtime_to.saturating_add(1);
-                    self.last_realtime_to
-                } else {
-                    self.last_realtime_from = realtime_usec;
-                    self.last_realtime_to = realtime_usec;
-                    realtime_usec
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Default)]
@@ -1960,7 +1907,9 @@ impl NetdataPageWindow {
                 heap.pop();
                 heap.push(Reverse(realtime_usec));
                 self.refresh_retained_bounds();
-                self.shifts = self.shifts.saturating_add(1);
+                if realtime_usec > oldest {
+                    self.shifts = self.shifts.saturating_add(1);
+                }
             }
             (NetdataPageHeap::Forward(heap), Direction::Forward) => {
                 if heap.len() < self.limit {
@@ -1980,7 +1929,9 @@ impl NetdataPageWindow {
                 heap.pop();
                 heap.push(realtime_usec);
                 self.refresh_retained_bounds();
-                self.shifts = self.shifts.saturating_add(1);
+                if realtime_usec < newest {
+                    self.shifts = self.shifts.saturating_add(1);
+                }
             }
             _ => {}
         }
@@ -2185,16 +2136,9 @@ impl CombinedResult {
     }
 
     fn sort_and_limit(&mut self, direction: Direction, limit: usize) {
-        match direction {
-            Direction::Forward => self.rows.sort_by_key(|row| row.row.realtime_usec),
-            Direction::Backward => self
-                .rows
-                .sort_by(|left, right| right.row.realtime_usec.cmp(&left.row.realtime_usec)),
-        }
-        make_row_timestamps_unique(&mut self.rows, direction);
-        if self.rows.len() > limit {
-            self.rows.truncate(limit);
-        }
+        sort_rows_by_raw_realtime(&mut self.rows, direction);
+        retain_boundary_group(&mut self.rows, direction, limit);
+        make_row_timestamps_unique_same_file(&mut self.rows, direction);
         self.stats.rows_returned = self.rows.len() as u64;
     }
 
@@ -3178,13 +3122,55 @@ fn split_payload(payload: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((&payload[..split], &payload[split + 1..]))
 }
 
-fn make_row_timestamps_unique(rows: &mut [LocatedRow], direction: Direction) {
+fn sort_rows_by_raw_realtime(rows: &mut [LocatedRow], direction: Direction) {
+    rows.sort_by(|left, right| {
+        let left_usec = left.row.realtime_usec;
+        let right_usec = right.row.realtime_usec;
+        let timestamp = match direction {
+            Direction::Forward => left_usec.cmp(&right_usec),
+            Direction::Backward => right_usec.cmp(&left_usec),
+        };
+        timestamp
+            .then_with(|| left.file_path.cmp(&right.file_path))
+            .then_with(|| left.row.cursor.cmp(&right.row.cursor))
+    });
+}
+
+fn retain_boundary_group(rows: &mut Vec<LocatedRow>, direction: Direction, limit: usize) {
+    if limit == 0 || rows.is_empty() {
+        if limit == 0 {
+            rows.clear();
+        }
+        return;
+    }
+    if rows.len() <= limit {
+        return;
+    }
+    let boundary_index = limit - 1;
+    let boundary_timestamp = rows[boundary_index].row.realtime_usec;
+    let keep_count = match direction {
+        Direction::Backward => rows
+            .iter()
+            .position(|row| row.row.realtime_usec < boundary_timestamp)
+            .unwrap_or(rows.len()),
+        Direction::Forward => rows
+            .iter()
+            .rposition(|row| row.row.realtime_usec <= boundary_timestamp)
+            .map(|index| index + 1)
+            .unwrap_or(0),
+    };
+    rows.truncate(keep_count);
+}
+
+fn make_row_timestamps_unique_same_file(rows: &mut [LocatedRow], direction: Direction) {
     let mut last_from = 0u64;
     let mut last_to = 0u64;
+    let mut last_file: Option<&std::path::Path> = None;
     let mut initialized = false;
-    for row in rows {
+    for row in rows.iter_mut() {
         let timestamp = row.row.realtime_usec;
-        if initialized && timestamp >= last_from && timestamp <= last_to {
+        let same_file = last_file == Some(row.file_path.as_path());
+        if initialized && same_file && timestamp >= last_from && timestamp <= last_to {
             match direction {
                 Direction::Backward => {
                     last_from = last_from.saturating_sub(1);
@@ -3195,11 +3181,12 @@ fn make_row_timestamps_unique(rows: &mut [LocatedRow], direction: Direction) {
                     row.row.realtime_usec = last_to;
                 }
             }
-        } else {
-            last_from = timestamp;
-            last_to = timestamp;
-            initialized = true;
+            continue;
         }
+        last_from = timestamp;
+        last_to = timestamp;
+        last_file = Some(row.file_path.as_path());
+        initialized = true;
     }
 }
 
@@ -5762,7 +5749,7 @@ mod tests {
             test_located_row(100),
             test_located_row(90),
         ];
-        make_row_timestamps_unique(&mut backward, Direction::Backward);
+        make_row_timestamps_unique_same_file(&mut backward, Direction::Backward);
         assert_eq!(
             backward
                 .iter()
@@ -5777,7 +5764,7 @@ mod tests {
             test_located_row(100),
             test_located_row(100),
         ];
-        make_row_timestamps_unique(&mut forward, Direction::Forward);
+        make_row_timestamps_unique_same_file(&mut forward, Direction::Forward);
         assert_eq!(
             forward
                 .iter()
@@ -5785,6 +5772,140 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![90, 100, 101, 102]
         );
+    }
+
+    #[test]
+    fn sort_and_limit_retains_full_raw_boundary_group_when_last_cuts_through_it() {
+        let mut rows = vec![
+            test_located_row_in_file("c.journal", 100, "c0"),
+            test_located_row_in_file("b.journal", 100, "b0"),
+            test_located_row_in_file("a.journal", 100, "a0"),
+        ];
+        rows.sort_by(|left, right| {
+            left.file_path
+                .cmp(&right.file_path)
+                .then_with(|| left.row.cursor.cmp(&right.row.cursor))
+        });
+        sort_rows_by_raw_realtime(&mut rows, Direction::Backward);
+        retain_boundary_group(&mut rows, Direction::Backward, 2);
+        make_row_timestamps_unique_same_file(&mut rows, Direction::Backward);
+
+        assert_eq!(rows.len(), 3);
+        let messages: Vec<&str> = rows
+            .iter()
+            .map(|row| row.file_path.to_str().unwrap())
+            .collect();
+        assert_eq!(messages, vec!["a.journal", "b.journal", "c.journal"]);
+    }
+
+    #[test]
+    fn sort_and_limit_retains_full_raw_boundary_group_for_forward_query() {
+        let mut rows = vec![
+            test_located_row_in_file("c.journal", 100, "c0"),
+            test_located_row_in_file("b.journal", 100, "b0"),
+            test_located_row_in_file("a.journal", 100, "a0"),
+        ];
+        rows.sort_by(|left, right| {
+            left.file_path
+                .cmp(&right.file_path)
+                .then_with(|| left.row.cursor.cmp(&right.row.cursor))
+        });
+        sort_rows_by_raw_realtime(&mut rows, Direction::Forward);
+        retain_boundary_group(&mut rows, Direction::Forward, 2);
+        make_row_timestamps_unique_same_file(&mut rows, Direction::Forward);
+
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn sort_and_limit_keeps_cross_file_equal_timestamps_for_anchor_continuity() {
+        let mut rows = vec![
+            test_located_row_in_file("c.journal", 100, "c0"),
+            test_located_row_in_file("b.journal", 100, "b0"),
+            test_located_row_in_file("a.journal", 100, "a0"),
+            test_located_row_in_file("d.journal", 90, "d0"),
+        ];
+        sort_rows_by_raw_realtime(&mut rows, Direction::Backward);
+        make_row_timestamps_unique_same_file(&mut rows, Direction::Backward);
+
+        let boundary_group: Vec<u64> = rows
+            .iter()
+            .filter(|row| row.row.realtime_usec == 100)
+            .map(|row| row.row.realtime_usec)
+            .collect();
+        assert_eq!(boundary_group.len(), 3);
+    }
+
+    #[test]
+    fn sort_and_limit_keeps_same_file_duplicate_display_adjustment() {
+        let mut rows = vec![
+            test_located_row_in_file("a.journal", 100, "a0"),
+            test_located_row_in_file("a.journal", 100, "a1"),
+            test_located_row_in_file("a.journal", 100, "a2"),
+            test_located_row_in_file("a.journal", 90, "a3"),
+        ];
+        sort_rows_by_raw_realtime(&mut rows, Direction::Backward);
+        make_row_timestamps_unique_same_file(&mut rows, Direction::Backward);
+
+        let same_file_timestamps: Vec<u64> = rows
+            .iter()
+            .filter(|row| row.file_path == Path::new("a.journal"))
+            .map(|row| row.row.realtime_usec)
+            .collect();
+        assert_eq!(same_file_timestamps, vec![100, 99, 98, 90]);
+    }
+
+    #[test]
+    fn backward_realtime_anchor_is_exclusive_for_non_data_only_requests() {
+        let config = NetdataFunctionConfig::systemd_journal();
+        let parsed = NetdataRequest::parse(
+            &json!({
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "anchor": 1_700_000_005_000_000u64,
+                "direction": "backward",
+                "last": 5
+            }),
+            &config,
+        )
+        .expect("parse non-data-only backward request");
+        let query = parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+
+        assert_eq!(query.before_realtime_usec, Some(1_700_000_004_999_999));
+        assert!(matches!(query.anchor, ExplorerAnchor::Auto));
+    }
+
+    #[test]
+    fn backward_realtime_anchor_remains_exclusive_for_data_only_requests() {
+        let config = NetdataFunctionConfig::systemd_journal();
+        let parsed = NetdataRequest::parse(
+            &json!({
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "anchor": 1_700_000_005_000_000u64,
+                "data_only": true,
+                "direction": "backward",
+                "last": 5
+            }),
+            &config,
+        )
+        .expect("parse data-only backward request");
+        let query = parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+
+        assert_eq!(query.before_realtime_usec, Some(1_700_000_004_999_999));
+        assert!(matches!(query.anchor, ExplorerAnchor::Auto));
+    }
+
+    #[test]
+    fn sort_and_limit_clears_rows_when_limit_is_zero() {
+        let mut rows = vec![
+            test_located_row_in_file("a.journal", 100, "a0"),
+            test_located_row_in_file("b.journal", 90, "b0"),
+        ];
+        sort_rows_by_raw_realtime(&mut rows, Direction::Backward);
+        retain_boundary_group(&mut rows, Direction::Backward, 0);
+
+        assert!(rows.is_empty());
     }
 
     #[test]
@@ -5978,6 +6099,35 @@ mod tests {
     }
 
     #[test]
+    fn netdata_function_boundary_expansion_does_not_report_more_rows() {
+        let dir = TempDir::new().expect("tempdir");
+        let boundary_realtime_usec = 1_700_000_000_000_000;
+        for name in ["a.journal", "b.journal", "c.journal"] {
+            write_named_netdata_test_journal(dir.path(), name, 1, boundary_realtime_usec);
+        }
+
+        for direction in [Direction::Backward, Direction::Forward] {
+            let response = run_netdata_contract_request(
+                dir.path(),
+                json!({
+                    "after": 1_700_000_000,
+                    "before": 1_700_000_001,
+                    "last": 2,
+                    "direction": direction_name(direction),
+                    "facets": ["PRIORITY"],
+                    "histogram": "PRIORITY"
+                }),
+            );
+            assert_eq!(response["status"], 200);
+            assert_eq!(response_column_u64s(&response, "timestamp").len(), 3);
+            assert_eq!(response["items"]["returned"], 3);
+            assert_eq!(response["items"]["max_to_return"], 2);
+            assert_eq!(response["items"]["after"], 0);
+            assert_eq!(response["items"]["before"], 0);
+        }
+    }
+
+    #[test]
     fn netdata_function_tail_polls_return_only_rows_after_anchor_then_304() {
         let dir = TempDir::new().expect("tempdir");
         let start_realtime_usec = 1_700_000_000_000_000;
@@ -6091,24 +6241,6 @@ mod tests {
         assert_eq!(items["matched"], 3);
         assert_eq!(items["returned"], 2);
         assert_eq!(items["after"], 2);
-    }
-
-    #[test]
-    fn realtime_adjuster_preserves_forward_state_across_file_boundaries() {
-        let mut adjuster = NetdataRealtimeAdjuster::new(Direction::Forward);
-
-        assert_eq!(adjuster.adjust(10), 10);
-        assert_eq!(adjuster.adjust(10), 11);
-        assert_eq!(adjuster.adjust(10), 12);
-    }
-
-    #[test]
-    fn realtime_adjuster_preserves_backward_state_across_file_boundaries() {
-        let mut adjuster = NetdataRealtimeAdjuster::new(Direction::Backward);
-
-        assert_eq!(adjuster.adjust(10), 10);
-        assert_eq!(adjuster.adjust(10), 9);
-        assert_eq!(adjuster.adjust(10), 8);
     }
 
     #[test]
@@ -6658,6 +6790,17 @@ mod tests {
             row: ExplorerRow {
                 realtime_usec,
                 cursor: String::new(),
+                payloads: Vec::new(),
+            },
+        }
+    }
+
+    fn test_located_row_in_file(file_path: &str, realtime_usec: u64, cursor: &str) -> LocatedRow {
+        LocatedRow {
+            file_path: PathBuf::from(file_path),
+            row: ExplorerRow {
+                realtime_usec,
+                cursor: cursor.to_string(),
                 payloads: Vec::new(),
             },
         }

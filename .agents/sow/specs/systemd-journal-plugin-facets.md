@@ -404,6 +404,73 @@ Duplicate visible timestamps are made unique inside one query:
 - backward scans decrement a duplicate timestamp (`systemd-journal-execute.h:173-179`);
 - forward scans increment a duplicate timestamp (`systemd-journal-execute.h:282-288`).
 
+## Query-Wide Anchor Contract (SDK Netdata Boundary)
+
+SOW-0124 (2026-06-25) records the SDK Netdata function paging contract that
+matches the Netdata UI one-anchor assumption
+(`netdata/cloud-frontend @ b0f9c41cfc36`):
+
+- `anchor` is a microsecond timestamp scalar across all selected journal files,
+  not a per-file offset. The UI stores one scalar `anchorAfter` /
+  `anchorBefore` for the whole merged table and sends one scalar `anchor` on
+  every load-more and tail poll. Consumers must treat it as an ordered scalar;
+  they must not infer a per-file cursor from it.
+- The current wire shape exposes the anchor through `pagination.column =
+  "timestamp"`. In the SDK this value is the Explorer row realtime, before the
+  final same-file duplicate display adjustment: journal commit realtime unless
+  an older `_SOURCE_REALTIME_TIMESTAMP` is present and selected as the effective
+  row time. There is no separate hidden internal cursor or opaque page token in
+  this contract.
+- Forward paging is strict: rows must satisfy `realtime_usec > anchor` to be
+  eligible for the next page.
+- Non-tail backward paging is exclusive for all row queries, including
+  `data_only = true` and `data_only = false`. The SDK converts a non-tail
+  backward realtime anchor into an exclusive upper bound
+  (`anchor - 1` microsecond) before Explorer range filtering, then clears
+  the Explorer anchor slot. This prevents page 2 from re-fetching the
+  boundary group that page 1 already returned.
+- Tail paging is exclusive on the next microsecond (`anchor + 1`).
+- When a page boundary lands inside an equal scalar-timestamp group across
+  files, the SDK retains the full boundary group from the merged per-file
+  batches even though that may return more than the requested `last`. Returning
+  more rows in that case is preferred over making the scalar anchor skip rows
+  that share the boundary value, because the current wire contract cannot
+  represent a compound cursor.
+- The SDK sorts combined per-file rows by pre-deduplication
+  `row.realtime_usec` / `Row.RealtimeUsec` in the requested direction, with
+  deterministic tie-breakers by file path and cursor. The combined retention
+  uses the pre-deduplication timestamp at the `limit - 1` index as the
+  boundary. Backward pages retain every row whose timestamp is greater than or
+  equal to the boundary. Forward pages retain every row whose timestamp is less
+  than or equal to the boundary. Any same-file duplicate timestamp adjustment
+  runs only after that boundary retention, so the cross-file boundary group
+  stays intact.
+- Duplicate scalar timestamps across different journal files are preserved as
+  equal in the response. Cross-file equal timestamps are the anchor collisions
+  the scalar query-wide anchor must represent. Same-file duplicate timestamps
+  still receive the existing direction-specific increment/decrement display
+  adjustment as a small compatibility tweak inside one file only.
+- `items.after` / `items.before` semantics continue to indicate whether more
+  rows are available; a page that returns more than `last` rows because of
+  boundary-group retention must still report the correct remaining count
+  rather than a false "no more rows" signal.
+- The implementation keeps per-file batched retrieval and a global merge.
+  It does not switch to row-by-row k-way multi-file traversal. The user
+  measured row-by-row k-way multi-file traversal as significantly slower
+  than per-file batched query plus merge for many large sources, and the
+  per-file batched shape remains the SDK performance contract.
+- The implementation does not introduce a new request key or response
+  cursor token. The existing scalar `anchor` request shape and the existing
+  response columns remain the wire contract.
+
+The plugin's same-file duplicate display adjustment
+(`systemd-journal-execute.h:173-179`,
+`systemd-journal-execute.h:282-288`) is still preserved as a small cosmetic
+display tweak when the boundary group is fully retained. The change is only
+that the SDK no longer mutates row timestamps before range/anchor filtering,
+no longer mutates duplicate timestamps across files, and no longer relies on
+per-file exclusive anchor semantics for non-tail backward queries.
+
 ## File Selection And Traversal Order
 
 The plugin queries one journal file at a time. It never opens a multi-file

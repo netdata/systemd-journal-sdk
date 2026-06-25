@@ -550,7 +550,7 @@ func (r netdataRequest) matchesSource(path string, metadata *NetdataJournalFileM
 func (r netdataRequest) toExplorerQuery(matchedFiles uint64, header *journalHeader, realtimeSlackUsec uint64) ExplorerQuery {
 	analysisEnabled := !r.DataOnly || r.Delta
 	tailAnchor := r.Tail && r.Anchor.Kind == ExplorerAnchorRealtime
-	backwardPageAnchor := r.DataOnly && !tailAnchor && r.Direction == DirectionBackward && r.Anchor.Kind == ExplorerAnchorRealtime
+	backwardPageAnchor := !tailAnchor && r.Direction == DirectionBackward && r.Anchor.Kind == ExplorerAnchorRealtime
 	query := DefaultExplorerQuery()
 	r.applyExplorerBounds(&query, tailAnchor, backwardPageAnchor)
 	query.Direction = r.Direction
@@ -812,6 +812,7 @@ func (w *netdataPageWindow) observe(realtimeUsec uint64) {
 		w.addRetainedBound(realtimeUsec)
 		return
 	}
+	shifted := false
 	switch w.Direction {
 	case DirectionBackward:
 		oldest := w.Retained.Peek()
@@ -821,6 +822,7 @@ func (w *netdataPageWindow) observe(realtimeUsec uint64) {
 		}
 		heap.Pop(&w.Retained)
 		heap.Push(&w.Retained, realtimeUsec)
+		shifted = realtimeUsec > oldest
 	case DirectionForward:
 		newest := w.Retained.Peek()
 		if realtimeUsec > newest {
@@ -829,9 +831,12 @@ func (w *netdataPageWindow) observe(realtimeUsec uint64) {
 		}
 		heap.Pop(&w.Retained)
 		heap.Push(&w.Retained, realtimeUsec)
+		shifted = realtimeUsec < newest
 	}
 	w.refreshRetainedBounds()
-	w.Shifts++
+	if shifted {
+		w.Shifts++
+	}
 }
 
 func (w *netdataPageWindow) addRetainedBound(realtimeUsec uint64) {
@@ -933,44 +938,12 @@ func (w *netdataPageWindow) canStopDeltaFile(realtimeUsec, slackUsec uint64) boo
 	}
 }
 
-type netdataRealtimeAdjuster struct {
-	Direction        Direction
-	LastRealtimeFrom uint64
-	LastRealtimeTo   uint64
-}
-
-func newNetdataRealtimeAdjuster(direction Direction) *netdataRealtimeAdjuster {
-	return &netdataRealtimeAdjuster{Direction: direction}
-}
-
-func (a *netdataRealtimeAdjuster) adjust(realtimeUsec uint64) uint64 {
-	if a.LastRealtimeFrom == 0 && a.LastRealtimeTo == 0 {
-		a.LastRealtimeFrom = realtimeUsec
-		a.LastRealtimeTo = realtimeUsec
-		return realtimeUsec
-	}
-	if realtimeUsec >= a.LastRealtimeFrom && realtimeUsec <= a.LastRealtimeTo {
-		switch a.Direction {
-		case DirectionBackward:
-			a.LastRealtimeFrom = saturatingSub(a.LastRealtimeFrom, 1)
-			return a.LastRealtimeFrom
-		default:
-			a.LastRealtimeTo = saturatingAdd(a.LastRealtimeTo, 1)
-			return a.LastRealtimeTo
-		}
-	}
-	a.LastRealtimeFrom = realtimeUsec
-	a.LastRealtimeTo = realtimeUsec
-	return realtimeUsec
-}
-
 func (f NetdataJournalFunction) exploreFiles(files []netdataSelectedJournalFile, request netdataRequest, deadline *time.Time, options NetdataFunctionRunOptions) (netdataCombinedResult, error) {
 	query := request.toExplorerQuery(uint64(len(files)), nil, netdataJournalRealtimeDeltaDefault)
 	combined := newNetdataCombinedResult()
 	pageWindow := newNetdataPageWindow(request)
 	combined.SamplingEnabled = query.Sampling != nil
 	samplingState := newExplorerSamplingState(query, histogramBucketCountForNetdataQuery(query))
-	realtimeAdjuster := newNetdataRealtimeAdjuster(request.Direction)
 	started := time.Now()
 	totalFiles := len(files)
 
@@ -978,7 +951,7 @@ func (f NetdataJournalFunction) exploreFiles(files []netdataSelectedJournalFile,
 		if shouldStopBeforeFile(&combined, deadline, options) {
 			break
 		}
-		stop, err := f.exploreSelectedFile(file, index, totalFiles, started, request, deadline, options, pageWindow, samplingState, realtimeAdjuster, &combined)
+		stop, err := f.exploreSelectedFile(file, index, totalFiles, started, request, deadline, options, pageWindow, samplingState, &combined)
 		if err != nil {
 			return combined, err
 		}
@@ -992,14 +965,14 @@ func (f NetdataJournalFunction) exploreFiles(files []netdataSelectedJournalFile,
 	return combined, nil
 }
 
-func (f NetdataJournalFunction) exploreSelectedFile(file netdataSelectedJournalFile, index, totalFiles int, started time.Time, request netdataRequest, deadline *time.Time, options NetdataFunctionRunOptions, pageWindow *netdataPageWindow, samplingState *explorerSamplingState, realtimeAdjuster *netdataRealtimeAdjuster, combined *netdataCombinedResult) (bool, error) {
+func (f NetdataJournalFunction) exploreSelectedFile(file netdataSelectedJournalFile, index, totalFiles int, started time.Time, request netdataRequest, deadline *time.Time, options NetdataFunctionRunOptions, pageWindow *netdataPageWindow, samplingState *explorerSamplingState, combined *netdataCombinedResult) (bool, error) {
 	progress := netdataProgressContext{CurrentFile: index + 1, TotalFiles: totalFiles, Started: started}
 	reader, ok := f.openExplorerFile(file.Path, request, options, progress, combined)
 	if !ok {
 		return false, nil
 	}
 	fileQuery := request.fileQuery(totalFiles, reader.Header(), file.Order)
-	control := configureNetdataExplorerControl(request, file.Order, deadline, options, progress, pageWindow, samplingState, realtimeAdjuster, combined)
+	control := configureNetdataExplorerControl(request, file.Order, deadline, options, progress, pageWindow, samplingState, combined)
 	result, err := reader.exploreCursorRows(fileQuery, f.Config.ExplorerStrategy, control)
 	stopReason := control.StopReason()
 	closeErr := reader.Close()
@@ -1045,7 +1018,7 @@ func (f NetdataJournalFunction) addExplorerColumnFields(path string, request net
 	combined.addColumnFields(fields)
 }
 
-func configureNetdataExplorerControl(request netdataRequest, order netdataJournalFileOrderInfo, deadline *time.Time, options NetdataFunctionRunOptions, progress netdataProgressContext, pageWindow *netdataPageWindow, samplingState *explorerSamplingState, realtimeAdjuster *netdataRealtimeAdjuster, combined *netdataCombinedResult) *ExplorerControl {
+func configureNetdataExplorerControl(request netdataRequest, order netdataJournalFileOrderInfo, deadline *time.Time, options NetdataFunctionRunOptions, progress netdataProgressContext, pageWindow *netdataPageWindow, samplingState *explorerSamplingState, combined *netdataCombinedResult) *ExplorerControl {
 	control := NewExplorerControl()
 	control.SetDeadline(deadline)
 	control.SetCancellationCallback(options.CancellationCallback)
@@ -1056,9 +1029,6 @@ func configureNetdataExplorerControl(request netdataRequest, order netdataJourna
 	control.setSamplingState(samplingState)
 	control.setCandidateRowCallback(func(realtimeUsec uint64) bool {
 		return pageWindow.candidateToKeep(realtimeUsec)
-	})
-	control.setRealtimeAdjustCallback(func(realtimeUsec uint64) uint64 {
-		return realtimeAdjuster.adjust(realtimeUsec)
 	})
 	realtimeDelta := order.JournalVsRealtimeDeltaUsec
 	control.SetMatchedRowCallback(func(realtimeUsec, rowsMatched uint64) bool {
@@ -1133,16 +1103,9 @@ func (c *netdataCombinedResult) addColumnFields(fields map[string]struct{}) {
 }
 
 func (c *netdataCombinedResult) sortAndLimit(direction Direction, limit int) {
-	switch direction {
-	case DirectionForward:
-		sort.Slice(c.Rows, func(i, j int) bool { return c.Rows[i].Row.RealtimeUsec < c.Rows[j].Row.RealtimeUsec })
-	default:
-		sort.Slice(c.Rows, func(i, j int) bool { return c.Rows[i].Row.RealtimeUsec > c.Rows[j].Row.RealtimeUsec })
-	}
-	makeRowTimestampsUnique(c.Rows, direction)
-	if limit >= 0 && len(c.Rows) > limit {
-		c.Rows = c.Rows[:limit]
-	}
+	sortRowsByRawRealtime(c.Rows, direction)
+	retainBoundaryGroup(&c.Rows, direction, limit)
+	makeRowTimestampsUniqueSameFile(c.Rows, direction)
 	c.Stats.RowsReturned = uint64(len(c.Rows))
 }
 
@@ -2705,25 +2668,93 @@ func dynamicProcessName(fields map[string][][]byte) string {
 	return fmt.Sprintf("%s[-]", base)
 }
 
-func makeRowTimestampsUnique(rows []netdataLocatedRow, direction Direction) {
+func sortRowsByRawRealtime(rows []netdataLocatedRow, direction Direction) {
+	sort.Slice(rows, func(i, j int) bool {
+		left := rows[i]
+		right := rows[j]
+		var byTimestamp int
+		if direction == DirectionForward {
+			byTimestamp = compareUint64(left.Row.RealtimeUsec, right.Row.RealtimeUsec)
+		} else {
+			byTimestamp = compareUint64(right.Row.RealtimeUsec, left.Row.RealtimeUsec)
+		}
+		if byTimestamp != 0 {
+			return byTimestamp < 0
+		}
+		if left.FilePath != right.FilePath {
+			return left.FilePath < right.FilePath
+		}
+		return left.Row.Cursor < right.Row.Cursor
+	})
+}
+
+func compareUint64(left, right uint64) int {
+	switch {
+	case left < right:
+		return -1
+	case left > right:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func retainBoundaryGroup(rows *[]netdataLocatedRow, direction Direction, limit int) {
+	if limit <= 0 {
+		*rows = (*rows)[:0]
+		return
+	}
+	if len(*rows) <= limit {
+		return
+	}
+	boundaryIndex := limit - 1
+	boundary := (*rows)[boundaryIndex].Row.RealtimeUsec
+	keep := len(*rows)
+	switch direction {
+	case DirectionBackward:
+		for index, row := range *rows {
+			if row.Row.RealtimeUsec < boundary {
+				keep = index
+				break
+			}
+		}
+	case DirectionForward:
+		for index := len(*rows) - 1; index >= 0; index-- {
+			if (*rows)[index].Row.RealtimeUsec <= boundary {
+				keep = index + 1
+				break
+			}
+			if index == 0 {
+				keep = 0
+			}
+		}
+	}
+	*rows = (*rows)[:keep]
+}
+
+func makeRowTimestampsUniqueSameFile(rows []netdataLocatedRow, direction Direction) {
 	var lastFrom uint64
 	var lastTo uint64
+	var lastFile string
 	initialized := false
 	for i := range rows {
-		timestamp := rows[i].Row.RealtimeUsec
-		if initialized && timestamp >= lastFrom && timestamp <= lastTo {
+		row := &rows[i]
+		timestamp := row.Row.RealtimeUsec
+		sameFile := initialized && row.FilePath == lastFile
+		if sameFile && timestamp >= lastFrom && timestamp <= lastTo {
 			switch direction {
 			case DirectionBackward:
 				lastFrom = saturatingSub(lastFrom, 1)
-				rows[i].Row.RealtimeUsec = lastFrom
+				row.Row.RealtimeUsec = lastFrom
 			default:
 				lastTo = saturatingAdd(lastTo, 1)
-				rows[i].Row.RealtimeUsec = lastTo
+				row.Row.RealtimeUsec = lastTo
 			}
 			continue
 		}
 		lastFrom = timestamp
 		lastTo = timestamp
+		lastFile = row.FilePath
 		initialized = true
 	}
 }
