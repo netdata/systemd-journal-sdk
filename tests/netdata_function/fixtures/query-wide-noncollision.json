@@ -1,0 +1,43 @@
+{
+  "description": "Three files, one row per file, with distinct non-continuous internal realtime timestamps. This is the positive-control case for ordered scalar query-wide anchors across multiple sources without an anchor collision.",
+  "expected_messages": [
+    "source-a",
+    "source-b",
+    "source-c"
+  ],
+  "files": [
+    {
+      "machine_dir": "aaaaaaaa-1111-2222-3333-444444444451",
+      "machine_id": "aaaaaaaa111122223333444444444451",
+      "boot_id": "bbbbbbbb111122223333444444444454",
+      "seqnum_id": "00000000000000000000000000000011",
+      "file_id": "0000000000000000000000000000006f",
+      "journal_file": "system.journal",
+      "message": "source-a",
+      "realtime_usec": 1700000000000000,
+      "monotonic_usec": 1
+    },
+    {
+      "machine_dir": "aaaaaaaa-1111-2222-3333-444444444452",
+      "machine_id": "aaaaaaaa111122223333444444444452",
+      "boot_id": "bbbbbbbb111122223333444444444454",
+      "seqnum_id": "00000000000000000000000000000012",
+      "file_id": "00000000000000000000000000000070",
+      "journal_file": "system.journal",
+      "message": "source-b",
+      "realtime_usec": 1700000000000100,
+      "monotonic_usec": 2
+    },
+    {
+      "machine_dir": "aaaaaaaa-1111-2222-3333-444444444453",
+      "machine_id": "aaaaaaaa111122223333444444444453",
+      "boot_id": "bbbbbbbb111122223333444444444454",
+      "seqnum_id": "00000000000000000000000000000013",
+      "file_id": "00000000000000000000000000000071",
+      "journal_file": "system.journal",
+      "message": "source-c",
+      "realtime_usec": 1700000000001000,
+      "monotonic_usec": 3
+    }
+  ]
+}

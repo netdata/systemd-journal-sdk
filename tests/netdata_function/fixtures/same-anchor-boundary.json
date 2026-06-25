@@ -1,0 +1,41 @@
+{
+  "description": "Three files, one row per file, all sharing the same internal realtime timestamp. A page size of two cuts through the query-wide same-anchor group.",
+  "realtime_usec": 1700000000000000,
+  "expected_messages": [
+    "source-a",
+    "source-b",
+    "source-c"
+  ],
+  "files": [
+    {
+      "machine_dir": "aaaaaaaa-1111-2222-3333-444444444441",
+      "machine_id": "aaaaaaaa111122223333444444444441",
+      "boot_id": "bbbbbbbb111122223333444444444444",
+      "seqnum_id": "00000000000000000000000000000001",
+      "file_id": "00000000000000000000000000000065",
+      "journal_file": "system.journal",
+      "message": "source-a",
+      "monotonic_usec": 1
+    },
+    {
+      "machine_dir": "aaaaaaaa-1111-2222-3333-444444444442",
+      "machine_id": "aaaaaaaa111122223333444444444442",
+      "boot_id": "bbbbbbbb111122223333444444444444",
+      "seqnum_id": "00000000000000000000000000000002",
+      "file_id": "00000000000000000000000000000066",
+      "journal_file": "system.journal",
+      "message": "source-b",
+      "monotonic_usec": 2
+    },
+    {
+      "machine_dir": "aaaaaaaa-1111-2222-3333-444444444443",
+      "machine_id": "aaaaaaaa111122223333444444444443",
+      "boot_id": "bbbbbbbb111122223333444444444444",
+      "seqnum_id": "00000000000000000000000000000003",
+      "file_id": "00000000000000000000000000000067",
+      "journal_file": "system.journal",
+      "message": "source-c",
+      "monotonic_usec": 3
+    }
+  ]
+}

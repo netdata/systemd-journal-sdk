@@ -1,0 +1,12 @@
+{
+  "after": 1700000000,
+  "before": 1700000001,
+  "anchor": 1700000000000000,
+  "last": 2,
+  "direction": "backward",
+  "data_only": true,
+  "facets": [
+    "PRIORITY"
+  ],
+  "histogram": "PRIORITY"
+}

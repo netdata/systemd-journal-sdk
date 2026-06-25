@@ -151,6 +151,44 @@ anchors from response rows. The committed sequence suite covers:
 The stateful harness uses `after=1` as its default lower bound. In Netdata
 request semantics, `after=0` is a relative UI window, not the Unix epoch.
 
+`run_anchor_regression.py` covers multi-source anchor behavior with committed
+fixture specs and request JSONs. It generates synthetic journal directories
+from `tests/netdata_function/fixtures/*.json`, runs each peer binary with the
+plugin-compatible `--test systemd-journal --dir ...` shape, and validates
+query-wide page collection instead of comparing peers to each other.
+
+The anchor regression suite currently includes two scenarios:
+
+- `query-wide-noncollision`: three sources with distinct non-continuous
+  internal realtime timestamps. This is the positive-control case; page 1 plus
+  page 2 must collect all expected messages without duplicates.
+- `same-anchor-boundary`: three sources with the same internal realtime
+  timestamp and a page size of two. A correct scalar-anchor implementation must
+  not split that query-wide boundary group in a way that makes any row
+  unreachable. Returning more than the requested page size is acceptable for
+  this boundary case.
+
+The runner also validates the ordered-scalar anchor invariant. A page may skip
+timestamp values, but rows in each page must be ordered, the next page must be
+strictly outside the previous scalar anchor, and the next page's own edge anchor
+must move in the requested direction when that page has rows.
+
+Example:
+
+```bash
+python3 tests/netdata_function/run_anchor_regression.py \
+  --peer plugin=/usr/libexec/netdata/plugins.d/systemd-journal.plugin \
+  --peer rust=rust/target/debug/netdata_function_wrapper \
+  --peer go=.local/sow-0124/bin/go-netdata_function_wrapper \
+  --scenario query-wide-noncollision \
+  --out .local/sow-0124/query-wide-noncollision-report.json
+```
+
+The installed Netdata `systemd-journal.plugin` is useful as current-behavior
+evidence, but it is not a correctness oracle for the `same-anchor-boundary`
+scenario; current plugin behavior also loses rows there. Use `--allow-fail
+plugin` when documenting that known plugin gap while validating SDK fixes.
+
 The stateful gate freezes a fresh-data synthetic fixture so an optional
 extra peer is not divergent because of live tail movement. The runner
 exposes `--make-static-fixture <dir>` which

@@ -1,10 +1,16 @@
 # SOW Status
 
-Last updated: 2026-06-24
+Last updated: 2026-06-25
 
 ## Current
 
-- None.
+- SOW-0124 - Netdata Query-Wide Anchor Regression: in-progress. Test-first
+  reproduction is active for the regression between the Netdata UI's single
+  ordered query-level anchor contract and the SDK Netdata wrappers' current
+  per-file anchor application plus after-the-fact timestamp merge. The first
+  chunk adds shared external fixture/query tests for multi-file
+  same-internal-anchor boundary loss and ordered-scalar non-overlap before
+  production logic changes.
 
 ## Pending
 
@@ -35,6 +41,10 @@ Last updated: 2026-06-24
   event-time-ordered journals. Project-manager diagnosis and implementation
   plan are complete; glm, minimax, kimi, mimo, deepseek, and qwen returned
   ready-to-implement verification. Rust/Go implementation remains pending.
+- SOW-0125 - Netdata Filter Operators Gap Analysis: open, parked by user
+  decision on 2026-06-25. Preserves the requested string/numeric operator
+  support matrix, current exact-positive filter gap analysis, and open semantic
+  decisions. Not executable until the user explicitly resumes it.
 ## Recently Closed Or Completed
 
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed
