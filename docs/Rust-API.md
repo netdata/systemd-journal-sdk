@@ -8,7 +8,7 @@ The normal Rust dependency is the public SDK package:
 <!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.7.5" }
+journal = { package = "systemd-journal-sdk", version = "0.7.6" }
 ```
 
 Use the lower-level packages only when the public package does not expose the
@@ -18,8 +18,8 @@ type you need. For example, structured directory writes currently use
 <!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.7.5" }
-journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.7.5" }
+journal = { package = "systemd-journal-sdk", version = "0.7.6" }
+journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.7.6" }
 ```
 
 Callers that intentionally want local-host identity can also depend on
@@ -30,7 +30,7 @@ the writer explicitly.
 <!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
-journal_host = { package = "systemd-journal-sdk-host", version = "0.7.5" }
+journal_host = { package = "systemd-journal-sdk-host", version = "0.7.6" }
 ```
 
 ## Read One File

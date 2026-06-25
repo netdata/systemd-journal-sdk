@@ -4,7 +4,12 @@ Last updated: 2026-06-25
 
 ## Current
 
-- None.
+- SOW-0126 - v0.7.6 Release: in-progress. Releases the pushed SOW-0124
+  Netdata query-wide anchor regression fix as the next patch SDK version.
+  `v0.7.5` and `go/v0.7.5` already exist and peel to `d338e13`; the current
+  release target is `0.7.6`, with Rust package metadata, public install
+  snippets, Rust crates.io publication, root tag, and Go submodule tag aligned
+  on one release commit.
 
 ## Pending
 
