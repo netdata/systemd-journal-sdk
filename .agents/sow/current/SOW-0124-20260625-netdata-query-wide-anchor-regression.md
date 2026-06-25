@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: test-first regression reproduction complete for the current chunk; shared external fixture/query tests prove the same-anchor boundary loss while production logic remains intentionally unchanged.
+Sub-state: surgical SDK repair analysis under reviewer verification; shared external fixture/query tests prove the same-anchor boundary loss while production logic remains intentionally unchanged.
 
 ## Requirements
 
@@ -209,6 +209,248 @@ Open decisions:
 4. Implement Rust first using per-file batched retrieval plus internal-anchor global merge.
 5. Port the same behavior and tests to Go.
 6. Run local validation and reviewer gate.
+
+## Surgical SDK Repair Analysis - 2026-06-25
+
+### Diagnosis
+
+Facts:
+
+- Rust and Go Netdata wrappers install a realtime-adjust callback before
+  Explorer range filtering:
+  - Rust: `rust/src/journal/src/netdata.rs:591-593`.
+  - Go: `go/journal/netdata.go:1048` configures the same callback path.
+- Explorer applies that adjusted timestamp before checking request time bounds:
+  - Rust: `rust/src/journal/src/explorer.rs:1608-1614`.
+  - Go: `go/journal/explorer.go:2122-2128`.
+- The combined Netdata result then sorts rows, makes duplicate timestamps
+  unique, and truncates to `last`:
+  - Rust: `rust/src/journal/src/netdata.rs:2187-2198`.
+  - Go: `go/journal/netdata.go:1135-1147`.
+- Same-timestamp rows can be valid across files. The user clarified that
+  journald increments the internal timestamp inside one file, but collisions can
+  happen across files and therefore must be handled at the query level.
+- Remaining-file pruning already keeps equality conservative:
+  - Rust backward pruning stops only when the next file's last timestamp is
+    strictly lower than the retained boundary after slack:
+    `rust/src/journal/src/netdata.rs:2993-2999`.
+  - Go mirrors this:
+    `go/journal/netdata.go:2315-2324`.
+
+Root-cause model:
+
+- The early realtime-adjust callback turns equal timestamps into unique values
+  before `timestamp_in_range()` and `row_within_anchor()` run. In the synthetic
+  boundary fixture, rows after the first can be shifted below the lower bound
+  and are rejected before the merge can see the full query-wide boundary group.
+- The final `sort_and_limit()` path also mutates duplicate timestamps before
+  truncating. If multiple files share the boundary timestamp, truncating after
+  mutation can split a query-wide same-anchor group and make later rows
+  unreachable through the scalar anchor.
+
+### Recommended Surgical Plan
+
+Classification: surgical.
+
+This plan intentionally avoids a request/response schema change, compound
+cursor token, core reader rewrite, or row-by-row k-way traversal.
+
+1. Stop using the Netdata realtime-adjust callback for row selection.
+   - Rust: remove `NetdataRealtimeAdjuster` from `explore_selected_files()` /
+     `explore_single_file()` control setup.
+   - Go: remove `netdataRealtimeAdjuster` from `exploreSelectedFiles()` /
+     `configureNetdataExplorerControl()`.
+   - Reason: display-time de-duplication must not run before time-window and
+     anchor predicates.
+2. Make backward realtime-anchor paging exclusive for every non-tail row query,
+   not only `data_only` queries.
+   - Rust: in `NetdataRequest::to_explorer_query()`, treat any non-tail
+     backward realtime anchor as an exclusive upper bound by applying
+     `before_realtime_bound_excluding_anchor()` and clearing `query.anchor` to
+     `ExplorerAnchor::Auto`.
+   - Go: mirror the same rule in `netdataRequest.applyExplorerBounds()`.
+   - Reason: after page 1 returns the complete boundary group at timestamp `T`,
+     page 2 with `anchor=T` must not re-fetch `T` in non-`data_only`
+     backward queries. Forward paging is already strict (`> anchor`) and tail
+     already uses `anchor + 1`.
+   - Keep `NetdataPageWindow` strict-anchor accounting aligned; its backward
+     `anchor_start_usec` path already rejects `realtime_usec >= anchor`.
+3. Change combined row retention to truncate by raw pre-display timestamp
+   boundary, not by mutated display timestamp.
+   - Sort rows by raw `row.realtime_usec` / `Row.RealtimeUsec` in the requested
+     direction, with deterministic tie-breakers by file path and cursor for
+     stable cross-language output.
+   - If `rows.len() > limit`, compute the raw boundary timestamp at
+     `limit - 1`.
+   - Backward pages retain all rows with raw timestamp greater than or equal to
+     that boundary; forward pages retain all rows with raw timestamp less than
+     or equal to that boundary.
+   - This allows returning more than `last` only when required to include the
+     query-wide boundary group.
+   - Guard `limit == 0` in Rust and `limit < 0` / `limit == 0` in Go before
+     computing `limit - 1`.
+4. Preserve duplicate timestamp equality across files.
+   - Replace the current unconditional `make_row_timestamps_unique()` call with
+     a scoped variant that adjusts duplicate timestamps only inside a
+     same-file duplicate run.
+   - Do not adjust equal timestamps across different files; those are the exact
+     internal timestamp collisions the scalar query-wide anchor must represent.
+   - This preserves the existing single-file duplicate-display behavior as much
+     as possible while making cross-file anchors ordered and non-overlapping.
+5. Keep per-file batched retrieval and conservative file pruning.
+   - Do not change Explorer index/filter/facet logic.
+   - Do not change directory reader ordering.
+   - Do not change `remaining_files_cannot_affect_data_page()` equality
+     behavior; equality must continue to force reading the next file.
+6. Keep the existing scalar `anchor` API.
+   - No new request key.
+   - No new response cursor/token.
+   - No public SDK API surface should change; this is an internal Netdata
+     wrapper behavior fix.
+7. Test Rust and Go with the shared external runner.
+   - `query-wide-noncollision` must keep passing.
+   - `same-anchor-boundary` must pass for Rust and Go.
+   - Add and pass a non-`data_only` backward same-anchor boundary scenario.
+   - Add and pass a forward same-anchor boundary scenario.
+   - The installed plugin may remain an allowed failure for
+     `same-anchor-boundary` because it is not being fixed in this SOW.
+
+### Expected Code Touch Points
+
+- Rust:
+  - `rust/src/journal/src/netdata.rs`
+    - remove early Netdata realtime adjuster wiring;
+    - make non-tail backward realtime anchors exclusive for both `data_only`
+      and non-`data_only` query rows;
+    - update `CombinedResult::merge()` / `sort_and_limit()`;
+    - update or replace `make_row_timestamps_unique()`;
+    - update focused unit tests near existing Netdata pagination and duplicate
+      timestamp tests.
+- Go:
+  - `go/journal/netdata.go`
+    - mirror the Rust wrapper changes;
+    - make non-tail backward realtime anchors exclusive for both `data_only`
+      and non-`data_only` query rows;
+    - update `netdataCombinedResult.merge()` / `sortAndLimit()`;
+    - update or replace `makeRowTimestampsUnique()`.
+  - `go/journal/netdata_test.go`
+    - mirror focused Rust test coverage.
+- Shared tests:
+  - `tests/netdata_function/run_anchor_regression.py` should be the acceptance
+    gate for the multi-source query behavior.
+
+### Risk Controls
+
+- API risk: low. The plan keeps the existing scalar `anchor` request shape and
+  the existing response columns.
+- Performance risk: low. Per-file batched retrieval is preserved; the only
+  extra work is retaining all rows at the final boundary timestamp already
+  returned by per-file batches.
+- Compatibility risk: medium-low. Cross-file equal timestamps will remain equal
+  instead of being display-adjusted. This is intentional for the query-wide
+  anchor contract, but reviewer verification should check source-realtime
+  duplicate edge cases.
+- Visible timestamp behavior changes for cross-file equal timestamps: those
+  rows intentionally remain equal in the output because the timestamp column is
+  the scalar anchor surface. Same-file duplicate display adjustment remains
+  scoped where applicable.
+- Regression risk to single-file duplicate display behavior: bounded by the
+  scoped same-file duplicate adjustment and existing duplicate timestamp unit
+  tests.
+- Security risk: low. The change does not add input parsing, subprocesses,
+  host probing, or new file access.
+
+### Validation Plan For Implementation
+
+- Rust focused tests for:
+  - combined sort/limit includes the whole raw boundary group;
+  - cross-file duplicate timestamps are not adjusted;
+  - same-file duplicate timestamps still follow the existing direction-specific
+    adjustment behavior where applicable.
+  - non-tail backward realtime anchors are converted to an exclusive upper
+    bound for both `data_only` and non-`data_only` requests.
+- Go focused tests mirroring Rust.
+- Shared external runner:
+  - Rust and Go pass `query-wide-noncollision`.
+  - Rust and Go pass `same-anchor-boundary`.
+  - Rust and Go pass non-`data_only` backward same-anchor boundary.
+  - Rust and Go pass forward same-anchor boundary.
+  - Plugin is only used as current-behavior evidence and may be `--allow-fail`
+    on `same-anchor-boundary`.
+- Validate `items.after` / `items.before` on at least one non-`data_only`
+  boundary-group scenario so variable returned row counts do not produce a
+  false "no more rows" signal.
+- Existing Netdata helper tests:
+  - `python3 -m unittest tests.netdata_function.test_anchor_regression`
+  - `python3 -m unittest tests.netdata_function.test_stateful_function_compare tests.netdata_function.test_compare_function_json`
+- Focused Rust/Go Netdata test suites.
+- Full `cargo test` / `go test ./...` if focused implementation touches only
+  these files cleanly; record any inability to run full suites.
+- `git diff --check`, SOW audit, and sensitive-data/name scan before closing.
+
+### Reviewer Gate - Plan Verification
+
+Round 1 read-only verification:
+
+- glm: `READY TO IMPLEMENT: NO`.
+  - Blocking finding: the plan fixed `data_only` backward anchors but left a
+    reachable non-`data_only` backward anchor path using inclusive
+    `row_within_anchor <= anchor`, so returning a whole boundary group on page 1
+    could duplicate that group on page 2.
+- qwen: `READY TO IMPLEMENT: NO`.
+  - Same blocking finding: backward `row_within_anchor()` must be made
+    exclusive through the Netdata request-to-query path, and forward
+    same-anchor coverage should be added.
+- deepseek: `READY TO IMPLEMENT: YES`.
+  - Non-blocking notes: guard limit edge cases, keep deterministic tie-breakers,
+    and validate `items.after` / `items.before`.
+- kimi: `READY TO IMPLEMENT: YES`.
+  - Confirmed diagnosis and same-file scoped uniqueness feasibility.
+- mimo: `READY TO IMPLEMENT: YES`.
+  - Confirmed page-window exclusive accounting does not need changes.
+- minimax: no valid vote; the run timed out after 30 minutes. The partial
+  transcript contained analysis consistent with the diagnosis and an apparent
+  `READY TO IMPLEMENT: YES`, but the timed-out run is not counted as a
+  completed vote.
+
+Disposition:
+
+- The plan now explicitly extends backward realtime-anchor exclusion to all
+  non-tail backward row queries, not only `data_only`.
+- The validation plan now includes non-`data_only` backward same-anchor and
+  forward same-anchor shared scenarios.
+- A second reviewer round must use the same whole scope plus these fix notes
+  before implementation starts.
+
+Round 2 read-only verification after plan update:
+
+- glm: `READY TO IMPLEMENT: YES`.
+- minimax: `READY TO IMPLEMENT: YES`.
+- kimi: `READY TO IMPLEMENT: YES`.
+- mimo: `READY TO IMPLEMENT: YES`.
+- deepseek: `READY TO IMPLEMENT: YES`.
+- qwen: `READY TO IMPLEMENT: YES`.
+
+Round 2 non-blocking implementation notes:
+
+- Raw-boundary retention must run before any display-time timestamp mutation.
+- Rust and Go must use matching deterministic tie-breakers for equal raw
+  timestamps, including file path and cursor.
+- Implementation must guard `limit == 0` in Rust and `limit <= 0` in Go before
+  computing `limit - 1`.
+- Remove the Netdata realtime-adjust callback wiring decisively. If the helper
+  structs remain only for historical unit tests, keep that explicit and avoid
+  dead production state.
+- The spec update must record that non-tail backward realtime anchors are now
+  exclusive for all row queries, not only `data_only`.
+- The new shared scenarios must be real committed fixture/request pairs for
+  non-`data_only` backward same-anchor and forward same-anchor paging.
+- `items.after` / `items.before` validation must check for no false "no more
+  rows" signal after boundary expansion.
+
+Plan gate result:
+
+- Round 2 reviewer consensus is READY TO IMPLEMENT.
 
 ## Delegation Plan
 

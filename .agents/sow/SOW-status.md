@@ -7,10 +7,13 @@ Last updated: 2026-06-25
 - SOW-0124 - Netdata Query-Wide Anchor Regression: in-progress. Test-first
   reproduction is active for the regression between the Netdata UI's single
   ordered query-level anchor contract and the SDK Netdata wrappers' current
-  per-file anchor application plus after-the-fact timestamp merge. The first
-  chunk adds shared external fixture/query tests for multi-file
-  same-internal-anchor boundary loss and ordered-scalar non-overlap before
-  production logic changes.
+  per-file anchor application plus after-the-fact timestamp merge. The current
+  surgical SDK repair plan is reviewer-verified READY TO IMPLEMENT by glm,
+  minimax, kimi, mimo, deepseek, and qwen after round-2 review. The plan keeps
+  the scalar anchor API and per-file batched retrieval, removes early
+  display-time timestamp mutation, makes non-tail backward anchors exclusive,
+  and makes final retention include the whole cross-file boundary timestamp
+  group.
 
 ## Pending
 
