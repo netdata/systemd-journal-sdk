@@ -4,12 +4,7 @@ Last updated: 2026-06-25
 
 ## Current
 
-- SOW-0126 - v0.7.6 Release: in-progress. Releases the pushed SOW-0124
-  Netdata query-wide anchor regression fix as the next patch SDK version.
-  `v0.7.5` and `go/v0.7.5` already exist and peel to `d338e13`; the current
-  release target is `0.7.6`, with Rust package metadata, public install
-  snippets, Rust crates.io publication, root tag, and Go submodule tag aligned
-  on one release commit.
+- None.
 
 ## Pending
 
@@ -46,6 +41,18 @@ Last updated: 2026-06-25
   decisions. Not executable until the user explicitly resumes it.
 ## Recently Closed Or Completed
 
+- SOW-0126 - v0.7.6 Release: completed. Rust crates were published to
+  crates.io at `0.7.6`, release-prep commit
+  `59e3467fe7b9c1dce61389aae8232c80711921e4` was pushed to `master`, and
+  annotated tags `v0.7.6` plus `go/v0.7.6` were pushed; both peel to the same
+  release commit. Go module lookup resolved
+  `github.com/netdata/systemd-journal-sdk/go v0.7.6`, crates.io search showed
+  all eight Rust packages at `0.7.6`, and validation passed Rust workspace
+  tests, Go module tests, docs checks, verified examples, rebuilt Rust/Go
+  Netdata wrappers, shared Rust/Go anchor regression scenarios, whitespace
+  checks, SOW audit, Rust publish dry-runs, and five read-only reviewer
+  `READY TO PUBLISH: YES` votes; minimax was recorded unavailable after two
+  runs without a final verdict.
 - SOW-0124 - Netdata Query-Wide Anchor Regression: completed. Rust and Go
   Netdata SDK wrappers now preserve the current scalar `anchor` plus
   `pagination.column = "timestamp"` wire contract while applying anchors
