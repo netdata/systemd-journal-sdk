@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-25
+Last updated: 2026-07-06
 
 ## Current
 
@@ -39,8 +39,44 @@ Last updated: 2026-06-25
   decision on 2026-06-25. Preserves the requested string/numeric operator
   support matrix, current exact-positive filter gap analysis, and open semantic
   decisions. Not executable until the user explicitly resumes it.
+- SOW-0131 - Go Facade Unique Streaming And Benchmarks: open. Tracks
+  reviewer-identified Go facade stateful unique-enumeration parity and
+  high-cardinality benchmark evidence follow-up from SOW-0129.
+
 ## Recently Closed Or Completed
 
+- SOW-0130 - Log-Writer Sync-On-Archive Opt-Out: completed. Rust
+  `Config::with_sync_on_archive(false)` and Go
+  `LogConfig.SyncOnArchive: journal.SyncOnArchive(false)` now let
+  latency-sensitive directory-writer consumers skip caller-path archive-file
+  sync while preserving default sync behavior. Repeat-review repair added Rust
+  Drop/startup coverage, Go strict-startup coverage, and release semver
+  workflow notes. The durability ownership shift is documented in product scope
+  and consumer docs. Validation passed the Rust workspace, full Go tests, wiki
+  docs validation, and verified examples.
+- SOW-0129 - Facade Unique-Values Streaming Enumeration: completed. Rust
+  sd-journal-style stateful unique enumeration now streams over FIELD/DATA
+  chains one returned payload at a time, fixes FIELD/DATA restart semantics,
+  deduplicates directory results without pre-materializing all payloads, and
+  repairs the legacy `jf` FIELD/DATA restart path. Repeat-review repair added
+  compressed stateful unique and direct DirectoryReader seek/state coverage.
+  Validation passed the Rust workspace, full Go tests, wiki docs validation, and
+  verified examples.
+- SOW-0128 - Engine Index Cache Version Discipline: completed. Rust
+  `journal-engine` cache version moved from 2 to 3 and `FileIndexKey` now
+  carries an optional consumer namespace exposed through
+  `FileIndexCacheBuilder::with_cache_namespace()`. Product scope records the
+  cache invalidation rule, and repeat-review repair added the project skill rule
+  for future `CACHE_VERSION` decisions. Validation passed the Rust workspace,
+  full Go tests, wiki docs validation, and verified examples.
+- SOW-0127 - Journal-Host Container-Aware Machine-ID Resolution: completed.
+  Rust `journal_host::LoadOptions::with_host_filesystem_prefix()` and Go
+  `journalhost.LoadOptions.HostFilesystemPrefix` now explicitly prefer
+  host-prefixed Linux machine-id files while preserving container-local
+  defaults. Repeat-review repair tightened invalid host-file precedence,
+  empty-prefix behavior, and all-zero Go machine-id rejection. Product scope and
+  consumer docs document the opt-in behavior. Validation passed the Rust
+  workspace, full Go tests, wiki docs validation, and verified examples.
 - SOW-0126 - v0.7.6 Release: completed. Rust crates were published to
   crates.io at `0.7.6`, release-prep commit
   `59e3467fe7b9c1dce61389aae8232c80711921e4` was pushed to `master`, and

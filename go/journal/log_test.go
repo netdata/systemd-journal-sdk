@@ -861,6 +861,135 @@ func TestLogCloseIsIdempotentAfterArchiveCleanupFailure(t *testing.T) {
 	}
 }
 
+func TestLogSyncOnArchiveDefaultSyncsOnCallerPath(t *testing.T) {
+	log, _ := newTestLog(t, LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(1),
+	})
+
+	oldSync := syncArchiveJournalFile
+	syncCalls := 0
+	syncArchiveJournalFile = func(w *Writer) error {
+		syncCalls++
+		return oldSync(w)
+	}
+	defer func() {
+		syncArchiveJournalFile = oldSync
+	}()
+
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "default archive sync 0"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_650_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "default archive sync 1"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_650_000_001, MonotonicUsec: 2}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("archive sync calls after rotation = %d, want 1", syncCalls)
+	}
+}
+
+func TestLogSyncOnArchiveFalseSkipsCallerPathSyncAndKeepsFilesReadable(t *testing.T) {
+	log, dir := newTestLog(t, LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(1),
+		SyncOnArchive:  SyncOnArchive(false),
+	})
+
+	oldSync := syncArchiveJournalFile
+	syncCalls := 0
+	syncArchiveJournalFile = func(*Writer) error {
+		syncCalls++
+		return errors.New("archive sync should not be called")
+	}
+	defer func() {
+		syncArchiveJournalFile = oldSync
+	}()
+
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "opt-out archive sync 0"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_660_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "opt-out archive sync 1"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_660_000_001, MonotonicUsec: 2}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close(opt-out) error = %v", err)
+	}
+	if syncCalls != 0 {
+		t.Fatalf("archive sync calls = %d, want 0", syncCalls)
+	}
+
+	files := assertJournalFileCount(t, dir, "after opt-out close", 2)
+	for _, path := range files {
+		snapshot := readJournalSnapshot(t, path)
+		if snapshot.header.nEntries != 1 {
+			t.Fatalf("%s entries = %d, want 1", path, snapshot.header.nEntries)
+		}
+		if snapshot.header.state != stateArchived {
+			t.Fatalf("%s state = %d, want archived", path, snapshot.header.state)
+		}
+	}
+}
+
+func TestLogSyncOnArchivePolicyAppliesToStrictStartupArchive(t *testing.T) {
+	baseConfig := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(10),
+	}
+	for _, tc := range []struct {
+		name     string
+		optOut   bool
+		wantSync int
+	}{
+		{name: "default", wantSync: 1},
+		{name: "opt-out", optOut: true, wantSync: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			first := mustNewLogForTest(t, root, baseConfig, "first")
+			appendLogRange(t, first, "startup-sync", "strict-startup-sync", 0, 2, 1_700_002_665_000_000)
+			syncLogForTest(t, first, "first")
+			chainPath := forceCloseActiveWriter(t, first, "first")
+
+			strictConfig := baseConfig
+			strictConfig.StrictSystemdNaming = true
+			if tc.optOut {
+				strictConfig.SyncOnArchive = SyncOnArchive(false)
+			}
+
+			oldSync := syncArchiveJournalFile
+			syncCalls := 0
+			syncArchiveJournalFile = func(w *Writer) error {
+				syncCalls++
+				return oldSync(w)
+			}
+			strict, err := NewLog(root, strictConfig)
+			syncArchiveJournalFile = oldSync
+			if err != nil {
+				t.Fatalf("NewLog(strict) error = %v", err)
+			}
+			defer strict.Close()
+
+			if syncCalls != tc.wantSync {
+				t.Fatalf("strict startup archive sync calls = %d, want %d", syncCalls, tc.wantSync)
+			}
+			if snapshot := readJournalSnapshot(t, chainPath); snapshot.header.state != stateArchived {
+				t.Fatalf("chain active state after strict open = %d, want archived", snapshot.header.state)
+			}
+		})
+	}
+}
+
 func TestLogRotationRetriesAfterArchiveCleanupFailure(t *testing.T) {
 	log, dir := newTestLog(t, LogConfig{
 		Options:        testOptions(),

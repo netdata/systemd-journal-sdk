@@ -118,9 +118,18 @@ type Writer struct {
 	fieldNamePolicy             FieldNamePolicy
 }
 
+var syncArchiveJournalFile = func(w *Writer) error {
+	return w.syncArena()
+}
+
 // PublishEveryEntries returns a pointer suitable for Options.LivePublishEveryEntries.
 func PublishEveryEntries(entries uint64) *uint64 {
 	return &entries
+}
+
+// SyncOnArchive returns a pointer suitable for LogConfig.SyncOnArchive.
+func SyncOnArchive(enabled bool) *bool {
+	return &enabled
 }
 
 // JournalFileMode returns a pointer suitable for Options.FileMode.
@@ -595,10 +604,10 @@ func (w *Writer) CurrentSize() uint64 {
 // ArchiveTo marks the journal archived, renames it, syncs the parent
 // directory, and closes it.
 func (w *Writer) ArchiveTo(path string) error {
-	return w.archiveTo(path)
+	return w.archiveTo(path, true)
 }
 
-func (w *Writer) archiveTo(path string) error {
+func (w *Writer) archiveTo(path string, syncOnArchive bool) error {
 	if w.closed {
 		return errWriterClosed
 	}
@@ -606,8 +615,10 @@ func (w *Writer) archiveTo(path string) error {
 	if err := w.writeHeader(); err != nil {
 		return err
 	}
-	if err := w.syncArena(); err != nil {
-		return err
+	if syncOnArchive {
+		if err := syncArchiveJournalFile(w); err != nil {
+			return err
+		}
 	}
 	if w.path != path {
 		if err := os.Rename(w.path, path); err != nil {

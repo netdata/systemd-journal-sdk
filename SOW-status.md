@@ -1,31 +1,56 @@
 # SOW Status
 
-Last updated: 2026-06-24
+Last updated: 2026-07-06
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
+- None.
 ## Pending
 
+- `SOW-0125-20260625-netdata-filter-operators-gap-analysis.md` - open, parked
+  by user decision on 2026-06-25. Preserves string/numeric operator support
+  matrix and semantic decisions; not executable until explicitly resumed.
 - `SOW-0123-20260624-event-time-lane-fresh-clock-seed.md` - open. Fresh-journal
   event-time realtime-clock seed gap analysis and implementation plan are
   complete. External read-only reviewer verification returned ready-to-implement
   votes from glm, minimax, kimi, mimo, deepseek, and qwen; Rust/Go
   implementation remains pending.
-- `SOW-0115-20260616-portable-writer-identity-helpers.md` - open, blocked-on-user-decisions after repeat external review. Strict OS-agnostic writer contract where `_MACHINE_ID`, `_BOOT_ID`, and generated-entry `__MONOTONIC_TIMESTAMP` are mandatory caller-provided anchors, plus a separate optional Layer-3 helper API/package for local-host values on Linux/FreeBSD/macOS/Windows when that is the caller's intended identity source. User accepted FreeBSD locked state-backed boot-id synthesis under `/var/run` by default with caller path override, Rust/Go product scope after SOW-0116, and hard native-only/no-subprocess policy. Initial external review on 2026-06-16 returned 7/7 NOT READY TO IMPLEMENT votes; repeat review after SOW hardening returned 6/7 NOT READY TO IMPLEMENT votes and 1/7 READY vote before the language-scope reduction. The SOW must resolve non-Linux boot-id strategy, state-file locking/security, Rust helper relocation/clock semantics, and breaking-change migration before implementation.
+- `SOW-0122-20260621-journalctl-performance-followups.md` - open. Tracks
+  non-blocking SOW-0121 performance follow-up for indexed
+  `--list-invocations`, portable `--follow` scalability, and large-fixture
+  performance evidence.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable Rust/Go `v1.0.0` SDK with Rust registry publication where applicable, Go module tags, and clean consumer install validation after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
 - `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.
 - `SOW-0049-20260528-netdata-reader-plugin-sdk-integration.md` - open. Integrate SDK reader/facade paths into Netdata OTEL signal viewer, no-libsystemd systemd-journal plugin mode, and static packaging after reader gates are accepted.
 - `SOW-0050-20260528-netdata-vendored-journal-removal.md` - open. Remove old Netdata vendored journal code only after all Netdata component integrations are complete and fresh searches prove no production references remain.
-- `SOW-0094-20260606-rust-explorer-lazy-compressed-field-inference.md` - open. Deferred Rust Explorer optimization experiment for compressed DATA field inference and delayed decompression.
 - `SOW-0097-20260607-go-codacy-metric-debt-refactor.md` - open. Follow-up from the Codacy Rust/Go metrics audit for Go production file-size/ownership and duplication reduction.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
+- `SOW-0131-20260706-go-facade-unique-streaming-and-benchmarks.md` - open.
+  Tracks Go facade stateful unique-enumeration parity and high-cardinality
+  benchmark evidence follow-up from SOW-0129.
 
 ## Done
 
+- `SOW-0130-20260706-log-writer-sync-on-archive-optout.md` - completed.
+  Rust and Go directory writers now expose explicit sync-on-archive opt-out
+  while preserving default archive sync behavior; repeat-review repair added
+  Drop/startup coverage and release semver workflow notes.
+- `SOW-0129-20260706-facade-unique-values-streaming.md` - completed.
+  Rust facade stateful unique enumeration now streams over FIELD/DATA chains
+  and deduplicates multi-file results without pre-materializing all payloads;
+  repeat-review repair fixed legacy `jf` restart and compressed/direct-reader
+  coverage gaps.
+- `SOW-0128-20260706-engine-cache-version-discipline.md` - completed.
+  Rust `journal-engine` cache keys now include cache version 3 and optional
+  consumer namespace control; repeat-review repair added project skill cache
+  version discipline.
+- `SOW-0127-20260706-journal-host-container-machine-id.md` - completed.
+  Rust and Go host helpers now support explicit host filesystem prefix
+  machine-id lookup while preserving container-local defaults; repeat-review
+  repair tightened invalid-host, empty-prefix, and all-zero ID handling.
 - `SOW-0120-20260619-v0-7-4-release-and-netdata-sow-update.md` - completed.
   Rust crates were published to crates.io at `0.7.4`, `master` was pushed
   through release commit `536224b531655d1f5ed80723b1e9de7882e01431`, and

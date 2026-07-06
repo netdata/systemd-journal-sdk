@@ -22,6 +22,8 @@ use journal_core::file::{
 use journal_registry::repository;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const STACK_ENTRY_REF_LIMIT: usize = 128;
 const SOURCE_REALTIME_PREFIX: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
@@ -29,6 +31,22 @@ const DERIVED_ROTATION_FRACTION: u64 = 20;
 const JOURNAL_FILE_SIZE_MIN: u64 = 512 * 1024;
 const PAGE_SIZE: u64 = 4096;
 const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
+
+#[cfg(test)]
+static ARCHIVE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn sync_archive_journal_file(
+    sync_on_archive: bool,
+    journal_file: &mut JournalFile<MmapMut>,
+) -> Result<()> {
+    if !sync_on_archive {
+        return Ok(());
+    }
+    #[cfg(test)]
+    ARCHIVE_SYNC_CALLS.fetch_add(1, Ordering::Relaxed);
+    journal_file.sync()?;
+    Ok(())
+}
 
 /// Tracks rotation state for size and count limits.
 pub struct Log {
@@ -592,7 +610,7 @@ impl Log {
             active_file.current_file_size(),
         );
         active_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
-        active_file.journal_file.sync()?;
+        sync_archive_journal_file(self.config.sync_on_archive, &mut active_file.journal_file)?;
 
         let protected_file = if self.config.strict_systemd_naming {
             let header = active_file.journal_file.journal_header_ref();
@@ -698,7 +716,7 @@ impl Log {
         use journal_core::file::JournalState;
 
         old_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
-        old_file.journal_file.sync()?;
+        sync_archive_journal_file(self.config.sync_on_archive, &mut old_file.journal_file)?;
         let archived = self.archive_rotated_file(&old_file)?;
         let new_file = old_file.rotate(
             &mut self.chain,
@@ -915,7 +933,193 @@ impl Drop for Log {
             active_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
 
             // Best/Last-effort sync just to be on the cautious side.
-            let _ = active_file.journal_file.sync();
+            let _ = sync_archive_journal_file(
+                self.config.sync_on_archive,
+                &mut active_file.journal_file,
+            );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use journal_registry::Origin;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static ARCHIVE_SYNC_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_uuid(seed: u8) -> uuid::Uuid {
+        uuid::Uuid::from_bytes([seed; 16])
+    }
+
+    fn test_config() -> Config {
+        Config::new(
+            Origin {
+                machine_id: Some(test_uuid(1)),
+                namespace: None,
+                source: journal_registry::Source::System,
+            },
+            RotationPolicy::default().with_number_of_entries(1),
+            RetentionPolicy::default(),
+        )
+        .with_boot_id(test_uuid(2))
+    }
+
+    fn write_test_entry(log: &mut Log, message: &[u8], realtime: u64) {
+        log.write_entry_with_timestamps(
+            &[message],
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(realtime)
+                .with_entry_monotonic_usec(realtime),
+        )
+        .expect("write entry");
+    }
+
+    fn journal_paths(dir: &TempDir) -> Vec<PathBuf> {
+        let journal_dir = dir.path().join(test_uuid(1).as_simple().to_string());
+        let mut paths: Vec<_> = std::fs::read_dir(journal_dir)
+            .expect("read journal dir")
+            .map(|entry| entry.expect("read entry").path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "journal"))
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    fn create_online_chain_active(dir: &TempDir) -> PathBuf {
+        let mut log = Log::new(
+            dir.path(),
+            test_config()
+                .with_rotation_policy(RotationPolicy::default().with_number_of_entries(10)),
+        )
+        .expect("create log");
+        write_test_entry(&mut log, b"MESSAGE=stale-online", 1);
+        log.sync().expect("sync stale online active");
+        let active_path = log.active_path().expect("active path").to_path_buf();
+        let active_file = log.active_file.take().expect("active file");
+        drop(active_file);
+        drop(log);
+        active_path
+    }
+
+    #[test]
+    fn default_rotation_syncs_archived_file_on_caller_path() {
+        let _guard = ARCHIVE_SYNC_TEST_LOCK.lock().expect("lock sync test");
+        ARCHIVE_SYNC_CALLS.store(0, Ordering::Relaxed);
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut log = Log::new(dir.path(), test_config()).expect("create log");
+
+        write_test_entry(&mut log, b"MESSAGE=first", 1);
+        write_test_entry(&mut log, b"MESSAGE=second", 2);
+
+        assert_eq!(
+            ARCHIVE_SYNC_CALLS.load(Ordering::Relaxed),
+            1,
+            "default rotation should sync the outgoing archived file"
+        );
+    }
+
+    #[test]
+    fn sync_on_archive_false_skips_archive_sync_and_keeps_files_readable() {
+        let _guard = ARCHIVE_SYNC_TEST_LOCK.lock().expect("lock sync test");
+        ARCHIVE_SYNC_CALLS.store(0, Ordering::Relaxed);
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let mut log =
+            Log::new(dir.path(), test_config().with_sync_on_archive(false)).expect("create log");
+
+        write_test_entry(&mut log, b"MESSAGE=first", 1);
+        write_test_entry(&mut log, b"MESSAGE=second", 2);
+        log.close().expect("close log");
+
+        assert_eq!(
+            ARCHIVE_SYNC_CALLS.load(Ordering::Relaxed),
+            0,
+            "opt-out must not sync archived files on the caller path"
+        );
+
+        let paths = journal_paths(&dir);
+        assert_eq!(
+            paths.len(),
+            2,
+            "rotation plus close should leave two journals"
+        );
+        for path in paths {
+            let file = JournalFile::<journal_core::file::Mmap>::open_path(&path, 32 * 1024 * 1024)
+                .expect("open archived journal");
+            assert_eq!(file.journal_header_ref().n_entries, 1);
+        }
+    }
+
+    #[test]
+    fn sync_on_archive_false_skips_drop_archive_sync() {
+        let _guard = ARCHIVE_SYNC_TEST_LOCK.lock().expect("lock sync test");
+        ARCHIVE_SYNC_CALLS.store(0, Ordering::Relaxed);
+        let dir = tempfile::tempdir().expect("create temp dir");
+
+        {
+            let mut log = Log::new(dir.path(), test_config().with_sync_on_archive(false))
+                .expect("create log");
+            write_test_entry(&mut log, b"MESSAGE=drop-opt-out", 1);
+        }
+
+        assert_eq!(
+            ARCHIVE_SYNC_CALLS.load(Ordering::Relaxed),
+            0,
+            "opt-out must skip best-effort Drop archive sync"
+        );
+    }
+
+    #[test]
+    fn strict_startup_sync_on_archive_policy_applies_to_online_chain_active() {
+        let _guard = ARCHIVE_SYNC_TEST_LOCK.lock().expect("lock sync test");
+
+        let default_dir = tempfile::tempdir().expect("create default temp dir");
+        let default_active = create_online_chain_active(&default_dir);
+        ARCHIVE_SYNC_CALLS.store(0, Ordering::Relaxed);
+        let _default_log = Log::new(
+            default_dir.path(),
+            test_config()
+                .with_rotation_policy(RotationPolicy::default().with_number_of_entries(10))
+                .with_strict_systemd_naming(true),
+        )
+        .expect("open strict log");
+        assert_eq!(
+            ARCHIVE_SYNC_CALLS.load(Ordering::Relaxed),
+            1,
+            "default strict startup should sync the stale online chain file"
+        );
+        let file =
+            JournalFile::<journal_core::file::Mmap>::open_path(&default_active, 32 * 1024 * 1024)
+                .expect("open default startup archived journal");
+        assert_eq!(
+            file.journal_header_ref().state,
+            journal_core::file::JournalState::Archived as u8
+        );
+
+        let opt_out_dir = tempfile::tempdir().expect("create opt-out temp dir");
+        let opt_out_active = create_online_chain_active(&opt_out_dir);
+        ARCHIVE_SYNC_CALLS.store(0, Ordering::Relaxed);
+        let _opt_out_log = Log::new(
+            opt_out_dir.path(),
+            test_config()
+                .with_rotation_policy(RotationPolicy::default().with_number_of_entries(10))
+                .with_strict_systemd_naming(true)
+                .with_sync_on_archive(false),
+        )
+        .expect("open strict opt-out log");
+        assert_eq!(
+            ARCHIVE_SYNC_CALLS.load(Ordering::Relaxed),
+            0,
+            "opt-out strict startup must not sync the stale online chain file"
+        );
+        let file =
+            JournalFile::<journal_core::file::Mmap>::open_path(&opt_out_active, 32 * 1024 * 1024)
+                .expect("open opt-out startup archived journal");
+        assert_eq!(
+            file.journal_header_ref().state,
+            journal_core::file::JournalState::Archived as u8
+        );
     }
 }

@@ -63,7 +63,14 @@ impl<'a, M: MemoryMap> Iterator for FieldIterator<'a, M> {
 /// Iterator that walks through all DATA objects for a specific field
 pub struct FieldDataIterator<'a, M: MemoryMap> {
     pub(super) journal: &'a JournalFile<M>,
+    pub(super) head_data_offset: Option<NonZeroU64>,
     pub(super) current_data_offset: Option<NonZeroU64>,
+}
+
+impl<M: MemoryMap> FieldDataIterator<'_, M> {
+    pub(crate) fn restart(&mut self) {
+        self.current_data_offset = self.head_data_offset;
+    }
 }
 
 impl<'a, M: MemoryMap> Iterator for FieldDataIterator<'a, M> {

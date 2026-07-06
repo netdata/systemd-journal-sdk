@@ -167,6 +167,15 @@ reader.visit_unique_values("SYSLOG_IDENTIFIER", |value| {
 ```
 
 Use `query_unique()` only when the caller needs an owned vector of all values.
+For facade-style stateful enumeration, `FileReader` exposes
+`query_unique_state()`, `restart_unique_state()`, `clear_unique_state()`, and
+`enumerate_unique_payload(field_name)`. `DirectoryReader` exposes the same
+state controls and `enumerate_unique_payload()` for multi-file de-duplicated
+payloads. These methods keep the same indexed FIELD/DATA-chain contract, so
+query setup and each enumeration step can fail independently if the journal
+contains damaged or undecompressible DATA. Directory-level stateful unique
+enumeration does not pre-materialize every payload, but it does retain the set
+of values already returned so duplicate values from later files can be skipped.
 
 ## Explorer Query
 
@@ -277,6 +286,19 @@ log.close()?;
 Netdata-compatible chain active names. Use
 `Config::with_strict_systemd_naming(true)` only when the consumer needs
 `<source>.journal` active naming.
+
+By default, `Log` syncs each archived journal file on the caller path during
+rotation, explicit close, and stale-active startup archive. Latency-sensitive
+callers may set `Config::with_sync_on_archive(false)` to skip that archive-file
+sync. With the opt-out, the caller owns archived-file durability before relying
+on side indexes or allowing retention to delete archived files.
+
+The optional `journal_host` helper can load local-host identity for callers that
+then pass those values into `Origin` and entry timestamps explicitly. On Linux,
+containerized callers can set `LoadOptions::with_host_filesystem_prefix("/host")`
+when they intentionally want host machine identity instead of container-local
+identity. Missing host files fall back to container-local files; present invalid
+host files return an error so collectors do not silently switch identity.
 
 ## Write Structured Fields
 

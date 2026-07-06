@@ -882,27 +882,23 @@ impl<M: MemoryMap> JournalFile<M> {
         iterator
     }
 
-    /// Creates an iterator over all DATA objects for the specified field
-    pub fn field_data_objects<'a>(
-        &'a self,
-        field_name: &'a [u8],
-    ) -> Result<FieldDataIterator<'a, M>> {
-        // Find the field offset by name
+    pub fn field_head_data_offset(&self, field_name: &[u8]) -> Result<Option<NonZeroU64>> {
         let field_hash = self.hash(field_name);
         let Some(field_offset) = self.find_field_offset(field_hash, field_name)? else {
-            return Ok(FieldDataIterator {
-                journal: self,
-                current_data_offset: None,
-            });
+            return Ok(None);
         };
 
-        // Get the field object to access its head_data_offset
         let field_guard = self.field_ref(field_offset)?;
-        let head_data_offset = field_guard.header.head_data_offset;
+        Ok(field_guard.header.head_data_offset)
+    }
 
-        // Create the iterator
+    /// Creates an iterator over all DATA objects for the specified field
+    pub fn field_data_objects<'a>(&'a self, field_name: &[u8]) -> Result<FieldDataIterator<'a, M>> {
+        let head_data_offset = self.field_head_data_offset(field_name)?;
+
         Ok(FieldDataIterator {
             journal: self,
+            head_data_offset,
             current_data_offset: head_data_offset,
         })
     }
@@ -911,7 +907,7 @@ impl<M: MemoryMap> JournalFile<M> {
     /// including the on-disk DATA object offset.
     pub fn field_data_objects_with_offsets<'a>(
         &'a self,
-        field_name: &'a [u8],
+        field_name: &[u8],
     ) -> Result<FieldDataOffsetIterator<'a, M>> {
         let field_hash = self.hash(field_name);
         let Some(field_offset) = self.find_field_offset(field_hash, field_name)? else {

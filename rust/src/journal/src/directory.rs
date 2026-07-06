@@ -10,6 +10,9 @@ pub struct DirectoryReader {
     current_key: Option<DirectoryEntryKey>,
     direction: Option<Direction>,
     boot_newest: HashMap<[u8; 16], DirectoryBootNewest>,
+    unique_field: Option<String>,
+    unique_file_index: usize,
+    unique_seen: HashSet<Vec<u8>>,
     pub(super) non_overlapping: bool,
 }
 
@@ -108,6 +111,9 @@ impl DirectoryReader {
             current_key: None,
             direction: None,
             boot_newest,
+            unique_field: None,
+            unique_file_index: usize::MAX,
+            unique_seen: HashSet::new(),
             non_overlapping,
         })
     }
@@ -484,6 +490,73 @@ impl DirectoryReader {
             })?;
         }
         Ok(())
+    }
+
+    pub fn query_unique_state(&mut self, field_name: &str) -> Result<()> {
+        self.clear_unique_state();
+        if let Some(reader) = self.files.get_mut(0) {
+            reader.query_unique_state(field_name)?;
+        }
+        self.unique_field = Some(field_name.to_string());
+        self.unique_file_index = 0;
+        Ok(())
+    }
+
+    pub fn restart_unique_state(&mut self) {
+        if self.unique_field.is_none() {
+            return;
+        }
+        self.unique_file_index = 0;
+        self.unique_seen.clear();
+        for (index, reader) in self.files.iter_mut().enumerate() {
+            if index == 0 {
+                reader.restart_unique_state();
+            } else {
+                reader.clear_unique_state();
+            }
+        }
+    }
+
+    pub fn clear_unique_state(&mut self) {
+        self.unique_field = None;
+        self.unique_file_index = usize::MAX;
+        self.unique_seen.clear();
+        for reader in &mut self.files {
+            reader.clear_unique_state();
+        }
+    }
+
+    pub fn enumerate_unique_payload(&mut self) -> Result<Option<Vec<u8>>> {
+        let Some(field_name) = self.unique_field.clone() else {
+            return Ok(None);
+        };
+
+        while self.unique_file_index < self.files.len() {
+            match self.files[self.unique_file_index].enumerate_unique_payload(&field_name)? {
+                Some(payload) => {
+                    let value = payload
+                        .strip_prefix(field_name.as_bytes())
+                        .and_then(|rest| rest.strip_prefix(b"="))
+                        .ok_or_else(|| {
+                            SdkError::VerificationError(
+                                "field DATA chain object does not match requested field"
+                                    .to_string(),
+                            )
+                        })?;
+                    if self.unique_seen.insert(value.to_vec()) {
+                        return Ok(Some(payload));
+                    }
+                }
+                None => {
+                    self.unique_file_index += 1;
+                    if let Some(reader) = self.files.get_mut(self.unique_file_index) {
+                        reader.query_unique_state(&field_name)?;
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn list_boots(&self) -> Vec<BootInfo> {

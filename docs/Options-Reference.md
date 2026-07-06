@@ -57,6 +57,7 @@ facets, histogram, FTS, or returned-row expansion do not require it.
 | `live_publish_every_entries = 1` | yes | Publishes metadata after every entry for stock live readers. | Use when stock follow-reader freshness matters. |
 | `live_publish_every_entries = 0` | no | Disables explicit SDK live publication. | Use for poll/snapshot consumers after validating the integration. |
 | `live_publish_every_entries = N` | no | Publishes every `N` entries. | Good batching compromise for latency-tolerant consumers. |
+| `sync_on_archive` / `SyncOnArchive` | yes | Syncs each archived journal file on the caller path during rotation, close, and stale-active startup archive. | Keep enabled unless the caller has an external durability path before side-index use or retention deletion. |
 | FSS / seal options | no | Adds sealed TAG/HMAC tamper evidence. | Enable only when sealed verification is required. |
 | optional writer lock helper | no | Cooperating SDK writer exclusion. | Acquire explicitly when deployment needs SDK-level exclusion. |
 
@@ -66,6 +67,17 @@ are separate operational choices.
 Rust low-level FSS uses `journal_core::seal::SealOptions`; Go uses
 `journal.SealOptions`. Rust low-level writer locks live under
 `journal_core::file::lock`; Go uses `journal.AcquireWriterLock`.
+
+## Host Helper Options
+
+| Option | Default | Effect | Production Guidance |
+|---|---:|---|---|
+| `journal_host::LoadOptions::with_host_filesystem_prefix` / `journalhost.LoadOptions.HostFilesystemPrefix` | disabled | On Linux, checks `<prefix>/etc/machine-id` and `<prefix>/var/lib/dbus/machine-id` before container-local machine-id files. Missing host files fall back; present invalid host files fail. | Use only when a containerized collector intentionally wants host machine identity, for example with a `/host` mount. |
+| host helper state directory/path | platform default | Stores synthetic boot state only on platforms that need state-backed boot identity. | Set explicitly for service users that need stable writable state locations. |
+
+Host helper diagnostics include the selected Linux machine-id path in the
+machine-id source label, for example `linux:/etc/machine-id` or
+`linux:/host/etc/machine-id`.
 
 ## Field-Name Policy Options
 

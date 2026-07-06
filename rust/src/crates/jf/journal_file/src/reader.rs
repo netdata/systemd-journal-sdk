@@ -152,6 +152,9 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
 
     pub fn field_data_restart(&mut self) {
         self.drop_guards();
+        if let Some(iter) = &mut self.field_data_iterator {
+            iter.restart();
+        }
     }
 
     pub fn field_data_enumerate(

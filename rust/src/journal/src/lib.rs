@@ -804,6 +804,52 @@ impl FileReader {
             visit_file_unique_values_indexed(file, field_name.as_bytes(), decompressed, visitor)
         })
     }
+
+    pub fn query_unique_state(&mut self, field_name: &str) -> Result<()> {
+        self.invalidate_entry_data_state();
+        self.inner.with_mut(|fields| {
+            fields
+                .reader
+                .field_data_query_unique(fields.file, field_name.as_bytes())
+        })?;
+        Ok(())
+    }
+
+    pub fn restart_unique_state(&mut self) {
+        self.inner
+            .with_reader_mut(|reader| reader.field_data_restart());
+    }
+
+    pub fn clear_unique_state(&mut self) {
+        self.inner
+            .with_reader_mut(|reader| reader.field_data_clear());
+    }
+
+    pub fn enumerate_unique_payload(&mut self, field_name: &str) -> Result<Option<Vec<u8>>> {
+        let field = field_name.as_bytes();
+        let decompressed = self.row.decompressed_mut();
+        self.inner.with_mut(|fields| {
+            let Some(data) = fields.reader.field_data_enumerate(fields.file)? else {
+                return Ok(None);
+            };
+            let payload = if data.is_compressed() {
+                decompressed.clear();
+                let len = data.decompress(decompressed)?;
+                &decompressed[..len]
+            } else {
+                data.raw_payload()
+            };
+            let Some(_) = payload
+                .strip_prefix(field)
+                .and_then(|rest| rest.strip_prefix(b"="))
+            else {
+                return Err(SdkError::VerificationError(
+                    "field DATA chain object does not match requested field".to_string(),
+                ));
+            };
+            Ok(Some(payload.to_vec()))
+        })
+    }
 }
 
 #[cfg(test)]

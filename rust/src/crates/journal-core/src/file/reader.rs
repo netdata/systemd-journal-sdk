@@ -244,7 +244,7 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     pub fn field_data_query_unique(
         &mut self,
         journal_file: &'a JournalFile<M>,
-        field_name: &'a [u8],
+        field_name: &[u8],
     ) -> Result<()> {
         self.drop_guards();
 
@@ -254,6 +254,14 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
 
     pub fn field_data_restart(&mut self) {
         self.drop_guards();
+        if let Some(iter) = &mut self.field_data_iterator {
+            iter.restart();
+        }
+    }
+
+    pub fn field_data_clear(&mut self) {
+        self.drop_guards();
+        self.field_data_iterator = None;
     }
 
     pub fn field_data_enumerate(

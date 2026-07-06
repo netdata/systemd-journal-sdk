@@ -474,6 +474,74 @@ fn directory_reader_query_unique_deduplicates_indexed_values_across_files() {
         .expect("visit unique");
     let got: HashSet<Vec<u8>> = visited.into_iter().collect();
     assert_eq!(got, want);
+
+    reader
+        .query_unique_state("PRIORITY")
+        .expect("query direct stateful unique");
+    let first_payload = reader
+        .enumerate_unique_payload()
+        .expect("enumerate first direct unique")
+        .expect("first direct unique exists");
+    reader.seek_head();
+    let mut direct_stateful = vec![first_payload];
+    while let Some(payload) = reader
+        .enumerate_unique_payload()
+        .expect("enumerate direct unique after seek")
+    {
+        direct_stateful.push(payload);
+    }
+    let direct_want: HashSet<Vec<u8>> = [b"PRIORITY=3".to_vec(), b"PRIORITY=6".to_vec()]
+        .into_iter()
+        .collect();
+    assert_eq!(direct_stateful.len(), direct_want.len());
+    let got: HashSet<Vec<u8>> = direct_stateful.into_iter().collect();
+    assert_eq!(got, direct_want);
+
+    reader.restart_unique_state();
+    reader.seek_tail();
+    let mut restarted_direct = Vec::new();
+    while let Some(payload) = reader
+        .enumerate_unique_payload()
+        .expect("enumerate restarted direct unique after seek")
+    {
+        restarted_direct.push(payload);
+    }
+    assert_eq!(restarted_direct.len(), direct_want.len());
+    let got: HashSet<Vec<u8>> = restarted_direct.into_iter().collect();
+    assert_eq!(got, direct_want);
+
+    let mut journal = SdJournalOpenFiles(
+        &[
+            first_path.to_str().expect("first path"),
+            second_path.to_str().expect("second path"),
+        ],
+        0,
+    )
+    .expect("open facade files");
+    SdJournalQueryUniqueState(&mut journal, "PRIORITY").expect("query facade unique state");
+    let mut stateful = Vec::new();
+    while let Some(payload) =
+        SdJournalEnumerateAvailableUnique(&mut journal).expect("enumerate facade unique")
+    {
+        stateful.push(payload);
+    }
+    let want: HashSet<Vec<u8>> = [b"PRIORITY=3".to_vec(), b"PRIORITY=6".to_vec()]
+        .into_iter()
+        .collect();
+    assert_eq!(stateful.len(), want.len());
+    let got: HashSet<Vec<u8>> = stateful.into_iter().collect();
+    assert_eq!(got, want);
+
+    SdJournalRestartUnique(&mut journal).expect("restart facade unique state");
+    let mut restarted = Vec::new();
+    while let Some(payload) =
+        SdJournalEnumerateAvailableUnique(&mut journal).expect("enumerate restarted unique")
+    {
+        restarted.push(payload);
+    }
+    assert_eq!(restarted.len(), want.len());
+    let got: HashSet<Vec<u8>> = restarted.into_iter().collect();
+    assert_eq!(got, want);
 }
 
 #[test]
@@ -565,6 +633,15 @@ fn assert_stateful_facade_unique_and_field_enumeration(journal: &mut SdJournal) 
     assert!(unique.iter().any(|payload| payload == b"REPEAT=one"));
     assert!(unique.iter().any(|payload| payload == b"REPEAT=two"));
     assert!(unique.iter().any(|payload| payload == b"REPEAT=three"));
+
+    SdJournalRestartUnique(journal).expect("restart unique");
+    let restarted = SdJournalEnumerateAvailableUnique(journal)
+        .expect("enumerate restarted unique")
+        .expect("restarted unique exists");
+    assert!(
+        unique.iter().any(|payload| payload == &restarted),
+        "restart should enumerate the same FIELD=value payload set"
+    );
 
     SdJournalRestartFields(journal).expect("restart fields");
     let mut fields = HashSet::new();
@@ -794,6 +871,47 @@ fn jf_facade_data_enumeration_handles_compressed_payloads() {
     }
 
     assert_eq!(payloads, vec![compressed_payload.into_bytes()]);
+}
+
+#[test]
+fn jf_facade_unique_state_handles_compressed_payloads_and_restart() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("journals/system.journal");
+    let (mut journal_file, mut writer) = create_facade_compressed_test_writer(&path);
+    let compressed_payload = format!("MESSAGE={}", "compressed unique ".repeat(128));
+    writer
+        .add_entry(
+            &mut journal_file,
+            &[compressed_payload.as_bytes()],
+            1000,
+            11,
+        )
+        .expect("write compressed entry");
+    journal_file.sync().expect("sync compressed journal");
+
+    let mut journal =
+        SdJournalOpenFiles(&[path.to_str().expect("utf8 path")], 0).expect("open files");
+    SdJournalQueryUniqueState(&mut journal, "NO_SUCH_FIELD").expect("query missing unique field");
+    assert_eq!(
+        SdJournalEnumerateAvailableUnique(&mut journal).expect("enumerate missing unique"),
+        None
+    );
+
+    SdJournalQueryUniqueState(&mut journal, "MESSAGE").expect("query unique state");
+    let first = SdJournalEnumerateAvailableUnique(&mut journal)
+        .expect("enumerate compressed unique")
+        .expect("compressed unique exists");
+    assert_eq!(first, compressed_payload.as_bytes());
+    assert_eq!(
+        SdJournalEnumerateAvailableUnique(&mut journal).expect("enumerate unique end"),
+        None
+    );
+
+    SdJournalRestartUnique(&mut journal).expect("restart compressed unique");
+    let restarted = SdJournalEnumerateAvailableUnique(&mut journal)
+        .expect("enumerate restarted compressed unique")
+        .expect("restarted compressed unique exists");
+    assert_eq!(restarted, compressed_payload.as_bytes());
 }
 
 #[test]

@@ -493,6 +493,7 @@ impl<M: MemoryMap> JournalFile<M> {
         let Some(field_offset) = self.find_field_offset(field_hash, field_name)? else {
             return Ok(FieldDataIterator {
                 journal: self,
+                head_data_offset: None,
                 current_data_offset: None,
             });
         };
@@ -504,6 +505,7 @@ impl<M: MemoryMap> JournalFile<M> {
         // Create the iterator
         Ok(FieldDataIterator {
             journal: self,
+            head_data_offset,
             current_data_offset: head_data_offset,
         })
     }

@@ -68,6 +68,11 @@ Do not use this skill for:
 - Journal-native API performance is part of compatibility. If the format provides a hash table, FIELD/DATA chain, DATA entry array, ENTRY array, offset, or mmap-backed path for an operation, implementations must use that path instead of scanning and expanding all entries unless a SOW records measured evidence and an explicit accepted reason.
 - Field-name enumeration should use FIELD hash-table traversal on valid indexed files. A compatibility fallback to entry scanning is acceptable only when a historical or damaged FIELD table cannot be traversed safely, and that fallback must be documented in the active SOW.
 - Unfiltered unique value enumeration must match systemd's algorithmic shape: find the FIELD object and walk its DATA chain, then de-duplicate across files. It must not scan every entry or expand unrelated fields.
+- Changes to `journal-engine` index semantics, `FileIndexKey`, serialized index
+  contents, cache schema, or consumer-visible cache partitioning must explicitly
+  decide whether `CACHE_VERSION` changes. If bumped, record the one-time
+  reindex/invalidation impact in the active SOW, product scope, and release
+  notes. If not bumped, record why old cache entries remain semantically safe.
 - Avoid unnecessary DATA decompression, repeated `FIELD=value` parsing, allocation, sorting, hashing, or syscalls in reader/writer hot paths. Treat these as regressions unless tests and benchmark evidence prove they are required.
 - Explorer column catalogs must be built from FIELD indexes. The Rust
   `ExplorerQuery::debug_collect_column_fields_by_row_traversal` switch is a

@@ -61,8 +61,7 @@ pub struct SdJournal {
     output_mode: OutputMode,
     field_items: Vec<String>,
     field_index: usize,
-    unique_items: Vec<Vec<u8>>,
-    unique_index: usize,
+    unique_field: Option<String>,
 }
 
 pub type UniqueValue = (String, Vec<u8>);
@@ -164,20 +163,24 @@ impl SdJournal {
             output_mode: OutputMode::Default,
             field_items: Vec::new(),
             field_index: 0,
-            unique_items: Vec::new(),
-            unique_index: 0,
+            unique_field: None,
         }
     }
 
     fn reset_iterators(&mut self) {
         match &mut self.reader {
-            ReaderKind::File(reader) => reader.clear_entry_data_state(),
-            ReaderKind::Directory(reader) => reader.clear_entry_data_state(),
+            ReaderKind::File(reader) => {
+                reader.clear_entry_data_state();
+                reader.clear_unique_state();
+            }
+            ReaderKind::Directory(reader) => {
+                reader.clear_entry_data_state();
+                reader.clear_unique_state();
+            }
         }
         self.field_items.clear();
         self.field_index = 0;
-        self.unique_items.clear();
-        self.unique_index = 0;
+        self.unique_field = None;
     }
 
     pub fn add_match(&mut self, data: &[u8]) {
@@ -402,26 +405,31 @@ impl SdJournal {
     }
 
     pub fn query_unique_state(&mut self, field: &str) -> std::result::Result<(), Error> {
-        let values = self.query_unique_values(field)?;
-        self.unique_items = values
-            .into_iter()
-            .map(|value| payload_from_field_value(field, &value))
-            .collect();
-        self.unique_index = 0;
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.query_unique_state(field),
+            ReaderKind::Directory(reader) => reader.query_unique_state(field),
+        }
+        .map_err(map_error)?;
+        self.unique_field = Some(field.to_string());
         Ok(())
     }
 
     pub fn restart_unique(&mut self) {
-        self.unique_index = 0;
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.restart_unique_state(),
+            ReaderKind::Directory(reader) => reader.restart_unique_state(),
+        }
     }
 
     pub fn enumerate_available_unique(&mut self) -> std::result::Result<Option<Vec<u8>>, Error> {
-        if self.unique_index >= self.unique_items.len() {
+        let Some(field) = &self.unique_field else {
             return Ok(None);
+        };
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.enumerate_unique_payload(field),
+            ReaderKind::Directory(reader) => reader.enumerate_unique_payload(),
         }
-        let item = self.unique_items[self.unique_index].clone();
-        self.unique_index += 1;
-        Ok(Some(item))
+        .map_err(map_error)
     }
 
     pub fn list_boots(&self) -> Vec<BootInfo> {
@@ -627,14 +635,6 @@ pub fn SdJournalProcessOutput(j: &SdJournal, entry: &Entry) -> std::result::Resu
 
 fn enumerate_file_fields(reader: &mut FileReader) -> crate::Result<Vec<String>> {
     reader.enumerate_fields()
-}
-
-fn payload_from_field_value(field: &str, value: &[u8]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(field.len() + 1 + value.len());
-    payload.extend_from_slice(field.as_bytes());
-    payload.push(b'=');
-    payload.extend_from_slice(value);
-    payload
 }
 
 fn map_error(err: SdkError) -> Error {

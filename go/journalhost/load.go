@@ -37,6 +37,11 @@ type LoadOptions struct {
 	// MonotonicLabel is a stable diagnostic label for MonotonicNow.
 	// The zero value is filled in by the platform loader.
 	MonotonicLabel string
+	// HostFilesystemPrefix resolves Linux host identity from a mounted host
+	// filesystem prefix. When set on Linux, machine-id resolution checks
+	// <prefix>/etc/machine-id and <prefix>/var/lib/dbus/machine-id before
+	// container-local paths. The zero value keeps default behavior unchanged.
+	HostFilesystemPrefix string
 }
 
 // Load returns a Provider that returns local-host machine ID, boot ID,

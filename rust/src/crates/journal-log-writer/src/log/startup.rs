@@ -247,6 +247,7 @@ pub(super) fn replace_strict_online_chain_file(
     chain: &mut OwnedChain,
     strict_systemd_naming: bool,
     boot_id: uuid::Uuid,
+    sync_on_archive: bool,
 ) -> Result<()> {
     if !strict_systemd_naming {
         return Ok(());
@@ -263,7 +264,7 @@ pub(super) fn replace_strict_online_chain_file(
 
     chain.update_file_size(&repository_file, opened.current_file_size());
     opened.journal_file.journal_header_mut().state = JournalState::Archived as u8;
-    opened.journal_file.sync()?;
+    super::sync_archive_journal_file(sync_on_archive, &mut opened.journal_file)?;
     Ok(())
 }
 
@@ -374,7 +375,12 @@ pub(super) fn open_startup_active_file(
 ) -> Result<StartupActiveFile> {
     let (mut boot_id, mut seqnum_id, mut current_seqnum) =
         initial_sequence_identity(chain, config)?;
-    replace_strict_online_chain_file(chain, config.strict_systemd_naming, boot_id)?;
+    replace_strict_online_chain_file(
+        chain,
+        config.strict_systemd_naming,
+        boot_id,
+        config.sync_on_archive,
+    )?;
     let active_file = open_existing_active_for_config(chain, config, boot_id)?;
     if let Some(active_file) = &active_file {
         adopt_active_file_identity(

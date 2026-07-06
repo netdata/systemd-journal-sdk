@@ -96,10 +96,15 @@ Before publishing Rust crates:
 
 1. Verify `rust/Cargo.toml` workspace package version matches the intended
    release.
-2. Verify publishable internal dependencies include both `package = ...` and
+2. Check public API compatibility since the previous release. Public Rust
+   struct field additions are source-breaking for downstream exhaustive struct
+   literals unless the struct is already `#[non_exhaustive]`; public method
+   additions are normally additive. Record the semver decision in the release
+   SOW before tagging.
+3. Verify publishable internal dependencies include both `package = ...` and
    `version = ...` so Cargo can replace path dependencies with registry
    dependencies.
-3. Run `cargo publish --dry-run` for each publishable package in dependency
+4. Run `cargo publish --dry-run` for each publishable package in dependency
    order:
 
    ```bash
@@ -113,14 +118,14 @@ Before publishing Rust crates:
    cargo publish --manifest-path rust/src/journal/Cargo.toml --dry-run
    ```
 
-4. Cargo verifies publishable path dependencies against crates.io. For a new
+5. Cargo verifies publishable path dependencies against crates.io. For a new
    release version, dependent crate dry-runs may fail until the previous crate
    in dependency order has been published and indexed. In that case, dry-run
    and publish one crate at a time in dependency order: dry-run `common`,
    publish `common`, then dry-run `registry`, publish `registry`, and continue.
-5. Publish in the same dependency order only after the package's dry-run passes
+6. Publish in the same dependency order only after the package's dry-run passes
    and the SOW review gate is satisfied.
-6. Never record crates.io tokens or credential details in durable artifacts.
+7. Never record crates.io tokens or credential details in durable artifacts.
 
 ## Validation Checklist
 

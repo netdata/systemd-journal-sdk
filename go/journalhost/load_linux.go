@@ -5,6 +5,7 @@ package journalhost
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/netdata/systemd-journal-sdk/go/journal"
@@ -18,10 +19,11 @@ func loadPlatform(opts LoadOptions) (*Provider, *Diagnostics, error) {
 		MachineIDSource: "linux",
 		MonotonicSource: "CLOCK_MONOTONIC",
 	}
-	machineID, err := loadLinuxMachineID()
+	machineID, machineIDSource, err := loadLinuxMachineID(opts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("journalhost: machine id: %w", err)
 	}
+	diag.MachineIDSource = machineIDSource
 	bootID, err := loadLinuxBootID()
 	if err != nil {
 		reason := fmt.Sprintf("linux boot_id unavailable: %v", err)
@@ -47,14 +49,30 @@ func loadPlatform(opts LoadOptions) (*Provider, *Diagnostics, error) {
 	}, diag, nil
 }
 
-func loadLinuxMachineID() (journal.UUID, error) {
-	for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
-		id, err := readMachineIDFile(path)
-		if err == nil {
-			return id, nil
+func loadLinuxMachineID(opts LoadOptions) (journal.UUID, string, error) {
+	return loadLinuxMachineIDFromRoot("/", opts.HostFilesystemPrefix)
+}
+
+func loadLinuxMachineIDFromRoot(root string, hostFilesystemPrefix string) (journal.UUID, string, error) {
+	if hostFilesystemPrefix != "" {
+		for _, candidate := range linuxMachineIDPaths(root, hostFilesystemPrefix, true) {
+			id, err := readMachineIDFile(candidate.path)
+			if err == nil {
+				return id, candidate.source, nil
+			}
+			if os.IsNotExist(err) {
+				continue
+			}
+			return journal.UUID{}, "", fmt.Errorf("host machine id: %s: %w", candidate.source, err)
 		}
 	}
-	return journal.UUID{}, fmt.Errorf("no machine id found")
+	for _, candidate := range linuxMachineIDPaths(root, "", false) {
+		id, err := readMachineIDFile(candidate.path)
+		if err == nil {
+			return id, candidate.source, nil
+		}
+	}
+	return journal.UUID{}, "", fmt.Errorf("no machine id found")
 }
 
 func readMachineIDFile(path string) (journal.UUID, error) {
@@ -63,7 +81,14 @@ func readMachineIDFile(path string) (journal.UUID, error) {
 		return journal.UUID{}, err
 	}
 	text := strings.TrimSpace(string(data))
-	return parseUUIDText(text)
+	id, err := parseUUIDText(text)
+	if err != nil {
+		return journal.UUID{}, err
+	}
+	if isZeroUUID(id) {
+		return journal.UUID{}, fmt.Errorf("machine id is all zeros")
+	}
+	return id, nil
 }
 
 func loadLinuxBootID() (journal.UUID, error) {
@@ -72,4 +97,51 @@ func loadLinuxBootID() (journal.UUID, error) {
 		return journal.UUID{}, err
 	}
 	return parseUUIDText(strings.TrimSpace(string(data)))
+}
+
+type machineIDPath struct {
+	path   string
+	source string
+}
+
+func linuxMachineIDPaths(root string, hostFilesystemPrefix string, hostOnly bool) []machineIDPath {
+	relPaths := []string{"etc/machine-id", "var/lib/dbus/machine-id"}
+	paths := make([]machineIDPath, 0, len(relPaths)*2)
+	if hostFilesystemPrefix != "" {
+		hostRoot := rootedPath(root, hostFilesystemPrefix)
+		for _, rel := range relPaths {
+			paths = append(paths, machineIDPath{
+				path:   filepath.Join(hostRoot, rel),
+				source: "linux:" + displayPrefixedPath(hostFilesystemPrefix, rel),
+			})
+		}
+	}
+	if hostOnly {
+		return paths
+	}
+	for _, rel := range relPaths {
+		paths = append(paths, machineIDPath{
+			path:   filepath.Join(root, rel),
+			source: "linux:/" + filepath.ToSlash(rel),
+		})
+	}
+	return paths
+}
+
+func rootedPath(root string, path string) string {
+	if filepath.IsAbs(path) {
+		volume := filepath.VolumeName(path)
+		trimmed := strings.TrimPrefix(path[len(volume):], string(os.PathSeparator))
+		return filepath.Join(root, trimmed)
+	}
+	return filepath.Join(root, path)
+}
+
+func displayPrefixedPath(prefix string, rel string) string {
+	prefix = filepath.ToSlash(prefix)
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" || prefix == "/" {
+		return "/" + filepath.ToSlash(rel)
+	}
+	return prefix + "/" + filepath.ToSlash(rel)
 }

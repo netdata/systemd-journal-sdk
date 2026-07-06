@@ -141,6 +141,14 @@ Writer compatibility:
 - Every writer implementation must support one active writer and multiple concurrent readers on the same file.
 - Every writer implementation must keep stock readers safe during append publication windows; stock readers must not crash, report corruption for committed entries, spin, or require the writer to close the file before reading.
 - Every writer implementation must pass stock `journalctl --verify --file` after clean close and after tested interruption/reopen scenarios for the feature slice claimed by that writer.
+- Directory writers sync archived journal files on the caller path by default
+  before rotation, close, or stale-active startup archive completes. Rust
+  `Config::with_sync_on_archive(false)` and Go
+  `LogConfig.SyncOnArchive: journal.SyncOnArchive(false)` are explicit
+  latency-oriented opt-outs. When disabled, the caller owns archived-file
+  durability before relying on, externally indexing, or deleting archived
+  files. The SDK still performs the archive rename/close flow and parent
+  directory sync where that implementation already does so.
 
 Reader compatibility:
 
@@ -494,8 +502,15 @@ Current shared high-level directory writer API slice:
   entry monotonic timestamps.
 - Per-platform host-helper source matrix (native APIs only; no subprocess, no
   CGO):
-  - Linux: machine ID `/etc/machine-id` then `/var/lib/dbus/machine-id`;
-    boot ID `/proc/sys/kernel/random/boot_id`; monotonic
+  - Linux: machine ID `/etc/machine-id` then `/var/lib/dbus/machine-id` by
+    default. When callers explicitly configure a host filesystem prefix, the
+    helper checks `<prefix>/etc/machine-id` and
+    `<prefix>/var/lib/dbus/machine-id` before the container-local paths so
+    containerized collectors can intentionally use host identity. Missing
+    host-prefixed machine-id files fall back to container-local paths; present
+    but invalid host-prefixed files fail instead of silently switching identity.
+    Parsed machine IDs must be non-zero. Boot ID remains
+    `/proc/sys/kernel/random/boot_id`; monotonic remains
     `clock_gettime(CLOCK_MONOTONIC)`.
   - FreeBSD 13+: machine ID `kern.hostuuid` sysctl (validate and reject
     all-zero jail sentinel); boot ID native `kern.boot_id`; monotonic
@@ -623,6 +638,16 @@ Accepted reader API layers:
   `ExplorerFieldMode::AllValues` is an explicit slower mode for exact
   duplicate-value accounting and scans the whole row for repeated-field
   correctness.
+- Rust `journal-engine` file-index caches are versioned by SDK-owned
+  `CACHE_VERSION` and by an optional consumer namespace. Any change to what the
+  indexer includes, excludes, computes, or serializes must bump
+  `CACHE_VERSION` in the same change. Consumers can use
+  `FileIndexCacheBuilder::with_cache_namespace()` plus
+  `FileIndexCacheBuilder::file_index_key()` or
+  `FileIndexKey::new_with_namespace()` to force a clean rebuild for
+  consumer-side semantic migrations without changing the physical cache
+  directory. Setting the builder namespace does not rewrite keys constructed
+  elsewhere with `FileIndexKey::new()`.
 - Rust and Go also expose explicit Explorer execution
   strategy controls through their idiomatic APIs. `ExplorerStrategy::Traversal`
   is the default and remains the behavior of each product language's ordinary

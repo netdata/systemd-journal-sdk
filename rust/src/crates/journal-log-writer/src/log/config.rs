@@ -141,6 +141,13 @@ pub struct Config {
     ///
     /// The default follows systemd journald's 0640 journal-file mode.
     pub file_mode: u32,
+    /// Sync archived journal files on the caller thread before rotation/close
+    /// completes.
+    ///
+    /// The default is true. Setting this to false avoids caller-thread archive
+    /// fsync latency; the caller then owns archived-file durability before
+    /// relying on or deleting archived files.
+    pub sync_on_archive: bool,
 }
 
 impl Config {
@@ -164,6 +171,7 @@ impl Config {
             live_publish_every_entries: 1,
             field_name_policy: FieldNamePolicy::Journald,
             file_mode: DEFAULT_JOURNAL_FILE_MODE,
+            sync_on_archive: true,
         }
     }
 
@@ -230,6 +238,11 @@ impl Config {
             "journal file mode must contain only permission bits"
         );
         self.file_mode = mode;
+        self
+    }
+
+    pub fn with_sync_on_archive(mut self, sync_on_archive: bool) -> Self {
+        self.sync_on_archive = sync_on_archive;
         self
     }
 }

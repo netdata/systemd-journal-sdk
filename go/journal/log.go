@@ -184,6 +184,12 @@ type LogConfig struct {
 	// <source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal for the
 	// active file.
 	StrictSystemdNaming bool
+	// SyncOnArchive controls whether Log syncs the archived journal file on the
+	// caller path during rotation, close, and stale-active startup archive.
+	// Nil defaults to true. Set this to SyncOnArchive(false) only when the
+	// caller owns archived-file durability before relying on or deleting
+	// archived files. The journal directory sync after rename still runs.
+	SyncOnArchive *bool
 }
 
 // Log writes journal entries to a systemd-compatible journal directory. Log is
@@ -199,6 +205,7 @@ type Log struct {
 	rotation        RotationPolicy
 	retention       RetentionPolicy
 	strict          bool
+	syncOnArchive   bool
 	lifecycle       LogLifecycleObserver
 	artifacts       LogArtifactSizer
 	fieldNamePolicy FieldNamePolicy
@@ -252,6 +259,7 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		rotation:        prepared.rotation,
 		retention:       config.RetentionPolicy,
 		strict:          config.StrictSystemdNaming,
+		syncOnArchive:   logSyncOnArchive(config),
 		lifecycle:       config.Lifecycle,
 		artifacts:       config.ArtifactSizer,
 		fieldNamePolicy: prepared.logFieldPolicy,
@@ -271,6 +279,10 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	}
 
 	return l, nil
+}
+
+func logSyncOnArchive(config LogConfig) bool {
+	return config.SyncOnArchive == nil || *config.SyncOnArchive
 }
 
 type preparedLogConfig struct {
@@ -436,7 +448,7 @@ func (l *Log) archiveOnlineChainActive(path string) error {
 		}
 		return errors.Join(closeErr, removeErr)
 	}
-	return w.archiveTo(path)
+	return w.archiveTo(path, l.syncOnArchive)
 }
 
 func replaceableActiveOpenError(err error) bool {
@@ -812,7 +824,7 @@ func (l *Log) archiveActive() (string, error) {
 	if l.strict {
 		archivePath = l.archivePathFor(l.writer.header)
 	}
-	if err := l.writer.archiveTo(archivePath); err != nil {
+	if err := l.writer.archiveTo(archivePath, l.syncOnArchive); err != nil {
 		if l.writer.closed {
 			l.options.SeqnumID = seqnumID
 			l.options.BootID = bootID

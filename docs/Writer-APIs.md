@@ -31,6 +31,14 @@ It handles:
 Directory writers store files below `<directory>/<machine-id>/`. They are
 single-writer objects; callers must serialize method calls on one instance.
 
+By default, directory writers sync each archived journal file on the caller path
+during rotation, explicit close, and stale-active startup archive. Rust exposes
+`Config::with_sync_on_archive(false)`, and Go exposes
+`LogConfig.SyncOnArchive: journal.SyncOnArchive(false)`, for latency-sensitive
+callers that intentionally move archived-file durability responsibility outside
+the SDK. With this opt-out, callers must make archived files durable before
+relying on side indexes or allowing retention to delete them.
+
 ## Direct-File Writer
 
 Use direct-file writing when the caller owns exactly one journal file.
@@ -150,7 +158,11 @@ generated-entry monotonic timestamps explicitly. The optional host identity
 helper is for integrations that intentionally want local-host values. In Go it
 lives in `github.com/netdata/systemd-journal-sdk/go/journalhost`; in Rust it is
 the `systemd-journal-sdk-host` crate with lib name `journal_host`. Callers
-still pass the returned values to the writer.
+still pass the returned values to the writer. Linux callers running inside a
+container can opt into a host filesystem prefix such as `/host`; the helper then
+checks host machine-id files under that prefix before container-local files.
+Missing host files fall back to container-local files; present invalid host
+files return an error so collectors do not silently switch identity.
 
 Core writers also do not lock. The journal file contract is one writer per
 file, but systemd does not define a portable journal-file lock protocol. The

@@ -563,6 +563,7 @@ impl<M: MemoryMap> JournalFile<M> {
         // Create the iterator
         Ok(FieldDataIterator {
             journal: self,
+            head_data_offset,
             current_data_offset: head_data_offset,
         })
     }
@@ -741,7 +742,14 @@ impl<'a, M: MemoryMap> Iterator for FieldIterator<'a, M> {
 /// Iterator that walks through all DATA objects for a specific field
 pub struct FieldDataIterator<'a, M: MemoryMap> {
     journal: &'a JournalFile<M>,
+    head_data_offset: u64,
     current_data_offset: u64,
+}
+
+impl<M: MemoryMap> FieldDataIterator<'_, M> {
+    pub fn restart(&mut self) {
+        self.current_data_offset = self.head_data_offset;
+    }
 }
 
 impl<'a, M: MemoryMap> Iterator for FieldDataIterator<'a, M> {

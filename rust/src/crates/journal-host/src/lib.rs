@@ -95,6 +95,7 @@ pub struct LoadOptions {
     pub state_dir: Option<PathBuf>,
     pub state_file_name: Option<String>,
     pub state_path: Option<PathBuf>,
+    pub host_filesystem_prefix: Option<PathBuf>,
     pub monotonic_now: Option<Arc<dyn Fn() -> io::Result<u64> + Send + Sync>>,
     pub monotonic_label: Option<String>,
 }
@@ -112,6 +113,16 @@ impl LoadOptions {
 
     pub fn with_state_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.state_path = Some(path.into());
+        self
+    }
+
+    /// Resolves Linux host identity from a mounted host filesystem prefix.
+    ///
+    /// This is opt-in. When set on Linux, machine-id resolution checks
+    /// `<prefix>/etc/machine-id` and `<prefix>/var/lib/dbus/machine-id` before
+    /// the container-local paths.
+    pub fn with_host_filesystem_prefix(mut self, path: impl Into<PathBuf>) -> Self {
+        self.host_filesystem_prefix = Some(path.into());
         self
     }
 

@@ -114,7 +114,11 @@ Platform behavior:
   systemd verification when stock tooling is required.
 - Writers require explicit machine ID, boot ID, and per-entry monotonic
   timestamps. Callers that need collector-host values can opt into the
-  `journalhost` helper and pass its results to the writer explicitly.
+  `journalhost` helper and pass its results to the writer explicitly. On Linux,
+  containerized callers can set `journalhost.LoadOptions.HostFilesystemPrefix`
+  to a mount such as `/host` when they intentionally want host machine identity.
+  Missing host files fall back to container-local files; present invalid host
+  files return an error so collectors do not silently switch identity.
 - Optional writer locking is a separate helper acquired with
   `journal.AcquireWriterLock(path)`. Linux uses procfs boot/process-start
   evidence; FreeBSD and macOS use native boot-time plus conservative process
@@ -331,6 +335,13 @@ For consumer-owned side indexes, `LogConfig.Lifecycle` reports created, rotated,
 and retention-deleted journal paths, and `LogConfig.ArtifactSizer` includes
 consumer-owned sidecar bytes in size-based retention. See `go/API.md` for the
 versioned public API contract.
+
+By default, `Log` syncs each archived journal file on the caller path during
+rotation, explicit close, and stale-active startup archive. Latency-sensitive
+callers may set `SyncOnArchive: journal.SyncOnArchive(false)` in `LogConfig` to
+skip that archive-file sync. With the opt-out, the caller owns archived-file
+durability before relying on side indexes or allowing retention to delete
+archived files.
 
 The low-level Go `Writer` and high-level `Log` writer support the same
 structured `Append()` and raw full-payload `AppendRaw()` entry shapes plus the

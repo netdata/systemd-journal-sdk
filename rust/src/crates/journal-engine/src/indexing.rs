@@ -7,10 +7,11 @@
 use crate::{
     cache::{FileIndexCache, FileIndexKey},
     error::{EngineError, Result},
+    facets::Facets,
     query_time_range::QueryTimeRange,
 };
-use journal_index::{FileIndex, FileIndexer, IndexingLimits, Seconds};
-use journal_registry::Registry;
+use journal_index::{FieldName, FileIndex, FileIndexer, IndexingLimits, Seconds};
+use journal_registry::{File, Registry};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio_util::sync::CancellationToken;
@@ -25,6 +26,7 @@ const MAX_BATCH_INDEX_THREADS: usize = 4;
 /// Builder for constructing a FileIndexCache with custom configuration.
 pub struct FileIndexCacheBuilder {
     cache_path: Option<std::path::PathBuf>,
+    cache_namespace: String,
     memory_capacity: Option<usize>,
     disk_capacity: Option<usize>,
     block_size: Option<usize>,
@@ -42,6 +44,7 @@ impl FileIndexCacheBuilder {
     pub fn new() -> Self {
         Self {
             cache_path: None,
+            cache_namespace: String::new(),
             memory_capacity: None,
             disk_capacity: None,
             block_size: None,
@@ -53,6 +56,37 @@ impl FileIndexCacheBuilder {
     pub fn with_cache_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.cache_path = Some(path.into());
         self
+    }
+
+    /// Sets the consumer-visible cache namespace.
+    ///
+    /// Use the returned namespace with [`FileIndexKey::new_with_namespace`] or
+    /// [`Self::file_index_key`] to force clean rebuilds for consumer semantic
+    /// migrations while keeping the same physical cache directory. The cache
+    /// object does not apply this namespace to keys constructed elsewhere.
+    pub fn with_cache_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.cache_namespace = namespace.into();
+        self
+    }
+
+    /// Returns the namespace configured on this builder.
+    pub fn cache_namespace(&self) -> &str {
+        &self.cache_namespace
+    }
+
+    /// Creates a file-index cache key using this builder's namespace.
+    pub fn file_index_key(
+        &self,
+        file: &File,
+        facets: &Facets,
+        source_timestamp_field: Option<FieldName>,
+    ) -> FileIndexKey {
+        FileIndexKey::new_with_namespace(
+            file,
+            facets,
+            source_timestamp_field,
+            self.cache_namespace.clone(),
+        )
     }
 
     /// Sets the memory capacity (number of items to keep in memory).
@@ -163,6 +197,53 @@ mod tests {
             "expected memory-only file index cache to avoid creating {}",
             cache_path.display()
         );
+    }
+
+    #[test]
+    fn builder_records_consumer_cache_namespace() {
+        let builder = FileIndexCacheBuilder::new().with_cache_namespace("netdata-v2");
+
+        assert_eq!(builder.cache_namespace(), "netdata-v2");
+    }
+
+    #[test]
+    fn builder_creates_namespaced_keys() {
+        let file = journal_registry::File::from_path(std::path::Path::new(
+            "/var/log/journal/00112233445566778899aabbccddeeff/system.journal",
+        ))
+        .expect("valid journal file path");
+        let facets = Facets::new(&[]);
+        let default_key = FileIndexKey::new(&file, &facets, None);
+        let builder_key = FileIndexCacheBuilder::new()
+            .with_cache_namespace("consumer-v2")
+            .file_index_key(&file, &facets, None);
+
+        assert_ne!(default_key, builder_key);
+    }
+
+    #[test]
+    fn cache_lookup_error_is_recomputed_as_miss() {
+        let file = journal_registry::File::from_path(std::path::Path::new(
+            "/var/log/journal/00112233445566778899aabbccddeeff/system.journal",
+        ))
+        .expect("valid journal file path");
+        let facets = Facets::new(&[]);
+        let key = FileIndexKey::new(&file, &facets, None);
+
+        let partition = partition_cache_results(
+            vec![(
+                key.clone(),
+                Err(EngineError::Io(std::io::Error::other(
+                    "cache lookup failed",
+                ))),
+            )],
+            1,
+            Seconds::new(60),
+        );
+
+        assert_eq!(partition.responses.len(), 0);
+        assert_eq!(partition.keys_to_compute, vec![key]);
+        assert_eq!(partition.stats.cache_misses, 1);
     }
 }
 
@@ -298,7 +379,9 @@ fn partition_cache_result(
             partition.keys_to_compute.push(key);
         }
         Err(e) => {
-            error!("cached file index lookup error {}", e);
+            error!("cached file index lookup error {}; recomputing", e);
+            partition.stats.cache_misses += 1;
+            partition.keys_to_compute.push(key);
         }
     }
 }

@@ -20,7 +20,14 @@ import "github.com/netdata/systemd-journal-sdk/go/journal"
 Callers that intentionally want local-host identity can also import the
 optional helper package `github.com/netdata/systemd-journal-sdk/go/journalhost`
 and pass its returned values to the writer explicitly. Core writers never
-import or call that helper automatically.
+import or call that helper automatically. On Linux, containerized callers can
+set `journalhost.LoadOptions.HostFilesystemPrefix` to a mount such as `/host`
+when they intentionally want host machine identity instead of container-local
+identity. Missing host files fall back to container-local files; present invalid
+host files return an error so collectors do not silently switch identity.
+`Provider.Diagnostics().MachineIDSource` reports the selected Linux path, for
+example `linux:/etc/machine-id` or `linux:/host/etc/machine-id`, so callers can
+log which identity source was used.
 
 The examples focus on SDK calls. Add ordinary Go standard-library imports such
 as `bytes`, `encoding/json`, `fmt`, and `time` when a snippet uses them.
@@ -390,6 +397,13 @@ return log.Append([]journal.Field{
 `NewLog` stores files below `<directory>/<machine-id>/`. The active filename
 uses chain naming by default. Set `StrictSystemdNaming: true` only when the
 consumer needs `<source>.journal` active naming.
+
+By default, `Log` syncs each archived journal file on the caller path during
+rotation, explicit close, and stale-active startup archive. Latency-sensitive
+callers may set `SyncOnArchive: journal.SyncOnArchive(false)` in `LogConfig` to
+skip that archive-file sync. With the opt-out, the caller owns archived-file
+durability before relying on side indexes or allowing retention to delete
+archived files.
 
 ## Field-Name Policy
 

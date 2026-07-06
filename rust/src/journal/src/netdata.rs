@@ -5869,7 +5869,8 @@ mod tests {
             &config,
         )
         .expect("parse non-data-only backward request");
-        let query = parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+        let query =
+            parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
 
         assert_eq!(query.before_realtime_usec, Some(1_700_000_004_999_999));
         assert!(matches!(query.anchor, ExplorerAnchor::Auto));
@@ -5890,7 +5891,8 @@ mod tests {
             &config,
         )
         .expect("parse data-only backward request");
-        let query = parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+        let query =
+            parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
 
         assert_eq!(query.before_realtime_usec, Some(1_700_000_004_999_999));
         assert!(matches!(query.anchor, ExplorerAnchor::Auto));
