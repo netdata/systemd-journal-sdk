@@ -173,9 +173,11 @@ For facade-style stateful enumeration, `FileReader` exposes
 state controls and `enumerate_unique_payload()` for multi-file de-duplicated
 payloads. These methods keep the same indexed FIELD/DATA-chain contract, so
 query setup and each enumeration step can fail independently if the journal
-contains damaged or undecompressible DATA. Directory-level stateful unique
-enumeration does not pre-materialize every payload, but it does retain the set
-of values already returned so duplicate values from later files can be skipped.
+contains damaged or undecompressible DATA. Directory-level unique enumeration
+builds an exact 8-entry per-open-reader LRU cache from per-file FIELD/DATA
+chains and reuses it for repeated queries or restarts while the already-open
+file set's header signatures stay unchanged. The entry count is bounded, but
+each cache entry keeps the full exact unique set for one field.
 
 ## Explorer Query
 

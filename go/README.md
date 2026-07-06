@@ -417,6 +417,11 @@ the slice, or use `CollectEntryPayloads` / `GetEntryPayload`, when the data must
 outlive the documented scope.
 For high-cardinality unique-value queries, prefer `VisitUnique` when the caller
 can stream results; `QueryUnique` is the owned-result convenience wrapper.
+Directory readers keep an exact 8-entry LRU cache of unique payloads per field
+and current already-open file-header signature, so repeated unique queries and
+facade restarts reuse the same directory-wide index until the opened files'
+header counters or tail metadata change. The entry count is bounded, but each
+cache entry keeps the full exact unique set for one field.
 
 File-backed journalctl:
 

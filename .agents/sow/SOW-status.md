@@ -39,12 +39,15 @@ Last updated: 2026-07-06
   decision on 2026-06-25. Preserves the requested string/numeric operator
   support matrix, current exact-positive filter gap analysis, and open semantic
   decisions. Not executable until the user explicitly resumes it.
-- SOW-0131 - Go Facade Unique Streaming And Benchmarks: open. Tracks
-  reviewer-identified Go facade stateful unique-enumeration parity and
-  high-cardinality benchmark evidence follow-up from SOW-0129.
-
 ## Recently Closed Or Completed
 
+- SOW-0131 - Directory Unique Cache And Go Parity: completed. Rust and Go
+  directory readers now keep an exact 8-entry per-open-reader LRU cache of
+  directory-wide unique payloads built from per-file FIELD/DATA chains. Go
+  stateful unique facade enumeration delegates to reader state, live-append
+  invalidation is tested, Go unique refresh preserves entry iteration
+  invariants, docs/specs record the cache memory model, and repeat reviewers
+  found the implementation production-grade.
 - SOW-0130 - Log-Writer Sync-On-Archive Opt-Out: completed. Rust
   `Config::with_sync_on_archive(false)` and Go
   `LogConfig.SyncOnArchive: journal.SyncOnArchive(false)` now let

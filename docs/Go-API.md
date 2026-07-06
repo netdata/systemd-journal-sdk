@@ -204,6 +204,11 @@ if err != nil {
 ```
 
 Use `QueryUnique` only when the caller needs an owned slice of all values.
+Directory-level unique enumeration builds an exact 8-entry per-open-reader LRU
+cache from per-file FIELD/DATA chains and reuses it for repeated queries or
+facade stateful restarts while the already-open file set's header signatures
+stay unchanged. The entry count is bounded, but each cache entry keeps the full
+exact unique set for one field.
 
 ## Explorer Query
 

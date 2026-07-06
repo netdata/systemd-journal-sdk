@@ -1,5 +1,7 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+
+const DIRECTORY_UNIQUE_CACHE_CAPACITY: usize = 8;
 
 pub struct DirectoryReader {
     files: Vec<FileReader>,
@@ -10,10 +12,44 @@ pub struct DirectoryReader {
     current_key: Option<DirectoryEntryKey>,
     direction: Option<Direction>,
     boot_newest: HashMap<[u8; 16], DirectoryBootNewest>,
-    unique_field: Option<String>,
-    unique_file_index: usize,
-    unique_seen: HashSet<Vec<u8>>,
+    unique_cache: HashMap<DirectoryUniqueCacheKey, DirectoryUniqueCacheEntry>,
+    unique_cache_order: VecDeque<DirectoryUniqueCacheKey>,
+    unique_state: Option<DirectoryUniqueState>,
+    #[cfg(test)]
+    unique_cache_builds: usize,
     pub(super) non_overlapping: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DirectoryUniqueCacheKey {
+    field_name: String,
+    files: Vec<DirectoryUniqueFileSignature>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct DirectoryUniqueFileSignature {
+    file_id: [u8; 16],
+    n_objects: u64,
+    n_entries: u64,
+    n_data: u64,
+    n_fields: u64,
+    head_entry_seqnum: u64,
+    tail_entry_seqnum: u64,
+    head_entry_realtime: u64,
+    tail_entry_realtime: u64,
+    tail_entry_monotonic: u64,
+    tail_entry_boot_id: [u8; 16],
+}
+
+#[derive(Debug, Clone)]
+struct DirectoryUniqueCacheEntry {
+    payloads: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+struct DirectoryUniqueState {
+    key: DirectoryUniqueCacheKey,
+    index: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,9 +147,11 @@ impl DirectoryReader {
             current_key: None,
             direction: None,
             boot_newest,
-            unique_field: None,
-            unique_file_index: usize::MAX,
-            unique_seen: HashSet::new(),
+            unique_cache: HashMap::new(),
+            unique_cache_order: VecDeque::new(),
+            unique_state: None,
+            #[cfg(test)]
+            unique_cache_builds: 0,
             non_overlapping,
         })
     }
@@ -476,87 +514,158 @@ impl DirectoryReader {
     where
         F: FnMut(&[u8]) -> Result<()>,
     {
-        if self.files.len() == 1 {
-            return self.files[0].visit_unique_values(field_name, visitor);
-        }
-
-        let mut seen = HashSet::new();
-        for reader in &mut self.files {
-            reader.visit_unique_values(field_name, |value| {
-                if seen.insert(value.to_vec()) {
-                    visitor(value)?;
-                }
-                Ok(())
-            })?;
+        let key = self.ensure_unique_cache(field_name)?;
+        let Some(entry) = self.unique_cache.get(&key) else {
+            return Err(SdkError::VerificationError(
+                "directory unique cache entry disappeared".to_string(),
+            ));
+        };
+        for payload in &entry.payloads {
+            let value = strip_cached_unique_payload(field_name, payload)?;
+            visitor(value)?;
         }
         Ok(())
     }
 
     pub fn query_unique_state(&mut self, field_name: &str) -> Result<()> {
         self.clear_unique_state();
-        if let Some(reader) = self.files.get_mut(0) {
-            reader.query_unique_state(field_name)?;
-        }
-        self.unique_field = Some(field_name.to_string());
-        self.unique_file_index = 0;
+        let key = self.ensure_unique_cache(field_name)?;
+        self.unique_state = Some(DirectoryUniqueState { key, index: 0 });
         Ok(())
     }
 
     pub fn restart_unique_state(&mut self) {
-        if self.unique_field.is_none() {
-            return;
-        }
-        self.unique_file_index = 0;
-        self.unique_seen.clear();
-        for (index, reader) in self.files.iter_mut().enumerate() {
-            if index == 0 {
-                reader.restart_unique_state();
-            } else {
-                reader.clear_unique_state();
-            }
+        if let Some(state) = &mut self.unique_state {
+            state.index = 0;
         }
     }
 
     pub fn clear_unique_state(&mut self) {
-        self.unique_field = None;
-        self.unique_file_index = usize::MAX;
-        self.unique_seen.clear();
+        self.unique_state = None;
         for reader in &mut self.files {
             reader.clear_unique_state();
         }
     }
 
     pub fn enumerate_unique_payload(&mut self) -> Result<Option<Vec<u8>>> {
-        let Some(field_name) = self.unique_field.clone() else {
+        let Some(state) = &mut self.unique_state else {
             return Ok(None);
         };
+        let Some(entry) = self.unique_cache.get(&state.key) else {
+            return Err(SdkError::VerificationError(
+                "directory unique state references a missing cache entry".to_string(),
+            ));
+        };
+        if state.index >= entry.payloads.len() {
+            return Ok(None);
+        }
+        let payload = entry.payloads[state.index].clone();
+        state.index += 1;
+        Ok(Some(payload))
+    }
 
-        while self.unique_file_index < self.files.len() {
-            match self.files[self.unique_file_index].enumerate_unique_payload(&field_name)? {
-                Some(payload) => {
-                    let value = payload
-                        .strip_prefix(field_name.as_bytes())
-                        .and_then(|rest| rest.strip_prefix(b"="))
-                        .ok_or_else(|| {
-                            SdkError::VerificationError(
-                                "field DATA chain object does not match requested field"
-                                    .to_string(),
-                            )
-                        })?;
-                    if self.unique_seen.insert(value.to_vec()) {
-                        return Ok(Some(payload));
-                    }
-                }
-                None => {
-                    self.unique_file_index += 1;
-                    if let Some(reader) = self.files.get_mut(self.unique_file_index) {
-                        reader.query_unique_state(&field_name)?;
-                    }
-                }
-            }
+    fn ensure_unique_cache(&mut self, field_name: &str) -> Result<DirectoryUniqueCacheKey> {
+        let key = self.unique_cache_key(field_name);
+        if self.unique_cache.contains_key(&key) {
+            self.touch_unique_cache_key(&key);
+            return Ok(key);
         }
 
-        Ok(None)
+        let mut payloads = self.build_unique_cache_payloads(field_name)?;
+        let refreshed_key = self.unique_cache_key(field_name);
+        if refreshed_key != key {
+            payloads = self.build_unique_cache_payloads(field_name)?;
+        }
+        let final_key = if refreshed_key == key {
+            key
+        } else {
+            refreshed_key
+        };
+        self.unique_cache
+            .insert(final_key.clone(), DirectoryUniqueCacheEntry { payloads });
+        self.touch_unique_cache_key(&final_key);
+        self.enforce_unique_cache_capacity();
+        #[cfg(test)]
+        {
+            self.unique_cache_builds += 1;
+        }
+        Ok(final_key)
+    }
+
+    fn touch_unique_cache_key(&mut self, key: &DirectoryUniqueCacheKey) {
+        if let Some(index) = self
+            .unique_cache_order
+            .iter()
+            .position(|existing| existing == key)
+        {
+            self.unique_cache_order.remove(index);
+        }
+        self.unique_cache_order.push_back(key.clone());
+    }
+
+    fn enforce_unique_cache_capacity(&mut self) {
+        let active_key = self.unique_state.as_ref().map(|state| state.key.clone());
+        let mut skipped_active = false;
+        while self.unique_cache_order.len() > DIRECTORY_UNIQUE_CACHE_CAPACITY {
+            let Some(evicted) = self.unique_cache_order.pop_front() else {
+                break;
+            };
+            if active_key.as_ref() == Some(&evicted) {
+                if skipped_active {
+                    self.unique_cache_order.push_front(evicted);
+                    break;
+                }
+                self.unique_cache_order.push_back(evicted);
+                skipped_active = true;
+                continue;
+            }
+            self.unique_cache.remove(&evicted);
+        }
+    }
+
+    fn build_unique_cache_payloads(&mut self, field_name: &str) -> Result<Vec<Vec<u8>>> {
+        let mut seen = HashSet::new();
+        let mut payloads = Vec::new();
+        for reader in &mut self.files {
+            reader.visit_unique_values(field_name, |value| {
+                if seen.insert(value.to_vec()) {
+                    payloads.push(cached_unique_payload(field_name, value));
+                }
+                Ok(())
+            })?;
+        }
+        Ok(payloads)
+    }
+
+    fn unique_cache_key(&self, field_name: &str) -> DirectoryUniqueCacheKey {
+        DirectoryUniqueCacheKey {
+            field_name: field_name.to_string(),
+            files: self
+                .files
+                .iter()
+                .map(|reader| {
+                    let header = reader.header();
+                    DirectoryUniqueFileSignature {
+                        file_id: header.file_id,
+                        n_objects: header.n_objects,
+                        n_entries: header.n_entries,
+                        n_data: header.n_data,
+                        n_fields: header.n_fields,
+                        head_entry_seqnum: header.head_entry_seqnum,
+                        tail_entry_seqnum: header.tail_entry_seqnum,
+                        head_entry_realtime: header.head_entry_realtime,
+                        tail_entry_realtime: header.tail_entry_realtime,
+                        tail_entry_monotonic: header.tail_entry_monotonic,
+                        tail_entry_boot_id: header.tail_entry_boot_id,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unique_cache_builds_for_tests(&self) -> usize {
+        self.unique_cache_builds
     }
 
     pub fn list_boots(&self) -> Vec<BootInfo> {
@@ -766,6 +875,25 @@ fn collect_journal_files(path: &Path) -> Result<Vec<PathBuf>> {
 
     files.sort();
     Ok(files)
+}
+
+fn cached_unique_payload(field_name: &str, value: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(field_name.len() + 1 + value.len());
+    payload.extend_from_slice(field_name.as_bytes());
+    payload.push(b'=');
+    payload.extend_from_slice(value);
+    payload
+}
+
+fn strip_cached_unique_payload<'a>(field_name: &str, payload: &'a [u8]) -> Result<&'a [u8]> {
+    payload
+        .strip_prefix(field_name.as_bytes())
+        .and_then(|rest| rest.strip_prefix(b"="))
+        .ok_or_else(|| {
+            SdkError::VerificationError(
+                "directory unique cache payload does not match requested field".to_string(),
+            )
+        })
 }
 
 fn is_journal_subdir_name(name: &str) -> bool {

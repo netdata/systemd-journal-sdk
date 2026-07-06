@@ -8,6 +8,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Current
 
 - None.
+
 ## Pending
 
 - `SOW-0125-20260625-netdata-filter-operators-gap-analysis.md` - open, parked
@@ -28,12 +29,15 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0050-20260528-netdata-vendored-journal-removal.md` - open. Remove old Netdata vendored journal code only after all Netdata component integrations are complete and fresh searches prove no production references remain.
 - `SOW-0097-20260607-go-codacy-metric-debt-refactor.md` - open. Follow-up from the Codacy Rust/Go metrics audit for Go production file-size/ownership and duplication reduction.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
-- `SOW-0131-20260706-go-facade-unique-streaming-and-benchmarks.md` - open.
-  Tracks Go facade stateful unique-enumeration parity and high-cardinality
-  benchmark evidence follow-up from SOW-0129.
-
 ## Done
 
+- `SOW-0131-20260706-directory-unique-cache-and-go-parity.md` - completed.
+  Rust and Go directory readers now keep an exact 8-entry per-open-reader LRU
+  cache of directory-wide unique payloads built from per-file FIELD/DATA
+  chains. Go stateful unique facade enumeration delegates to reader state,
+  live-append invalidation is tested, Go unique refresh preserves entry
+  iteration invariants, docs/specs record the cache memory model, and repeat
+  reviewers found the implementation production-grade.
 - `SOW-0130-20260706-log-writer-sync-on-archive-optout.md` - completed.
   Rust and Go directory writers now expose explicit sync-on-archive opt-out
   while preserving default archive sync behavior; repeat-review repair added

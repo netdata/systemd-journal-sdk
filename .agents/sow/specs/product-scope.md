@@ -609,7 +609,13 @@ Accepted reader API layers:
   FIELD object's DATA chain, decode only matching DATA payloads, and de-duplicate
   across files. This matches systemd's `sd_journal_query_unique()` /
   `sd_journal_enumerate_unique()` algorithmic contract and avoids expanding
-  unrelated entries or fields.
+  unrelated entries or fields. Directory readers keep an exact 8-entry
+  per-open-reader LRU cache of directory-wide unique payloads per requested
+  field and current already-open file header signatures, so repeated directory
+  unique queries and stateful restarts reuse the built index while invalidating
+  when opened-file journal counters or tail metadata change. The cache entry
+  count is bounded, but each entry keeps the full exact unique set for one
+  field.
 - Performance-sensitive readers should use the raw current-entry payload
   visitor/enumeration APIs when they already need byte-level `FIELD=value`
   payloads. Convenience entry materialization APIs may build maps, repeated

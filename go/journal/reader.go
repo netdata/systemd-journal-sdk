@@ -195,6 +195,10 @@ type Reader struct {
 	entryDataOffsetsEntry uint64
 	entryDataIndex        int
 	entryDataActive       bool
+
+	uniqueField         string
+	uniqueHeadOffset    uint64
+	uniqueCurrentOffset uint64
 }
 
 type readerRefreshSnapshot struct {

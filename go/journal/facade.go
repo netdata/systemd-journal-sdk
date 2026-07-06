@@ -24,6 +24,10 @@ type sdReader interface {
 	TestCursor(string) (bool, error)
 	QueryUnique(string) ([][]byte, error)
 	VisitUnique(string, func([]byte) error) error
+	QueryUniqueState(string) error
+	RestartUniqueState() error
+	ClearUniqueState()
+	EnumerateUniquePayload() ([]byte, bool, error)
 	EnumerateFields() (map[string]struct{}, error)
 	AddMatch(data []byte)
 	AddDisjunction()
@@ -42,15 +46,13 @@ type sdReader interface {
 }
 
 type sdJournal struct {
-	reader      sdReader
-	outputMode  string
-	dataItems   [][]byte
-	dataIndex   int
-	readerData  bool
-	fieldItems  []string
-	fieldIndex  int
-	uniqueItems [][]byte
-	uniqueIndex int
+	reader     sdReader
+	outputMode string
+	dataItems  [][]byte
+	dataIndex  int
+	readerData bool
+	fieldItems []string
+	fieldIndex int
 }
 
 type UniqueValue struct {
@@ -309,8 +311,7 @@ func (j *sdJournal) resetIterators() {
 	j.readerData = false
 	j.fieldItems = nil
 	j.fieldIndex = 0
-	j.uniqueItems = nil
-	j.uniqueIndex = 0
+	j.reader.ClearUniqueState()
 	j.reader.ClearEntryDataState()
 }
 
@@ -616,30 +617,15 @@ func SdJournalListBoots(j *sdJournal) ([]BootInfo, error) {
 }
 
 func SdJournalQueryUniqueState(j *sdJournal, field string) error {
-	j.uniqueItems = j.uniqueItems[:0]
-	err := j.reader.VisitUnique(field, func(value []byte) error {
-		j.uniqueItems = append(j.uniqueItems, payloadFromFieldValue(field, value))
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	j.uniqueIndex = 0
-	return nil
+	return j.reader.QueryUniqueState(field)
 }
 
 func SdJournalRestartUnique(j *sdJournal) error {
-	j.uniqueIndex = 0
-	return nil
+	return j.reader.RestartUniqueState()
 }
 
 func SdJournalEnumerateAvailableUnique(j *sdJournal) ([]byte, bool, error) {
-	if j.uniqueIndex >= len(j.uniqueItems) {
-		return nil, false, nil
-	}
-	item := append([]byte(nil), j.uniqueItems[j.uniqueIndex]...)
-	j.uniqueIndex++
-	return item, true, nil
+	return j.reader.EnumerateUniquePayload()
 }
 
 func payloadFromFieldValue(field string, value []byte) []byte {

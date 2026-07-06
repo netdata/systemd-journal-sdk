@@ -16,6 +16,9 @@ func (r *Reader) QueryUnique(fieldName string) ([][]byte, error) {
 }
 
 func (r *Reader) VisitUnique(fieldName string, visit func([]byte) error) error {
+	if err := r.refreshUniqueHeader(); err != nil {
+		return err
+	}
 	field := []byte(fieldName)
 
 	offset, ok, err := r.findFieldHeadDataOffset(field)
@@ -42,6 +45,75 @@ func (r *Reader) VisitUnique(fieldName string, visit func([]byte) error) error {
 	}
 
 	return nil
+}
+
+func (r *Reader) QueryUniqueState(fieldName string) error {
+	r.ClearUniqueState()
+	if err := r.refreshUniqueHeader(); err != nil {
+		return err
+	}
+	offset, ok, err := r.findFieldHeadDataOffset([]byte(fieldName))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		offset = 0
+	}
+	r.uniqueField = fieldName
+	r.uniqueHeadOffset = offset
+	r.uniqueCurrentOffset = offset
+	return nil
+}
+
+func (r *Reader) RestartUniqueState() error {
+	r.uniqueCurrentOffset = r.uniqueHeadOffset
+	return nil
+}
+
+func (r *Reader) ClearUniqueState() {
+	r.uniqueField = ""
+	r.uniqueHeadOffset = 0
+	r.uniqueCurrentOffset = 0
+}
+
+func (r *Reader) EnumerateUniquePayload() ([]byte, bool, error) {
+	if r.uniqueCurrentOffset == 0 {
+		return nil, false, nil
+	}
+	field := []byte(r.uniqueField)
+	offset := r.uniqueCurrentOffset
+	header, err := r.readDataHeaderAt(offset)
+	if err != nil {
+		r.ClearUniqueState()
+		return nil, false, err
+	}
+	r.uniqueCurrentOffset = header.nextFieldOffset
+
+	var out []byte
+	err = r.visitDataPayloadWithHeader(offset, header, func(payload []byte) error {
+		if len(payload) <= len(field) || !bytes.Equal(payload[:len(field)], field) || payload[len(field)] != '=' {
+			return fmt.Errorf("%w: field data object at offset %d does not match %q", errCorruptObject, offset, r.uniqueField)
+		}
+		out = cloneBytes(payload)
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+func (r *Reader) refreshUniqueHeader() error {
+	_, err := r.refreshEntryOffsets()
+	return err
+}
+
+func stripPayloadFieldValue(fieldName string, payload []byte) ([]byte, error) {
+	field := []byte(fieldName)
+	if len(payload) <= len(field) || !bytes.Equal(payload[:len(field)], field) || payload[len(field)] != '=' {
+		return nil, fmt.Errorf("%w: unique payload does not match %q", errCorruptObject, fieldName)
+	}
+	return payload[len(field)+1:], nil
 }
 
 func (r *Reader) EnumerateFields() (map[string]struct{}, error) {

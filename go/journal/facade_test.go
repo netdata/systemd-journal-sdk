@@ -264,6 +264,57 @@ func TestSdJournalCompressedMixedDataPayloadsRemainValidForCurrentRow(t *testing
 	}
 }
 
+func TestSdJournalStatefulUniqueHandlesCompressedPayloadsAndRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "facade-compressed-unique.journal")
+	opts := testOptions()
+	opts.Compression = CompressionZSTD
+	opts.CompressThresholdBytes = 8
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	largeValue := bytes.Repeat([]byte("unique "), 256)
+	if err := w.Append([]Field{
+		{Name: "MESSAGE", Value: largeValue},
+	}, EntryOptions{RealtimeUsec: 1000, MonotonicUsec: 11}); err != nil {
+		t.Fatalf("Append error: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	j, err := SdJournalOpenFiles([]string{path}, 0)
+	if err != nil {
+		t.Fatalf("SdJournalOpenFiles error: %v", err)
+	}
+	defer j.Close()
+
+	if err := SdJournalQueryUniqueState(j, "MESSAGE"); err != nil {
+		t.Fatalf("SdJournalQueryUniqueState error: %v", err)
+	}
+	want := append([]byte("MESSAGE="), largeValue...)
+	payload, ok, err := SdJournalEnumerateAvailableUnique(j)
+	if err != nil {
+		t.Fatalf("SdJournalEnumerateAvailableUnique error: %v", err)
+	}
+	if !ok || !bytes.Equal(payload, want) {
+		t.Fatalf("compressed unique payload = %q, %v; want %q true", payload, ok, want)
+	}
+	if payload, ok, err = SdJournalEnumerateAvailableUnique(j); err != nil || ok || payload != nil {
+		t.Fatalf("compressed unique end = %q, %v, %v; want nil false nil", payload, ok, err)
+	}
+	if err := SdJournalRestartUnique(j); err != nil {
+		t.Fatalf("SdJournalRestartUnique error: %v", err)
+	}
+	payload, ok, err = SdJournalEnumerateAvailableUnique(j)
+	if err != nil {
+		t.Fatalf("restarted SdJournalEnumerateAvailableUnique error: %v", err)
+	}
+	if !ok || !bytes.Equal(payload, want) {
+		t.Fatalf("restarted compressed unique payload = %q, %v; want %q true", payload, ok, want)
+	}
+}
+
 func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jf-facade.journal")

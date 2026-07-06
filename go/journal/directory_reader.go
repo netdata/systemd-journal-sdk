@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const directoryUniqueCacheCapacity = 8
+
 // DirectoryReader reads multiple journal files in journal order. A
 // DirectoryReader is not safe for concurrent use by multiple goroutines.
 type DirectoryReader struct {
@@ -25,6 +27,10 @@ type DirectoryReader struct {
 	hasDirection      bool
 	bootNewest        map[UUID]directoryBootNewest
 	nonOverlapping    bool
+	uniqueCache       map[directoryUniqueCacheKey][][]byte
+	uniqueCacheOrder  []directoryUniqueCacheKey
+	uniqueState       *directoryUniqueState
+	uniqueCacheBuilds int
 }
 
 func OpenDirectory(path string) (*DirectoryReader, error) {
@@ -111,6 +117,7 @@ func newDirectoryReader(readers []*Reader, allowEmpty bool) (*DirectoryReader, e
 		candidates:     make([]*directoryCandidate, len(readers)),
 		bootNewest:     buildDirectoryBootNewest(readers),
 		nonOverlapping: directoryFilesNonOverlapping(readers),
+		uniqueCache:    make(map[directoryUniqueCacheKey][][]byte),
 	}, nil
 }
 
@@ -154,6 +161,13 @@ type directoryBootNewest struct {
 	machineID UUID
 	monotonic uint64
 	realtime  uint64
+}
+
+type directoryUniqueCacheKey string
+
+type directoryUniqueState struct {
+	key   directoryUniqueCacheKey
+	index int
 }
 
 func isJournalFileName(name string) bool {
@@ -471,26 +485,179 @@ func (dr *DirectoryReader) QueryUnique(fieldName string) ([][]byte, error) {
 }
 
 func (dr *DirectoryReader) VisitUnique(fieldName string, visit func([]byte) error) error {
-	if len(dr.files) == 1 {
-		return dr.files[0].VisitUnique(fieldName, visit)
+	key, err := dr.ensureUniqueCache(fieldName)
+	if err != nil {
+		return err
 	}
-
-	unique := make(map[string]struct{})
-	for _, r := range dr.files {
-		err := r.VisitUnique(fieldName, func(value []byte) error {
-			key := string(value)
-			if _, exists := unique[key]; !exists {
-				unique[key] = struct{}{}
-				return visit(value)
-			}
-			return nil
-		})
+	for _, payload := range dr.uniqueCache[key] {
+		value, err := stripPayloadFieldValue(fieldName, payload)
 		if err != nil {
 			return err
 		}
+		if err := visit(value); err != nil {
+			return err
+		}
 	}
-
 	return nil
+}
+
+func (dr *DirectoryReader) QueryUniqueState(fieldName string) error {
+	dr.ClearUniqueState()
+	key, err := dr.ensureUniqueCache(fieldName)
+	if err != nil {
+		return err
+	}
+	dr.uniqueState = &directoryUniqueState{key: key}
+	return nil
+}
+
+func (dr *DirectoryReader) RestartUniqueState() error {
+	if dr.uniqueState != nil {
+		dr.uniqueState.index = 0
+	}
+	return nil
+}
+
+func (dr *DirectoryReader) ClearUniqueState() {
+	dr.uniqueState = nil
+	for _, r := range dr.files {
+		r.ClearUniqueState()
+	}
+}
+
+func (dr *DirectoryReader) EnumerateUniquePayload() ([]byte, bool, error) {
+	if dr.uniqueState == nil {
+		return nil, false, nil
+	}
+	payloads := dr.uniqueCache[dr.uniqueState.key]
+	if payloads == nil {
+		return nil, false, fmt.Errorf("directory unique state references a missing cache entry")
+	}
+	if dr.uniqueState.index >= len(payloads) {
+		return nil, false, nil
+	}
+	payload := cloneBytes(payloads[dr.uniqueState.index])
+	dr.uniqueState.index++
+	return payload, true, nil
+}
+
+func (dr *DirectoryReader) ensureUniqueCache(fieldName string) (directoryUniqueCacheKey, error) {
+	if err := dr.refreshUniqueHeaders(); err != nil {
+		return "", err
+	}
+	key := dr.uniqueCacheKey(fieldName)
+	if _, ok := dr.uniqueCache[key]; ok {
+		dr.touchUniqueCacheKey(key)
+		return key, nil
+	}
+	payloads, err := dr.buildUniqueCachePayloads(fieldName)
+	if err != nil {
+		return "", err
+	}
+	refreshedKey := dr.uniqueCacheKey(fieldName)
+	if refreshedKey != key {
+		payloads, err = dr.buildUniqueCachePayloads(fieldName)
+		if err != nil {
+			return "", err
+		}
+	}
+	finalKey := key
+	if refreshedKey != key {
+		finalKey = refreshedKey
+	}
+	dr.uniqueCache[finalKey] = payloads
+	dr.touchUniqueCacheKey(finalKey)
+	dr.enforceUniqueCacheCapacity()
+	dr.uniqueCacheBuilds++
+	return finalKey, nil
+}
+
+func (dr *DirectoryReader) refreshUniqueHeaders() error {
+	for _, r := range dr.files {
+		if err := r.refreshUniqueHeader(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (dr *DirectoryReader) touchUniqueCacheKey(key directoryUniqueCacheKey) {
+	for i, existing := range dr.uniqueCacheOrder {
+		if existing == key {
+			copy(dr.uniqueCacheOrder[i:], dr.uniqueCacheOrder[i+1:])
+			dr.uniqueCacheOrder = dr.uniqueCacheOrder[:len(dr.uniqueCacheOrder)-1]
+			break
+		}
+	}
+	dr.uniqueCacheOrder = append(dr.uniqueCacheOrder, key)
+}
+
+func (dr *DirectoryReader) enforceUniqueCacheCapacity() {
+	var activeKey directoryUniqueCacheKey
+	var hasActiveKey bool
+	if dr.uniqueState != nil {
+		activeKey = dr.uniqueState.key
+		hasActiveKey = true
+	}
+	skippedActive := false
+	for len(dr.uniqueCacheOrder) > directoryUniqueCacheCapacity {
+		evicted := dr.uniqueCacheOrder[0]
+		dr.uniqueCacheOrder = dr.uniqueCacheOrder[1:]
+		if hasActiveKey && evicted == activeKey {
+			if skippedActive {
+				dr.uniqueCacheOrder = append([]directoryUniqueCacheKey{evicted}, dr.uniqueCacheOrder...)
+				return
+			}
+			dr.uniqueCacheOrder = append(dr.uniqueCacheOrder, evicted)
+			skippedActive = true
+			continue
+		}
+		delete(dr.uniqueCache, evicted)
+	}
+}
+
+func (dr *DirectoryReader) buildUniqueCachePayloads(fieldName string) ([][]byte, error) {
+	seen := make(map[string]struct{})
+	payloads := make([][]byte, 0)
+	for _, r := range dr.files {
+		err := r.VisitUnique(fieldName, func(value []byte) error {
+			key := string(value)
+			if _, exists := seen[key]; exists {
+				return nil
+			}
+			seen[key] = struct{}{}
+			payloads = append(payloads, payloadFromFieldValue(fieldName, value))
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return payloads, nil
+}
+
+func (dr *DirectoryReader) uniqueCacheKey(fieldName string) directoryUniqueCacheKey {
+	var b strings.Builder
+	b.WriteString(fieldName)
+	for _, r := range dr.files {
+		h := r.header
+		fmt.Fprintf(
+			&b,
+			"|%s:%d:%d:%d:%d:%d:%d:%d:%d:%d:%s",
+			h.fileID.String(),
+			h.nObjects,
+			h.nEntries,
+			h.nData,
+			h.nFields,
+			h.headEntrySeqnum,
+			h.tailEntrySeqnum,
+			h.headEntryRealtime,
+			h.tailEntryRealtime,
+			h.tailEntryMonotonic,
+			h.tailEntryBootID.String(),
+		)
+	}
+	return directoryUniqueCacheKey(b.String())
 }
 
 func (dr *DirectoryReader) EnumerateFields() (map[string]struct{}, error) {

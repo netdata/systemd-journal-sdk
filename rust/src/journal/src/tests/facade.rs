@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[test]
 fn facade_uncompressed_data_uses_mmap_payload_for_whole_file_reader() {
@@ -460,7 +461,9 @@ fn directory_reader_query_unique_deduplicates_indexed_values_across_files() {
     second_file.sync().expect("sync second");
 
     let mut reader = DirectoryReader::open_files([&first_path, &second_path]).expect("open files");
+    assert_eq!(reader.unique_cache_builds_for_tests(), 0);
     let values = reader.query_unique("PRIORITY").expect("query unique");
+    assert_eq!(reader.unique_cache_builds_for_tests(), 1);
     let got: HashSet<Vec<u8>> = values.into_iter().collect();
     let want: HashSet<Vec<u8>> = [b"3", b"6"].into_iter().map(|v| v.to_vec()).collect();
     assert_eq!(got, want);
@@ -472,12 +475,22 @@ fn directory_reader_query_unique_deduplicates_indexed_values_across_files() {
             Ok(())
         })
         .expect("visit unique");
+    assert_eq!(
+        reader.unique_cache_builds_for_tests(),
+        1,
+        "same-field directory unique visit should reuse the cached index"
+    );
     let got: HashSet<Vec<u8>> = visited.into_iter().collect();
     assert_eq!(got, want);
 
     reader
         .query_unique_state("PRIORITY")
         .expect("query direct stateful unique");
+    assert_eq!(
+        reader.unique_cache_builds_for_tests(),
+        1,
+        "stateful directory unique query should reuse the cached index"
+    );
     let first_payload = reader
         .enumerate_unique_payload()
         .expect("enumerate first direct unique")
@@ -498,6 +511,11 @@ fn directory_reader_query_unique_deduplicates_indexed_values_across_files() {
     assert_eq!(got, direct_want);
 
     reader.restart_unique_state();
+    assert_eq!(
+        reader.unique_cache_builds_for_tests(),
+        1,
+        "restart should not rebuild the directory unique cache"
+    );
     reader.seek_tail();
     let mut restarted_direct = Vec::new();
     while let Some(payload) = reader
@@ -542,6 +560,150 @@ fn directory_reader_query_unique_deduplicates_indexed_values_across_files() {
     assert_eq!(restarted.len(), want.len());
     let got: HashSet<Vec<u8>> = restarted.into_iter().collect();
     assert_eq!(got, want);
+}
+
+#[test]
+fn directory_reader_unique_cache_high_cardinality_reuses_index() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let paths: Vec<_> = (0..3)
+        .map(|idx| {
+            dir.path()
+                .join(format!("journals/high-cardinality-{idx}.journal"))
+        })
+        .collect();
+
+    for (file_idx, path) in paths.iter().enumerate() {
+        let (mut journal_file, mut writer) = create_facade_test_writer(path);
+        for value_idx in 0..250 {
+            let unique = format!("UNIQUE_ID=value-{value_idx:04}");
+            writer
+                .add_entry(
+                    &mut journal_file,
+                    &[unique.as_bytes()],
+                    10_000 + (file_idx as u64 * 1_000) + value_idx as u64,
+                    100 + (file_idx as u64 * 1_000) + value_idx as u64,
+                )
+                .expect("write high-cardinality entry");
+        }
+        journal_file.sync().expect("sync high-cardinality journal");
+    }
+
+    let mut reader =
+        DirectoryReader::open_files(paths.iter()).expect("open high-cardinality files");
+
+    let cold_start = Instant::now();
+    reader
+        .query_unique_state("UNIQUE_ID")
+        .expect("query high-cardinality unique state");
+    let mut count = 0;
+    while reader
+        .enumerate_unique_payload()
+        .expect("enumerate high-cardinality unique")
+        .is_some()
+    {
+        count += 1;
+    }
+    let cold_elapsed = cold_start.elapsed();
+    assert_eq!(count, 250);
+    assert_eq!(reader.unique_cache_builds_for_tests(), 1);
+
+    let cached_start = Instant::now();
+    reader.restart_unique_state();
+    let mut restarted = 0;
+    while reader
+        .enumerate_unique_payload()
+        .expect("enumerate cached high-cardinality unique")
+        .is_some()
+    {
+        restarted += 1;
+    }
+    let cached_elapsed = cached_start.elapsed();
+    assert_eq!(restarted, 250);
+    assert_eq!(reader.unique_cache_builds_for_tests(), 1);
+    eprintln!(
+        "directory unique high-cardinality: cold_build={cold_elapsed:?} cached_restart={cached_elapsed:?}"
+    );
+}
+
+#[test]
+fn directory_reader_unique_state_survives_cache_pressure() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("journals/cache-pressure.journal");
+    let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+    let cache_fields: Vec<Vec<u8>> = (0..10)
+        .map(|idx| format!("CACHE_{idx:02}=value-{idx:02}").into_bytes())
+        .collect();
+    let mut first_entry: Vec<&[u8]> = vec![b"ACTIVE=one".as_slice()];
+    first_entry.extend(cache_fields.iter().map(Vec::as_slice));
+    writer
+        .add_entry(&mut journal_file, &first_entry, 10_000, 100)
+        .expect("write first cache-pressure entry");
+    writer
+        .add_entry(&mut journal_file, &[b"ACTIVE=two".as_slice()], 10_001, 101)
+        .expect("write second cache-pressure entry");
+    journal_file.sync().expect("sync cache-pressure journal");
+
+    let mut reader =
+        DirectoryReader::open(&dir.path().join("journals")).expect("open cache-pressure directory");
+    reader
+        .query_unique_state("ACTIVE")
+        .expect("query active unique state");
+    let mut active = vec![
+        reader
+            .enumerate_unique_payload()
+            .expect("enumerate first active unique")
+            .expect("first active unique payload"),
+    ];
+
+    for idx in 0..10 {
+        let field = format!("CACHE_{idx:02}");
+        let values = reader.query_unique(&field).expect("query pressure field");
+        assert_eq!(values, vec![format!("value-{idx:02}").into_bytes()]);
+    }
+
+    while let Some(payload) = reader
+        .enumerate_unique_payload()
+        .expect("active unique enumeration survives cache pressure")
+    {
+        active.push(payload);
+    }
+    let got: HashSet<Vec<u8>> = active.into_iter().collect();
+    let want: HashSet<Vec<u8>> = [b"ACTIVE=one".to_vec(), b"ACTIVE=two".to_vec()]
+        .into_iter()
+        .collect();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn directory_reader_unique_cache_invalidates_after_live_append() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("journals/live-unique.journal");
+    let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+    writer
+        .add_entry(&mut journal_file, &[b"HOST=host-a".as_slice()], 10_000, 100)
+        .expect("write initial entry");
+    journal_file.sync().expect("sync initial entry");
+
+    let mut reader =
+        DirectoryReader::open(&dir.path().join("journals")).expect("open live directory");
+    let values = reader.query_unique("HOST").expect("initial unique query");
+    assert_eq!(values, vec![b"host-a".to_vec()]);
+    assert_eq!(reader.unique_cache_builds_for_tests(), 1);
+
+    writer
+        .add_entry(&mut journal_file, &[b"HOST=host-b".as_slice()], 10_001, 101)
+        .expect("append live entry");
+    journal_file.sync().expect("sync appended entry");
+
+    let values = reader
+        .query_unique("HOST")
+        .expect("post-append unique query");
+    let got: HashSet<Vec<u8>> = values.into_iter().collect();
+    let want: HashSet<Vec<u8>> = [b"host-a".to_vec(), b"host-b".to_vec()]
+        .into_iter()
+        .collect();
+    assert_eq!(got, want);
+    assert_eq!(reader.unique_cache_builds_for_tests(), 2);
 }
 
 #[test]
