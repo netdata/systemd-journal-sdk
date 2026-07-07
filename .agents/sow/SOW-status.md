@@ -1,10 +1,13 @@
 # SOW Status
 
-Last updated: 2026-07-06
+Last updated: 2026-07-07
 
 ## Current
 
-- None.
+- SOW-0132 - v0.7.7 Release: in-progress. Preparing and publishing the
+  `0.7.7` Rust/Go SDK patch release for completed SOW-0127 through SOW-0131
+  work. Scope is SDK release only; broader Netdata integration remains outside
+  this repository.
 
 ## Pending
 
