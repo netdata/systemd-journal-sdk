@@ -2,9 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: pre-implementation gate ready; implementation starting.
+Sub-state: `0.7.8` is published and verified; Netdata PR #23033 consumes the
+release for NetFlow and SNMP traps.
 
 ## Requirements
 
@@ -238,6 +239,18 @@ Failure handling:
   release-prep commit. The remaining publish dry-runs must run one package at a
   time immediately before upload, because dependent crates need the previous
   `0.7.8` package to be visible in the crates.io index.
+- Release-prep commit `6705aee5c0fa22f58deacc0b33a5ee60f2b7bac6` was pushed to
+  `master`.
+- Rust publish dry-runs and publication completed in dependency order:
+  common, registry, core, host, log-writer, index, engine, and public SDK.
+- Annotated tags `v0.7.8` and `go/v0.7.8` were pushed and verified to peel to
+  `6705aee5c0fa22f58deacc0b33a5ee60f2b7bac6`.
+- `go list -m github.com/netdata/systemd-journal-sdk/go@v0.7.8` resolved.
+- `cargo info <package>@0.7.8` showed all eight Rust packages visible on
+  crates.io.
+- Netdata PR #23033 was updated with commit
+  `74ee6c011f` so NetFlow Rust SDK crates and the SNMP traps Go module consume
+  `0.7.8`.
 
 ## Validation
 
@@ -259,20 +272,42 @@ Acceptance criteria evidence:
 
 Tests or equivalent validation:
 
-- PASS: `gofmt -w go/journalhost/load.go go/journalhost/load_linux.go go/journalhost/load_linux_test.go`
-- PASS: `git diff --check`
-- PASS: `cargo fmt --manifest-path rust/Cargo.toml --all --check`
-- PASS: `go test ./...` from `go/`
-- PASS: `cargo test --manifest-path rust/Cargo.toml --workspace --locked`
-- PASS: `python3 tests/docs/check_wiki_docs.py`
-- PASS: `python3 tests/docs/verify_examples.py --timeout 60`
+- Passed: `gofmt -w go/journalhost/load.go go/journalhost/load_linux.go go/journalhost/load_linux_test.go`
+- Passed: `git diff --check`
+- Passed: `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+- Passed: `go test ./...` from `go/`
+- Passed: `cargo test --manifest-path rust/Cargo.toml --workspace --locked`
+- Passed: `python3 tests/docs/check_wiki_docs.py`
+- Passed: `python3 tests/docs/verify_examples.py --timeout 60`
 - Passed: `.agents/sow/audit.sh`
-- PASS: `cargo publish --manifest-path rust/src/crates/journal-common/Cargo.toml --dry-run --allow-dirty`
+- Passed: `cargo publish --manifest-path rust/src/crates/journal-common/Cargo.toml --dry-run --allow-dirty`
+- Passed: `cargo publish --manifest-path <package> --dry-run` for each published
+  Rust package before upload.
+- Passed: `git ls-remote --tags origin refs/tags/v0.7.8 refs/tags/v0.7.8^{} refs/tags/go/v0.7.8 refs/tags/go/v0.7.8^{}`
+- Passed: `go list -m github.com/netdata/systemd-journal-sdk/go@v0.7.8`
+- Passed: `cargo info <package>@0.7.8` for all eight Rust packages.
+- Netdata validation passed:
+  - `cargo test --manifest-path src/crates/Cargo.toml --locked -p netflow-plugin`
+  - `go test ./plugin/go.d/collector/snmp_traps/...`
+  - `go test -race ./pkg/pluginconfig ./plugin/go.d/collector/snmp_traps/... ./plugin/agent/jobmgr`
+  - `git diff --check`
 
 Real-use evidence:
 
-- Pre-release real-use evidence is local only. Public package, tag, and Go
-  module resolution evidence will be recorded after release publication.
+- Rust crates published at `0.7.8`:
+  `systemd-journal-sdk-common`, `systemd-journal-sdk-registry`,
+  `systemd-journal-sdk-core`, `systemd-journal-sdk-host`,
+  `systemd-journal-sdk-log-writer`, `systemd-journal-sdk-index`,
+  `systemd-journal-sdk-engine`, and `systemd-journal-sdk`.
+- Remote tag verification:
+  - `refs/tags/v0.7.8^{}` peels to
+    `6705aee5c0fa22f58deacc0b33a5ee60f2b7bac6`.
+  - `refs/tags/go/v0.7.8^{}` peels to
+    `6705aee5c0fa22f58deacc0b33a5ee60f2b7bac6`.
+- Go module lookup resolved
+  `github.com/netdata/systemd-journal-sdk/go v0.7.8`.
+- Netdata PR #23033 now points its Rust NetFlow and Go SNMP traps SDK
+  dependencies at `0.7.8`.
 
 Reviewer findings:
 
@@ -307,9 +342,8 @@ Artifact maintenance gate:
 - End-user/operator docs: updated README/helper docs for host machine and boot
   identity.
 - End-user/operator skills: no output/reference skills exist or were affected.
-- SOW lifecycle: current SOW remains in-progress until release and Netdata
-  integration are complete.
-- SOW-status.md: updated to show SOW-0133 current.
+- SOW lifecycle: SOW is completed and moved to `done/` during closeout.
+- SOW-status.md: updated to show SOW-0133 completed.
 
 Specs update:
 
@@ -341,7 +375,14 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending release publication and Netdata dependency update.
+Released SDK version `0.7.8` and updated Netdata PR #23033 to consume it.
+
+- Rust crates are published to crates.io at `0.7.8`.
+- Root release tag `v0.7.8` is pushed and verified.
+- Go submodule tag `go/v0.7.8` is pushed and verified.
+- Go module lookup resolves `github.com/netdata/systemd-journal-sdk/go v0.7.8`.
+- Netdata branch `codex/systemd-journal-sdk-0.7.7` contains commit
+  `74ee6c011f` updating the PR dependency pins to `0.7.8`.
 
 ## Lessons Extracted
 
@@ -351,4 +392,5 @@ Pending release publication and Netdata dependency update.
 
 ## Followup
 
-None for the SDK behavior. Netdata dependency update is part of this same SOW.
+None. The SDK behavior and the Netdata dependency update required by the user
+request are complete.

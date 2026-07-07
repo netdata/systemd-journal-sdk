@@ -4,10 +4,7 @@ Last updated: 2026-07-07
 
 ## Current
 
-- SOW-0133 - v0.7.8 Host-Prefix Boot-ID Release: in-progress. Fixes Linux
-  optional journalhost helper host-prefix behavior so explicit host prefixes
-  apply to boot-id as well as machine-id, then releases `0.7.8` and updates the
-  Netdata NetFlow/SNMP traps integration.
+- None.
 
 ## Pending
 
@@ -44,6 +41,17 @@ Last updated: 2026-07-07
   decisions. Not executable until the user explicitly resumes it.
 ## Recently Closed Or Completed
 
+- SOW-0133 - v0.7.8 Host-Prefix Boot-ID Release: completed. Linux optional
+  journalhost helpers now apply explicit host filesystem prefixes to boot-id as
+  well as machine-id. Rust crates were published to crates.io at `0.7.8`,
+  release-prep commit `6705aee5c0fa22f58deacc0b33a5ee60f2b7bac6` was pushed to
+  `master`, and annotated tags `v0.7.8` plus `go/v0.7.8` were pushed; both peel
+  to the same release commit. Go module lookup resolved
+  `github.com/netdata/systemd-journal-sdk/go v0.7.8`, crates.io `cargo info`
+  showed all eight Rust packages at `0.7.8`, SDK validation passed Rust
+  workspace tests, Go module tests, docs checks, verified examples, whitespace
+  checks, SOW audit, and Rust publish dry-runs, and Netdata PR #23033 was
+  updated to consume `0.7.8` for NetFlow and SNMP traps.
 - SOW-0132 - v0.7.7 Release: completed. Rust crates were published to
   crates.io at `0.7.7`, release-prep commit
   `735ff04072f783c0c9ca8f1cadc688ccf7edb239` was pushed to `master`, and
