@@ -120,7 +120,8 @@ impl LoadOptions {
     ///
     /// This is opt-in. When set on Linux, machine-id resolution checks
     /// `<prefix>/etc/machine-id` and `<prefix>/var/lib/dbus/machine-id` before
-    /// the container-local paths.
+    /// the container-local paths, and boot-id resolution checks
+    /// `<prefix>/proc/sys/kernel/random/boot_id` before the container-local path.
     pub fn with_host_filesystem_prefix(mut self, path: impl Into<PathBuf>) -> Self {
         self.host_filesystem_prefix = Some(path.into());
         self

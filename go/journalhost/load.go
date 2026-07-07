@@ -40,7 +40,9 @@ type LoadOptions struct {
 	// HostFilesystemPrefix resolves Linux host identity from a mounted host
 	// filesystem prefix. When set on Linux, machine-id resolution checks
 	// <prefix>/etc/machine-id and <prefix>/var/lib/dbus/machine-id before
-	// container-local paths. The zero value keeps default behavior unchanged.
+	// container-local paths, and boot-id resolution checks
+	// <prefix>/proc/sys/kernel/random/boot_id before the container-local path.
+	// The zero value keeps default behavior unchanged.
 	HostFilesystemPrefix string
 }
 

@@ -116,9 +116,10 @@ Platform behavior:
   timestamps. Callers that need collector-host values can opt into the
   `journalhost` helper and pass its results to the writer explicitly. On Linux,
   containerized callers can set `journalhost.LoadOptions.HostFilesystemPrefix`
-  to a mount such as `/host` when they intentionally want host machine identity.
-  Missing host files fall back to container-local files; present invalid host
-  files return an error so collectors do not silently switch identity.
+  to a mount such as `/host` when they intentionally want host machine and boot
+  identity. Missing host files fall back to container-local files; present
+  invalid host files return an error so collectors do not silently switch
+  identity.
 - Optional writer locking is a separate helper acquired with
   `journal.AcquireWriterLock(path)`. Linux uses procfs boot/process-start
   evidence; FreeBSD and macOS use native boot-time plus conservative process

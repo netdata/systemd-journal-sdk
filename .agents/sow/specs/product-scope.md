@@ -503,15 +503,16 @@ Current shared high-level directory writer API slice:
 - Per-platform host-helper source matrix (native APIs only; no subprocess, no
   CGO):
   - Linux: machine ID `/etc/machine-id` then `/var/lib/dbus/machine-id` by
-    default. When callers explicitly configure a host filesystem prefix, the
-    helper checks `<prefix>/etc/machine-id` and
-    `<prefix>/var/lib/dbus/machine-id` before the container-local paths so
-    containerized collectors can intentionally use host identity. Missing
-    host-prefixed machine-id files fall back to container-local paths; present
-    but invalid host-prefixed files fail instead of silently switching identity.
-    Parsed machine IDs must be non-zero. Boot ID remains
-    `/proc/sys/kernel/random/boot_id`; monotonic remains
-    `clock_gettime(CLOCK_MONOTONIC)`.
+    default; boot ID `/proc/sys/kernel/random/boot_id`; monotonic
+    `clock_gettime(CLOCK_MONOTONIC)`. When callers explicitly configure a host
+    filesystem prefix, the helper checks `<prefix>/etc/machine-id` and
+    `<prefix>/var/lib/dbus/machine-id` before the container-local paths, and
+    checks `<prefix>/proc/sys/kernel/random/boot_id` before the
+    container-local boot-id path, so containerized collectors can intentionally
+    use host machine and boot identity. Missing host-prefixed identity files
+    fall back to container-local paths; present but invalid host-prefixed files
+    fail instead of silently switching identity. Parsed machine IDs must be
+    non-zero.
   - FreeBSD 13+: machine ID `kern.hostuuid` sysctl (validate and reject
     all-zero jail sentinel); boot ID native `kern.boot_id`; monotonic
     `clock_gettime(CLOCK_UPTIME)`. FreeBSD 12 or environments where

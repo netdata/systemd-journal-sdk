@@ -4,7 +4,10 @@ Last updated: 2026-07-07
 
 ## Current
 
-- None.
+- SOW-0133 - v0.7.8 Host-Prefix Boot-ID Release: in-progress. Fixes Linux
+  optional journalhost helper host-prefix behavior so explicit host prefixes
+  apply to boot-id as well as machine-id, then releases `0.7.8` and updates the
+  Netdata NetFlow/SNMP traps integration.
 
 ## Pending
 

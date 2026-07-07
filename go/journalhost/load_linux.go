@@ -24,7 +24,7 @@ func loadPlatform(opts LoadOptions) (*Provider, *Diagnostics, error) {
 		return nil, nil, fmt.Errorf("journalhost: machine id: %w", err)
 	}
 	diag.MachineIDSource = machineIDSource
-	bootID, err := loadLinuxBootID()
+	bootID, err := loadLinuxBootID(opts)
 	if err != nil {
 		reason := fmt.Sprintf("linux boot_id unavailable: %v", err)
 		bootID, err = freshDegradedBootID(opts, reason)
@@ -91,8 +91,27 @@ func readMachineIDFile(path string) (journal.UUID, error) {
 	return id, nil
 }
 
-func loadLinuxBootID() (journal.UUID, error) {
-	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+func loadLinuxBootID(opts LoadOptions) (journal.UUID, error) {
+	return loadLinuxBootIDFromRoot("/", opts.HostFilesystemPrefix)
+}
+
+func loadLinuxBootIDFromRoot(root string, hostFilesystemPrefix string) (journal.UUID, error) {
+	const rel = "proc/sys/kernel/random/boot_id"
+	if hostFilesystemPrefix != "" {
+		source := "linux:" + displayPrefixedPath(hostFilesystemPrefix, rel)
+		id, err := readBootIDFile(filepath.Join(rootedPath(root, hostFilesystemPrefix), rel))
+		if err == nil {
+			return id, nil
+		}
+		if !os.IsNotExist(err) {
+			return journal.UUID{}, fmt.Errorf("host boot id: %s: %w", source, err)
+		}
+	}
+	return readBootIDFile(filepath.Join(root, rel))
+}
+
+func readBootIDFile(path string) (journal.UUID, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return journal.UUID{}, err
 	}

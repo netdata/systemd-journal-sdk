@@ -8,14 +8,15 @@ use uuid::Uuid;
 pub(crate) fn load(options: LoadOptions) -> io::Result<LocalJournalProvider> {
     let (machine_id, machine_id_source) =
         load_machine_id(options.host_filesystem_prefix.as_deref())?;
-    let (boot_id, boot_id_source, degraded_reason) = match load_boot_id() {
-        Ok(id) => (id, crate::BootIdSource::Native, None),
-        Err(err) => (
-            Uuid::new_v4(),
-            crate::BootIdSource::Degraded,
-            Some(format!("linux boot_id unavailable: {err}")),
-        ),
-    };
+    let (boot_id, boot_id_source, degraded_reason) =
+        match load_boot_id(options.host_filesystem_prefix.as_deref()) {
+            Ok(id) => (id, crate::BootIdSource::Native, None),
+            Err(err) => (
+                Uuid::new_v4(),
+                crate::BootIdSource::Degraded,
+                Some(format!("linux boot_id unavailable: {err}")),
+            ),
+        };
     let mut diagnostics = Diagnostics {
         machine_id_source,
         boot_id_source,
@@ -114,9 +115,33 @@ fn display_prefixed_path(prefix: &Path, rel: &Path) -> String {
     }
 }
 
-fn load_boot_id() -> io::Result<Uuid> {
-    let text = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+fn load_boot_id(host_filesystem_prefix: Option<&Path>) -> io::Result<Uuid> {
+    load_boot_id_from_root(Path::new("/"), host_filesystem_prefix)
+}
+
+fn load_boot_id_from_root(root: &Path, host_filesystem_prefix: Option<&Path>) -> io::Result<Uuid> {
+    let rel = Path::new("proc/sys/kernel/random/boot_id");
+    if let Some(prefix) = host_filesystem_prefix.filter(|path| !path.as_os_str().is_empty()) {
+        let source = format!("linux:{}", display_prefixed_path(prefix, rel));
+        match read_boot_id_candidate(&rooted_path(root, prefix).join(rel), &source) {
+            Ok(id) => return Ok(id),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    read_boot_id_candidate(&root.join(rel), "linux:/proc/sys/kernel/random/boot_id")
+}
+
+fn read_boot_id_candidate(path: &Path, source: &str) -> io::Result<Uuid> {
+    let text = fs::read_to_string(path).map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            err
+        } else {
+            io::Error::new(err.kind(), format!("failed to read {source}: {err}"))
+        }
+    })?;
     parse_uuid_text(&text)
+        .map_err(|err| io::Error::new(err.kind(), format!("failed to read {source}: {err}")))
 }
 
 #[cfg(test)]
@@ -128,6 +153,8 @@ mod tests {
     const CONTAINER_ID: &str = "00112233445566778899aabbccddeeff";
     const HOST_ID: &str = "ffeeddccbbaa99887766554433221100";
     const DBUS_ID: &str = "0123456789abcdef0123456789abcdef";
+    const CONTAINER_BOOT_ID: &str = "11111111111111111111111111111111";
+    const HOST_BOOT_ID: &str = "22222222222222222222222222222222";
 
     #[test]
     fn machine_id_uses_container_paths_by_default() {
@@ -212,7 +239,86 @@ mod tests {
         assert_eq!(source, "linux:/etc/machine-id");
     }
 
+    #[test]
+    fn boot_id_uses_container_path_by_default() {
+        let dir = TempDir::new().unwrap();
+        write_boot_id(
+            dir.path(),
+            "proc/sys/kernel/random/boot_id",
+            CONTAINER_BOOT_ID,
+        );
+        write_boot_id(
+            dir.path(),
+            "host/proc/sys/kernel/random/boot_id",
+            HOST_BOOT_ID,
+        );
+
+        let id = load_boot_id_from_root(dir.path(), None).unwrap();
+
+        assert_eq!(id, Uuid::parse_str(CONTAINER_BOOT_ID).unwrap());
+    }
+
+    #[test]
+    fn boot_id_prefers_explicit_host_prefix() {
+        let dir = TempDir::new().unwrap();
+        write_boot_id(
+            dir.path(),
+            "proc/sys/kernel/random/boot_id",
+            CONTAINER_BOOT_ID,
+        );
+        write_boot_id(
+            dir.path(),
+            "host/proc/sys/kernel/random/boot_id",
+            HOST_BOOT_ID,
+        );
+
+        let id = load_boot_id_from_root(dir.path(), Some(Path::new("/host"))).unwrap();
+
+        assert_eq!(id, Uuid::parse_str(HOST_BOOT_ID).unwrap());
+    }
+
+    #[test]
+    fn boot_id_falls_back_when_host_prefix_absent() {
+        let dir = TempDir::new().unwrap();
+        write_boot_id(
+            dir.path(),
+            "proc/sys/kernel/random/boot_id",
+            CONTAINER_BOOT_ID,
+        );
+
+        let id = load_boot_id_from_root(dir.path(), Some(Path::new("/host"))).unwrap();
+
+        assert_eq!(id, Uuid::parse_str(CONTAINER_BOOT_ID).unwrap());
+    }
+
+    #[test]
+    fn boot_id_errors_on_invalid_explicit_host_prefix_file() {
+        let dir = TempDir::new().unwrap();
+        write_boot_id(
+            dir.path(),
+            "proc/sys/kernel/random/boot_id",
+            CONTAINER_BOOT_ID,
+        );
+        write_text(
+            dir.path(),
+            "host/proc/sys/kernel/random/boot_id",
+            "not-a-boot-id\n",
+        );
+
+        let err = load_boot_id_from_root(dir.path(), Some(Path::new("/host"))).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("linux:/host/proc/sys/kernel/random/boot_id")
+        );
+    }
+
     fn write_machine_id(root: &Path, rel: &str, value: &str) {
+        write_text(root, rel, &format!("{value}\n"));
+    }
+
+    fn write_boot_id(root: &Path, rel: &str, value: &str) {
         write_text(root, rel, &format!("{value}\n"));
     }
 

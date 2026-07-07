@@ -15,6 +15,8 @@ const (
 	testContainerMachineID = "00112233445566778899aabbccddeeff"
 	testHostMachineID      = "ffeeddccbbaa99887766554433221100"
 	testDBusMachineID      = "0123456789abcdef0123456789abcdef"
+	testContainerBootID    = "11111111111111111111111111111111"
+	testHostBootID         = "22222222222222222222222222222222"
 )
 
 func TestLinuxMachineIDUsesContainerPathsByDefault(t *testing.T) {
@@ -132,7 +134,60 @@ func TestLinuxMachineIDEmptyHostPrefixKeepsContainerDefault(t *testing.T) {
 	}
 }
 
+func TestLinuxBootIDUsesContainerPathByDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeBootID(t, dir, "proc/sys/kernel/random/boot_id", testContainerBootID)
+	writeBootID(t, dir, "host/proc/sys/kernel/random/boot_id", testHostBootID)
+
+	id, err := loadLinuxBootIDFromRoot(dir, "")
+	if err != nil {
+		t.Fatalf("loadLinuxBootIDFromRoot() error = %v", err)
+	}
+	assertBootID(t, id, testContainerBootID)
+}
+
+func TestLinuxBootIDPrefersExplicitHostPrefix(t *testing.T) {
+	dir := t.TempDir()
+	writeBootID(t, dir, "proc/sys/kernel/random/boot_id", testContainerBootID)
+	writeBootID(t, dir, "host/proc/sys/kernel/random/boot_id", testHostBootID)
+
+	id, err := loadLinuxBootIDFromRoot(dir, "/host")
+	if err != nil {
+		t.Fatalf("loadLinuxBootIDFromRoot() error = %v", err)
+	}
+	assertBootID(t, id, testHostBootID)
+}
+
+func TestLinuxBootIDFallsBackWhenHostPrefixAbsent(t *testing.T) {
+	dir := t.TempDir()
+	writeBootID(t, dir, "proc/sys/kernel/random/boot_id", testContainerBootID)
+
+	id, err := loadLinuxBootIDFromRoot(dir, "/host")
+	if err != nil {
+		t.Fatalf("loadLinuxBootIDFromRoot() error = %v", err)
+	}
+	assertBootID(t, id, testContainerBootID)
+}
+
+func TestLinuxBootIDErrorsOnInvalidExplicitHostPrefixFile(t *testing.T) {
+	dir := t.TempDir()
+	writeBootID(t, dir, "proc/sys/kernel/random/boot_id", testContainerBootID)
+	writeText(t, dir, "host/proc/sys/kernel/random/boot_id", "not-a-boot-id\n")
+
+	_, err := loadLinuxBootIDFromRoot(dir, "/host")
+	if err == nil {
+		t.Fatal("loadLinuxBootIDFromRoot() error = nil, want invalid host boot-id error")
+	}
+	if !strings.Contains(err.Error(), "linux:/host/proc/sys/kernel/random/boot_id") {
+		t.Fatalf("error = %q, want host source path", err)
+	}
+}
+
 func writeMachineID(t *testing.T, root, rel, value string) {
+	writeText(t, root, rel, value+"\n")
+}
+
+func writeBootID(t *testing.T, root, rel, value string) {
 	writeText(t, root, rel, value+"\n")
 }
 
@@ -155,5 +210,16 @@ func assertMachineID(t *testing.T, got journal.UUID, wantText string) {
 	}
 	if got != want {
 		t.Fatalf("machine id = %s, want %s", got, want)
+	}
+}
+
+func assertBootID(t *testing.T, got journal.UUID, wantText string) {
+	t.Helper()
+	want, err := journal.ParseUUID(wantText)
+	if err != nil {
+		t.Fatalf("ParseUUID(%q) error = %v", wantText, err)
+	}
+	if got != want {
+		t.Fatalf("boot id = %s, want %s", got, want)
 	}
 }
