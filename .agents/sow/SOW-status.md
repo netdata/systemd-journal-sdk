@@ -4,10 +4,7 @@ Last updated: 2026-07-07
 
 ## Current
 
-- SOW-0132 - v0.7.7 Release: in-progress. Preparing and publishing the
-  `0.7.7` Rust/Go SDK patch release for completed SOW-0127 through SOW-0131
-  work. Scope is SDK release only; broader Netdata integration remains outside
-  this repository.
+- None.
 
 ## Pending
 
@@ -44,6 +41,15 @@ Last updated: 2026-07-07
   decisions. Not executable until the user explicitly resumes it.
 ## Recently Closed Or Completed
 
+- SOW-0132 - v0.7.7 Release: completed. Rust crates were published to
+  crates.io at `0.7.7`, release-prep commit
+  `735ff04072f783c0c9ca8f1cadc688ccf7edb239` was pushed to `master`, and
+  annotated tags `v0.7.7` plus `go/v0.7.7` were pushed; both peel to the same
+  release commit. Go module lookup resolved
+  `github.com/netdata/systemd-journal-sdk/go v0.7.7`, crates.io `cargo info`
+  showed all eight Rust packages at `0.7.7`, and validation passed Rust
+  workspace tests, Go module tests, docs checks, verified examples, whitespace
+  checks, SOW audit, and Rust publish dry-runs.
 - SOW-0131 - Directory Unique Cache And Go Parity: completed. Rust and Go
   directory readers now keep an exact 8-entry per-open-reader LRU cache of
   directory-wide unique payloads built from per-file FIELD/DATA chains. Go
