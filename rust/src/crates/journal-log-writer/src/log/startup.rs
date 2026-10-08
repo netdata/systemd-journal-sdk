@@ -61,10 +61,19 @@ impl ActiveFile {
         repository_file: repository::File,
         fallback_boot_id: uuid::Uuid,
     ) -> Result<Self> {
-        use journal_core::file::JournalState;
-
-        let mut journal_file =
+        let journal_file =
             JournalFile::<MmapMut>::open_for_append(&repository_file, 8 * 1024 * 1024)?;
+        Self::activate_opened(repository_file, journal_file, fallback_boot_id)
+    }
+
+    /// Begins mutation of an already opened journal. Callers that distinguish
+    /// safe open failures from uncertain mutation must establish ownership first.
+    pub(super) fn activate_opened(
+        repository_file: repository::File,
+        mut journal_file: JournalFile<MmapMut>,
+        fallback_boot_id: uuid::Uuid,
+    ) -> Result<Self> {
+        use journal_core::file::JournalState;
         journal_file.journal_header_mut().state = JournalState::Online as u8;
         let header = journal_file.journal_header_ref();
         let next_seqnum = header.tail_entry_seqnum.saturating_add(1);
@@ -90,41 +99,28 @@ impl ActiveFile {
         seqnum_id: uuid::Uuid,
         boot_id: uuid::Uuid,
         next_seqnum: u64,
-        max_file_size: Option<u64>,
-        _head_realtime: u64,
-        compression: Compression,
-        compression_threshold: usize,
-        compact: bool,
-        strict_systemd_naming: bool,
-        live_publish_every_entries: u64,
-        file_mode: u32,
+        head_realtime: u64,
+        config: &Config,
     ) -> Result<Self> {
         let head_seqnum = next_seqnum;
 
-        let repository_file = if strict_systemd_naming {
+        let repository_file = if config.strict_systemd_naming {
             chain.create_active_file()?
         } else {
-            chain.create_chain_file(seqnum_id, head_seqnum, _head_realtime)?
+            chain.create_chain_file(seqnum_id, head_seqnum, head_realtime)?
         };
 
-        let options = JournalFileOptions::new(chain.machine_id, boot_id, seqnum_id)
-            .with_window_size(8 * 1024 * 1024)
-            .with_compact(compact)
-            .with_optimized_buckets(None, max_file_size)
-            .with_keyed_hash(true)
-            .with_compression(compression)
-            .with_file_mode(file_mode)
-            .with_compress_threshold(compression_threshold);
+        let options = configured_file_options(config, chain.machine_id, boot_id, seqnum_id);
 
         let mut journal_file = JournalFile::create(&repository_file, options)?;
         let mut writer = JournalWriter::new_with_compression(
             &mut journal_file,
             head_seqnum,
             boot_id,
-            compression,
-            compression_threshold,
+            config.compression,
+            config.compression_threshold,
         )?;
-        writer.set_live_publish_every_entries(live_publish_every_entries);
+        writer.set_live_publish_every_entries(config.live_publish_every_entries);
 
         let header = journal_file.journal_header_ref();
         let identity = (header.file_id, header.machine_id, header.seqnum_id);
@@ -206,6 +202,22 @@ impl ActiveFile {
     pub(super) fn current_file_size(&self) -> u64 {
         self.writer.current_file_size()
     }
+}
+
+pub(super) fn configured_file_options(
+    config: &Config,
+    machine_id: uuid::Uuid,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
+) -> JournalFileOptions {
+    JournalFileOptions::new(machine_id, boot_id, seqnum_id)
+        .with_window_size(8 * 1024 * 1024)
+        .with_compact(config.compact)
+        .with_optimized_buckets(None, config.rotation_policy.size_of_journal_file)
+        .with_keyed_hash(true)
+        .with_compression(config.compression)
+        .with_file_mode(config.file_mode)
+        .with_compress_threshold(config.compression_threshold)
 }
 
 pub(super) fn replaceable_active_open_error(err: &WriterError) -> bool {

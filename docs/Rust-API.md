@@ -383,14 +383,25 @@ in effect; derived allocation geometry is recalculated. Maintenance archives a
 live file only for idle age expiry or changed allocation geometry, discards an
 empty file when needed, and leaves its successor lazy. `Archived` lifecycle
 events describe finalization without a successor; ordinary rotations retain
-their existing `Rotated` event.
+their existing `Rotated` event. Successful finalization emits `Archived` before
+any deletion, including retired files and close; empty-file disposal is not an
+archive event. Even eager construction may return without an active file when
+startup maintenance finalizes a recovered file. New root files use the current
+configuration, including compact layout, rather than inheriting the recovered
+file's layout.
 
 Root maintenance runs on startup (including lazy archived-only histories),
-active-file creation, rotation, and explicit calls. The SDK does not schedule
-it. `maintain_root_retention(now)` and `enforce_retention()` report failures;
+active-file creation, rotation, `close()` of a nonempty active file, and explicit
+calls. Closing an unopened or empty Log does not sweep history.
+`close_without_retention()` finalizes without pruning. Files allocate at least
+8 MiB; once finalized, a file loses live protection, so a small allowance or
+policy shrink can delete even the newest file in the same pass. There is no
+newest-file grace period. The SDK does not schedule maintenance.
+`maintain_root_retention(now)` and `enforce_retention()` report failures;
 automatic safe inventory/unlink/directory-sync failures are recorded without
-failing a healthy append. Uncertain archive mutation still poisons the writer
-and stops pruning. `last_root_retention_result()` exposes the latest attempt,
+failing a healthy append. Failure to open or validate a retired file before
+mutation also leaves the current writer healthy. Uncertain archive mutation
+still poisons the writer and stops pruning. `last_root_retention_result()` exposes the latest attempt,
 last successful time, deletion count, typed shared error and a post-attempt
 inventory only when `inventory_valid` is true. Read this retained result after
 an explicit maintenance error as well; an invalid inventory is unknown, not

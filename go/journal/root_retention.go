@@ -246,9 +246,12 @@ type RootRetentionResult struct {
 // LastRootRetentionResult returns the latest explicit or automatic maintenance
 // attempt. The bool is false before an attempt. Log methods require exclusion.
 func (l *Log) LastRootRetentionResult() (RootRetentionResult, bool) {
-	result := l.rootResult
+	return cloneRootRetentionResult(l.rootResult), l.rootAttempted
+}
+
+func cloneRootRetentionResult(result RootRetentionResult) RootRetentionResult {
 	result.Inventory.Files = append([]RootRetentionFile(nil), result.Inventory.Files...)
-	return result, l.rootAttempted
+	return result
 }
 
 // RootRetentionPolicy returns an independent copy of the effective policy.
@@ -341,7 +344,7 @@ func (l *Log) maintainRootRetention(now time.Time, expireLive bool) (result Root
 			result.LastSuccessfulAt = now
 		}
 		result.Err = err
-		l.rootResult = result
+		l.rootResult = cloneRootRetentionResult(result)
 		l.rootAttempted = true
 	}()
 	inv, err := l.InspectRootRetention()
@@ -393,9 +396,11 @@ func (l *Log) finalizeRootActives(inv RootRetentionInventory, now time.Time, exp
 				}
 				continue
 			}
-			if _, err := l.archiveActive(); err != nil {
+			archived, err := l.archiveActive()
+			if err != nil {
 				return l.recordFailure(err)
 			}
+			l.emitRootArchived(archived)
 			continue
 		}
 		// The current machine is opened by NewLog before maintenance. Every other
@@ -413,7 +418,7 @@ func (l *Log) finalizeRootActives(inv RootRetentionInventory, now time.Time, exp
 func (l *Log) finalizeRetiredActive(file RootRetentionFile) error {
 	w, err := OpenWithOptions(file.Path, Options{})
 	if err != nil {
-		return l.recordFailure(errors.Join(ErrWriterFailed, err))
+		return l.recordFailure(err)
 	}
 	if file.Entries == 0 {
 		if err = w.Close(); err != nil {
@@ -428,8 +433,12 @@ func (l *Log) finalizeRetiredActive(file RootRetentionFile) error {
 	if err = w.archiveTo(target, l.syncOnArchive); err != nil {
 		return l.recordFailure(errors.Join(err, w.Close()))
 	}
-	l.emitLifecycle(LogLifecycleEvent{Type: LogLifecycleRotated, Reason: LogLifecycleReasonRetention, ArchivedPath: target})
+	l.emitRootArchived(target)
 	return nil
+}
+
+func (l *Log) emitRootArchived(path string) {
+	l.emitLifecycle(LogLifecycleEvent{Type: LogLifecycleArchived, Reason: LogLifecycleReasonRetention, ArchivedPath: path})
 }
 
 var removeRootRetentionFile = os.Remove

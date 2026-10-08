@@ -421,6 +421,32 @@ fn root_inventory_rejects_corrupt_header_object_bounds_without_deleting_evidence
     }
 }
 
+// Capture directories as well as complete regular-file bytes so startup
+// rejection cannot hide mutations inside an unchanged machine directory.
+fn recursive_evidence(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        evidence: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            if entry.file_type().unwrap().is_dir() {
+                evidence.insert(relative, None);
+                visit(root, &path, evidence);
+            } else {
+                assert!(entry.file_type().unwrap().is_file());
+                evidence.insert(relative, Some(fs::read(path).unwrap()));
+            }
+        }
+    }
+    let mut evidence = std::collections::BTreeMap::new();
+    visit(root, root, &mut evidence);
+    evidence
+}
+
 #[test]
 fn root_inventory_rejects_unsafe_candidates_before_any_pruning() {
     for kind in [
@@ -481,11 +507,7 @@ fn root_inventory_rejects_unsafe_candidates_before_any_pruning() {
             "unknown-flags" => patch(&path, 12, &0x8000_0004u32.to_le_bytes()),
             _ => unreachable!(),
         }
-        let mut before: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|v| v.unwrap().path())
-            .collect();
-        before.sort();
+        let before = recursive_evidence(dir.path());
         assert!(
             inspect_root_retention(dir.path(), &source()).is_err(),
             "accepted {kind}"
@@ -500,16 +522,10 @@ fn root_inventory_rejects_unsafe_candidates_before_any_pruning() {
             .is_err(),
             "opened {kind}"
         );
-        let mut after: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|v| v.unwrap().path())
-            .collect();
-        after.sort();
-        assert_eq!(before, after, "startup changed evidence for {kind}");
-        assert!(
-            after
-                .iter()
-                .any(|p| p.file_name().unwrap() != machine(1).simple().to_string().as_str())
+        assert_eq!(
+            before,
+            recursive_evidence(dir.path()),
+            "startup changed evidence for {kind}"
         );
     }
 }
@@ -805,4 +821,158 @@ fn root_close_of_unopened_or_empty_log_does_not_apply_new_policy() {
         );
         assert_eq!(inspect(dir.path()).files.len(), 1);
     }
+}
+
+#[test]
+fn root_recovered_rotation_uses_configured_compactness_for_both_append_shapes() {
+    use journal_core::file::HeaderIncompatibleFlags;
+    const GIB: u64 = 1024 * MIB;
+    for compact in [true, false] {
+        for raw in [true, false] {
+            let dir = TempDir::new().unwrap();
+            let machine_dir = dir.path().join(machine(1).simple().to_string());
+            fs::create_dir(&machine_dir).unwrap();
+            let path = machine_dir.join("history.journal");
+            let repository_file = File::from_path(&path).unwrap();
+            let seqnum_id = Uuid::new_v4();
+            let options = JournalFileOptions::new(machine(1), boot(), seqnum_id)
+                .with_compact(!compact)
+                .with_optimized_buckets(None, Some(4 * GIB));
+            let mut journal = JournalFile::<MmapMut>::create(&repository_file, options).unwrap();
+            let mut writer = JournalWriter::new(&mut journal, 1, boot()).unwrap();
+            let saved = micros(SystemTime::now());
+            writer
+                .add_entry(&mut journal, &[b"MESSAGE=first"], saved, 1)
+                .unwrap();
+            journal.journal_header_mut().state = JournalState::Offline as u8;
+            journal.sync().unwrap();
+            drop(writer);
+            drop(journal);
+            let observer = Arc::new(Events::default());
+            let cfg = config().with_compact(compact).with_rotation_policy(
+                RotationPolicy::default()
+                    .with_size_of_journal_file(if compact { 8 * GIB } else { 4 * GIB })
+                    .with_number_of_entries(1),
+            );
+            let mut log =
+                Log::new_with_lifecycle_observer(dir.path(), cfg, observer.clone()).unwrap();
+            assert_eq!(
+                log.active_path(),
+                Some(path.as_path()),
+                "recover before rotating"
+            );
+            append(&mut log, UNIX_EPOCH + Duration::from_micros(saved + 1), raw);
+            assert!(!log.is_poisoned());
+            let active =
+                JournalFile::<Mmap>::open_path(log.active_path().unwrap(), 8 * MIB).unwrap();
+            assert_eq!(
+                active
+                    .journal_header_ref()
+                    .has_incompatible_flag(HeaderIncompatibleFlags::Compact),
+                compact
+            );
+            drop(active);
+            let inventory = log.inspect_root_retention().unwrap();
+            assert_eq!(inventory.files.len(), 2);
+            assert!(
+                inventory
+                    .files
+                    .iter()
+                    .all(|file| file.seqnum_id == seqnum_id && file.entries == 1)
+            );
+            let mut seqs = vec![];
+            for file in &inventory.files {
+                let journal = JournalFile::<Mmap>::open_path(&file.path, 8 * MIB).unwrap();
+                let mut reader = JournalReader::default();
+                while reader.step(&journal, Direction::Forward).unwrap() {
+                    seqs.push(reader.get_seqnum(&journal).unwrap().0);
+                }
+            }
+            seqs.sort();
+            assert_eq!(seqs, [1, 2]);
+            let events = observer.0.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            let LogLifecycleEvent::Rotated { archived, active } = &events[0] else {
+                panic!("expected one paired rotation event")
+            };
+            assert!(Path::new(archived.path()).exists());
+            assert_eq!(Path::new(active.path()), path);
+            drop(events);
+            log.close_without_retention().unwrap();
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn root_retired_permission_denied_is_safe_and_retryable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let now = SystemTime::now();
+    let mut log = Log::new(dir.path(), config()).unwrap();
+    append(&mut log, now, false);
+    let path = fixture(dir.path(), 23, &[micros(now)], true);
+    let before = fs::read(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+    // Unix mode bits may not deny a privileged process. Skip only after probing
+    // the exact write-open operation, without weakening assertions where denied.
+    match fs::OpenOptions::new().read(true).write(true).open(&path) {
+        Ok(_) => {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            eprintln!("write permissions are bypassed on this host; permission regression skipped");
+            return;
+        }
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied),
+    }
+    let successful = log.last_root_retention_result().unwrap().last_successful_at;
+    let outcome = log.maintain_root_retention(now);
+    let error = outcome.unwrap_err();
+    let WriterError::RootRetention(error) = error else {
+        panic!("expected maintenance error")
+    };
+    assert!(
+        matches!(error.as_ref(), WriterError::Journal(journal_core::error::JournalError::Io(error))
+        if error.kind() == std::io::ErrorKind::PermissionDenied)
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(
+        !log.is_poisoned(),
+        "write-open failure precedes all mutation"
+    );
+    assert_eq!(
+        log.last_root_retention_result().unwrap().last_successful_at,
+        successful
+    );
+    append(&mut log, now + Duration::from_secs(1), true);
+    log.sync().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    log.maintain_root_retention(now + Duration::from_secs(1))
+        .unwrap();
+    assert!(!path.exists());
+    assert_eq!(log.inspect_root_retention().unwrap().files.len(), 2);
+    log.close_without_retention().unwrap();
+}
+
+#[test]
+fn root_sub_microsecond_age_retains_exact_tail_and_expires_one_microsecond_later() {
+    let dir = TempDir::new().unwrap();
+    let saved = micros(SystemTime::now() + Duration::from_secs(3600));
+    let path = fixture(dir.path(), 21, &[saved], false);
+    let mut log = Log::new(dir.path(), config()).unwrap();
+    log.set_root_retention_policy(
+        RetentionPolicy::default().with_duration_of_journal_files(Duration::from_nanos(1)),
+    )
+    .unwrap();
+    let now = UNIX_EPOCH + Duration::from_micros(saved);
+    let retained = log.maintain_root_retention(now).unwrap();
+    assert_eq!(retained.deleted_files, 0);
+    assert_eq!(retained.inventory.files.len(), 1);
+    assert!(path.exists());
+    let expired = log
+        .maintain_root_retention(now + Duration::from_micros(1))
+        .unwrap();
+    assert_eq!(expired.deleted_files, 1);
+    assert!(expired.inventory.files.is_empty());
+    log.close_without_retention().unwrap();
 }

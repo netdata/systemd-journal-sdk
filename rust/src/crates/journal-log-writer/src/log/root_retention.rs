@@ -172,7 +172,7 @@ fn expired(file: &RootRetentionFile, policy: RetentionPolicy, now: SystemTime) -
     ) else {
         return false;
     };
-    let age = age.as_micros();
+    let age = age.as_micros().max(1);
     let stamp = stamp.as_micros();
     stamp >= age && u128::from(file.tail_realtime) <= stamp - age
 }
@@ -350,14 +350,13 @@ impl Log {
             }
             let live = self.active_path().is_some_and(|path| path == file.path);
             if live {
-                let desired =
-                    JournalFileOptions::new(self.chain.machine_id, self.boot_id, self.seqnum_id)
-                        .with_compact(self.config.compact)
-                        .with_optimized_buckets(
-                            None,
-                            self.config.rotation_policy.size_of_journal_file,
-                        )
-                        .data_hash_table_size();
+                let desired = startup::configured_file_options(
+                    &self.config,
+                    self.chain.machine_id,
+                    self.boot_id,
+                    self.seqnum_id,
+                )
+                .data_hash_table_size();
                 let allocation_changed = self
                     .active_file
                     .as_ref()
@@ -427,8 +426,13 @@ impl Log {
             sync_directory(&self.chain.path)?;
             return Ok(true);
         }
+        // The operation owns the outgoing file from the first mutation onward.
+        // If rename succeeds but sync fails, a poisoned Log must not retain a
+        // live-path assertion for the old name. Inspection can still scan evidence.
+        let mut active = self.active_file.take().unwrap();
+        self.retention_on_open_applied = false;
+        self.rotation_state.reset();
         self.poisoned = true;
-        let active = self.active_file.as_mut().unwrap();
         active.journal_file.journal_header_mut().state = JournalState::Archived as u8;
         #[cfg(test)]
         if self.root_faults.archive_sync {
@@ -442,9 +446,6 @@ impl Log {
             header.head_entry_seqnum,
             header.head_entry_realtime,
         )?;
-        self.active_file.take();
-        self.retention_on_open_applied = false;
-        self.rotation_state.reset();
         self.poisoned = false;
         self.emit_lifecycle_event(&LogLifecycleEvent::Archived { archived, reason });
         Ok(false)
@@ -455,8 +456,12 @@ impl Log {
         // lifecycle, never a recursive high-level Log with its own retention.
         let repository_file = repository::File::from_path(&file.path)
             .ok_or_else(|| invalid(&file.path, "invalid active path"))?;
+        // Mapping validates existing bytes without writing them. In particular,
+        // a denied write-open must not poison the unrelated current writer.
+        let journal_file =
+            JournalFile::<MmapMut>::open_for_append(&repository_file, 8 * 1024 * 1024)?;
         self.poisoned = true;
-        let mut active = ActiveFile::open(repository_file, self.boot_id)?;
+        let mut active = ActiveFile::activate_opened(repository_file, journal_file, self.boot_id)?;
         if file.entries == 0 {
             active.journal_file.sync()?;
             drop(active);
@@ -729,6 +734,86 @@ mod tests {
         assert!(log.active_path().is_none());
         assert!(!path.exists());
         log.close_without_retention().unwrap();
+    }
+
+    #[test]
+    fn retired_archive_mutation_failure_remains_fatal() {
+        let _guard = super::super::tests::ARCHIVE_SYNC_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = Log::new(dir.path(), config()).unwrap();
+        append(&mut log, 1);
+        let mut retired_config = config().with_root_retention(false);
+        retired_config.origin.machine_id = Some(Uuid::from_bytes([3; 16]));
+        let mut retired = Log::new(dir.path(), retired_config).unwrap();
+        append(&mut retired, 1);
+        let mut retired_active = retired.active_file.take().unwrap();
+        retired_active.journal_file.journal_header_mut().state = JournalState::Offline as u8;
+        retired_active.journal_file.sync().unwrap();
+        let path = PathBuf::from(retired_active.repository_file.path());
+        drop(retired_active);
+        drop(retired);
+        assert_eq!(
+            std::fs::read(&path).unwrap()[16],
+            JournalState::Offline as u8
+        );
+        log.root_faults.archive_sync = true;
+        assert!(log.maintain_root_retention(SystemTime::now()).is_err());
+        assert!(log.is_poisoned());
+        assert_eq!(
+            std::fs::read(&path).unwrap()[16],
+            JournalState::Archived as u8
+        );
+        assert_eq!(log.inspect_root_retention().unwrap().files.len(), 2);
+        let before = std::fs::read(&path).unwrap();
+        assert!(log.close().is_err());
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn failed_archive_after_rename_remains_inspectable_and_preserves_evidence() {
+        let _guard = super::super::tests::ARCHIVE_SYNC_TEST_LOCK.lock().unwrap();
+        for explicit_close in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut log = Log::new(dir.path(), config()).unwrap();
+            append(&mut log, 1);
+            let original = log.active_path().unwrap().to_path_buf();
+            log.set_root_retention_policy(
+                RetentionPolicy::default().with_duration_of_journal_files(Duration::from_secs(1)),
+            )
+            .unwrap();
+            let successful = log.last_root_retention_result().unwrap().last_successful_at;
+            log.chain.fail_archive_directory_sync = true;
+            assert!(
+                log.maintain_root_retention(SystemTime::now() + Duration::from_secs(2))
+                    .is_err()
+            );
+            assert!(log.is_poisoned());
+            assert!(
+                !original.exists(),
+                "failure must occur after the actual rename"
+            );
+            let standalone =
+                inspect_root_retention(dir.path(), &Source::Unknown("history".into())).unwrap();
+            assert_eq!(standalone.files.len(), 1);
+            assert!(!standalone.files[0].active);
+            let live = log
+                .inspect_root_retention()
+                .expect("failed writer remains inspectable");
+            assert_eq!(live.files[0].path, standalone.files[0].path);
+            let result = log.last_root_retention_result().unwrap();
+            assert!(result.error.is_some());
+            assert_eq!(result.deleted_files, 0);
+            assert_eq!(result.last_successful_at, successful);
+            let path = live.files[0].path.clone();
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(log.sync().is_err());
+            if explicit_close {
+                assert!(log.close().is_err());
+            } else {
+                drop(log);
+            }
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
     }
 
     struct ForbiddenSizer;

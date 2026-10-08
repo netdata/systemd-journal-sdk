@@ -221,6 +221,9 @@ func Open(path string) (*Writer, error) {
 // entries. For files without a tail boot ID, callers must supply an explicit
 // non-zero Options.BootID before the first append; the writer rejects the
 // append with ErrMissingBootID instead of inventing a value.
+// Errors before mutation leave the file unchanged. Once writable mapping
+// (which may resize the file) begins, failures include ErrWriterFailed because
+// the file may have changed and must be inspected before recovery.
 func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	opts = normalizeOpenOptions(opts)
 	if err := validateOpenOptions(opts); err != nil {
@@ -232,8 +235,7 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	}
 	w, err := newAppendWriter(path, f, opts)
 	if err != nil {
-		_ = f.Close()
-		return nil, err
+		return nil, errors.Join(err, f.Close())
 	}
 	return w, nil
 }
@@ -301,16 +303,16 @@ func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
 		livePublishEveryEntries: livePublishEveryEntries(opts),
 		fieldNamePolicy:         opts.FieldNamePolicy,
 	}
-	if err := w.mapArena(fileSize); err != nil {
+	if err := w.applyAppendBootID(opts); err != nil {
 		return nil, err
 	}
-	if err := w.applyAppendBootID(opts); err != nil {
-		_ = w.closeArena()
-		return nil, err
+	// Writable mapping can resize the file. From this boundary onward a failed
+	// open requires verification, just like a failed append or archive mutation.
+	if err := w.mapArena(fileSize); err != nil {
+		return nil, w.fail(err)
 	}
 	if err := w.writeHeader(); err != nil {
-		_ = w.closeArena()
-		return nil, err
+		return nil, errors.Join(w.fail(err), w.closeArena())
 	}
 	return w, nil
 }

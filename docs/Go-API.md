@@ -442,7 +442,7 @@ canonical machine directories, filename/header machine and sequence identities,
 archive state and header bounds. It rejects source quarantine names, symlinks,
 ambiguous identities and malformed candidates before pruning. Unrelated caller
 metadata directories, such as `identity/`, are permitted when they contain no
-source candidates. A missing or inaccessible root is an error, not zero history.
+source candidates and must be readable so inventory can establish that exclusion. A missing or inaccessible root is an error, not zero history.
 This inventory does not verify payloads/indexes or certify provenance. Checks
 run at inventory/maintenance boundaries and do not protect against concurrent
 external modification. Canonical machine-named entries must be directories.
@@ -487,14 +487,21 @@ a live file is protected from size pressure, and an append/allocation can exceed
 the allowance. With the example's 24-hour file span and successful hourly
 maintenance, age overhang is about one day plus one hour under advancing clocks.
 The SDK does not schedule maintenance. Existing files keep their actual spans.
+Files allocate at least 8 MiB. Once an active file is finalized, it loses size
+protection: a smaller allowance or policy shrink can delete even the newest
+file in the same maintenance pass. There is no newest-file grace period.
 
 `NewLog` applies root maintenance even for lazy archived-only histories.
-Automatic cleanup also runs on active-file creation and rotation. Explicit
+Automatic cleanup also runs on active-file creation, rotation and `Close` of
+a nonempty active file. Closing an unopened or empty Log does not sweep history.
+`CloseWithoutRetention` finalizes the active file without pruning. Explicit
 `MaintainRootRetention(now)` (or `EnforceRetention()`) finalizes an idle active
 only when its tail expires or a changed derived size policy needs fresh
 allocation geometry; empty files are discarded. Ordinary idle sweeps keep the
-same file, and the successor stays lazy. Verified retired-machine active files
-are archived through the existing writer lifecycle. `SetRootRetentionPolicy`
+same file, and the successor stays lazy. Even eager construction may therefore
+return without an active file after startup maintenance finalizes a recovered
+file. Verified retired-machine active files are archived through the existing
+writer lifecycle. `SetRootRetentionPolicy`
 installs copied valid limits without applying either old or new limits;
 `RootRetentionPolicy()` returns a copy. Policy-derived hash-table sizing is
 recomputed from the new allowance; caller-explicit hash buckets or allocation
@@ -503,11 +510,23 @@ effective policy, so edits reverted before maintenance do not force an archive.
 Each newly created successor receives creation cleanup. Explicit rotation limits
 stay fixed.
 
+Successful root finalization emits `LogLifecycleArchived` before any retention
+deletion, including retired-file maintenance and close. Its `ArchivedPath` names
+the finalized file and `ActivePath` is empty; ordinary rotations retain their
+existing `LogLifecycleRotated` event with both paths. Empty-file disposal is not
+an archive event.
+
+Creation cleanup also runs in default mode when a retry successfully creates
+a successor after an earlier safe creation failure. This corrects the previous
+case where that retry could skip retention.
+
 Safe inventory/unlink/directory-sync errors are maintenance failures and do not
 turn successful appends into failures. Read `LastRootRetentionResult()` after
 automatic boundaries: it retains `AttemptedAt`, `LastSuccessfulAt`, `Err`, and a
 post-attempt inventory only when `InventoryValid` is true. Explicit maintenance
-also returns the error. Unknown inventory must not be displayed as zero.
+also returns the error. Returned inventories are independent copies of retained
+status. Unknown inventory must not be displayed as zero. Failure to open or
+validate a retired file before mutation leaves the current writer healthy.
 Uncertain writer/archive mutations still fail the Log and preserve evidence;
 writer failure must be reported separately. Failed maintenance can leave excess
 bytes indefinitely. Readers holding a removed file may continue reading it;

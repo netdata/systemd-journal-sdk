@@ -3,12 +3,14 @@ use journal_core::file::{
     MmapMut,
 };
 use journal_log_writer::{
-    Config, EntryTimestamps, Log, RetentionPolicy, RotationPolicy, inspect_root_retention,
+    Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
+    RotationPolicy, inspect_root_retention,
 };
 use journal_registry::{Origin, Source, repository::File};
 use std::{
     fs,
     path::Path,
+    sync::{Arc, Mutex},
     time::{Duration, UNIX_EPOCH},
 };
 use uuid::Uuid;
@@ -48,6 +50,33 @@ fn inventory(root: &Path) {
         )
     }
 }
+fn append_entry(log: &mut Log, stamp: u64) {
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=live"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(stamp)
+            .with_entry_monotonic_usec(1),
+    )
+    .unwrap();
+}
+
+#[derive(Default)]
+struct LifecycleEvents(Mutex<Vec<&'static str>>);
+impl LogLifecycleObserver for LifecycleEvents {
+    fn on_event(&self, event: &LogLifecycleEvent) {
+        let name = match event {
+            LogLifecycleEvent::Archived { archived, .. } => {
+                assert!(Path::new(archived.path()).is_file());
+                "archived"
+            }
+            LogLifecycleEvent::Created { .. } => "created",
+            LogLifecycleEvent::Rotated { .. } => "rotated",
+            LogLifecycleEvent::RetainedDeleted { .. } => "deleted",
+        };
+        self.0.lock().unwrap().push(name);
+    }
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     let root = Path::new(&args[2]);
@@ -113,19 +142,73 @@ fn main() {
             println!("{}", start.elapsed().as_nanos() / 1000);
         }
         "inspect" => inventory(root),
-        "maintain" => {
+        "maintain" | "maintain-size" | "maintain-count" => {
             let mut log = Log::new(root, config()).unwrap();
-            log.set_root_retention_policy(
-                RetentionPolicy::default()
+            let policy = match args[1].as_str() {
+                "maintain-size" => RetentionPolicy::default().with_size_of_journal_files(8 << 20),
+                "maintain-count" => RetentionPolicy::default().with_number_of_journal_files(2),
+                _ => RetentionPolicy::default()
                     .with_duration_of_journal_files(Duration::from_micros(30 * DAY)),
-            )
-            .unwrap();
+            };
+            log.set_root_retention_policy(policy).unwrap();
             let r = log
                 .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now))
                 .unwrap();
             println!("deleted {}", r.deleted_files);
             log.close_without_retention().unwrap();
             inventory(root)
+        }
+        "policy" | "close-small" => {
+            let policy =
+                RetentionPolicy::default().with_size_of_journal_files(if args[1] == "policy" {
+                    32 << 30
+                } else {
+                    4 << 20
+                });
+            let events = Arc::new(LifecycleEvents::default());
+            let mut log = Log::new(root, config().with_retention_policy(policy))
+                .unwrap()
+                .with_lifecycle_observer(events.clone());
+            append_entry(&mut log, now);
+            events.0.lock().unwrap().clear();
+            if args[1] == "policy" {
+                log.set_root_retention_policy(
+                    RetentionPolicy::default().with_size_of_journal_files(8 << 20),
+                )
+                .unwrap();
+                let r = log
+                    .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now))
+                    .unwrap();
+                assert_eq!(r.deleted_files, 1);
+                assert!(r.inventory.files.is_empty());
+                assert!(log.active_path().is_none());
+                assert_eq!(*events.0.lock().unwrap(), ["archived", "deleted"]);
+                append_entry(&mut log, now + 1);
+                log.close_without_retention().unwrap();
+            } else {
+                log.close().unwrap();
+                assert_eq!(*events.0.lock().unwrap(), ["archived", "deleted"]);
+            }
+            inventory(root)
+        }
+        "tiny-age" => {
+            let mut log = Log::new(root, config()).unwrap();
+            log.set_root_retention_policy(
+                RetentionPolicy::default().with_duration_of_journal_files(Duration::from_nanos(1)),
+            )
+            .unwrap();
+            let r = log
+                .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now))
+                .unwrap();
+            assert_eq!(r.deleted_files, 0);
+            assert_eq!(r.inventory.files.len(), 1);
+            let r = log
+                .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now + 1))
+                .unwrap();
+            assert_eq!(r.deleted_files, 1);
+            assert!(r.inventory.files.is_empty());
+            log.close_without_retention().unwrap();
+            println!("kept then expired");
         }
         "reject" => {
             assert!(inspect_root_retention(root, &source()).is_err());
@@ -142,16 +225,7 @@ fn main() {
         }
         "live" => {
             let mut log = Log::new(root, config()).unwrap();
-            let append = |log: &mut Log, t| {
-                log.write_entry_with_timestamps(
-                    &[b"MESSAGE=live"],
-                    EntryTimestamps::default()
-                        .with_entry_realtime_usec(t)
-                        .with_entry_monotonic_usec(1),
-                )
-                .unwrap();
-            };
-            append(&mut log, now);
+            append_entry(&mut log, now);
             log.set_root_retention_policy(
                 RetentionPolicy::default()
                     .with_duration_of_journal_files(Duration::from_micros(30 * DAY)),
@@ -162,7 +236,7 @@ fn main() {
                 .unwrap();
             assert!(r.inventory.files.is_empty());
             assert!(log.active_path().is_none());
-            append(&mut log, now + 32 * DAY);
+            append_entry(&mut log, now + 32 * DAY);
             log.close_without_retention().unwrap();
             inventory(root)
         }

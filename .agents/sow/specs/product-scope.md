@@ -419,18 +419,27 @@ caller writer exclusion, verified recovery provenance/indexes and no artifact
 sizer. `InspectRootRetention` reads fixed-size headers, validates canonical
 machine/sequence/archive identities and header extents, and fails the complete
 inventory for unsafe source candidates. Missing roots are errors; unrelated
-caller metadata directories are allowed, but canonical machine-named entries
-must be directories. After open, `Log.InspectRootRetention` additionally proves
+caller metadata directories are allowed when readable to exclude source
+candidates, but canonical machine-named entries must be directories. After open,
+`Log.InspectRootRetention` additionally proves
 the active path still names the live writer file and journal identities; it is
 available after writer failure and is reused by maintenance before mutations.
 An inventory mismatch alone does not poison the writer. These boundary checks
 assume caller exclusion and do not promise protection against concurrent
 external modification. Inventory is not full verification.
 Root retention counts file lengths including preallocation, expires by tail
-saved time, and evicts whole files in tail/path order. Existing defaults and file
-format are unchanged. `MaintainRootRetention` finalizes verified retired active
+saved time, and evicts whole files in tail/path order. Default retention policies
+and file format are unchanged; Go now applies cleanup after a successful
+successor-creation retry following a safe creation failure.
+`MaintainRootRetention` finalizes verified retired active
 files and only seals live actives for idle expiry or required size-policy
-allocation changes, leaving successors lazy. Safe cleanup errors remain in
+allocation changes, leaving successors lazy even after eager startup. Startup,
+creation, rotation, closing a nonempty active and explicit maintenance enforce
+the policy. Closing an unopened or empty Log does not sweep history. Files
+allocate at least 8 MiB; finalized files have no newest-file grace period and
+may be deleted immediately under a smaller allowance. Close without retention
+finalizes without pruning. Positive ages below one microsecond normalize to
+one microsecond. Safe pre-mutation open/validation and cleanup errors remain in
 `RootRetentionResult` (attempt/last-success times and valid-or-unknown sample)
 without failing healthy appends; uncertain archive mutation still fails the
 writer. `SetRootRetentionPolicy` validates/copies/installs before enforcement;
@@ -438,8 +447,12 @@ explicit rotation limits survive changes. This is neither exact TTL nor a
 physical disk cap; preallocation/active growth/pinned readers and failed cleanup
 can exceed the allowance. Rust exposes equivalent snake_case methods, Copy policy
 values, SystemTime timestamps, and retained typed errors through Arc. The public
-Rust SDK reexports inventory/result APIs. Rust lazy finalization emits an Archived
-event without inventing a successor; ordinary Rotated events remain unchanged.
+Rust SDK reexports inventory/result APIs. Both SDKs emit an Archived event after
+successful finalization without a successor and before deletion, including
+retired files and close; ordinary Rotated events remain unchanged. Go result
+inventories do not alias retained status. New root files and allocation checks
+use current configuration, including compact layout, while recovered files
+retain their on-disk layout until finalized.
 Rust root configuration rejects namespaces and artifact sizing; adding an artifact
 sizer with the infallible builder causes mutation validation errors and preserves
 files on close/drop. Root functionality ships in both languages; publication

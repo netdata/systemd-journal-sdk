@@ -2,6 +2,7 @@ package journal
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -67,6 +68,41 @@ func rootInspect(t testing.TB, dir string) RootRetentionInventory {
 		t.Fatal(err)
 	}
 	return inv
+}
+
+func rootEvidenceSnapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	snapshot := make(map[string]string)
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || path == dir {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		switch {
+		case entry.IsDir():
+			snapshot[rel] = "directory"
+		case entry.Type()&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			snapshot[rel] = "symlink:" + target
+		default:
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			snapshot[rel] = fmt.Sprintf("file:%x", sha256.Sum256(data))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func TestRootRetentionAcrossMachinesAndTailAge(t *testing.T) {
@@ -224,7 +260,7 @@ func TestRootInventoryPreservesUnsafeCandidates(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			before, _ := filepath.Glob(filepath.Join(dir, "*", "*"))
+			before := rootEvidenceSnapshot(t, dir)
 			if _, err := InspectRootRetention(dir, "dem"); err == nil {
 				t.Fatal("unsafe inventory accepted")
 			}
@@ -233,7 +269,7 @@ func TestRootInventoryPreservesUnsafeCandidates(t *testing.T) {
 			if _, err := NewLog(dir, cfg); err == nil {
 				t.Fatal("unsafe root opened")
 			}
-			after, _ := filepath.Glob(filepath.Join(dir, "*", "*"))
+			after := rootEvidenceSnapshot(t, dir)
 			if !reflect.DeepEqual(before, after) {
 				t.Fatalf("evidence changed: %v / %v", before, after)
 			}

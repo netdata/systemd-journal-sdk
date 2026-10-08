@@ -837,23 +837,40 @@ impl Log {
         old_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
         sync_archive_journal_file(self.config.sync_on_archive, &mut old_file.journal_file)?;
         let archived = self.archive_rotated_file(&old_file)?;
-        let new_file = old_file.rotate(
-            &mut self.chain,
-            max_file_size,
-            head_realtime,
-            self.config.compression,
-            self.config.compression_threshold,
-            self.config.strict_systemd_naming,
-            self.config.live_publish_every_entries,
-            self.config.file_mode,
-        )?;
+        let new_file = if self.config.root_retention {
+            // Root allocation checks and all new root files use current config.
+            // A recovered file may have a different compact layout.
+            let next_seqnum = old_file.writer.next_seqnum();
+            let boot_id = old_file.writer.boot_id();
+            let seqnum_id =
+                uuid::Uuid::from_bytes(old_file.journal_file.journal_header_ref().seqnum_id);
+            drop(old_file);
+            ActiveFile::create(
+                &mut self.chain,
+                seqnum_id,
+                boot_id,
+                next_seqnum,
+                head_realtime,
+                &self.config,
+            )?
+        } else {
+            old_file.rotate(
+                &mut self.chain,
+                max_file_size,
+                head_realtime,
+                self.config.compression,
+                self.config.compression_threshold,
+                self.config.strict_systemd_naming,
+                self.config.live_publish_every_entries,
+                self.config.file_mode,
+            )?
+        };
         let active = new_file.repository_file.clone();
         Ok((new_file, LogLifecycleEvent::Rotated { archived, active }))
     }
 
     fn create_initial_active_file(
         &mut self,
-        max_file_size: Option<u64>,
         head_realtime: u64,
         reason: LogLifecycleReason,
     ) -> Result<(ActiveFile, LogLifecycleEvent)> {
@@ -862,14 +879,8 @@ impl Log {
             self.seqnum_id,
             self.boot_id,
             self.current_seqnum + 1,
-            max_file_size,
             head_realtime,
-            self.config.compression,
-            self.config.compression_threshold,
-            self.config.compact,
-            self.config.strict_systemd_naming,
-            self.config.live_publish_every_entries,
-            self.config.file_mode,
+            &self.config,
         )?;
         let active = new_file.repository_file.clone();
         Ok((new_file, LogLifecycleEvent::Created { active, reason }))
@@ -896,7 +907,7 @@ impl Log {
         let (new_file, lifecycle_event) = if let Some(old_file) = self.active_file.take() {
             self.rotate_existing_active_file(old_file, max_file_size, head_realtime)?
         } else {
-            self.create_initial_active_file(max_file_size, head_realtime, reason)?
+            self.create_initial_active_file(head_realtime, reason)?
         };
 
         tracing::Span::current().record("new_file", new_file.repository_file.path());

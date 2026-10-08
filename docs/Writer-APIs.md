@@ -190,7 +190,10 @@ This feature is unreleased.
 Go `LogConfig.RootRetention` and Rust `Config::with_root_retention(true)` add
 an explicit policy for a caller-owned root/source across machine identities.
 Use this when retained history must share one allowance even after machine
-identity changes. Existing directory-writer defaults remain unchanged.
+identity changes. Default retention policies remain machine-local, with
+committed-byte accounting and archive-head-age expiry. Go also corrects an
+existing default-mode gap: a successful successor-creation retry now applies
+retention after a preceding safe creation failure.
 
 Both implementations require strict active names and exclusive caller ownership.
 The caller must verify recovered active files before opening the writer. Inventory
@@ -198,22 +201,38 @@ reads directory entries, file metadata and fixed-size headers without expanding
 records. It rejects malformed or quarantined source candidates, symlinks,
 ambiguous identities and filename/header mismatches before pruning. A missing
 root is an error. Canonical machine-named entries must be directories; unrelated
-metadata directories are allowed when they contain no source candidates.
+metadata directories are allowed when they contain no source candidates and
+must be readable so inventory can establish that exclusion.
 Live-aware inventory also rejects a missing or replaced active file.
 
 The shared policy:
 
 - Counts full directory-visible file lengths, including preallocation, across
-  all retained identities. Unlinked files pinned by readers are excluded.
+  all retained identities. Files allocate at least 8 MiB. Unlinked files pinned
+  by readers are excluded.
 - Expires whole files by their newest saved journal realtime, independently of
   producer event time. Size/count pressure removes oldest tails first, with
   canonical path as the deterministic tie-breaker.
 - Protects a live active from size eviction. Explicit maintenance finalizes it
   for idle age expiry or required allocation changes, leaving the next file lazy.
+  Eager startup can also leave a lazy successor after finalizing a recovered file.
+- Runs on startup, active-file creation, rotation, closing a nonempty active,
+  and explicit maintenance. Closing an unopened or empty Log does not sweep
+  history. Close without retention finalizes without pruning. Finalized files
+  lose live protection: policy shrinkage or a too-small allowance can delete even the
+  newest file immediately, without a grace period.
+- Emits `Archived` when finalization succeeds without a successor, before any
+  deletion; ordinary `Rotated` events keep both old and successor identities.
+  Empty-file disposal is not an archive event.
 - Installs valid replacement policies before enforcement, preserves explicit
   rotation limits, and recalculates derived allocation geometry.
 - Reports safe cleanup failures independently from healthy appends; uncertain
-  archive mutation remains a writer failure and stops pruning.
+  archive mutation remains a writer failure and stops pruning. Opening or
+  validating a retired file before mutation may fail without poisoning the
+  healthy current writer. Failed writers remain inspectable for status.
+
+Positive age limits below one microsecond normalize to one microsecond in both
+SDKs; larger limits use whole microseconds.
 
 This is neither an exact record TTL nor a hard physical disk cap. With a 24-hour
 file span and successful hourly cleanup, age overhang is about one day plus one

@@ -33,6 +33,10 @@ func inventory(root string) {
 		fmt.Printf("%s %d %d %d %d %d %d %t\n", f.MachineID.String(), f.Bytes, f.Entries, f.HeadSeqnum, f.TailSeqnum, f.HeadRealtime, f.TailRealtime, f.Active)
 	}
 }
+func appendEntry(l *j.Log, stamp int64) {
+	must(l.Append([]j.Field{j.StringField("MESSAGE", "live")}, j.EntryOptions{RealtimeUsec: uint64(stamp), MonotonicUsec: 1}))
+}
+
 func main() {
 	mode, root := os.Args[1], os.Args[2]
 	now, e := strconv.ParseInt(os.Args[3], 10, 64)
@@ -85,15 +89,78 @@ func main() {
 		fmt.Println(time.Since(start).Nanoseconds() / 1000)
 	case "inspect":
 		inventory(root)
-	case "maintain":
+	case "maintain", "maintain-size", "maintain-count":
 		l, e := j.NewLog(root, config())
 		must(e)
-		must(l.SetRootRetentionPolicy(j.RetentionPolicy{}.WithMaxAge(30 * 24 * time.Hour)))
+		policy := j.RetentionPolicy{}.WithMaxAge(30 * 24 * time.Hour)
+		if mode == "maintain-size" {
+			policy = j.RetentionPolicy{}.WithMaxBytes(8 << 20)
+		} else if mode == "maintain-count" {
+			policy = j.RetentionPolicy{}.WithMaxFiles(2)
+		}
+		must(l.SetRootRetentionPolicy(policy))
 		r, e := l.MaintainRootRetention(time.UnixMicro(now))
 		must(e)
 		fmt.Printf("deleted %d\n", r.DeletedFiles)
 		must(l.CloseWithoutRetention())
 		inventory(root)
+	case "policy", "close-small":
+		cfg := config()
+		cfg.Options.DataHashTableBuckets = 0
+		cfg.Options.FieldHashTableBuckets = 0
+		cfg.RetentionPolicy = j.RetentionPolicy{}.WithMaxBytes(32 << 30)
+		if mode == "close-small" {
+			cfg.RetentionPolicy = j.RetentionPolicy{}.WithMaxBytes(4 << 20)
+		}
+		var events []j.LogLifecycleEventType
+		cfg.Lifecycle = j.LogLifecycleObserverFunc(func(event j.LogLifecycleEvent) {
+			if event.Type == j.LogLifecycleArchived {
+				_, err := os.Stat(event.ArchivedPath)
+				must(err)
+				if event.ActivePath != "" {
+					panic("archive announced a successor")
+				}
+			}
+			events = append(events, event.Type)
+		})
+		l, e := j.NewLog(root, cfg)
+		must(e)
+		appendEntry(l, now)
+		events = nil
+		if mode == "policy" {
+			must(l.SetRootRetentionPolicy(j.RetentionPolicy{}.WithMaxBytes(8 << 20)))
+			r, err := l.MaintainRootRetention(time.UnixMicro(now))
+			must(err)
+			if len(r.Inventory.Files) != 0 || l.ActivePath() != "" || r.DeletedFiles != 1 {
+				panic("policy shrink did not finalize and prune oversized active")
+			}
+		} else {
+			must(l.Close())
+		}
+		if len(events) != 2 || events[0] != j.LogLifecycleArchived || events[1] != j.LogLifecycleDeleted {
+			panic(fmt.Sprintf("archive/deletion event order: %v", events))
+		}
+		if mode == "policy" {
+			appendEntry(l, now+1)
+			must(l.CloseWithoutRetention())
+		}
+		inventory(root)
+	case "tiny-age":
+		l, e := j.NewLog(root, config())
+		must(e)
+		must(l.SetRootRetentionPolicy(j.RetentionPolicy{}.WithMaxAge(time.Nanosecond)))
+		r, e := l.MaintainRootRetention(time.UnixMicro(now))
+		must(e)
+		if r.DeletedFiles != 0 || len(r.Inventory.Files) != 1 {
+			panic("positive age rounded to zero")
+		}
+		r, e = l.MaintainRootRetention(time.UnixMicro(now + 1))
+		must(e)
+		if r.DeletedFiles != 1 || len(r.Inventory.Files) != 0 {
+			panic("one-microsecond age boundary")
+		}
+		must(l.CloseWithoutRetention())
+		fmt.Println("kept then expired")
 	case "reject":
 		_, e := j.InspectRootRetention(root, "history")
 		if e == nil {
@@ -110,17 +177,14 @@ func main() {
 	case "live":
 		l, e := j.NewLog(root, config())
 		must(e)
-		appendEntry := func(t int64) {
-			must(l.Append([]j.Field{j.StringField("MESSAGE", "live")}, j.EntryOptions{RealtimeUsec: uint64(t), MonotonicUsec: 1}))
-		}
-		appendEntry(now)
+		appendEntry(l, now)
 		must(l.SetRootRetentionPolicy(j.RetentionPolicy{}.WithMaxAge(30 * 24 * time.Hour)))
 		r, e := l.MaintainRootRetention(time.UnixMicro(now + 31*day))
 		must(e)
 		if len(r.Inventory.Files) != 0 || l.ActivePath() != "" {
 			panic("expiry not lazy")
 		}
-		appendEntry(now + 32*day)
+		appendEntry(l, now+32*day)
 		must(l.CloseWithoutRetention())
 		inventory(root)
 	case "read":

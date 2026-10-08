@@ -74,7 +74,13 @@ Do not use this skill for:
   substitute Reader entry-vector expansion.
   Live inventory must reject missing/replaced active files instead of reporting
   false-empty success, and maintenance must validate it before mutation.
-  Preserve separate safe-maintenance errors and fatal archive-mutation errors.
+  Preserve separate safe-maintenance errors and fatal archive-mutation errors:
+  failed retired-file open/validation before mutation must not poison a healthy
+  current writer. Detach outgoing ownership before archive mutations so even
+  a post-rename failure leaves evidence inspectable. New root files, successors
+  and allocation checks must share configured options rather than inheriting
+  stale recovered layout. Exercise regular/compact transitions through both
+  append APIs, pre/post-mutation failures, and archive-before-delete events.
   Fixed-header inventory MUST validate every header-addressed object extent
   against the declared arena and allocated object tail, including ENTRY-array
   and tail-entry hints. Reuse stable-header validation with append recovery and

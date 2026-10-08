@@ -14,7 +14,9 @@ pub enum LogOpenMode {
     /// active journal file on the first append.
     #[default]
     Lazy,
-    /// Create or open the active journal file during construction.
+    /// Create or open the active journal file during construction. Root-mode
+    /// startup maintenance may finalize it for expiry or changed allocation;
+    /// the successor then remains lazy until the first append.
     Eager,
 }
 

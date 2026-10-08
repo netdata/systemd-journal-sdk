@@ -94,7 +94,8 @@ const (
 	LogOpenLazy LogOpenMode = iota
 	// LogOpenEager creates or opens the active file during NewLog(), proving
 	// file creation/open and configured writer options before the caller accepts
-	// work.
+	// work. Root startup maintenance may then finalize a recovered active and
+	// leave its successor lazy, as it does during explicit maintenance.
 	LogOpenEager
 )
 
@@ -123,8 +124,10 @@ type LogLifecycleEventType string
 
 const (
 	LogLifecycleCreated LogLifecycleEventType = "created"
-	LogLifecycleRotated LogLifecycleEventType = "rotated"
-	LogLifecycleDeleted LogLifecycleEventType = "deleted"
+	// LogLifecycleArchived finalizes a root-retention file without a successor.
+	LogLifecycleArchived LogLifecycleEventType = "archived"
+	LogLifecycleRotated  LogLifecycleEventType = "rotated"
+	LogLifecycleDeleted  LogLifecycleEventType = "deleted"
 )
 
 // LogLifecycleReason identifies why a lifecycle event happened.
@@ -137,7 +140,8 @@ const (
 	LogLifecycleReasonRetention LogLifecycleReason = "retention"
 )
 
-// LogLifecycleEvent describes a journal file lifecycle change.
+// LogLifecycleEvent describes a journal file lifecycle change. Archived events
+// provide ArchivedPath and leave ActivePath empty; Rotated events provide both.
 type LogLifecycleEvent struct {
 	Type         LogLifecycleEventType
 	Reason       LogLifecycleReason
@@ -774,6 +778,9 @@ func (l *Log) close(enforceRetention bool) error {
 		}
 		l.closed = true
 		return err
+	}
+	if l.rootRetention {
+		l.emitRootArchived(protectedPath)
 	}
 	if enforceRetention {
 		if err := l.enforceRetention(protectedPath); err != nil {

@@ -107,6 +107,18 @@ def main() -> None:
             for verifier in bins:
                 assert probe(verifier, 'inspect', maintained) == [expected[1]]
                 assert probe(verifier, 'read', maintained) == sorted(map(str, [now-40*DAY, now-20*DAY]))
+            for mode in ('maintain-size', 'maintain-count'):
+                limited = evidence / f'{writer}-{mode}-by-{reader}'
+                shutil.copytree(fixture, limited)
+                survivors = [expected[1]]
+                times = [now-40*DAY, now-20*DAY]
+                if mode == 'maintain-count':
+                    survivors.append(row(23, 1, now-40*DAY, now-40*DAY))
+                    times.append(now-40*DAY)
+                assert probe(reader, mode, limited) == sorted([f'deleted {3-len(survivors)}', *survivors])
+                for verifier in bins:
+                    assert probe(verifier, 'inspect', limited) == sorted(survivors)
+                    assert probe(verifier, 'read', limited) == sorted(map(str, times))
             for damage in ('malformed', 'quarantine', *HEADER_DAMAGE):
                 unsafe = evidence / f'{writer}-{reader}-{damage}'
                 shutil.copytree(fixture, unsafe)
@@ -121,7 +133,12 @@ def main() -> None:
                 before = snapshot(unsafe)
                 assert probe(reader, 'reject', unsafe) == ['rejected']
                 assert snapshot(unsafe) == before, 'preflight changed journal evidence'
-            checks.append(f'{writer} writer / {reader} inventory, readback, age, unsafe preflight')
+            checks.append(f'{writer} writer / {reader} inventory, readback, age, size/count tail/path order, unsafe preflight')
+            tiny_age = evidence / f'{writer}-tiny-age-by-{reader}'
+            tiny_age.mkdir()
+            run([str(bins[writer]), 'fixture', str(tiny_age), str(now), '1'])
+            assert probe(reader, 'tiny-age', tiny_age) == ['kept then expired']
+            checks.append(f'{writer} writer / {reader} positive sub-microsecond age boundary')
         live = evidence / f'{writer}-live'
         live.mkdir()
         successor = [row(1, 1, now+32*DAY, now+32*DAY, seq=2)]
@@ -130,6 +147,16 @@ def main() -> None:
             assert probe(reader, 'inspect', live) == successor
             assert probe(reader, 'read', live) == [str(now+32*DAY)]
         checks.append(f'{writer} lazy live expiry / both readers successor sequence and readback')
+        for mode in ('policy', 'close-small'):
+            lifecycle = evidence / f'{writer}-{mode}'
+            lifecycle.mkdir()
+            expected_rows = [row(1, 1, now+1, now+1, seq=2)] if mode == 'policy' else []
+            expected_times = [str(now+1)] if mode == 'policy' else []
+            assert probe(writer, mode, lifecycle) == expected_rows
+            for reader in bins:
+                assert probe(reader, 'inspect', lifecycle) == expected_rows
+                assert probe(reader, 'read', lifecycle) == expected_times
+            checks.append(f'{writer} {mode} / archive-before-delete events and both readers')
     timings = []
     if options.benchmark:
         for writer in bins:
