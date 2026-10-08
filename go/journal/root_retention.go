@@ -58,15 +58,17 @@ func InspectRootRetention(dir, source string) (RootRetentionInventory, error) {
 	var inventory RootRetentionInventory
 	seen := make(map[UUID]bool)
 	for _, entry := range dirs {
-		// Dedicated roots may also contain caller-owned lock/status files.
+		machine, parseErr := ParseUUID(entry.Name())
+		canonicalMachine := parseErr == nil && machine.String() == entry.Name()
+		// Dedicated roots may also contain caller-owned lock/status files,
+		// but a canonical machine name always denotes a machine directory.
 		if !entry.IsDir() {
-			if entry.Type()&os.ModeSymlink != 0 || ownedRootName(entry.Name(), source) {
+			if canonicalMachine || entry.Type()&os.ModeSymlink != 0 || ownedRootName(entry.Name(), source) {
 				return RootRetentionInventory{}, rootCandidateError(filepath.Join(dir, entry.Name()), "unexpected root entry")
 			}
 			continue
 		}
-		machine, err := ParseUUID(entry.Name())
-		if err != nil || machine.String() != entry.Name() || isZeroUUID(machine) {
+		if !canonicalMachine || isZeroUUID(machine) {
 			children, readErr := os.ReadDir(filepath.Join(dir, entry.Name()))
 			if readErr != nil {
 				return RootRetentionInventory{}, readErr
@@ -92,6 +94,55 @@ func InspectRootRetention(dir, source string) (RootRetentionInventory, error) {
 		}
 	}
 	return inventory, nil
+}
+
+// InspectRootRetention returns the owned root inventory and verifies that a
+// live writer still names the same filesystem file and journal identities in
+// that inventory. Use this method after NewLog for queries and status; the
+// standalone function cannot know whether an active writer is missing.
+// It requires an open RootRetention Log but remains available after writer
+// failure. Inventory errors alone do not mark the writer failed. Calls require
+// the same caller exclusion as other Log operations and do not protect against
+// concurrent external directory changes.
+func (l *Log) InspectRootRetention() (RootRetentionInventory, error) {
+	if !l.rootRetention {
+		return RootRetentionInventory{}, fmt.Errorf("journal: root retention is not enabled")
+	}
+	if l.closed {
+		return RootRetentionInventory{}, errWriterClosed
+	}
+	if l.writer != nil {
+		path := l.activePath()
+		named, err := os.Lstat(path)
+		if err != nil {
+			return RootRetentionInventory{}, err
+		}
+		live, err := l.writer.file.Stat()
+		if err != nil {
+			return RootRetentionInventory{}, err
+		}
+		if !named.Mode().IsRegular() || !os.SameFile(named, live) {
+			return RootRetentionInventory{}, rootCandidateError(path, "active path no longer names the live writer file")
+		}
+	}
+	inventory, err := InspectRootRetention(l.configuredDir, l.source)
+	if err != nil {
+		return RootRetentionInventory{}, err
+	}
+	if l.writer == nil {
+		return inventory, nil
+	}
+	for _, file := range inventory.Files {
+		if file.Path != l.activePath() {
+			continue
+		}
+		live := l.writer.header
+		if !file.Active || file.header.fileID != live.fileID || file.MachineID != live.machineID || file.SeqnumID != live.seqnumID {
+			return RootRetentionInventory{}, rootCandidateError(file.Path, "active journal identity disagrees with live writer")
+		}
+		return inventory, nil
+	}
+	return RootRetentionInventory{}, rootCandidateError(l.activePath(), "live writer is missing from root inventory")
 }
 
 func ownedRootName(name, source string) bool {
@@ -293,21 +344,21 @@ func (l *Log) maintainRootRetention(now time.Time, expireLive bool) (result Root
 		l.rootResult = result
 		l.rootAttempted = true
 	}()
-	inv, err := InspectRootRetention(l.configuredDir, l.source)
+	inv, err := l.InspectRootRetention()
 	if err != nil {
 		return result, err
 	}
 	if err = l.finalizeRootActives(inv, now, expireLive, &result); err != nil {
 		return result, err
 	}
-	inv, err = InspectRootRetention(l.configuredDir, l.source)
+	inv, err = l.InspectRootRetention()
 	if err != nil {
 		return result, err
 	}
 	err = l.pruneRootRetention(&inv, now, &result)
 	// A failed unlink leaves known files in place, but sync or external I/O errors
 	// can make any cached count misleading. Resample; never report failed scans as zero.
-	sample, sampleErr := InspectRootRetention(l.configuredDir, l.source)
+	sample, sampleErr := l.InspectRootRetention()
 	if sampleErr == nil {
 		result.Inventory = sample
 		result.InventoryValid = true

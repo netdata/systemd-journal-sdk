@@ -4,7 +4,7 @@ Last updated: 2026-10-08
 
 ## Current
 
-None.
+- SOW-0152 - Root History Retention: in-progress, reopened for live-writer inventory correspondence.
 
 ## Pending
 
@@ -49,7 +49,7 @@ None.
 
 ## Recently Closed Or Completed
 
-- SOW-0152 - Root History Retention: completed locally at 41273e1 after full validation and independent review. Go opt-in root inventory/maintenance and policy updates; no release or push.
+- SOW-0152: reopened in Current after consumer integration found a live-writer inventory regression; earlier allocation/lifecycle fixes and reviews remain valid.
 
 - SOW-0154 - Project Release Skill: completed. Adds the full-process team
   skill to PR #8, including language parity, CI publication, maintainer tags,

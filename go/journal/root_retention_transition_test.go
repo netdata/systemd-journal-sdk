@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -188,5 +189,187 @@ func TestRootRetentionTransitionRevertedPolicyKeepsLiveGeometry(t *testing.T) {
 	}
 	if l.ActivePath() != path || len(result.Inventory.Files) != 1 || !result.Inventory.Files[0].Active {
 		t.Fatalf("reverted policy fragmented live file: %+v", result)
+	}
+}
+
+func TestRootRetentionMaintenanceDetectsMissingLiveDirectory(t *testing.T) {
+	for _, kind := range []string{"directory", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := transitionConfig(t)
+			l, err := journal.NewLog(root, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.CloseWithoutRetention()
+			transitionAppend(t, l, false)
+			original := l.JournalDirectory()
+			if kind == "file" {
+				original = l.ActivePath()
+			}
+			moved := filepath.Join(t.TempDir(), "moved-live-path")
+			if err = os.Rename(original, moved); err != nil {
+				t.Fatal(err)
+			}
+			away := true
+			defer func() {
+				if away {
+					if err := os.Rename(moved, original); err != nil {
+						t.Error(err)
+					}
+				}
+			}()
+			if _, err = l.InspectRootRetention(); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("missing live inventory: %v", err)
+			}
+			previous, _ := l.LastRootRetentionResult()
+			result, err := l.MaintainRootRetention(time.Now())
+			if !errors.Is(err, os.ErrNotExist) || result.InventoryValid || errors.Is(err, journal.ErrWriterFailed) {
+				t.Fatalf("missing live path: valid=%t err=%v", result.InventoryValid, err)
+			}
+			if !result.LastSuccessfulAt.Equal(previous.LastSuccessfulAt) {
+				t.Fatal("failed inventory replaced last maintenance success")
+			}
+			if err = l.Sync(); err != nil {
+				t.Fatalf("inventory error poisoned writer: %v", err)
+			}
+			if err = os.Rename(moved, original); err != nil {
+				t.Fatal(err)
+			}
+			away = false
+			inventory, err := l.InspectRootRetention()
+			if err != nil || len(inventory.Files) != 1 {
+				t.Fatalf("recovered inventory: files=%d err=%v", len(inventory.Files), err)
+			}
+			result, err = l.MaintainRootRetention(time.Now())
+			if err != nil || !result.InventoryValid {
+				t.Fatalf("recovered maintenance: %v", err)
+			}
+			transitionAppend(t, l, false)
+		})
+	}
+}
+
+func TestRootRetentionRejectsMachineNamedRegularFile(t *testing.T) {
+	root := t.TempDir()
+	cfg := transitionConfig(t)
+	if err := os.WriteFile(filepath.Join(root, cfg.Options.MachineID.String()), []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.InspectRootRetention(root, cfg.Source); err == nil {
+		t.Fatal("machine-named regular file accepted as empty inventory")
+	}
+}
+
+func TestRootRetentionLiveInventoryRejectsReplacementFile(t *testing.T) {
+	root := t.TempDir()
+	l, err := journal.NewLog(root, transitionConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.CloseWithoutRetention()
+	transitionAppend(t, l, false)
+	original := l.ActivePath()
+	holding := t.TempDir()
+	moved := filepath.Join(holding, "live")
+	copyPath := filepath.Join(holding, "copy")
+	bytes, err := os.ReadFile(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Rename(original, moved); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := os.Stat(original); err == nil {
+			if err := os.Rename(original, copyPath); err != nil {
+				t.Error(err)
+			}
+		}
+		if err := os.Rename(moved, original); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err = os.WriteFile(original, bytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A copied valid header has identical journal IDs but is not the live inode.
+	if _, err = journal.InspectRootRetention(root, "history"); err != nil {
+		t.Fatalf("copy should pass standalone headers: %v", err)
+	}
+	if _, err = l.InspectRootRetention(); err == nil || errors.Is(err, journal.ErrWriterFailed) {
+		t.Fatalf("replacement inventory: %v", err)
+	}
+	result, err := l.MaintainRootRetention(time.Now())
+	if err == nil || result.InventoryValid || errors.Is(err, journal.ErrWriterFailed) {
+		t.Fatalf("replacement maintenance: valid=%t err=%v", result.InventoryValid, err)
+	}
+	if err = l.Sync(); err != nil {
+		t.Fatalf("read-only mismatch poisoned writer: %v", err)
+	}
+}
+
+func TestRootRetentionLiveInventoryRejectsChangedHeaderIdentity(t *testing.T) {
+	root := t.TempDir()
+	l, err := journal.NewLog(root, transitionConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.CloseWithoutRetention()
+	transitionAppend(t, l, false)
+	f, err := os.OpenFile(l.ActivePath(), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var fileID [16]byte
+	if _, err = f.ReadAt(fileID[:], 24); err != nil {
+		t.Fatal(err)
+	}
+	changed := fileID
+	changed[0] ^= 1
+	if _, err = f.WriteAt(changed[:], 24); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := f.WriteAt(fileID[:], 24); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err = l.InspectRootRetention(); err == nil || errors.Is(err, journal.ErrWriterFailed) {
+		t.Fatalf("changed identity accepted: %v", err)
+	}
+	if _, err = f.WriteAt(fileID[:], 24); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.InspectRootRetention(); err != nil {
+		t.Fatalf("restored identity rejected: %v", err)
+	}
+}
+
+func TestRootRetentionLiveInventoryRequiresOptInAndOpenLog(t *testing.T) {
+	cfg := transitionConfig(t)
+	cfg.RootRetention = false
+	legacy, err := journal.NewLog(t.TempDir(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.CloseWithoutRetention()
+	if _, err = legacy.InspectRootRetention(); err == nil {
+		t.Fatal("non-opt-in inspection accepted")
+	}
+	cfg.RootRetention = true
+	l, err := journal.NewLog(t.TempDir(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.InspectRootRetention(); err != nil {
+		t.Fatalf("open lazy inspection: %v", err)
+	}
+	if err = l.CloseWithoutRetention(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.InspectRootRetention(); err == nil {
+		t.Fatal("closed Log inspection accepted")
 	}
 }

@@ -425,6 +425,10 @@ func TestRootRetentionArchiveFailureStopsWritesAndPruning(t *testing.T) {
 	if err = l.Append([]Field{StringField("MESSAGE", "must fail")}, EntryOptions{MonotonicUsec: 2}); !errors.Is(err, ErrWriterFailed) {
 		t.Fatalf("write after archive failure: %v", err)
 	}
+	inventory, inspectErr := l.InspectRootRetention()
+	if inspectErr != nil || len(inventory.Files) != 1 {
+		t.Fatalf("failed-writer status inventory: files=%d err=%v", len(inventory.Files), inspectErr)
+	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*", "dem*"))
 	if len(files) != 1 {
 		t.Fatalf("uncertain evidence discarded: %v", files)
@@ -505,6 +509,32 @@ func BenchmarkRootRetentionRotation(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				if err := l.Append(fields, EntryOptions{RealtimeUsec: start + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkInspectLiveRootRetention(b *testing.B) {
+	for _, records := range []int{1, 10000} {
+		b.Run(fmt.Sprintf("records_%d", records), func(b *testing.B) {
+			l, err := NewLog(b.TempDir(), rootTestConfig())
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer l.CloseWithoutRetention()
+			fields := []Field{StringField("MESSAGE", "inventory")}
+			stamp := uint64(time.Now().UnixMicro())
+			for i := 0; i < records; i++ {
+				if err := l.Append(fields, EntryOptions{RealtimeUsec: stamp + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := l.InspectRootRetention(); err != nil {
 					b.Fatal(err)
 				}
 			}

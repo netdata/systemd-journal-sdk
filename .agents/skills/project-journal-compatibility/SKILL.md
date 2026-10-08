@@ -66,7 +66,10 @@ Do not use this skill for:
   the owned root, file lengths and tail times govern deletion, and live files
   may be finalized for idle expiry or allocation-policy changes. Recovered
   active files require caller verification/exclusion. Use header-native
-  `InspectRootRetention`; do not substitute Reader entry-vector expansion.
+  `InspectRootRetention` before open and `Log.InspectRootRetention` for live
+  query/status inventory; do not substitute Reader entry-vector expansion.
+  Live inventory must reject missing/replaced active files instead of reporting
+  false-empty success, and maintenance must validate it before mutation.
   Preserve separate safe-maintenance errors and fatal archive-mutation errors.
 - For deterministic regular uncompressed writer output, the layout target is byte-for-byte identity with the systemd v260.1 reference ingester for the accepted corpus. Writers must match systemd object order, alignment, initial allocation envelope, v260 header fields, entry-array growth, tail metadata, and hash-chain header behavior for that slice.
 - Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.

@@ -7,7 +7,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-None.
+- SOW-0152 - Root History Retention: in-progress, reopened for live-writer inventory correspondence.
 
 ## Pending
 

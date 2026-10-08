@@ -418,7 +418,13 @@ caller writer exclusion, verified recovery provenance/indexes and no artifact
 sizer. `InspectRootRetention` reads fixed-size headers, validates canonical
 machine/sequence/archive identities and header extents, and fails the complete
 inventory for unsafe source candidates. Missing roots are errors; unrelated
-caller metadata directories are allowed. Inventory is not full verification.
+caller metadata directories are allowed, but canonical machine-named entries
+must be directories. After open, `Log.InspectRootRetention` additionally proves
+the active path still names the live writer file and journal identities; it is
+available after writer failure and is reused by maintenance before mutations.
+An inventory mismatch alone does not poison the writer. These boundary checks
+assume caller exclusion and do not promise protection against concurrent
+external modification. Inventory is not full verification.
 Root retention counts file lengths including preallocation, expires by tail
 saved time, and evicts whole files in tail/path order. Existing defaults and file
 format are unchanged. `MaintainRootRetention` finalizes verified retired active

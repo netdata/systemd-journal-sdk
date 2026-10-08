@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: implementation, validation and independent review complete at 41273e1; local only, no release or push.
+Sub-state: reopened live-writer inventory regression is fixed and locally validated; coordinated review/completion pending.
 
 ## Requirements
 
@@ -187,3 +187,27 @@ No independent work added. Consumer adoption is owned by the coordinating task.
 No reopened regression; this is an explicit additive opt-in.
 
 Completion checkpoint: the approved SDK target is complete without a DEM compatibility path. Re-review reproduced the corrected 32-GiB-to-8-MiB transition (48-MiB old allocation to 8-MiB successor) and lazy creation cleanup (one 8-MiB active, updated maintenance time). Every verified finding is fixed; no optional review item extends this scope. Completion record is a separate commit because current user instructions require implementation commits before independent review.
+
+## Regression - 2026-10-08
+
+Observed failure and missed invariant:
+- Moving the active machine directory outside the configured root leaves the Log holding a live file descriptor, while standalone directory inventory reports zero files and maintenance reports success. Replacing the old machine path with a regular file is also silently ignored as metadata. Consumer query/status requires a missing-file error rather than false-empty success. Initial tests inspected directory-visible files but did not challenge their correspondence with an owned live writer.
+
+Approved repair plan and gate:
+- The coordinating task authorizes a narrow SDK-owned Log.InspectRootRetention API, usable on an open failed Log, requiring root opt-in. It combines standalone header inventory with live path/filesystem identity and header-identity checks. Use it internally before maintenance mutations. Reject canonical machine-named non-directories in standalone inventory. Missing-file inventory errors do not poison the writer. No per-record filesystem checks or general concurrent-external-modification guarantee is added.
+- Gate status: ready. Existing caller exclusion, recovery verification, synthetic-fixture/cache/repository boundaries and no-publication constraints remain in effect. Source files, tests, docs and product-scope are affected; other SDK consumers retain defaults. No unresolved user-owned decision remains.
+
+Validation and artifact plan:
+- Reproduce existing maintenance false-empty behavior with a public real-filesystem test before repair, then test missing active directory/file, replacement identity, recovery, standalone machine-path type rejection, and inspection after writer failure. Run affected Go tests/race and docs/audit; retain applicable earlier full-suite/benchmark evidence. Document standalone versus live-aware inventories without broadening external-modification guarantees. Commit the coherent fix before coordinated review; keep the SOW in progress.
+
+Regression implementation and validation:
+- Both initial reproducers failed before the fix: missing live directory produced valid zero inventory/success; a canonical machine-named regular file passed standalone inventory. The live-aware method now checks path presence/filesystem identity with Lstat, fd Stat and SameFile, then verifies file/machine/sequence journal identities in the shared header inventory. Every maintenance sample uses it. Neither this read-only method nor its errors calls writable/recordFailure; failed writer status remains inspectable.
+- Public real-filesystem tests cover a moved machine directory and moved active file, filesystem ENOENT, invalid maintenance inventory, unchanged last-success time, healthy Sync while missing, restoration/recovery, an identical-header replacement inode, changed header identity, and non-opt-in/closed rejection. The existing real-file archive-failure test confirms inspection still works after writer failure.
+- `go -C go test ./journal -run 'TestRoot|TestLog|TestDefaultLogRotation' -count=1`: pass. The same affected suite with `-race` passes. Prior full-suite evidence remains valid for unchanged reader/writer/default paths; this repair does not alter append or file format code.
+- `python3 tests/docs/check_wiki_docs.py`: all 16 wiki pages pass. `python3 tests/docs/verify_examples.py --only go-root-retention`: the updated public example passes, including live-aware inspection.
+- `go -C go test ./journal -run '^$' -bench BenchmarkInspectLiveRootRetention -benchtime=200ms -benchmem -count=3`: one live file with 1 or 10,000 records takes about 35–36 microseconds, about 5.3 KiB and 37 allocations per inspection on darwin/arm64. This demonstrates record-count independence only; it does not measure archive/unlink/fsync stalls or establish a speedup over previous runs.
+- Code search confirms only existing maintenance boundaries invoke the new check internally; no per-record filesystem probes were added. Standalone root scanning now reserves canonical machine names for directories. Docs, product scope and the compatibility skill distinguish startup inventory from live-aware status/query inventory, with caller exclusion still required. Native Windows/Linux runtime caveats remain unchanged.
+- Validation uses the same /tmp and repository-local cache redirection recorded above; no live journals, external state or unapproved repository writes. Durable artifacts contain no sensitive data. SOW audit and diff checks must pass before the follow-up commit.
+
+Regression outcome:
+- Fix locally validated; retain current/in-progress until coordinated review and completion. No push or release.

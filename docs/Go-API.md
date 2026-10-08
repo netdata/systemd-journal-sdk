@@ -430,14 +430,20 @@ Log behavior remains machine-local, committed-byte and archive-head-age based.
 The caller MUST serialize Log calls and directory changes, exclude independent
 writers, and verify the provenance and index integrity of recovered active
 files before `NewLog`. Owned files must use nondecreasing saved realtime (as
-Log does). `InspectRootRetention(root, source)` supplies the same header-only
-inventory before open and for status after a writer failure. It validates
+Log does). `InspectRootRetention(root, source)` supplies header-only inventory
+before open. After open, use `log.InspectRootRetention()` for queries and status,
+including after writer failure: it also checks that the active path still names
+the live writer's filesystem file and journal identities. Missing or replaced
+live files are errors, not empty history; inventory errors alone do not poison
+the writer. The method requires an open root-retention Log. Both forms validate
 canonical machine directories, filename/header machine and sequence identities,
 archive state and header bounds. It rejects source quarantine names, symlinks,
 ambiguous identities and malformed candidates before pruning. Unrelated caller
 metadata directories, such as `identity/`, are permitted when they contain no
 source candidates. A missing or inaccessible root is an error, not zero history.
-This inventory does not verify payloads/indexes or certify provenance.
+This inventory does not verify payloads/indexes or certify provenance. Checks
+run at inventory/maintenance boundaries and do not protect against concurrent
+external modification. Canonical machine-named entries must be directories.
 
 <!-- verify-example: lang=go id=go-root-retention -->
 ```go
@@ -465,7 +471,9 @@ if err := log.SetRootRetentionPolicy(journal.RetentionPolicy{}.
 }
 result, err := log.MaintainRootRetention(time.Now())
 if err != nil { return err }
-fmt.Println(result.Inventory.Bytes, len(result.Inventory.Files))
+inventory, err := log.InspectRootRetention()
+if err != nil { return err }
+fmt.Println(inventory.Bytes, len(inventory.Files), result.LastSuccessfulAt)
 ```
 
 Root maintenance counts full directory-visible file lengths, including
