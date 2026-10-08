@@ -49,6 +49,9 @@ func (p RotationPolicy) WithMaxDuration(d time.Duration) RotationPolicy {
 }
 
 // RetentionPolicy controls deletion of old archived files owned by a Log.
+// RootRetention explicitly changes scope/accounting to the dedicated source
+// root, file lengths and tail saved times; the default methods below describe
+// the original machine-local policy.
 type RetentionPolicy struct {
 	MaxFiles *int
 	MaxBytes *uint64
@@ -171,6 +174,12 @@ func (f LogArtifactSizeFunc) JournalArtifactSize(journalPath string) (uint64, er
 
 // LogConfig configures a high-level directory journal writer.
 type LogConfig struct {
+	// RootRetention opts into dedicated-root/source retention across machine IDs.
+	// Requires StrictSystemdNaming and no ArtifactSizer. The caller owns writer
+	// exclusion and must verify recovered active files before NewLog. Accounting
+	// uses file lengths and tail saved times; safe cleanup errors are reported by
+	// LastRootRetentionResult instead of failing healthy appends.
+	RootRetention   bool
 	Options         Options
 	Source          string
 	RotationPolicy  RotationPolicy
@@ -196,10 +205,16 @@ type LogConfig struct {
 // not safe for concurrent method calls; callers must serialize writes to the
 // single writer instance.
 type Log struct {
-	configuredDir string
-	machineDir    string
-	source        string
-	active        string
+	rootRetention         bool
+	rootRotation          RotationPolicy
+	rootConfiguredMaxSize uint64
+	rootPolicyRotate      bool
+	rootResult            RootRetentionResult
+	rootAttempted         bool
+	configuredDir         string
+	machineDir            string
+	source                string
+	active                string
 
 	options         Options
 	rotation        RotationPolicy
@@ -268,26 +283,40 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		return nil, err
 	}
 
+	if config.RootRetention {
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			if _, err := InspectRootRetention(dir, prepared.source); err != nil {
+				return nil, err
+			}
+		}
+	}
 	machineDir := filepath.Join(dir, prepared.options.MachineID.String())
 	if err := os.MkdirAll(machineDir, 0o750); err != nil {
 		return nil, err
 	}
 
 	l := &Log{
-		configuredDir:   dir,
-		machineDir:      machineDir,
-		source:          prepared.source,
-		options:         prepared.options,
-		rotation:        prepared.rotation,
-		retention:       config.RetentionPolicy,
-		strict:          config.StrictSystemdNaming,
-		syncOnArchive:   logSyncOnArchive(config),
-		lifecycle:       config.Lifecycle,
-		artifacts:       config.ArtifactSizer,
-		fieldNamePolicy: prepared.logFieldPolicy,
-		entriesInFile:   0,
+		rootRetention:         config.RootRetention,
+		rootRotation:          cloneRotationPolicy(config.RotationPolicy),
+		rootConfiguredMaxSize: config.Options.MaxFileSize,
+		configuredDir:         dir,
+		machineDir:            machineDir,
+		source:                prepared.source,
+		options:               prepared.options,
+		rotation:              prepared.rotation,
+		retention:             config.RetentionPolicy,
+		strict:                config.StrictSystemdNaming,
+		syncOnArchive:         logSyncOnArchive(config),
+		lifecycle:             config.Lifecycle,
+		artifacts:             config.ArtifactSizer,
+		fieldNamePolicy:       prepared.logFieldPolicy,
+		entriesInFile:         0,
 	}
 
+	if config.RootRetention {
+		l.retention = cloneRetentionPolicy(config.RetentionPolicy)
+		l.rotation = deriveRotationPolicy(l.rootRotation, l.retention, l.options.Compact)
+	}
 	if err := l.openExistingChain(prepared.explicitHeadSeqnum, prepared.explicitSeqnumID); err != nil {
 		return nil, err
 	}
@@ -296,10 +325,18 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			return nil, err
 		}
 	}
-	if err := l.enforceRetentionOnOpen(); err != nil {
+	if l.rootRetention {
+		if _, err := l.maintainRootRetention(time.Now(), true); errors.Is(err, ErrWriterFailed) {
+			if l.writer != nil {
+				err = errors.Join(err, l.writer.Close())
+				l.writer = nil
+			}
+			return nil, err
+		}
+		l.openRetention = l.writer != nil
+	} else if err := l.enforceRetentionOnOpen(); err != nil {
 		return nil, err
 	}
-
 	return l, nil
 }
 
@@ -342,6 +379,9 @@ func prepareNewLogConfig(dir string, config LogConfig) (preparedLogConfig, error
 }
 
 func validateNewLogConfig(dir string, config LogConfig) error {
+	if config.RootRetention && (!config.StrictSystemdNaming || config.ArtifactSizer != nil) {
+		return fmt.Errorf("journal: root retention requires strict naming and no artifact sizer")
+	}
 	if dir == "" {
 		return errInvalidJournal
 	}
@@ -442,7 +482,7 @@ func (l *Log) openDefaultChainActive(state chainState) error {
 func (l *Log) openActivePath(path string) error {
 	w, err := OpenWithOptions(path, l.options)
 	if err != nil {
-		if !replaceableActiveOpenError(err) {
+		if l.rootRetention || !replaceableActiveOpenError(err) {
 			return err
 		}
 		return l.replaceActiveFile(path)
@@ -807,6 +847,7 @@ func (l *Log) ensureWriter(entryOpts EntryOptions, reason LogLifecycleReason) er
 		return l.recordFailure(err)
 	}
 	l.writer = w
+	l.rootPolicyRotate = false // The new writer already uses the installed allocation policy.
 	l.entriesInFile = 0
 	if reason != LogLifecycleReasonRotation {
 		l.emitLifecycle(LogLifecycleEvent{

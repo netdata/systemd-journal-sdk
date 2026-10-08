@@ -1,13 +1,13 @@
 # SOW Status
 
-Last updated: 2026-10-07
+Last updated: 2026-10-08
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- None.
+- SOW-0152 - Root History Retention: in-progress. Go opt-in root inventory and maintenance; user-approved implementation, independent review pending.
 
 ## Pending
 

@@ -1,10 +1,10 @@
 # SOW Status
 
-Last updated: 2026-10-07
+Last updated: 2026-10-08
 
 ## Current
 
-- None.
+- SOW-0152 - Root History Retention: in-progress. Go opt-in root inventory and maintenance; user-approved implementation, independent review pending.
 
 ## Pending
 

@@ -412,6 +412,25 @@ Current writer performance certification status:
   those implementations now live under `experiments/` and are not product
   performance or correctness gates.
 
+Go also provides explicit `LogConfig.RootRetention` for a caller-owned root/source
+across machine identities. This Go-only opt-in requires strict active naming,
+caller writer exclusion, verified recovery provenance/indexes and no artifact
+sizer. `InspectRootRetention` reads fixed-size headers, validates canonical
+machine/sequence/archive identities and header extents, and fails the complete
+inventory for unsafe source candidates. Missing roots are errors; unrelated
+caller metadata directories are allowed. Inventory is not full verification.
+Root retention counts file lengths including preallocation, expires by tail
+saved time, and evicts whole files in tail/path order. Existing defaults and file
+format are unchanged. `MaintainRootRetention` finalizes verified retired active
+files and only seals live actives for idle expiry or required size-policy
+allocation changes, leaving successors lazy. Safe cleanup errors remain in
+`RootRetentionResult` (attempt/last-success times and valid-or-unknown sample)
+without failing healthy appends; uncertain archive mutation still fails the
+writer. `SetRootRetentionPolicy` validates/copies/installs before enforcement;
+explicit rotation limits survive changes. This is neither exact TTL nor a
+physical disk cap; preallocation/active growth/pinned readers and failed cleanup
+can exceed the allowance. No Rust parity or release is promised by this addition.
+
 Current Go writer feature slice:
 
 - regular journal files by default and compact journal files when

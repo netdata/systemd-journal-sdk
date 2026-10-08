@@ -420,6 +420,86 @@ remove an empty active file with strict systemd naming, retain its archive with
 chain naming, and are idempotent after closure; calling `Close()`
 after `CloseWithoutRetention()` does not retroactively apply the old policy.
 
+## Dedicated Root Retention
+
+Use `LogConfig.RootRetention: true` when one caller owns a dedicated root and
+source across machine identity changes. This Go-only opt-in requires
+`StrictSystemdNaming: true` and does not accept an `ArtifactSizer`. The default
+Log behavior remains machine-local, committed-byte and archive-head-age based.
+
+The caller MUST serialize Log calls and directory changes, exclude independent
+writers, and verify the provenance and index integrity of recovered active
+files before `NewLog`. Owned files must use nondecreasing saved realtime (as
+Log does). `InspectRootRetention(root, source)` supplies the same header-only
+inventory before open and for status after a writer failure. It validates
+canonical machine directories, filename/header machine and sequence identities,
+archive state and header bounds. It rejects source quarantine names, symlinks,
+ambiguous identities and malformed candidates before pruning. Unrelated caller
+metadata directories, such as `identity/`, are permitted when they contain no
+source candidates. A missing or inaccessible root is an error, not zero history.
+This inventory does not verify payloads/indexes or certify provenance.
+
+<!-- verify-example: lang=go id=go-root-retention -->
+```go
+machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
+if err != nil { return err }
+bootID, err := journal.ParseUUID("ffeeddccbbaa99887766554433221100")
+if err != nil { return err }
+log, err := journal.NewLog("/var/log/journal-sdk", journal.LogConfig{
+    Source: "example-history",
+    Options: journal.Options{MachineID: machineID, BootID: bootID},
+    StrictSystemdNaming: true,
+    RootRetention: true,
+    RotationPolicy: journal.RotationPolicy{}.WithMaxDuration(24 * time.Hour),
+    RetentionPolicy: journal.RetentionPolicy{}.
+        WithMaxAge(30 * 24 * time.Hour).WithMaxBytes(1024 * 1024 * 1024),
+})
+if err != nil { return err }
+defer log.CloseWithoutRetention()
+if err := log.Append([]journal.Field{journal.StringField("MESSAGE", "saved")},
+    journal.EntryOptions{MonotonicUsec: 1}); err != nil { return err }
+// Install a valid replacement before maintenance; invalid policies change nothing.
+if err := log.SetRootRetentionPolicy(journal.RetentionPolicy{}.
+    WithMaxAge(30 * 24 * time.Hour).WithMaxBytes(2 * 1024 * 1024 * 1024)); err != nil {
+    return err
+}
+result, err := log.MaintainRootRetention(time.Now())
+if err != nil { return err }
+fmt.Println(result.Inventory.Bytes, len(result.Inventory.Files))
+```
+
+Root maintenance counts full directory-visible file lengths, including
+preallocation, across all owned machine directories. Age eviction uses each
+file's tail saved realtime; size/file-count eviction chooses oldest tail first,
+then canonical path as a deterministic identity/sequence tie-breaker. Saved
+realtime is not producer event time. Whole-file expiry is not an exact row TTL;
+a live file is protected from size pressure, and an append/allocation can exceed
+the allowance. With the example's 24-hour file span and successful hourly
+maintenance, age overhang is about one day plus one hour under advancing clocks.
+The SDK does not schedule maintenance. Existing files keep their actual spans.
+
+`NewLog` applies root maintenance even for lazy archived-only histories.
+Automatic cleanup also runs on active-file creation and rotation. Explicit
+`MaintainRootRetention(now)` (or `EnforceRetention()`) finalizes an idle active
+only when its tail expires or a changed derived size policy needs fresh
+allocation geometry; empty files are discarded. Ordinary idle sweeps keep the
+same file, and the successor stays lazy. Verified retired-machine active files
+are archived through the existing writer lifecycle. `SetRootRetentionPolicy`
+installs copied valid limits without applying either old or new limits;
+`RootRetentionPolicy()` returns a copy. Explicit rotation limits stay fixed.
+
+Safe inventory/unlink/directory-sync errors are maintenance failures and do not
+turn successful appends into failures. Read `LastRootRetentionResult()` after
+automatic boundaries: it retains `AttemptedAt`, `LastSuccessfulAt`, `Err`, and a
+post-attempt inventory only when `InventoryValid` is true. Explicit maintenance
+also returns the error. Unknown inventory must not be displayed as zero.
+Uncertain writer/archive mutations still fail the Log and preserve evidence;
+writer failure must be reported separately. Failed maintenance can leave excess
+bytes indefinitely. Readers holding a removed file may continue reading it;
+those pinned bytes remain allocated until readers close and are excluded from
+directory-visible accounting. Windows opens permit delete sharing, but runtime
+unlink behavior must be validated on the consumer's supported Windows setup.
+
 ## Field-Name Policy
 
 <!-- verify-example: lang=go id=go-field-name-policy -->

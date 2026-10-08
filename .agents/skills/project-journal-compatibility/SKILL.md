@@ -61,6 +61,13 @@ Do not use this skill for:
 - The reusable live-concurrency harness is under `tests/conformance/live/`. Writer tests should use the configured monotonically increasing sequence field, default `LIVE_SEQ`, so stock readers prove complete ordered visibility.
 - Stock reader harness adapters may retry transient active-writer `ENODATA` open/read failures or partial snapshots only while the writer is active. After the writer exits, final ordered reads and `journalctl --verify --file` must pass.
 - High-level directory writers must apply configured retention once when an active writer is opened or created. Existing-active reopen and eager open enforce during construction; lazy archived-only construction remains side-effect-free until the first append opens the active file, then retention runs before the first entry is written. Active/current files must remain protected and normal retention deletion lifecycle events must be reused.
+- Go's explicit `LogConfig.RootRetention` is an exception to the default
+  machine-local lifecycle rules above: archived-only startup also maintains
+  the owned root, file lengths and tail times govern deletion, and live files
+  may be finalized for idle expiry or allocation-policy changes. Recovered
+  active files require caller verification/exclusion. Use header-native
+  `InspectRootRetention`; do not substitute Reader entry-vector expansion.
+  Preserve separate safe-maintenance errors and fatal archive-mutation errors.
 - For deterministic regular uncompressed writer output, the layout target is byte-for-byte identity with the systemd v260.1 reference ingester for the accepted corpus. Writers must match systemd object order, alignment, initial allocation envelope, v260 header fields, entry-array growth, tail metadata, and hash-chain header behavior for that slice.
 - Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.
 - Header readers must use the on-disk `header_size` when validating object and hash-table locations. Do not compare historical file offsets against the current in-memory v260 `JournalHeader` struct size, and do not expose bytes beyond the on-disk header as newer header fields.
