@@ -435,8 +435,9 @@ successor-creation retry following a safe creation failure.
 files and only seals live actives for idle expiry or required size-policy
 allocation changes, leaving successors lazy even after eager startup. Startup,
 creation, rotation, closing a nonempty active and explicit maintenance enforce
-the policy. Closing an unopened or empty Log does not sweep history. Files
-allocate at least 8 MiB; finalized files have no newest-file grace period and
+the policy. Closing an unopened or empty Log does not sweep history. New SDK files
+allocate at least 8 MiB; existing files are counted at their actual length and
+smaller allowances are accepted; finalized files have no newest-file grace period and
 may be deleted immediately under a smaller allowance. Close without retention
 finalizes without pruning. Positive ages below one microsecond normalize to
 one microsecond. Safe pre-mutation open/validation and cleanup errors remain in

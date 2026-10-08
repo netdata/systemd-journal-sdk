@@ -405,17 +405,14 @@ func (l *Log) finalizeRootActives(inv RootRetentionInventory, now time.Time, exp
 		}
 		// The current machine is opened by NewLog before maintenance. Every other
 		// active is retired; callers verified its provenance/index before opt-in.
-		if err := l.finalizeRetiredActive(file); err != nil {
+		if err := l.finalizeRetiredActive(file, result); err != nil {
 			return err
-		}
-		if file.Entries == 0 {
-			result.DeletedFiles++
 		}
 	}
 	return nil
 }
 
-func (l *Log) finalizeRetiredActive(file RootRetentionFile) error {
+func (l *Log) finalizeRetiredActive(file RootRetentionFile, result *RootRetentionResult) error {
 	w, err := OpenWithOptions(file.Path, Options{})
 	if err != nil {
 		return l.recordFailure(err)
@@ -427,6 +424,7 @@ func (l *Log) finalizeRetiredActive(file RootRetentionFile) error {
 		if err := os.Remove(file.Path); err != nil {
 			return err
 		}
+		result.DeletedFiles++
 		return syncJournalDirectory(filepath.Dir(file.Path))
 	}
 	target := filepath.Join(filepath.Dir(file.Path), rootArchiveName(l.source, file.header))

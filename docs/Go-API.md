@@ -463,7 +463,7 @@ log, err := journal.NewLog("/var/log/journal-sdk", journal.LogConfig{
         WithMaxAge(30 * 24 * time.Hour).WithMaxBytes(1024 * 1024 * 1024),
 })
 if err != nil { return err }
-defer log.CloseWithoutRetention()
+defer log.Close()
 if err := log.Append([]journal.Field{journal.StringField("MESSAGE", "saved")},
     journal.EntryOptions{MonotonicUsec: 1}); err != nil { return err }
 // Install a valid replacement before maintenance; invalid policies change nothing.
@@ -487,8 +487,9 @@ a live file is protected from size pressure, and an append/allocation can exceed
 the allowance. With the example's 24-hour file span and successful hourly
 maintenance, age overhang is about one day plus one hour under advancing clocks.
 The SDK does not schedule maintenance. Existing files keep their actual spans.
-Files allocate at least 8 MiB. Once an active file is finalized, it loses size
-protection: a smaller allowance or policy shrink can delete even the newest
+New SDK files allocate at least 8 MiB; existing files are counted at their
+actual length, and smaller allowances are accepted. Once an active file is
+finalized, it loses size protection: a smaller allowance or policy shrink can delete even the newest
 file in the same maintenance pass. There is no newest-file grace period.
 
 `NewLog` applies root maintenance even for lazy archived-only histories.

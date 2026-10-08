@@ -208,8 +208,9 @@ Live-aware inventory also rejects a missing or replaced active file.
 The shared policy:
 
 - Counts full directory-visible file lengths, including preallocation, across
-  all retained identities. Files allocate at least 8 MiB. Unlinked files pinned
-  by readers are excluded.
+  all retained identities. New SDK files allocate at least 8 MiB; existing files
+  are counted at their actual length, and smaller allowances are accepted.
+  Unlinked files pinned by readers are excluded.
 - Expires whole files by their newest saved journal realtime, independently of
   producer event time. Size/count pressure removes oldest tails first, with
   canonical path as the deterministic tie-breaker.

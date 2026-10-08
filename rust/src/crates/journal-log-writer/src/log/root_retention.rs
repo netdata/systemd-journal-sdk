@@ -89,80 +89,112 @@ pub fn inspect_root_retention(root: &Path, source: &Source) -> Result<RootRetent
     let mut identities = HashSet::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let machine = Uuid::parse_str(&name)
-            .ok()
-            .filter(|id| id.simple().to_string() == name);
-        let kind = entry.file_type()?;
-        if !kind.is_dir() {
-            if machine.is_some() || kind.is_symlink() || owned_name(&name, &source) {
-                return Err(invalid(&path, "unexpected root entry"));
-            }
-            continue;
-        }
-        let machine = match machine.filter(|id| !id.is_nil()) {
-            Some(machine) => machine,
-            None => {
-                for child in std::fs::read_dir(&path)? {
-                    let child = child?;
-                    if owned_name(&child.file_name().to_string_lossy(), &source) {
-                        return Err(invalid(&path, "invalid machine directory"));
-                    }
-                }
-                continue;
-            }
-        };
-        let mut targets = HashSet::new();
-        for candidate in std::fs::read_dir(&path)? {
-            let candidate = candidate?;
-            let name = candidate.file_name();
-            let name = name.to_string_lossy();
-            if !owned_name(&name, &source) {
-                continue;
-            }
-            let path = candidate.path();
-            if !candidate.file_type()?.is_file() {
-                return Err(invalid(&path, "nonregular source candidate"));
-            }
-            let (header, bytes) = read_retention_header(&path)?;
-            if header.machine_id != *machine.as_bytes() {
-                return Err(invalid(&path, "machine directory disagrees with header"));
-            }
-            let active = name == format!("{source}.journal");
-            let target = archive_name(&source, &header);
-            if !active
-                && (name != target
-                    || header.state != JournalState::Archived as u8
-                    || header.n_entries == 0)
-            {
-                return Err(invalid(&path, "archive name/state disagrees with header"));
-            }
-            if !targets.insert(target) {
-                return Err(invalid(&path, "ambiguous archive identity"));
-            }
-            if !identities.insert(header.file_id) {
-                return Err(invalid(&path, "duplicate file identity"));
-            }
-            inventory.bytes = inventory.bytes.saturating_add(bytes);
-            inventory.files.push(RootRetentionFile {
-                path,
-                machine_id: machine,
-                seqnum_id: Uuid::from_bytes(header.seqnum_id),
-                bytes,
-                entries: header.n_entries,
-                head_seqnum: header.head_entry_seqnum,
-                tail_seqnum: header.tail_entry_seqnum,
-                head_realtime: header.head_entry_realtime,
-                tail_realtime: header.tail_entry_realtime,
-                active,
-                header,
-            });
+        if let Some(machine) = classify_root_entry(&entry, &source)? {
+            inspect_root_machine(
+                &entry.path(),
+                &source,
+                machine,
+                &mut inventory,
+                &mut identities,
+            )?;
         }
     }
     inventory.files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(inventory)
+}
+
+fn classify_root_entry(entry: &std::fs::DirEntry, source: &str) -> Result<Option<Uuid>> {
+    let path = entry.path();
+    let name = entry.file_name();
+    let name = name.to_string_lossy();
+    let machine = Uuid::parse_str(&name)
+        .ok()
+        .filter(|id| id.simple().to_string() == name);
+    let kind = entry.file_type()?;
+    if !kind.is_dir() {
+        if machine.is_some() || kind.is_symlink() || owned_name(&name, source) {
+            return Err(invalid(&path, "unexpected root entry"));
+        }
+        return Ok(None);
+    }
+    if let Some(machine) = machine.filter(|id| !id.is_nil()) {
+        return Ok(Some(machine));
+    }
+    // Metadata directories are allowed only when they contain no source candidates.
+    for child in std::fs::read_dir(&path)? {
+        let child = child?;
+        if owned_name(&child.file_name().to_string_lossy(), source) {
+            return Err(invalid(&path, "invalid machine directory"));
+        }
+    }
+    Ok(None)
+}
+
+fn inspect_root_machine(
+    path: &Path,
+    source: &str,
+    machine: Uuid,
+    inventory: &mut RootRetentionInventory,
+    identities: &mut HashSet<[u8; 16]>,
+) -> Result<()> {
+    let mut targets = HashSet::new();
+    for candidate in std::fs::read_dir(path)? {
+        let candidate = candidate?;
+        let name = candidate.file_name();
+        let name = name.to_string_lossy();
+        if !owned_name(&name, source) {
+            continue;
+        }
+        let path = candidate.path();
+        if !candidate.file_type()?.is_file() {
+            return Err(invalid(&path, "nonregular source candidate"));
+        }
+        let (file, target) = inspect_root_file(path, &name, source, machine)?;
+        if !targets.insert(target) {
+            return Err(invalid(&file.path, "ambiguous archive identity"));
+        }
+        if !identities.insert(file.header.file_id) {
+            return Err(invalid(&file.path, "duplicate file identity"));
+        }
+        inventory.bytes = inventory.bytes.saturating_add(file.bytes);
+        inventory.files.push(file);
+    }
+    Ok(())
+}
+
+fn inspect_root_file(
+    path: PathBuf,
+    name: &str,
+    source: &str,
+    machine: Uuid,
+) -> Result<(RootRetentionFile, String)> {
+    let (header, bytes) = read_retention_header(&path)?;
+    if header.machine_id != *machine.as_bytes() {
+        return Err(invalid(&path, "machine directory disagrees with header"));
+    }
+    let active = name == format!("{source}.journal");
+    let target = archive_name(source, &header);
+    if !active
+        && (name != target || header.state != JournalState::Archived as u8 || header.n_entries == 0)
+    {
+        return Err(invalid(&path, "archive name/state disagrees with header"));
+    }
+    Ok((
+        RootRetentionFile {
+            path,
+            machine_id: machine,
+            seqnum_id: Uuid::from_bytes(header.seqnum_id),
+            bytes,
+            entries: header.n_entries,
+            head_seqnum: header.head_entry_seqnum,
+            tail_seqnum: header.tail_entry_seqnum,
+            head_realtime: header.head_entry_realtime,
+            tail_realtime: header.tail_entry_realtime,
+            active,
+            header,
+        },
+        target,
+    ))
 }
 
 fn expired(file: &RootRetentionFile, policy: RetentionPolicy, now: SystemTime) -> bool {
@@ -191,6 +223,7 @@ pub(super) struct RootFaults {
     unlink_after: Option<usize>,
     prune_sync: bool,
     archive_sync: bool,
+    empty_sync: bool,
 }
 
 #[cfg(test)]
@@ -373,23 +406,23 @@ impl Log {
                 {
                     continue;
                 }
-                if self.archive_root_active(LogLifecycleReason::Retention)? {
-                    result.deleted_files += 1;
-                }
+                self.archive_root_active(LogLifecycleReason::Retention, &mut result.deleted_files)?;
             } else {
-                if self.finalize_retired_root_active(file)? {
-                    result.deleted_files += 1;
-                }
+                self.finalize_retired_root_active(file, &mut result.deleted_files)?;
             }
         }
         Ok(())
     }
 
-    /// Finalizes the current writer without creating a successor. Returns true
-    /// when an empty active was discarded. Uncertain archive failures poison.
-    pub(super) fn archive_root_active(&mut self, reason: LogLifecycleReason) -> Result<bool> {
+    /// Finalizes the current writer without creating a successor. Counts empty
+    /// unlinks before syncing their directory. Uncertain archive failures poison.
+    pub(super) fn archive_root_active(
+        &mut self,
+        reason: LogLifecycleReason,
+        deleted_files: &mut usize,
+    ) -> Result<()> {
         let Some(active) = self.active_file.as_ref() else {
-            return Ok(false);
+            return Ok(());
         };
         let path = Path::new(active.repository_file.path());
         if !active.journal_file.names_same_file(path)? {
@@ -419,12 +452,13 @@ impl Log {
         if active.journal_file.journal_header_ref().n_entries == 0 {
             let file = active.repository_file.clone();
             std::fs::remove_file(file.path())?;
+            *deleted_files += 1;
             self.active_file.take();
             self.retention_on_open_applied = false;
             self.rotation_state.reset();
             self.chain.remove_tracked_file(&file);
-            sync_directory(&self.chain.path)?;
-            return Ok(true);
+            self.sync_empty_root_directory(&self.chain.path)?;
+            return Ok(());
         }
         // The operation owns the outgoing file from the first mutation onward.
         // If rename succeeds but sync fails, a poisoned Log must not retain a
@@ -448,10 +482,14 @@ impl Log {
         )?;
         self.poisoned = false;
         self.emit_lifecycle_event(&LogLifecycleEvent::Archived { archived, reason });
-        Ok(false)
+        Ok(())
     }
 
-    fn finalize_retired_root_active(&mut self, file: &RootRetentionFile) -> Result<bool> {
+    fn finalize_retired_root_active(
+        &mut self,
+        file: &RootRetentionFile,
+        deleted_files: &mut usize,
+    ) -> Result<()> {
         // Recovery callers verified this file. Use the low-level append/archive
         // lifecycle, never a recursive high-level Log with its own retention.
         let repository_file = repository::File::from_path(&file.path)
@@ -467,8 +505,9 @@ impl Log {
             drop(active);
             self.poisoned = false;
             std::fs::remove_file(&file.path)?;
-            sync_directory(file.path.parent().unwrap())?;
-            return Ok(true);
+            *deleted_files += 1;
+            self.sync_empty_root_directory(file.path.parent().unwrap())?;
+            return Ok(());
         }
         active.journal_file.journal_header_mut().state = JournalState::Archived as u8;
         #[cfg(test)]
@@ -490,7 +529,7 @@ impl Log {
             archived,
             reason: LogLifecycleReason::Retention,
         });
-        Ok(false)
+        Ok(())
     }
 
     fn remove_root_file(&mut self, path: &Path) -> Result<()> {
@@ -503,6 +542,14 @@ impl Log {
         }
         std::fs::remove_file(path)?;
         Ok(())
+    }
+
+    fn sync_empty_root_directory(&self, path: &Path) -> Result<()> {
+        #[cfg(test)]
+        if self.root_faults.empty_sync {
+            return Err(injected_error());
+        }
+        sync_directory(path)
     }
 
     fn sync_pruned_directory(&self, path: &Path) -> Result<()> {
@@ -602,6 +649,63 @@ mod tests {
                 .with_entry_monotonic_usec(step),
         )
         .unwrap();
+    }
+
+    fn assert_empty_unlink_counted_after_sync_failure(retired: bool) {
+        let _guard = super::super::tests::ARCHIVE_SYNC_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = Log::new(dir.path(), config().with_open_mode(LogOpenMode::Eager)).unwrap();
+        let removed = if retired {
+            append(&mut log, 1);
+            let mut retired_config = config()
+                .with_root_retention(false)
+                .with_open_mode(LogOpenMode::Eager);
+            retired_config.origin.machine_id = Some(Uuid::from_bytes([3; 16]));
+            let mut retired = Log::new(dir.path(), retired_config).unwrap();
+            let mut active = retired.active_file.take().unwrap();
+            active.journal_file.sync().unwrap();
+            let path = PathBuf::from(active.repository_file.path());
+            drop(active);
+            drop(retired);
+            path
+        } else {
+            log.set_root_retention_policy(
+                RetentionPolicy::default().with_size_of_journal_files(8 * 1024 * 1024),
+            )
+            .unwrap();
+            log.active_path().unwrap().to_path_buf()
+        };
+        let successful = log.last_root_retention_result().unwrap().last_successful_at;
+        log.root_faults.empty_sync = true;
+        assert!(log.maintain_root_retention(SystemTime::now()).is_err());
+        assert!(
+            !removed.exists(),
+            "unlink must succeed before the injected sync error"
+        );
+        let result = log.last_root_retention_result().unwrap();
+        assert_eq!(
+            result.deleted_files, 1,
+            "successful unlink must be accounted even when sync fails"
+        );
+        assert_eq!(result.last_successful_at, successful);
+        assert!(result.error.is_some());
+        assert!(!result.inventory_valid);
+        assert!(!log.is_poisoned());
+        log.root_faults.empty_sync = false;
+        log.maintain_root_retention(SystemTime::now()).unwrap();
+        assert_eq!(log.last_root_retention_result().unwrap().deleted_files, 0);
+        append(&mut log, 2);
+        log.close_without_retention().unwrap();
+    }
+
+    #[test]
+    fn live_empty_unlink_is_counted_before_sync_failure() {
+        assert_empty_unlink_counted_after_sync_failure(false);
+    }
+
+    #[test]
+    fn retired_empty_unlink_is_counted_before_sync_failure() {
+        assert_empty_unlink_counted_after_sync_failure(true);
     }
 
     #[test]

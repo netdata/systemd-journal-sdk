@@ -373,7 +373,7 @@ log.set_root_retention_policy(
 let result = log.maintain_root_retention(SystemTime::now())?;
 let inventory = log.inspect_root_retention()?;
 println!("{} bytes, {} files, {:?}", inventory.bytes, inventory.files.len(), result.last_successful_at);
-log.close_without_retention()?;
+log.close()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -393,9 +393,10 @@ file's layout.
 Root maintenance runs on startup (including lazy archived-only histories),
 active-file creation, rotation, `close()` of a nonempty active file, and explicit
 calls. Closing an unopened or empty Log does not sweep history.
-`close_without_retention()` finalizes without pruning. Files allocate at least
-8 MiB; once finalized, a file loses live protection, so a small allowance or
-policy shrink can delete even the newest file in the same pass. There is no
+`close_without_retention()` finalizes without pruning. New SDK files allocate
+at least 8 MiB; existing files are counted at their actual length and smaller allowances
+are accepted. Once finalized, a file loses live protection, so a small allowance
+or policy shrink can delete even the newest file in the same pass. There is no
 newest-file grace period. The SDK does not schedule maintenance.
 `maintain_root_retention(now)` and `enforce_retention()` report failures;
 automatic safe inventory/unlink/directory-sync failures are recorded without

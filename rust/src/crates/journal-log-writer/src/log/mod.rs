@@ -688,8 +688,9 @@ impl Log {
             if self.active_file.is_none() {
                 return Ok(());
             }
-            let discarded_empty = self.archive_root_active(LogLifecycleReason::Retention)?;
-            if enforce_retention && !discarded_empty {
+            let mut deleted_files = 0;
+            self.archive_root_active(LogLifecycleReason::Retention, &mut deleted_files)?;
+            if enforce_retention && deleted_files == 0 {
                 self.automatic_root_retention(false)?;
             }
             return Ok(());
@@ -1067,7 +1068,8 @@ impl Drop for Log {
             return;
         }
         if self.config.root_retention {
-            let _ = self.archive_root_active(LogLifecycleReason::Retention);
+            let mut deleted_files = 0;
+            let _ = self.archive_root_active(LogLifecycleReason::Retention, &mut deleted_files);
             return;
         }
         if let Some(ref mut active_file) = self.active_file {

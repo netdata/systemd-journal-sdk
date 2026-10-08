@@ -65,7 +65,7 @@ func createHighCardinalityDirectoryReaderJournal(tb testing.TB, files int, entri
 			if err := w.Append([]Field{
 				{Name: "UNIQUE_ID", Value: value},
 				StringField("PRIORITY", "6"),
-			}, EntryOptions{RealtimeUsec: uint64(1_700_000_000_000_000 + i*entriesPerFile + j), MonotonicUsec: uint64(i*entriesPerFile + j + 1)}); err != nil {
+			}, EntryOptions{RealtimeUsec: 1_700_000_000_000_000 + uint64(i*entriesPerFile+j), MonotonicUsec: uint64(i*entriesPerFile + j + 1)}); err != nil {
 				tb.Fatalf("Append error: %v", err)
 			}
 		}

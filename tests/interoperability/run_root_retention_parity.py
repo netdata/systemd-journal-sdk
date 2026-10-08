@@ -14,7 +14,8 @@ import os
 from pathlib import Path
 import shlex
 import shutil
-import subprocess
+# Synthetic harness executes explicit build/probe argv.
+import subprocess  # nosec B404
 import sys
 import tempfile
 import time
@@ -36,8 +37,12 @@ HEADER_DAMAGE = {
 def run(args: list[str], cwd: Path = ROOT) -> str:
     print(f"[{cwd}] {shlex.join(map(str, args))}", file=sys.stderr)
     try:
-        result = subprocess.run(args, cwd=cwd, check=True, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+        # The caller intentionally selects Cargo; remaining argv uses synthetic fixtures.
+        # No shell expansion or untrusted journal content is executed.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+        result = subprocess.run(  # nosec B603
+            args, cwd=cwd, check=True, text=True, shell=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
     except subprocess.CalledProcessError as exc:
         print(f"command failed in {cwd}, status {exc.returncode}: {exc.stderr}", file=sys.stderr)
         raise SystemExit(exc.returncode) from exc
@@ -52,6 +57,94 @@ def snapshot(root: Path) -> dict[str, str]:
 def row(machine: int, count: int, head: int, tail: int, active: bool = False,
         seq: int = 1) -> str:
     return f"{bytes([machine] * 16).hex()} {8*MIB} {count} {seq} {seq+count-1} {head} {tail} {str(active).lower()}"
+
+
+def build_probes(options, output: Path, bins: dict[str, Path]) -> None:
+    run(['go', 'build', '-o', str(bins['go']),
+         str(ROOT / 'tests/interoperability/root_retention/go_probe.go')], ROOT / 'go')
+    target = Path(os.environ.get('CARGO_TARGET_DIR', str(output / 'cargo-target')))
+    if not target.is_absolute():
+        target = ROOT / target
+    # Keep Cargo's generated lock and workspace outside committed test sources.
+    source = ROOT / 'tests/interoperability/root_retention/rust'
+    crate = output / 'rust-probe-src'
+    (crate / 'src').mkdir(parents=True, exist_ok=True)
+    manifest = (source / 'Cargo.toml').read_text().replace(
+        '../../../../rust/', str(ROOT / 'rust') + '/')
+    (crate / 'Cargo.toml').write_text(manifest)
+    shutil.copy2(source / 'src/main.rs', crate / 'src/main.rs')
+    run([options.cargo, 'build', '--offline', '--manifest-path',
+         str(crate / 'Cargo.toml'), '--target-dir', str(target)])
+    shutil.copy2(target / 'debug/root-retention-parity-probe', bins['rust'])
+
+
+def check_reader(writer, reader, bins, evidence, fixture, now, expected, checks, probe) -> None:
+    assert probe(reader, 'inspect', fixture) == expected
+    assert probe(reader, 'read', fixture) == sorted(map(str, [now-40*DAY]*3 + [now-20*DAY]))
+    maintained = evidence / f'{writer}-maintained-by-{reader}'
+    shutil.copytree(fixture, maintained)
+    assert probe(reader, 'maintain', maintained) == sorted(['deleted 2', expected[1]])
+    for verifier in bins:
+        assert probe(verifier, 'inspect', maintained) == [expected[1]]
+        assert probe(verifier, 'read', maintained) == sorted(map(str, [now-40*DAY, now-20*DAY]))
+    for mode in ('maintain-size', 'maintain-count'):
+        limited = evidence / f'{writer}-{mode}-by-{reader}'
+        shutil.copytree(fixture, limited)
+        survivors = [expected[1]]
+        times = [now-40*DAY, now-20*DAY]
+        if mode == 'maintain-count':
+            survivors.append(row(23, 1, now-40*DAY, now-40*DAY))
+            times.append(now-40*DAY)
+        assert probe(reader, mode, limited) == sorted([f'deleted {3-len(survivors)}', *survivors])
+        for verifier in bins:
+            assert probe(verifier, 'inspect', limited) == sorted(survivors)
+            assert probe(verifier, 'read', limited) == sorted(map(str, times))
+    for damage in ('malformed', 'quarantine', *HEADER_DAMAGE):
+        unsafe = evidence / f'{writer}-{reader}-{damage}'
+        shutil.copytree(fixture, unsafe)
+        path = next(unsafe.rglob('history@*.journal'))
+        if damage == 'quarantine':
+            path.rename(path.with_suffix('.journal~'))
+        else:
+            with path.open('r+b') as stream:
+                offset, value = HEADER_DAMAGE.get(damage, (0, b'BROKEN!!'))
+                stream.seek(offset)
+                stream.write(value)
+        before = snapshot(unsafe)
+        assert probe(reader, 'reject', unsafe) == ['rejected']
+        assert snapshot(unsafe) == before, 'preflight changed journal evidence'
+    checks.append(f'{writer} writer / {reader} inventory, readback, age, size/count tail/path order, unsafe preflight')
+    tiny_age = evidence / f'{writer}-tiny-age-by-{reader}'
+    tiny_age.mkdir()
+    run([str(bins[writer]), 'fixture', str(tiny_age), str(now), '1'])
+    assert probe(reader, 'tiny-age', tiny_age) == ['kept then expired']
+    checks.append(f'{writer} writer / {reader} positive sub-microsecond age boundary')
+
+
+def check_writer(writer, bins, evidence, now, expected, checks, probe) -> None:
+    fixture = evidence / f'{writer}-fixture'
+    fixture.mkdir()
+    probe(writer, 'fixture', fixture)
+    for reader in bins:
+        check_reader(writer, reader, bins, evidence, fixture, now, expected, checks, probe)
+    live = evidence / f'{writer}-live'
+    live.mkdir()
+    successor = [row(1, 1, now+32*DAY, now+32*DAY, seq=2)]
+    assert probe(writer, 'live', live) == successor
+    for reader in bins:
+        assert probe(reader, 'inspect', live) == successor
+        assert probe(reader, 'read', live) == [str(now+32*DAY)]
+    checks.append(f'{writer} lazy live expiry / both readers successor sequence and readback')
+    for mode in ('policy', 'close-small'):
+        lifecycle = evidence / f'{writer}-{mode}'
+        lifecycle.mkdir()
+        expected_rows = [row(1, 1, now+1, now+1, seq=2)] if mode == 'policy' else []
+        expected_times = [str(now+1)] if mode == 'policy' else []
+        assert probe(writer, mode, lifecycle) == expected_rows
+        for reader in bins:
+            assert probe(reader, 'inspect', lifecycle) == expected_rows
+            assert probe(reader, 'read', lifecycle) == expected_times
+        checks.append(f'{writer} {mode} / archive-before-delete events and both readers')
 
 
 def main() -> None:
@@ -70,93 +163,19 @@ def main() -> None:
         os.environ.setdefault(key, str(output / 'caches' / directory))
     bins = {'go': output / 'go-probe', 'rust': output / 'rust-probe'}
     if not options.skip_build:
-        run(['go', 'build', '-o', str(bins['go']),
-             str(ROOT / 'tests/interoperability/root_retention/go_probe.go')], ROOT / 'go')
-        target = Path(os.environ.get('CARGO_TARGET_DIR', str(output / 'cargo-target')))
-        if not target.is_absolute():
-            target = ROOT / target
-        # Keep Cargo's generated lock and workspace outside committed test sources.
-        source = ROOT / 'tests/interoperability/root_retention/rust'
-        crate = output / 'rust-probe-src'
-        (crate / 'src').mkdir(parents=True, exist_ok=True)
-        manifest = (source / 'Cargo.toml').read_text().replace(
-            '../../../../rust/', str(ROOT / 'rust') + '/')
-        (crate / 'Cargo.toml').write_text(manifest)
-        shutil.copy2(source / 'src/main.rs', crate / 'src/main.rs')
-        run([options.cargo, 'build', '--offline', '--manifest-path',
-             str(crate / 'Cargo.toml'), '--target-dir', str(target)])
-        shutil.copy2(target / 'debug/root-retention-parity-probe', bins['rust'])
+        build_probes(options, output, bins)
     evidence = Path(tempfile.mkdtemp(prefix='run-', dir=output))
     now = time.time_ns() // 1000 + 60_000_000  # Above either SDK's fresh clock floor.
     expected = sorted([row(21, 1, now-40*DAY, now-40*DAY),
                        row(22, 2, now-40*DAY, now-20*DAY),
                        row(23, 1, now-40*DAY, now-40*DAY, True)])
     checks = []
+
     def probe(lang: str, mode: str, root: Path) -> list[str]:
         return sorted(run([str(bins[lang]), mode, str(root), str(now)]).splitlines())
+
     for writer in bins:
-        fixture = evidence / f'{writer}-fixture'
-        fixture.mkdir()
-        probe(writer, 'fixture', fixture)
-        for reader in bins:
-            assert probe(reader, 'inspect', fixture) == expected
-            assert probe(reader, 'read', fixture) == sorted(map(str, [now-40*DAY]*3 + [now-20*DAY]))
-            maintained = evidence / f'{writer}-maintained-by-{reader}'
-            shutil.copytree(fixture, maintained)
-            assert probe(reader, 'maintain', maintained) == sorted(['deleted 2', expected[1]])
-            for verifier in bins:
-                assert probe(verifier, 'inspect', maintained) == [expected[1]]
-                assert probe(verifier, 'read', maintained) == sorted(map(str, [now-40*DAY, now-20*DAY]))
-            for mode in ('maintain-size', 'maintain-count'):
-                limited = evidence / f'{writer}-{mode}-by-{reader}'
-                shutil.copytree(fixture, limited)
-                survivors = [expected[1]]
-                times = [now-40*DAY, now-20*DAY]
-                if mode == 'maintain-count':
-                    survivors.append(row(23, 1, now-40*DAY, now-40*DAY))
-                    times.append(now-40*DAY)
-                assert probe(reader, mode, limited) == sorted([f'deleted {3-len(survivors)}', *survivors])
-                for verifier in bins:
-                    assert probe(verifier, 'inspect', limited) == sorted(survivors)
-                    assert probe(verifier, 'read', limited) == sorted(map(str, times))
-            for damage in ('malformed', 'quarantine', *HEADER_DAMAGE):
-                unsafe = evidence / f'{writer}-{reader}-{damage}'
-                shutil.copytree(fixture, unsafe)
-                path = next(unsafe.rglob('history@*.journal'))
-                if damage == 'quarantine':
-                    path.rename(path.with_suffix('.journal~'))
-                else:
-                    with path.open('r+b') as stream:
-                        offset, value = HEADER_DAMAGE.get(damage, (0, b'BROKEN!!'))
-                        stream.seek(offset)
-                        stream.write(value)
-                before = snapshot(unsafe)
-                assert probe(reader, 'reject', unsafe) == ['rejected']
-                assert snapshot(unsafe) == before, 'preflight changed journal evidence'
-            checks.append(f'{writer} writer / {reader} inventory, readback, age, size/count tail/path order, unsafe preflight')
-            tiny_age = evidence / f'{writer}-tiny-age-by-{reader}'
-            tiny_age.mkdir()
-            run([str(bins[writer]), 'fixture', str(tiny_age), str(now), '1'])
-            assert probe(reader, 'tiny-age', tiny_age) == ['kept then expired']
-            checks.append(f'{writer} writer / {reader} positive sub-microsecond age boundary')
-        live = evidence / f'{writer}-live'
-        live.mkdir()
-        successor = [row(1, 1, now+32*DAY, now+32*DAY, seq=2)]
-        assert probe(writer, 'live', live) == successor
-        for reader in bins:
-            assert probe(reader, 'inspect', live) == successor
-            assert probe(reader, 'read', live) == [str(now+32*DAY)]
-        checks.append(f'{writer} lazy live expiry / both readers successor sequence and readback')
-        for mode in ('policy', 'close-small'):
-            lifecycle = evidence / f'{writer}-{mode}'
-            lifecycle.mkdir()
-            expected_rows = [row(1, 1, now+1, now+1, seq=2)] if mode == 'policy' else []
-            expected_times = [str(now+1)] if mode == 'policy' else []
-            assert probe(writer, mode, lifecycle) == expected_rows
-            for reader in bins:
-                assert probe(reader, 'inspect', lifecycle) == expected_rows
-                assert probe(reader, 'read', lifecycle) == expected_times
-            checks.append(f'{writer} {mode} / archive-before-delete events and both readers')
+        check_writer(writer, bins, evidence, now, expected, checks, probe)
     timings = []
     if options.benchmark:
         for writer in bins:

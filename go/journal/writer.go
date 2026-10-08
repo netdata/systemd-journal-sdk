@@ -286,6 +286,11 @@ func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
 		return nil, fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
 	}
 
+	// Reject unsupported mapping sizes before entering the mutation boundary.
+	if err := checkArenaSize(fileSize); err != nil {
+		return nil, err
+	}
+
 	// Retain physical preallocation in the writable arena so mapping and later
 	// publication cannot truncate padding beyond the original declared arena.
 	header.arenaSize = fileSize - header.headerSize

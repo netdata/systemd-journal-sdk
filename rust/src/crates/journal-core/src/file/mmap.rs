@@ -390,12 +390,17 @@ impl<M: MemoryMap> WindowManager<M> {
             };
             fn identity(file: &File) -> std::io::Result<(u32, u32, u32)> {
                 let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-                // Both the borrowed handle and output storage remain valid for the call.
+                // SAFETY: the borrowed File keeps its handle valid for this call;
+                // info provides writable, aligned storage for the full output struct.
+                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
                 if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) }
                     == 0
                 {
                     return Err(std::io::Error::last_os_error());
                 }
+                // SAFETY: a nonzero return from GetFileInformationByHandle
+                // initializes the entire output struct; failure returned above.
+                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
                 let info = unsafe { info.assume_init() };
                 Ok((
                     info.dwVolumeSerialNumber,

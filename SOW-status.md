@@ -7,7 +7,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- None.
+- SOW-0152-20261008 - Root History Retention: in-progress for PR #9 bot review and Codacy fixes; prior implementation independently reviewed. No push authorized yet.
 
 ## Pending
 
@@ -38,7 +38,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
-- SOW-0152-20261008 - Root History Retention: completed. Paired Go/Rust retention with final-review lifecycle, failure-boundary and configuration fixes in 643afe1; regression/parity/docs checks and independent review pass. No push or release.
 
 - `SOW-0154-20261007-project-release-skill.md` - completed. Adds the team
   release skill, parity and publication/recovery gates, operator routing and

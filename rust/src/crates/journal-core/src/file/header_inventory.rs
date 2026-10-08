@@ -14,18 +14,28 @@ pub fn read_retention_header(path: &Path) -> Result<(JournalHeader, u64)> {
     let mut buffer = [0u8; std::mem::size_of::<JournalHeader>()];
     read_file_exact_at(&file, 0, &mut buffer)?;
     let header = JournalHeader::read_from_prefix(&buffer).unwrap().0;
+    validate_writer_compatibility(&header)?;
+    header.validated_arena_end(bytes)?;
+    header.validate_empty_entry_metadata()?;
+    JournalState::try_from(header.state)?;
+    validate_retention_metadata(&header)?;
+    Ok((header, bytes))
+}
+
+fn validate_writer_compatibility(header: &JournalHeader) -> Result<()> {
     if header.signature != *b"LPKSHHRH" {
         return Err(JournalError::InvalidMagicNumber);
     }
-    if header.header_size < buffer.len() as u64
+    if header.header_size < std::mem::size_of::<JournalHeader>() as u64
         || header.incompatible_flags & !0x1f != 0
         || !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
     {
         return Err(JournalError::UnsupportedJournalFile);
     }
-    header.validated_arena_end(bytes)?;
-    header.validate_empty_entry_metadata()?;
-    JournalState::try_from(header.state)?;
+    Ok(())
+}
+
+fn validate_retention_metadata(header: &JournalHeader) -> Result<()> {
     if header.file_id == [0; 16]
         || header.seqnum_id == [0; 16]
         || header.data_hash_table_offset.is_none()
@@ -41,5 +51,5 @@ pub fn read_retention_header(path: &Path) -> Result<(JournalHeader, u64)> {
     {
         return Err(JournalError::InvalidObjectLocation);
     }
-    Ok((header, bytes))
+    Ok(())
 }

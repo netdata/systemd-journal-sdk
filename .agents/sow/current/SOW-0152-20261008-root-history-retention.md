@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: final-review fixes committed in 643afe1, validated and independently reviewed. No verified blocker remains. The current result supersedes earlier completion checkpoints. No push or release.
+Sub-state: reopened for authorized PR #9 bot comments and all 14 current Codacy findings. Prior reviewed implementation is 1abb52d. No push authorized yet.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 ### Assistant Understanding
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Current result: the final-review regression section records verified defects, completed repairs, validation and independent review. No product decision or verified blocker remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
+Current work: the latest GitHub Review section records the PR9 fixes and validation. Independent review and authorized publication/thread resolution remain pending; prior completed review evidence is historical. No product decision remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
 
 ### Acceptance Criteria
 - Explicit root/source inventory validates identities, filenames, state and header extents without visiting records; rejects unsafe/quarantined candidates before pruning.
@@ -175,7 +175,7 @@ Follow-up mapping:
 
 ## Outcome
 
-Paired root retention and the authorized final-review repairs are complete. Commit 643afe1 passes relevant Go/Rust suites, shared file-behavior checks and documentation validation; independent read-only review found no verified blocker. Default policies are preserved, with the approved Go successor-retry cleanup correction documented and tested. Publication/release remains separately authorized; consumer dependency pinning awaits an SDK release.
+The original paired feature and 643afe1 repairs were validated and independently reviewed. PR9 review fixes are now implemented and locally validated; independent review and publication/thread resolution remain pending. No push has been authorized.
 
 ## Lessons Extracted
 
@@ -319,3 +319,40 @@ Final review and completion:
 - Final dispositions: P2-1/2/3 and P3-7 are fixed; P3-9's reproduced permission and age defects are fixed. P3-1/2/3/4/8 are resolved with truthful docs/records and approved behavior retained. P3-6 has recursive evidence assertions in both SDKs. P3-5 remains rejected as an invalid recovered fixture, not a reason to invent identity or weaken verification. The secondary resample error and duplicate startup pass remain nonblocking as assessed above.
 - Re-evaluated the clean target and coupled references: both SDKs deliver the approved owned-root policy with corrected lifecycle and failure guarantees. No compatibility adapter, new dependency, unrelated implementation or in-scope partial remains. Native Windows/Linux runtime and broader offline workspace validation remain explicit limitations, not passing claims.
 - Completion moves this SOW to done and updates both indexes. The implementation was committed before review; this final commit records review and lifecycle only. No push, release or history rewrite.
+
+## Regression - 2026-10-08 GitHub Review
+
+Authorization and target:
+- User requests fixes for PR #9 bot suggestions, reply/resolution of wrong or nit-only threads, and valid Codacy findings including nits. Scope is selected GitHub bot comments and Codacy, with the mirrored CodeQL alert. No human reply, unrelated analyzer backlog, review trigger, policy weakening or push is authorized.
+- PR head equals local 1abb52d, base local master 2b33553. Six inline comments (one already fixed/resolved) and fourteen Added Codacy issues were fetched completely. Codacy pagination reports total14; GitHub pages were shorter than100 and every thread comment page is complete. Evidence is ignored .local/pr9-review; no token is saved there.
+
+Repair gate: ready. Existing approved public behavior and the request fix the target.
+
+Root causes and dispositions:
+- Empty retired-file removal increments DeletedFiles only after directory sync; a sync failure underreports actual removal. Rust has the same ordering for both live and retired empty actives. Count removals when unlink succeeds and preserve errors/unknown inventory.
+- Go append-open classifies checkArenaSize failure as uncertain even though it precedes mutation, relevant to oversized files on32-bit Unix. Run the shared mapping-size preflight before the mutation boundary; retain fatal classification after mapping begins.
+- Go/Rust root examples should close normally to demonstrate shutdown retention; reserve CloseWithoutRetention for the explicitly documented no-prune use case. Clarify that8MiB is new SDK allocation granularity, not an inventory acceptance or allowance floor.
+- The archive-event comment is already fixed in643afe1 and resolved remotely. CodeQL3691 concerns identifiers emitted by the controlled synthetic test probe; verify and dismiss with the test-only rationale, then reply/resolve its thread.
+- Codacy: seven complexity/length findings across Rust inventory/header validation and three shared probes, one Python spacing finding. Decompose coherent operations without changing guards or test assertions. Six security-audit findings cover Windows FFI, Rust test CLI arguments and Python subprocess execution; audit each exact construct and document narrow rule-specific suppression for verified safe necessary operations, following repository patterns. No global analyzer exclusion.
+
+Plan and ownership:
+1. Coordinator owns Go runtime/tests, docs/spec/SOW, remote triage and final integration. Reproduce deletion status before fixing, investigate32-bit execution availability and retain exact mutation boundaries.
+2. One implementer exclusively owns rust/src/crates/journal-log-writer/** and rust/src/crates/journal-core/src/file/{header_inventory.rs,mmap.rs}: paired deletion fix, bounded inventory decomposition, audited FFI annotations and relevant tests.
+3. Another implementer exclusively owns tests/interoperability/root_retention/** and tests/interoperability/run_root_retention_parity.py: behavior-preserving scenario decomposition, audited security annotations, spacing and matrix checks. No overlapping writers; agents do not commit or post reviews.
+4. Run relevant Go/Rust suites, shared2x2matrix, docs, local analyzers where available and audit. Commit validated changes before any warranted independent review, retain earlier review coverage where valid, then reply/resolve each bot thread individually with evidence. Remote code must not be described as fixed before the commit is present there. If pushing is necessary, present the completed result and request authorization as the final step.
+
+Validation and risk:
+- Failure accounting must preserve successful unlink counts even on later sync failure, keep current writer healthy, and prevent pruning after uncertain writer mutation. File validation refactoring must preserve all header/identity/ownership guards and complete preflight. Test refactoring must preserve every scenario and assertion.
+- Caches/temp output stay under this repository or /tmp, all fixtures synthetic. No host journal/identity probes, dependency/compiler changes or services. Existing offline Rust-workspace and native Windows/Linux execution gaps remain explicit.
+- Current native-agent review instructions override the absent legacy external-reviewers harness, as recorded in prior decisions. This gate records user authorization before source or remote mutations.
+
+GitHub repair implementation and evidence:
+- Go retired empty removal and Rust live/retired empty removal now update the attempt counter at successful unlink, before directory sync. Before logs demonstrate underreported zero counts; after regressions prove one deletion, retained error, unchanged last-success, unknown inventory and healthy retry. Evidence: .local/pr9-review/go-before.log, go-after.log, rust-empty-count-before.log, rust-retired-empty-count-before.log and rust-writer-after.log.
+- Go32-bit Unix size preflight was reproduced with a sparse2GiB retained active: mapping-size rejection incorrectly carried ErrWriterFailed. The same compiled regression passes after moving the existing checkArenaSize preflight ahead of the mutation boundary. Execution used the already installed Debian Docker image, no network, with386 emulation; no images/tools were installed. Files: go-386-before.log and go-386-after.log. An existing test timestamp expression overflowed int during386 compilation; a one-line uint64-before-addition correction in reader_directory_test.go is coupled test portability work.
+- Rust inventory scanning and fixed-header validation are decomposed into coherent helpers while retaining all guard conditions and ordering. Shared test probes are split by scenario/build/orchestration: all17 Python assert ASTs and8 scenario bodies per Go/Rust are preserved. New allocation wording and normal-close root examples are updated in both guides/shared guide/spec.
+- Full Go suite and journal race suite pass; Rust all-feature writer suite passes26unit+56existingIntegration+26rootIntegration+2docs, core default suite passes86tests (3existing docs ignored). The2x2sharedmatrix passes14checks in .local/retention-parity/run-91w6yrc9/report.json. All35docs examples and16wiki pages pass. SOW audit and diff checks pass.
+- Cached Lizard validates all five affected files with zero CC20/NLOC100 warnings. Rust root inventory CC31->10 and header reader23->9; probe maxCC10/maxNLOC49. Targeted Bandit B404/B603 passes. Python E306 is directly verified by required blank-line separation; pycodestyle is unavailable. Existing B101 test assertions are intentionally retained.
+- Windows FFI uses valid borrowed handles and aligned output storage; assume_init follows checked API success. The Rust CLI uses args only as test inputs, not a security decision. Python intentionally runs caller-selected Cargo and synthetic probe argv with shell=False; no journal content is executed. Narrow named audit annotations follow existing patterns. Cached Semgrep1.179.0 with the three public rule definitions and exact reported IDs reports zero findings/errors across all three targets. Native wrapper required explicit cached certificate path and pysemgrep entrypoint; no dependencies changed. Local analyzer results do not claim the hosted gate has rerun.
+- CodeQL3691 was dismissed as used in tests and its thread replied/resolved. The probe writes fixed synthetic identifiers and uses Source::Unknown(history), never source_basename's User(uid) branch or host journals. One prior archive-event thread was already fixed/resolved at643afe1. Four valid new bot threads remain pending publication of the current fixes before reply/resolution.
+- Same-cause search: `rg -n 'finalizeRetiredActive|discardEmptyOpenedWriter|DeletedFiles|syncJournalDirectory' go/journal` and `rg -n 'archive_root_active|finalize_retired_root_active|deleted_files|sync_empty_root_directory' rust/src/crates/journal-log-writer` covers empty/live/retired/prune paths; other removal counters already precede sync. `checkArenaSize` remains the common platform bound validation, reused before append-open's mutation boundary.
+- Review readiness: the two runtime corrections plus preserved guard decomposition touch deletion/failure behavior. Obtain a bounded independent review of the committed repair and relevant callers; prior feature/Claude PASS coverage remains applicable outside this change. No product contract fork or unapproved scope expansion remains.
