@@ -71,7 +71,8 @@ pub use journal_core::file::{
 use journal_core::file::{CurrentRowMetadata, CurrentRowView};
 pub use journal_log_writer::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
-    RotationPolicy, WriterError,
+    RootRetentionFile, RootRetentionInventory, RootRetentionResult, RotationPolicy, WriterError,
+    inspect_root_retention,
 };
 pub use journal_registry::{Origin, Source};
 

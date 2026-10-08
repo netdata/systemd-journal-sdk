@@ -422,8 +422,10 @@ after `CloseWithoutRetention()` does not retroactively apply the old policy.
 
 ## Dedicated Root Retention
 
+This feature is unreleased.
+
 Use `LogConfig.RootRetention: true` when one caller owns a dedicated root and
-source across machine identity changes. This Go-only opt-in requires
+source across machine identity changes. This opt-in requires
 `StrictSystemdNaming: true` and does not accept an `ArtifactSizer`. The default
 Log behavior remains machine-local, committed-byte and archive-head-age based.
 

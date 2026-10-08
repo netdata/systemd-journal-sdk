@@ -25,8 +25,8 @@ actions already authorized. Loading this skill does not start a release.
 
 1. Check the active/pending SOWs and the previous published APIs in **both**
    languages. The user chooses scope and version; record the semver decision
-   before implementation. Accepted Go functionality also belongs in Rust and
-   vice versa. Resolve any parity gap with the user before publishing.
+   before implementation. Apply the **Go/Rust Feature Parity** rule in
+   `AGENTS.md`; resolve any recorded parity gap with the user before publishing.
 2. Prepare aligned release metadata, Rust internal dependency pins and
    lockfile, current installation examples and migration notes. Assess Rust
    exhaustive public structs/enums as well as Go source compatibility. Follow

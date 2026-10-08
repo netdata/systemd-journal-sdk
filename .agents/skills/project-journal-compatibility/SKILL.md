@@ -61,13 +61,17 @@ Do not use this skill for:
 - The reusable live-concurrency harness is under `tests/conformance/live/`. Writer tests should use the configured monotonically increasing sequence field, default `LIVE_SEQ`, so stock readers prove complete ordered visibility.
 - Stock reader harness adapters may retry transient active-writer `ENODATA` open/read failures or partial snapshots only while the writer is active. After the writer exits, final ordered reads and `journalctl --verify --file` must pass.
 - High-level directory writers must apply configured retention once when an active writer is opened or created. Existing-active reopen and eager open enforce during construction; lazy archived-only construction remains side-effect-free until the first append opens the active file, then retention runs before the first entry is written. Active/current files must remain protected and normal retention deletion lifecycle events must be reused.
-- Go's explicit `LogConfig.RootRetention` is an exception to the default
+- Apply the **Go/Rust Feature Parity** development rule in `AGENTS.md`;
+  consumer language alone does not justify a feature gap.
+- Go's explicit `LogConfig.RootRetention` and Rust's
+  `Config::with_root_retention(true)` are exceptions to the default
   machine-local lifecycle rules above: archived-only startup also maintains
   the owned root, file lengths and tail times govern deletion, and live files
   may be finalized for idle expiry or allocation-policy changes. Recovered
   active files require caller verification/exclusion. Use header-native
   `InspectRootRetention` before open and `Log.InspectRootRetention` for live
-  query/status inventory; do not substitute Reader entry-vector expansion.
+  query/status inventory (Rust exposes equivalent snake_case APIs); do not
+  substitute Reader entry-vector expansion.
   Live inventory must reject missing/replaced active files instead of reporting
   false-empty success, and maintenance must validate it before mutation.
   Preserve separate safe-maintenance errors and fatal archive-mutation errors.

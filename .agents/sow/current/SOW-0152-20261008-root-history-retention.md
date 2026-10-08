@@ -2,17 +2,17 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: SDK implementation through bf2f1e5 and the reopened regression are validated and independently reviewed; completed locally, without push or release.
+Sub-state: reopened for Rust feature parity at user request after rebase onto local master. Prior Go validation/review remains evidence; Rust design, implementation and validation are in progress. No push or release.
 
 ## Requirements
 
 ### Purpose
-Provide the Go SDK prerequisite for source-owned history retention across machine identities.
+Provide equivalent Go and Rust source-owned history retention across machine identities, with idiomatic APIs and unchanged default consumer behavior.
 
 ### User Request
-The user approved the root retention design on 2026-10-08: shared age/byte allowance, full file lengths including preallocation, whole-file tail saved-time expiration, fixed caller-selected 24-hour rotation span, no forced hourly archives, cleanup outcomes independent from healthy writes, and compact factual status. Existing consumers retain default semantics. This is the Go-only prerequisite; no Rust parity or release is promised here.
+The user approved the root retention design on 2026-10-08: shared age/byte allowance, full file lengths including preallocation, whole-file tail saved-time expiration, fixed caller-selected 24-hour rotation span, no forced hourly archives, cleanup outcomes independent from healthy writes, and compact factual status. Existing consumers retain default semantics. The user subsequently required Go/Rust parity for this branch. The earlier Go-only assumption was not a user-approved parity waiver and is superseded. Publication remains a separately authorized operation.
 
 ### Assistant Understanding
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
@@ -45,10 +45,10 @@ Evidence reviewed:
 - log.go open/rotate/archive lifecycle; log_retention.go default policy; writer.go append-open/archive/release; native header validation; current and pending SOWs; product-scope retention contracts; approved consumer design evidence.
 
 Affected contracts and surfaces:
-- Additive Go Log configuration and root inventory/maintenance APIs, Go tests, published Go writer docs and product scope. No on-disk format or default consumer behavior change.
+- Equivalent opt-in Go and Rust Log configuration, root inventory/maintenance APIs, native header/descriptor helpers required by Rust, real-file tests, both published writer guides, product scope and the repository parity rule. No on-disk format or default consumer behavior change.
 
 Existing patterns to reuse:
-- parseHeader/readAppendHeader, validateDeclaredArena, validateEmptyEntryMetadata, Writer.archiveTo, lifecycle events, policy validation and derived rotation.
+- Go parseHeader/readAppendHeader, arena/empty-entry validation, Writer.archiveTo, lifecycle events and policy normalization. Rust JournalHeader bounds/empty-entry validation, ActiveFile/OwnedChain archive and directory-sync lifecycle, config normalization, and existing descriptor/platform dependencies. Inventory must not use JournalFile::open (maps hash tables) or Reader entry expansion.
 
 Risk and blast radius:
 - Opt-in strict source ownership only. Caller provides exclusive dedicated root and verifies retained active provenance/content before mutation. Header inventory is not full integrity verification. Validate the complete candidate set before pruning; propagate uncertain mutation as writer failure.
@@ -57,20 +57,20 @@ Sensitive data handling plan:
 - Synthetic identities and generated file fixtures only. No live journals, host probes, personal data, credentials, production paths or raw external reports in durable artifacts.
 
 Implementation plan:
-1. Add strict root/source header inventory and opt-in lifecycle integration; copy policies and preserve default paths.
-2. Implement retired active archival, idle expiration, policy transition and separately observable maintenance failures with tail-first/full-length eviction.
-3. Add real-file regression/contract tests and benchmark; update docs/spec, run Go/race/docs/audit, commit validated changes for independent review.
+1. Retain reviewed Go implementation; implement equivalent strict root/source Rust header inventory and live-descriptor identity validation.
+2. Integrate Rust retired/live active finalization without eager successors, full-length/tail-time pruning, original-policy-derived geometry and distinct maintenance/writer failures. Keep readiness with each live file and preserve default semantics.
+3. Add Rust real-file counterparts to Go contract/regression tests, cross-language fixture checks and bounded performance evidence; update docs/spec/rules, run affected suites/docs/audit, commit validated changes for independent review.
 
 Validation plan:
 - Real generated journals cover retained identities, archive naming/header mismatches, quarantine, allocation, age head/tail difference, idle/size/policy boundaries, unlink failure and pinned reader snapshots. Run focused/full Go tests and race, inventory benchmark, cross-compile where available, docs validators and SOW audit. No format compatibility claim beyond exercised platforms.
 
 Artifact impact plan:
-- AGENTS.md: unchanged; no project-wide workflow change.
-- Runtime project skills: clarify new explicit Go opt-in exception to legacy retention rules if needed.
-- Specs: product-scope gains opt-in Go retention contract.
-- End-user/operator docs: Go writer guide documents ownership, accounting, failure and policy update semantics.
+- AGENTS.md: make language feature parity explicit during development; release skill references the rule.
+- Runtime project skills: document paired opt-in behavior and reference the canonical parity rule.
+- Specs: product-scope records paired root retention behavior.
+- End-user/operator docs: both writer guides and shared API guidance document ownership, accounting, failure and policy updates with verified examples.
 - End-user/operator skills: none exist.
-- SOW lifecycle: completed in done after independent review, including the reopened regression.
+- SOW lifecycle: reopened in current for the parity correction, then complete only after Rust and cross-language validation/review.
 - SOW-status.md: both indexes updated on start and completion.
 
 Open-source reference evidence:
@@ -82,7 +82,7 @@ Open decisions:
 ## Implications And Decisions
 
 1. User approved full file-length accounting and tail-based whole-file age, explicitly neither exact TTL nor hard physical cap; size may shorten history. Caller chooses 24-hour rotation and hourly maintenance.
-2. User approved dedicated root ownership across identities and prerequisite SDK PR followed by consumer adoption. Preserve unknown/corrupt/quarantined evidence. No Rust parity requirement for this opt-in.
+2. User approved dedicated root ownership across identities and prerequisite SDK PR followed by consumer adoption. Preserve unknown/corrupt/quarantined evidence. The original implementation inferred Go-only scope from the first consumer; the user corrected that assumption and requires Rust parity in this branch.
 3. Current user instructions describe native Astra delegation and require local validated commits before independent review. Applying those current instructions over the older external-reviewers harness pointers is the coordinator's interpretation. That skill was searched by the coordinator and is absent; it is not used. No pushes/history rewrites/releases.
 4. Independent review and SOW completion are owned by the coordinating agent; implementation agent does not launch reviewers.
 
@@ -94,7 +94,7 @@ Open decisions:
 
 ## Implementation And Review Plan
 
-Implementation: assigned agent owns this SDK worktree exclusively. No other repository mutations; caches and temporary files remain in this repository or /tmp.
+Implementation: coordinator owns integration tests, public docs, rules, specs and SOW artifacts; a delegated implementer may exclusively own Rust runtime files and its internal unit tests. No overlapping writers. No other repository mutations; caches and temporary files remain in this repository or /tmp.
 Reviewers: independent read-only native review is authorized and coordinated by the parent after a validated implementation commit. No delegated agents are launched by the implementer.
 Failure handling: record failing validation and concrete environmental limitations, fix verified source defects, and report genuine scope forks to the coordinator. Preserve uncertain file evidence.
 
@@ -128,7 +128,7 @@ Tests or equivalent validation:
 - `python3 tests/docs/verify_examples.py --lang go`: all 20 Go examples pass, including the new root-retention example. Rust examples unchanged and not rerun.
 - `bash .agents/sow/audit.sh`: clean. `git diff --check`: clean.
 - `go -C go test ./journal -run '^$' -bench 'Benchmark(InspectRootRetention|RootRetentionMaintenance)' -benchmem -benchtime=200ms -count=3`: inventory is 39–56 microseconds/37 allocations/about 5 KiB for one file with 1 or 10,000 entries. Maintenance without deletion: 164–169 microseconds for one file; 1.4–1.8 ms for 20 files. The one-file 1-vs-10,000-entry comparison demonstrates independence from record count. No-deletion maintenance measurements exclude archive/unlink/fsync stalls.
-- `go -C go test ./journal -run '^$' -bench BenchmarkRootRetentionRotation -benchmem -benchtime=100ms -count=3`: forced one-entry rotation 12–15 ms opt-in vs 16–18 ms default in this short filesystem/sync-dominated sample. Opt-in uses roughly 73 KiB/229–235 allocations vs 49 KiB/80 default. These noisy samples bound observed stalls and do not establish a speedup. No Rust/systemd counterpart exists for this approved Go-only root policy.
+- `go -C go test ./journal -run '^$' -bench BenchmarkRootRetentionRotation -benchmem -benchtime=100ms -count=3`: forced one-entry rotation 12–15 ms opt-in vs 16–18 ms default in this short filesystem/sync-dominated sample. Opt-in uses roughly 73 KiB/229–235 allocations vs 49 KiB/80 default. These noisy samples bound observed stalls and do not establish a speedup. This was the initial Go-only measurement before the parity correction; no matching stock-systemd custom root policy exists. Rust evidence is recorded in the parity correction below.
 
 Real-use evidence:
 - Tests exercise actual Create/Append/ArchiveTo/NewLog/maintenance/read-snapshot filesystem paths with synthetic records; published example compiles and runs the public policy/maintenance API. No live host journals were used.
@@ -147,9 +147,9 @@ Sensitive data gate:
 - Durable changes contain synthetic identities and general contracts only. No raw sensitive data or workstation identities are recorded.
 
 Artifact maintenance gate:
-- AGENTS.md: unchanged; no global workflow/product default changes.
-- Runtime project skills: project-journal-compatibility documents the explicit Go-only exception and header-native validation requirement.
-- Specs: product-scope.md records ownership, accounting, lifecycle, errors and Go-only scope.
+- AGENTS.md: feature parity is explicitly required during development, with user-owned exceptions and acceptance evidence in both languages.
+- Runtime project skills: project-journal-compatibility documents both root opt-ins and header-native validation; release skill references the canonical parity rule.
+- Specs: product-scope.md records paired ownership, accounting, lifecycle and errors.
 - End-user/operator docs: Go-API.md adds verified usage and precise limits/ownership/platform caveats.
 - End-user/operator skills: none exist in this repository.
 - SOW lifecycle: completed in done after independent review. Current user instructions require a validated implementation commit before review, so completion cannot be bundled in that first commit.
@@ -175,7 +175,7 @@ Follow-up mapping:
 
 ## Outcome
 
-The approved Go-only SDK prerequisite is complete through bf2f1e5, including the two allocation/lifecycle review fixes and the live-inventory regression. Local validation and required independent review passed with no verified blocker. The result is ready for the requested local two-PR delivery; publication/release is not authorized here. Consumer dependency pinning awaits a separate SDK release.
+The prior Go implementation and its review fixes are complete. Branch readiness is reopened for equivalent Rust behavior and cross-language evidence. Publication/release remains separately authorized; consumer dependency pinning awaits an SDK release.
 
 ## Lessons Extracted
 
@@ -216,3 +216,38 @@ Regression outcome:
 - Fixed in bf2f1e5. The affected tests/race, docs example/wiki checks and audit passed. Focused independent review found no verified blocker and retained earlier SDK coverage; the coordinator authorized completed/done status. No push or release.
 
 Final completion checkpoint: local SDK source is unchanged from reviewed bf2f1e5. This completion commit changes only the SOW lifecycle/current-state record and its indexes. No broad validation rerun is needed for these tracking-only edits.
+
+
+## Parity Correction - 2026-10-08
+
+User direction: keep Go/Rust parity for feat/root-history-retention and make the requirement visible in repository rules. The release skill already requires accepted functionality in both languages. The prior Go-only assumption was too narrow; it is not retained as an approved exception.
+
+Target and scope:
+- Deliver the existing root inventory, tail-time/full-length policy, live-file correspondence, lazy finalization, mutable policy and maintenance-status contract in Rust as well as Go. APIs follow each language's ownership conventions. Defaults, on-disk format and explicit caller writer exclusion remain unchanged.
+- Retain the reviewed Go implementation and regression evidence; add Rust counterparts for the known allocation, successor-readiness, safe-failure and live-path failure classes.
+- Make parity a development rule in AGENTS.md and reference it from release/compatibility guidance. Remove current Go-only claims from docs/specs; preserve prior validation as historical evidence.
+- Release metadata, publication, external consumers and parked unrelated Rust optimization work remain outside this task. No dependencies or compiler-minimum changes are planned.
+
+Investigation and plan:
+1. Verify Rust lifecycle/header/identity primitives and the Go contract; obtain bounded independent design challenge.
+2. Implement opt-in Rust APIs, root maintenance and real-file tests using existing native header/writer primitives. Preserve original caller rotation inputs; fresh active files own maintenance readiness.
+3. Document both language surfaces with executable examples, root parity rules and contract/spec updates.
+4. Validate affected Rust/full language suites as appropriate, Go regression evidence, cross-language real files and record-count-independent inventory cost. Commit coherent validated changes, obtain independent review, fix verified blockers, then close this SOW.
+
+Baseline: SDK HEAD5961564 after local-master rebase; working tree clean. Root retention is absent from Rust. Rust writer/default tests are running with caches/output under /tmp. Current SOW queue is empty; pending Rust array-open optimization and legacy-core cleanup remain independent and unactivated.
+
+Parity gate: ready. The user request fixes the end state; there is no new product/architecture fork. Rust needs narrow fixed-header and owned-descriptor identity primitives plus archive-without-successor lifecycle, using existing dependencies. Error/result spelling and helper organization are routine language-specific implementation choices. Baseline all-feature Rust log-writer suite passes. Independent design inspection is in progress and any verified constraint must be incorporated before the affected implementation.
+
+
+Parity implementation and validation checkpoint:
+- Rust exposes the paired opt-in, fixed-header inventory, opening-identity snapshots and live descriptor checks, value policy updates, lazy Archived events, tail/length pruning and Arc-backed typed outcomes. Startup and mutation reuse existing writer lifecycles; no on-disk format or default policy changes. Root rejects namespaces/artifact sizing. Infallible artifact-sizer builder cannot bypass validation or mutate evidence during close/drop.
+- Existing source patterns exposed two regressions during self-review: resetting default-mode creation readiness changed cleanup-error retry behavior; unconditional root close maintenance pruned histories when no active existed or an empty file was discarded. Both public regression tests failed before fixes and pass afterward. A third focused unit test reproduced a retained empty recovered current active; the fix reuses startup disposal for empties while forbidding unsupported-file quarantine in root mode.
+- Rust 1.91.0 (declared minimum), darwin/arm64: log-writer all-features passes 22 unit tests, 56 existing integration tests, 22 new public root tests and 2 doc tests. Core/public SDK/log-writer default-feature suites pass with two pre-existing macOS group-name assertions filtered: 165 public SDK, 86 core, 14 log unit, 56 existing integration, 22 root integration tests plus applicable docs. The two filtered tests were separately reproduced at unchanged HEAD5961564: macOS resolves GID 0 to wheel, while those reader tests require root. No unrelated reader fix is bundled.
+- Full-workspace attempts hit the unchanged legacy FFI build's fresh metadata resolution: offline cache resolves yanked chacha20 0.10.1 without the workspace lock. Workspace all-features additionally needs uncached allocative 0.3.6. These broader environmental/legacy checks are not claimed passing; all changed crates and executable public examples were tested. No compiler/dependency version changes or network workaround was made. Native Windows/Linux runtime is untested; Windows code uses the existing windows-sys handle identity API with its filesystem feature enabled. Only the native macOS target is installed.
+- `go -C go test ./...`: passes again; Go runtime is unchanged from the reviewed/rebased implementation. Existing race evidence remains applicable.
+- Wiki validator passes all 16 pages. All 19 Go and 16 Rust marked docs examples pass, including both root APIs. An initial Rust docs-cache miss was resolved by copying existing isolated cached dependencies into the harness's repository-local cache; no dependency changes.
+- Shared `tests/interoperability/run_root_retention_parity.py --benchmark` passes both writers x both inventories/readers, retained active finalization, tail-age pruning, byte-preserving malformed/quarantine startup rejection, and lazy expiry with successor sequence/readback. Its 1-versus-10000-entry header inventory measurements show no record-count growth: approximately 35-63 microseconds per inventory across Go optimized/Rust debug builds. This is a scaling check, not a release-speed comparison or an archive/unlink/fsync benchmark.
+- Alternating release default-directory benchmark, 20000 rows, five before/after runs per append shape: raw median 210.6 to 194.2 ms; structured median 207.9 to 211.8 ms. Samples overlap with filesystem/scheduling noise; no consistent regression or speedup claim. Original and final binaries plus JSON evidence remain under .local/retention-validation. The new checks run at inventory/maintenance boundaries, never per entry.
+- Durable docs now label root retention unreleased and call out Rust exhaustive Config/enum additions; version selection and publication remain separately authorized release work.
+- Reference searches: `rg -n 'Go-only|Rust parity|Go opt-in' docs AGENTS.md .agents/skills .agents/sow/specs/product-scope.md` leaves only the release-tagging instruction about language-specific releases, which is valid. Current SOW historical Go-only references explain the corrected assumption, not an exception. `rg -n 'LogLifecycleEvent::' rust` shows existing matches retain wildcard handling and new lazy archive tests cover the added event. Retention readiness paths reset for root detach/create only; default cleanup retry remains tested.
+- Independent design investigation found the mapped-header identity trap, original-policy normalization, fresh-file readiness and artifact-sizer builder bypass; all are implemented/tested. Independent final implementation review remains to be performed after the validated commit.

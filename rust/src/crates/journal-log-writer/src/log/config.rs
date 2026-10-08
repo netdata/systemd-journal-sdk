@@ -108,6 +108,9 @@ impl RetentionPolicy {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub origin: Origin,
+    /// Own retention for this dedicated root/source across machine identities.
+    /// Requires strict systemd naming, no namespace and no artifact sizing hook.
+    pub root_retention: bool,
     /// Policy for when to rotate active files
     pub rotation_policy: RotationPolicy,
     /// Policy for when to remove old files
@@ -159,6 +162,7 @@ impl Config {
     ) -> Self {
         Self {
             origin,
+            root_retention: false,
             rotation_policy,
             retention_policy,
             compression: Compression::None,
@@ -173,6 +177,11 @@ impl Config {
             file_mode: DEFAULT_JOURNAL_FILE_MODE,
             sync_on_archive: true,
         }
+    }
+
+    pub fn with_root_retention(mut self, enabled: bool) -> Self {
+        self.root_retention = enabled;
+        self
     }
 
     /// Specifies the rotation policy of the log directory

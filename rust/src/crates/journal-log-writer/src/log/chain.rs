@@ -14,7 +14,7 @@ use uuid::Uuid;
 #[allow(unused_imports)]
 use tracing::{error, info, instrument};
 
-fn source_basename(source: &Source) -> String {
+pub(super) fn source_basename(source: &Source) -> String {
     match source {
         Source::System => "system".to_string(),
         Source::User(uid) => format!("user-{uid}"),

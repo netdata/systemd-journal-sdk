@@ -315,6 +315,92 @@ when they intentionally want host machine identity instead of container-local
 identity. Missing host files fall back to container-local files; present invalid
 host files return an error so collectors do not silently switch identity.
 
+## Dedicated Root Retention
+
+This feature is unreleased. It adds the public `Config.root_retention` field,
+`LogLifecycleEvent::Archived` variant and `WriterError::RootRetention` variant.
+Callers using exhaustive struct literals or enum matches must handle these
+additions when upgrading; `Config::new` keeps root retention disabled.
+
+Use `Config::with_root_retention(true)` when one caller owns a dedicated root
+and source across machine identity changes. This has the same retention contract
+as the Go API. It requires strict systemd naming, explicit machine/boot identity,
+and no namespace or artifact sizer. Default `Log` behavior remains machine-local,
+with committed-byte accounting and archive-head-age retention.
+
+The caller MUST serialize access, exclude other writers and directory changes,
+and verify recovered active files' provenance and indexes before opening the
+log. `inspect_root_retention(root, &source)` supplies header-only inventory
+before open; `log.inspect_root_retention()` also validates the live file's
+filesystem and journal identities. Missing or replaced files are errors, and
+inspection remains available after writer poisoning. Neither API verifies
+payloads/indexes or protects against concurrent external modification. See
+[[Writer-APIs|Writer APIs]] for the shared ownership and accounting contract.
+
+<!-- verify-example: lang=rust id=rust-root-retention -->
+```rust
+use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
+use std::path::Path;
+use std::time::{Duration, SystemTime};
+
+let day = Duration::from_secs(24 * 3600);
+let config = Config::new(
+    Origin {
+        machine_id: Some("00112233445566778899aabbccddeeff".parse()?),
+        namespace: None,
+        source: Source::Unknown("example-history".into()),
+    },
+    RotationPolicy::default().with_duration_of_journal_file(day),
+    RetentionPolicy::default()
+        .with_duration_of_journal_files(30 * day)
+        .with_size_of_journal_files(1024 * 1024 * 1024),
+)
+.with_boot_id("ffeeddccbbaa99887766554433221100".parse()?)
+.with_strict_systemd_naming(true)
+.with_root_retention(true);
+
+let mut log = Log::new(Path::new("/var/log/journal-sdk"), config)?;
+log.write_entry_with_timestamps(
+    &[b"MESSAGE=saved"],
+    EntryTimestamps::default().with_entry_monotonic_usec(1),
+)?;
+// Install the replacement before maintenance; invalid policies change nothing.
+log.set_root_retention_policy(
+    RetentionPolicy::default()
+        .with_duration_of_journal_files(30 * day)
+        .with_size_of_journal_files(2 * 1024 * 1024 * 1024),
+)?;
+let result = log.maintain_root_retention(SystemTime::now())?;
+let inventory = log.inspect_root_retention()?;
+println!("{} bytes, {} files, {:?}", inventory.bytes, inventory.files.len(), result.last_successful_at);
+log.close_without_retention()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`set_root_retention_policy()` installs a validated value without enforcing
+limits. `root_retention_policy()` returns a copy. Explicit rotation limits stay
+in effect; derived allocation geometry is recalculated. Maintenance archives a
+live file only for idle age expiry or changed allocation geometry, discards an
+empty file when needed, and leaves its successor lazy. `Archived` lifecycle
+events describe finalization without a successor; ordinary rotations retain
+their existing `Rotated` event.
+
+Root maintenance runs on startup (including lazy archived-only histories),
+active-file creation, rotation, and explicit calls. The SDK does not schedule
+it. `maintain_root_retention(now)` and `enforce_retention()` report failures;
+automatic safe inventory/unlink/directory-sync failures are recorded without
+failing a healthy append. Uncertain archive mutation still poisons the writer
+and stops pruning. `last_root_retention_result()` exposes the latest attempt,
+last successful time, deletion count, typed shared error and a post-attempt
+inventory only when `inventory_valid` is true. Read this retained result after
+an explicit maintenance error as well; an invalid inventory is unknown, not
+zero storage. `is_poisoned()` separately reports writer health.
+
+Root mode rejects artifact sizing in `new_with_hooks`. Attaching an artifact
+sizer through the infallible `with_artifact_sizer` builder makes subsequent
+mutating operations fail configuration validation; close/drop preserve the
+files instead of applying that invalid combination.
+
 ## Write Structured Fields
 
 Use structured fields when the producer already has field names and values

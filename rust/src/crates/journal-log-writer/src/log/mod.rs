@@ -1,3 +1,7 @@
+mod root_retention;
+pub use root_retention::{
+    RootRetentionFile, RootRetentionInventory, RootRetentionResult, inspect_root_retention,
+};
 mod chain;
 use chain::OwnedChain;
 
@@ -51,6 +55,10 @@ fn sync_archive_journal_file(
 /// Tracks rotation state for size and count limits.
 pub struct Log {
     poisoned: bool,
+    root_rotation: RotationPolicy,
+    root_result: Option<RootRetentionResult>,
+    #[cfg(test)]
+    root_faults: root_retention::RootFaults,
     configured_dir: PathBuf,
     chain: OwnedChain,
     config: Config,
@@ -82,6 +90,10 @@ pub enum LogLifecycleEvent {
         active: repository::File,
         reason: LogLifecycleReason,
     },
+    Archived {
+        archived: repository::File,
+        reason: LogLifecycleReason,
+    },
     Rotated {
         archived: repository::File,
         active: repository::File,
@@ -110,6 +122,7 @@ impl Log {
     }
 
     fn ensure_healthy(&self) -> Result<()> {
+        self.validate_root_hooks()?;
         if self.is_poisoned() {
             Err(JournalError::WriterPoisoned.into())
         } else {
@@ -209,6 +222,9 @@ impl Log {
     }
 
     fn apply_retention(&mut self, protected_file: Option<&repository::File>) -> Result<()> {
+        if self.config.root_retention {
+            return self.automatic_root_retention(false);
+        }
         if let Some(sizer) = &self.artifact_sizer {
             self.chain.refresh_retained_sizes(|file| {
                 sizer.journal_artifact_size(Path::new(file.path()))
@@ -236,7 +252,11 @@ impl Log {
         if self.retention_on_open_applied || self.active_file.is_none() {
             return Ok(());
         }
-        self.enforce_retention()?;
+        if self.config.root_retention {
+            self.automatic_root_retention(false)?;
+        } else {
+            self.enforce_retention()?;
+        }
         self.retention_on_open_applied = true;
         Ok(())
     }
@@ -308,10 +328,20 @@ impl Log {
         lifecycle_observer: Option<Arc<dyn LogLifecycleObserver>>,
         artifact_sizer: Option<Arc<dyn LogArtifactSizer>>,
     ) -> Result<Self> {
+        if config.root_retention && artifact_sizer.is_some() {
+            return Err(WriterError::InvalidConfig(
+                "root retention does not support artifact sizing hooks".into(),
+            ));
+        }
+        let root_rotation = config.rotation_policy;
         let startup = build_startup_state(path, config)?;
 
         let mut log = Log {
             poisoned: false,
+            root_rotation,
+            root_result: None,
+            #[cfg(test)]
+            root_faults: root_retention::RootFaults::default(),
             configured_dir: path.to_path_buf(),
             chain: startup.chain,
             config: startup.config,
@@ -333,7 +363,12 @@ impl Log {
             log.rotate(realtime, LogLifecycleReason::EagerOpen)?;
             log.retention_on_open_applied = true;
         }
-        log.apply_retention_on_open()?;
+        if log.config.root_retention {
+            log.automatic_root_retention(true)?;
+            log.retention_on_open_applied = log.active_file.is_some();
+        } else {
+            log.apply_retention_on_open()?;
+        }
         Ok(log)
     }
 
@@ -342,6 +377,10 @@ impl Log {
         self
     }
 
+    /// Installs custom accounting for default machine-local retention.
+    /// In root mode this infallible builder leaves an invalid configuration:
+    /// mutating methods return `InvalidConfig`, and close/drop release resources
+    /// without archiving or pruning. Prefer `new_with_hooks` for eager validation.
     pub fn with_artifact_sizer(mut self, sizer: Arc<dyn LogArtifactSizer>) -> Self {
         self.artifact_sizer = Some(sizer);
         self
@@ -640,6 +679,21 @@ impl Log {
     fn close_impl(mut self, enforce_retention: bool) -> Result<()> {
         use journal_core::file::JournalState;
 
+        if let Err(error) = self.validate_root_hooks() {
+            self.active_file.take();
+            return Err(error);
+        }
+        if self.config.root_retention {
+            self.ensure_healthy()?;
+            if self.active_file.is_none() {
+                return Ok(());
+            }
+            let discarded_empty = self.archive_root_active(LogLifecycleReason::Retention)?;
+            if enforce_retention && !discarded_empty {
+                self.automatic_root_retention(false)?;
+            }
+            return Ok(());
+        }
         if self.is_poisoned() {
             self.active_file.take();
             return Err(JournalError::WriterPoisoned.into());
@@ -722,6 +776,11 @@ impl Log {
     /// protected from deletion.
     pub fn enforce_retention(&mut self) -> Result<()> {
         self.ensure_healthy()?;
+        if self.config.root_retention {
+            return self
+                .maintain_root_retention(std::time::SystemTime::now())
+                .map(|_| ());
+        }
         let protected_file = if let Some(active_file) = &self.active_file {
             self.chain.update_file_size(
                 &active_file.repository_file,
@@ -841,6 +900,9 @@ impl Log {
         tracing::Span::current().record("new_file", new_file.repository_file.path());
 
         self.active_file = Some(new_file);
+        if self.config.root_retention {
+            self.retention_on_open_applied = false;
+        }
         self.poisoned = false;
         self.rotation_state.reset();
         self.update_active_file_size();
@@ -850,6 +912,7 @@ impl Log {
         // tracked current file counts in the envelope and is never deleted.
         let protected_file = self.protected_active_file();
         self.apply_retention(protected_file.as_ref())?;
+        self.retention_on_open_applied = true;
 
         Ok(())
     }
@@ -987,7 +1050,11 @@ impl Drop for Log {
     fn drop(&mut self) {
         use journal_core::file::JournalState;
 
-        if self.is_poisoned() {
+        if self.is_poisoned() || self.validate_root_hooks().is_err() {
+            return;
+        }
+        if self.config.root_retention {
+            let _ = self.archive_root_active(LogLifecycleReason::Retention);
             return;
         }
         if let Some(ref mut active_file) = self.active_file {

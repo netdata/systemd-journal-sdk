@@ -412,8 +412,9 @@ Current writer performance certification status:
   those implementations now live under `experiments/` and are not product
   performance or correctness gates.
 
-Go also provides explicit `LogConfig.RootRetention` for a caller-owned root/source
-across machine identities. This Go-only opt-in requires strict active naming,
+Go `LogConfig.RootRetention` and Rust `Config::with_root_retention(true)` provide
+equivalent caller-owned root/source retention across machine identities. This
+opt-in requires strict active naming,
 caller writer exclusion, verified recovery provenance/indexes and no artifact
 sizer. `InspectRootRetention` reads fixed-size headers, validates canonical
 machine/sequence/archive identities and header extents, and fails the complete
@@ -435,7 +436,14 @@ without failing healthy appends; uncertain archive mutation still fails the
 writer. `SetRootRetentionPolicy` validates/copies/installs before enforcement;
 explicit rotation limits survive changes. This is neither exact TTL nor a
 physical disk cap; preallocation/active growth/pinned readers and failed cleanup
-can exceed the allowance. No Rust parity or release is promised by this addition.
+can exceed the allowance. Rust exposes equivalent snake_case methods, Copy policy
+values, SystemTime timestamps, and retained typed errors through Arc. The public
+Rust SDK reexports inventory/result APIs. Rust lazy finalization emits an Archived
+event without inventing a successor; ordinary Rotated events remain unchanged.
+Rust root configuration rejects namespaces and artifact sizing; adding an artifact
+sizer with the infallible builder causes mutation validation errors and preserves
+files on close/drop. Root functionality ships in both languages; publication
+remains a separate release operation.
 
 Current Go writer feature slice:
 

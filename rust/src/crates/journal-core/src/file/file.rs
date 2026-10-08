@@ -283,6 +283,12 @@ impl JournalFileOptions {
         self
     }
 
+    /// Effective DATA table size after applying the options builders.
+    #[doc(hidden)]
+    pub fn data_hash_table_size(&self) -> u64 {
+        self.data_hash_table_buckets as u64 * 16
+    }
+
     pub fn with_window_size(mut self, size: u64) -> Self {
         assert_eq!(size % OBJECT_ALIGNMENT, 0);
         assert_eq!(size % 4096, 0, "Window size must be page-aligned");
@@ -488,6 +494,15 @@ fn sanitize_header_for_size(mut header: JournalHeader) -> JournalHeader {
 }
 
 impl<M: MemoryMap> JournalFile<M> {
+    /// Checks the named regular file against this journal's owned descriptor.
+    /// Caller exclusion is required; this is not a concurrent rename guard.
+    #[doc(hidden)]
+    pub fn names_same_file(&self, path: &std::path::Path) -> Result<bool> {
+        self.window_manager
+            .borrow_mut_checked()?
+            .names_same_file(path)
+    }
+
     pub fn visit_bucket<'a, H, V>(
         &'a self,
         hash_table: Option<H>,

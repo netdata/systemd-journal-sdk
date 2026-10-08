@@ -184,6 +184,15 @@ pub(super) fn resolve_boot_id(config: &Config) -> Result<uuid::Uuid> {
 }
 
 pub(super) fn validate_config(config: &Config) -> Result<()> {
+    if config.root_retention {
+        if !config.strict_systemd_naming || config.origin.namespace.is_some() {
+            return Err(WriterError::InvalidConfig(
+                "root retention requires strict systemd naming and no namespace".into(),
+            ));
+        }
+        super::root_retention::validate_source(&config.origin.source)?;
+    }
+
     #[allow(deprecated)]
     if config.identity_mode == LogIdentityMode::Auto {
         return Err(WriterError::InvalidConfig(

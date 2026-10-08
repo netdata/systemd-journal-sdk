@@ -4,7 +4,7 @@ Last updated: 2026-10-08
 
 ## Current
 
-None.
+- SOW-0152-20261008 - Root History Retention: in-progress again for user-required Go/Rust parity. Prior Go implementation/review retained; Rust counterpart and validation underway. No publication authorized.
 
 ## Pending
 
@@ -48,8 +48,6 @@ None.
   decisions. Not executable until the user explicitly resumes it.
 
 ## Recently Closed Or Completed
-
-- SOW-0152 - Root History Retention: completed locally through bf2f1e5 after validation and focused independent review of the live-inventory regression. Earlier allocation/lifecycle coverage retained; no verified blocker. No push or release; consumer pinning awaits a separate SDK release.
 
 - SOW-0154 - Project Release Skill: completed. Adds the full-process team
   skill to PR #8, including language parity, CI publication, maintainer tags,

@@ -183,6 +183,47 @@ its empty archive. Construct a new writer with the intended policy for
 subsequent retention enforcement. Normal Rust `close()` keeps applying its
 policy when archiving a file, except when discarding an empty strict-named file.
 
+## Dedicated Root History
+
+This feature is unreleased.
+
+Go `LogConfig.RootRetention` and Rust `Config::with_root_retention(true)` add
+an explicit policy for a caller-owned root/source across machine identities.
+Use this when retained history must share one allowance even after machine
+identity changes. Existing directory-writer defaults remain unchanged.
+
+Both implementations require strict active names and exclusive caller ownership.
+The caller must verify recovered active files before opening the writer. Inventory
+reads directory entries, file metadata and fixed-size headers without expanding
+records. It rejects malformed or quarantined source candidates, symlinks,
+ambiguous identities and filename/header mismatches before pruning. A missing
+root is an error. Canonical machine-named entries must be directories; unrelated
+metadata directories are allowed when they contain no source candidates.
+Live-aware inventory also rejects a missing or replaced active file.
+
+The shared policy:
+
+- Counts full directory-visible file lengths, including preallocation, across
+  all retained identities. Unlinked files pinned by readers are excluded.
+- Expires whole files by their newest saved journal realtime, independently of
+  producer event time. Size/count pressure removes oldest tails first, with
+  canonical path as the deterministic tie-breaker.
+- Protects a live active from size eviction. Explicit maintenance finalizes it
+  for idle age expiry or required allocation changes, leaving the next file lazy.
+- Installs valid replacement policies before enforcement, preserves explicit
+  rotation limits, and recalculates derived allocation geometry.
+- Reports safe cleanup failures independently from healthy appends; uncertain
+  archive mutation remains a writer failure and stops pruning.
+
+This is neither an exact record TTL nor a hard physical disk cap. With a 24-hour
+file span and successful hourly cleanup, age overhang is about one day plus one
+hour under advancing clocks; existing files keep their actual spans. Size pressure
+can remove history earlier. Preallocation, active growth, pinned readers and
+failed cleanup can exceed the allowance. The SDK does not schedule cleanup.
+
+See [[Go-API|Go API]] and [[Rust-API|Rust API]] for executable examples, policy
+updates, inventory and maintenance outcomes.
+
 ## Identity And Locking
 
 Core writers do not discover host identity. Pass machine ID, boot ID, and

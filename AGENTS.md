@@ -35,6 +35,18 @@ Success means:
 
 Project SOW status: initialized
 
+## Go/Rust Feature Parity
+
+- Accepted SDK functionality MUST be implemented in both Go and Rust as part of
+  the same approved feature scope. APIs SHOULD follow each language's idioms
+  while providing equivalent behavior, failure semantics and operational guarantees.
+- Feature plans and acceptance criteria MUST identify both language surfaces and
+  validate each implementation, including relevant cross-language file behavior.
+  One consumer using only one language does not justify a parity gap.
+- A language-specific exception or staged delivery requires an explicit user
+  decision recorded in the active SOW. A remaining parity gap MUST be resolved
+  with the user before publication; release preparation is not the first parity check.
+
 ## Performance Contract
 
 This project is not only a compatibility clone. It is a high-performance

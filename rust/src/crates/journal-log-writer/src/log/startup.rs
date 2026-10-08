@@ -52,6 +52,7 @@ pub(super) struct ActiveFile {
     pub(super) repository_file: repository::File,
     pub(super) journal_file: JournalFile<MmapMut>,
     pub(super) writer: JournalWriter,
+    pub(super) identity: ([u8; 16], [u8; 16], [u8; 16]),
 }
 
 impl ActiveFile {
@@ -73,10 +74,13 @@ impl ActiveFile {
         }
         let writer = JournalWriter::new(&mut journal_file, next_seqnum, boot_id)?;
 
+        let header = journal_file.journal_header_ref();
+        let identity = (header.file_id, header.machine_id, header.seqnum_id);
         Ok(Self {
             repository_file,
             journal_file,
             writer,
+            identity,
         })
     }
 
@@ -122,10 +126,13 @@ impl ActiveFile {
         )?;
         writer.set_live_publish_every_entries(live_publish_every_entries);
 
+        let header = journal_file.journal_header_ref();
+        let identity = (header.file_id, header.machine_id, header.seqnum_id);
         Ok(Self {
             repository_file,
             journal_file,
             writer,
+            identity,
         })
     }
 
@@ -168,10 +175,13 @@ impl ActiveFile {
         )?;
         writer.set_live_publish_every_entries(live_publish_every_entries);
 
+        let header = journal_file.journal_header_ref();
+        let identity = (header.file_id, header.machine_id, header.seqnum_id);
         Ok(Self {
             repository_file,
             journal_file,
             writer,
+            identity,
         })
     }
 
@@ -209,6 +219,7 @@ pub(super) fn open_existing_active_file(
     chain: &mut OwnedChain,
     repository_file: repository::File,
     boot_id: uuid::Uuid,
+    allow_disposal: bool,
 ) -> Result<Option<ActiveFile>> {
     match ActiveFile::open(repository_file.clone(), boot_id) {
         Ok(opened) => {
@@ -224,7 +235,7 @@ pub(super) fn open_existing_active_file(
                 Ok(Some(opened))
             }
         }
-        Err(err) if replaceable_active_open_error(&err) => {
+        Err(err) if allow_disposal && replaceable_active_open_error(&err) => {
             chain.dispose_replaceable_active_file(&repository_file)?;
             Ok(None)
         }
@@ -255,7 +266,8 @@ pub(super) fn replace_strict_online_chain_file(
     let Some(repository_file) = chain.online_chain_file()? else {
         return Ok(());
     };
-    let Some(mut opened) = open_existing_active_file(chain, repository_file.clone(), boot_id)?
+    let Some(mut opened) =
+        open_existing_active_file(chain, repository_file.clone(), boot_id, true)?
     else {
         return Ok(());
     };
@@ -289,7 +301,9 @@ pub(super) fn open_existing_active_for_config(
     else {
         return Ok(None);
     };
-    open_existing_active_file(chain, repository_file, boot_id)
+    // Never dispose an unsupported recovered active in root mode. Empty
+    // valid actives still follow the existing lazy startup lifecycle.
+    open_existing_active_file(chain, repository_file, boot_id, !config.root_retention)
 }
 
 pub(super) fn adopt_active_file_identity(
@@ -401,6 +415,14 @@ pub(super) fn open_startup_active_file(
 
 pub(super) fn build_startup_state(path: &Path, config: Config) -> Result<StartupState> {
     let config = normalize_config(config)?;
+    if config.root_retention {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                super::inspect_root_retention(path, &config.origin.source)?;
+            }
+        }
+    }
     let mut chain = create_startup_chain(path, &config)?;
     let startup_active = open_startup_active_file(&mut chain, &config)?;
     let rotation_state =
