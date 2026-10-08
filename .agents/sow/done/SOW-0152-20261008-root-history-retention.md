@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reopened for Rust feature parity at user request after rebase onto local master. Prior Go validation/review remains evidence; Rust design, implementation and validation are in progress. No push or release.
+Sub-state: complete after local-master rebase, Go/Rust parity implementation, validation and independent review of the header-bounds repair. No push or release.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 ### Assistant Understanding
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Unknowns: no unresolved product decisions. Independent parity review identified a shared Rust header-bound validation gap; the repair and validation are recorded below. Native Windows/Linux runtime validation limitations remain.
+Unknowns: no unresolved product decisions or verified blockers. Independent parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
 
 ### Acceptance Criteria
 - Explicit root/source inventory validates identities, filenames, state and header extents without visiting records; rejects unsafe/quarantined candidates before pruning.
@@ -117,7 +117,7 @@ Acceptance criteria evidence:
 - Unsafe fixture coverage: quarantine, filename SeqnumID mismatch, directory MachineID mismatch, corrupt tail range/state, truncated arena, ambiguous active/archive target, symlink, invalid machine directory and an unsafe candidate added after construction. Preserved evidence is checked.
 - Synthetic unlink failure does not fail healthy append; retry succeeds. Archive-sync failure poisons subsequent writes and retains evidence. A captured IndexedSnapshot reads its original rows after unlink. Deliberately corrupt ENTRY-array content remains outside header-only inventory, demonstrating that this API does not certify indexes.
 
-Tests or equivalent validation:
+Tests or equivalent validation (initial Go implementation; current paired evidence follows under Parity Correction):
 - Environment: TMPDIR=/tmp; GOCACHE=/tmp/dem-sdk-go-cache; GOMODCACHE=/tmp/dem-sdk-go-mod; GOPATH=/tmp/dem-sdk-go-path; GOPROXY=off. Caches for docs are repository-local as enforced by their harness.
 - `go -C go test ./...`: pass on darwin/arm64, Go 1.27.1.
 - `go -C go test -race ./...`: pass on darwin/arm64, including existing default Log tests and new root retention tests.
@@ -150,7 +150,7 @@ Artifact maintenance gate:
 - AGENTS.md: feature parity is explicitly required during development, with user-owned exceptions and acceptance evidence in both languages.
 - Runtime project skills: project-journal-compatibility documents both root opt-ins and header-native validation; release skill references the canonical parity rule.
 - Specs: product-scope.md records paired ownership, accounting, lifecycle and errors.
-- End-user/operator docs: Go-API.md adds verified usage and precise limits/ownership/platform caveats.
+- End-user/operator docs: Go-API.md, Rust-API.md and Writer-APIs.md document both opt-ins, verified usage and precise limits/ownership/platform caveats.
 - End-user/operator skills: none exist in this repository.
 - SOW lifecycle: completed in done after independent review. Current user instructions require a validated implementation commit before review, so completion cannot be bundled in that first commit.
 - SOW-status.md: canonical and convenience indexes record completed status and no remaining current SDK SOW.
@@ -162,7 +162,7 @@ Project skills update:
 - Compatibility skill updated so its earlier default-only retention rule does not contradict this opt-in.
 
 End-user/operator docs update:
-- Go guide and verified example cover root ownership, status, policy edits, error distinction and lack of exact TTL/physical cap.
+- Both language guides and verified examples cover root ownership, status, policy edits, error distinction and lack of exact TTL/physical cap. Shared writer guidance describes the paired contract.
 
 End-user/operator skills update:
 - No output/reference skills exist.
@@ -175,7 +175,7 @@ Follow-up mapping:
 
 ## Outcome
 
-The prior Go implementation and its review fixes are complete. Branch readiness is reopened for equivalent Rust behavior and cross-language evidence. Publication/release remains separately authorized; consumer dependency pinning awaits an SDK release.
+Equivalent Go and Rust root retention is complete, with the development parity rule recorded in AGENTS.md, executable examples and shared file-behavior tests. Independent review of the complete Rust implementation and focused recheck of 3f9101c leave no verified blocker. Publication/release remains separately authorized; consumer dependency pinning awaits an SDK release.
 
 ## Lessons Extracted
 
@@ -234,9 +234,9 @@ Investigation and plan:
 3. Document both language surfaces with executable examples, root parity rules and contract/spec updates.
 4. Validate affected Rust/full language suites as appropriate, Go regression evidence, cross-language real files and record-count-independent inventory cost. Commit coherent validated changes, obtain independent review, fix verified blockers, then close this SOW.
 
-Baseline: SDK HEAD5961564 after local-master rebase; working tree clean. Root retention is absent from Rust. Rust writer/default tests are running with caches/output under /tmp. Current SOW queue is empty; pending Rust array-open optimization and legacy-core cleanup remain independent and unactivated.
+Baseline at parity start: SDK HEAD5961564 after local-master rebase, working tree clean, root retention absent from Rust. Rust writer/default baseline tests passed with caches/output under /tmp. No other current SDK SOW overlapped; pending Rust array-open optimization and legacy-core cleanup remain independent and unactivated.
 
-Parity gate: ready. The user request fixes the end state; there is no new product/architecture fork. Rust needs narrow fixed-header and owned-descriptor identity primitives plus archive-without-successor lifecycle, using existing dependencies. Error/result spelling and helper organization are routine language-specific implementation choices. Baseline all-feature Rust log-writer suite passes. Independent design inspection is in progress and any verified constraint must be incorporated before the affected implementation.
+Parity gate: ready. The user request fixes the end state; there is no new product/architecture fork. Rust needs narrow fixed-header and owned-descriptor identity primitives plus archive-without-successor lifecycle, using existing dependencies. Error/result spelling and helper organization are routine language-specific implementation choices. Baseline all-feature Rust log-writer suite passes. Independent design inspection completed and its verified constraints were incorporated into the implementation.
 
 
 Parity implementation and validation checkpoint:
@@ -250,7 +250,7 @@ Parity implementation and validation checkpoint:
 - Alternating release default-directory benchmark, 20000 rows, five before/after runs per append shape: raw median 210.6 to 194.2 ms; structured median 207.9 to 211.8 ms. Samples overlap with filesystem/scheduling noise; no consistent regression or speedup claim. Original and final binaries plus JSON evidence remain under .local/retention-validation. The new checks run at inventory/maintenance boundaries, never per entry.
 - Durable docs now label root retention unreleased and call out Rust exhaustive Config/enum additions; version selection and publication remain separately authorized release work.
 - Reference searches: `rg -n 'Go-only|Rust parity|Go opt-in' docs AGENTS.md .agents/skills .agents/sow/specs/product-scope.md` leaves only the release-tagging instruction about language-specific releases, which is valid. Current SOW historical Go-only references explain the corrected assumption, not an exception. `rg -n 'LogLifecycleEvent::' rust` shows existing matches retain wildcard handling and new lazy archive tests cover the added event. Retention readiness paths reset for root detach/create only; default cleanup retry remains tested.
-- Independent design investigation found the mapped-header identity trap, original-policy normalization, fresh-file readiness and artifact-sizer builder bypass; all are implemented/tested. Independent final implementation review remains to be performed after the validated commit.
+- Independent design investigation found the mapped-header identity trap, original-policy normalization, fresh-file readiness and artifact-sizer builder bypass; all are implemented/tested. Independent final implementation review of 664b3df identified the fixed-header blocker and misleading rustdoc addressed below; prior whole-feature coverage remains applicable.
 
 Parity review repair:
 - Independent review of 664b3df identified a verified deletion-safety blocker: Rust's shared stable-arena validator omits ENTRY-array and tail-entry header offset bounds enforced by Go. Patching an expired archive's entry_array_offset to u64::MAX makes Go reject/preserve it, but Rust accepts inventory and deletes it during maintenance. The reproducer uses both compiled public API probes on copied synthetic fixtures.
@@ -258,4 +258,9 @@ Parity review repair:
 - Review also found misleading enforce_retention rustdoc claiming unconditional active-file protection. Clarify root mode's already-approved expiry/allocation finalization behavior.
 - Both automated reproducers failed before the repair: Rust's public root test accepted the invalid ENTRY-array offset, and the shared matrix passed Go rejection cases then failed on Rust's first malformed header case. After repairing the shared validator, both writers x both SDKs reject all seven header corruptions without changing any journal bytes; valid retained histories and lazy successors still read correctly. Rust's existing array-content corruption test still permits header inventory, preserving the documented boundary.
 - The affected Rust core/public SDK/log-writer suite passes again (165 public SDK, 86 core, 14 log unit, 56 existing integration and 23 root integration tests, plus applicable docs), with only the same two independently reproduced macOS group-name tests filtered. Existing compact, historical-header, snapshot and live-growth coverage passes. The changed helper's callers are fixed-header inventory, committed-arena validation for append recovery, and excluded-writer indexed snapshot capture; ordinary live mapping validation remains unchanged.
-- Wiki/docs and Go runtime evidence from 664b3df remain applicable. The new checks inspect fixed header fields only and add no I/O, object traversal or per-entry probes, so prior scaling/default writer measurements remain applicable. The compatibility skill records the shared invariant and evidence-preserving parity tests. Diff and SOW audit checks pass; a focused independent recheck of the validated fix follows its local commit.
+- Wiki/docs and Go runtime evidence from 664b3df remain applicable. The new checks inspect fixed header fields only and add no I/O, object traversal or per-entry probes, so prior scaling/default writer measurements remain applicable. The compatibility skill records the shared invariant and evidence-preserving parity tests. Diff and SOW audit checks pass; the focused independent recheck of 3f9101c found no remaining blocker.
+
+Parity completion checkpoint:
+- Independent read-only review of 3f9101c confirms parity with Go's relevant stable header bounds, unchanged ordinary live-reader mapping validation, appropriate stronger append/snapshot checks, corrected rustdoc and preserved rejected file bytes. It retained earlier whole-feature coverage and inspected source plus recorded failing/passing evidence without rerunning tests. No unresolved review blocker remains.
+- Re-evaluated the paired acceptance criteria and remaining references: Rust and Go expose equivalent policies, inventories, lifecycle and failure guarantees; no compatibility adapter, default-policy change or unrelated implementation is included. All deferred-keyword matches are historical reasoning, separately authorized consumer/release work, recorded environment/platform coverage limitations, or existing unrelated pending SOWs. No new implementation is deferred.
+- Local master 2b33553 is an ancestor of the branch after the requested rebase. This final tracking commit records completion separately because the current user instructions require validated implementation commits before independent review. SOW moves to done, both indexes record completion, and final audit/diff/status checks verify consistency. No push, publication or additional history rewrite.
