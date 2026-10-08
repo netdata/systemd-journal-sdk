@@ -7,7 +7,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- SOW-0152 - Root History Retention: in-progress. Go opt-in root inventory and maintenance; user-approved implementation, independent review pending.
+None.
 
 ## Pending
 

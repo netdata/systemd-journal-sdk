@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: both independent-review blockers fixed and locally validated; focused recheck pending.
+Sub-state: implementation, validation and independent review complete at 41273e1; local only, no release or push.
 
 ## Requirements
 
@@ -134,7 +134,7 @@ Real-use evidence:
 Reviewer findings:
 - Independent read-only review of c4ffeab found two verified blockers: policy changes retained normalized data-hash buckets derived from the old allowance, and a Log-lifetime creation-cleanup flag survived writer detachment, skipping maintenance on the lazy successor. Existing fixed-small-bucket tests masked the allocation defect.
 - Public-API/default-Options regression tests reproduced both before source fixes, including Append and AppendRaw creation boundaries. Both now pass: derived geometry shrinks to an 8 MiB successor, and successor creation removes the older archive under the 8 MiB allowance with a new maintenance outcome. Explicit buckets/allocation size remain unchanged. The implementation retains caller allocation inputs, reuses constructor normalization, compares actual/desired geometry without transition flags, and binds readiness to the actual Writer. A default-Log rotation-cleanup-error regression verifies preserved successful append retry semantics. Focused independent recheck is required after the validated follow-up commit.
-- Main-agent source inspection earlier identified the unlink-sync and empty-eager-policy issues; both remain fixed and covered. Do not mark completed until independent review resolves material findings.
+- Main-agent source inspection earlier identified the unlink-sync and empty-eager-policy issues; both remain fixed and covered. The review gate is satisfied; native Windows/Linux runtime limitations remain explicit.
 
 Same-failure scan:
 - `rg -n 'enforceRetention\(|enforceRetentionOnOpen|RootRetention' go/journal/log.go go/journal/log_retention.go`: constructor, both append shapes, rotation and close share the opt-in dispatch. Default methods retain original semantics. `ensureWriter` is the common fresh-allocation path for both Append and AppendRaw.
@@ -149,7 +149,7 @@ Artifact maintenance gate:
 - Specs: product-scope.md records ownership, accounting, lifecycle, errors and Go-only scope.
 - End-user/operator docs: Go-API.md adds verified usage and precise limits/ownership/platform caveats.
 - End-user/operator skills: none exist in this repository.
-- SOW lifecycle: tracked current/in-progress; completion is pending review. Current user instructions require a validated implementation commit before review, so completion cannot be bundled in that first commit.
+- SOW lifecycle: completed in done after independent review. Current user instructions require a validated implementation commit before review, so completion cannot be bundled in that first commit.
 - SOW-status.md: canonical and convenience indexes point to the active SOW.
 
 Specs update:
@@ -185,3 +185,5 @@ No independent work added. Consumer adoption is owned by the coordinating task.
 ## Regression Log
 
 No reopened regression; this is an explicit additive opt-in.
+
+Completion checkpoint: the approved SDK target is complete without a DEM compatibility path. Re-review reproduced the corrected 32-GiB-to-8-MiB transition (48-MiB old allocation to 8-MiB successor) and lazy creation cleanup (one 8-MiB active, updated maintenance time). Every verified finding is fixed; no optional review item extends this scope. Completion record is a separate commit because current user instructions require implementation commits before independent review.
