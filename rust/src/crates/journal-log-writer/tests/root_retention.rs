@@ -365,6 +365,63 @@ fn root_retention_explicit_span_survives_policy_updates() {
 }
 
 #[test]
+fn root_inventory_rejects_corrupt_header_object_bounds_without_deleting_evidence() {
+    for (kind, offset, value) in [
+        ("entry array overflow", 176, u64::MAX.to_le_bytes().to_vec()),
+        (
+            "entry array inside header",
+            176,
+            8u64.to_le_bytes().to_vec(),
+        ),
+        (
+            "entry array inside unused allocation",
+            176,
+            (8 * MIB - 24).to_le_bytes().to_vec(),
+        ),
+        (
+            "tail array outside arena",
+            256,
+            (u32::MAX - 7).to_le_bytes().to_vec(),
+        ),
+        (
+            "tail array count outside arena",
+            260,
+            u32::MAX.to_le_bytes().to_vec(),
+        ),
+        ("tail entry overflow", 264, u64::MAX.to_le_bytes().to_vec()),
+        (
+            "tail entry inside unused allocation",
+            264,
+            (8 * MIB - 64).to_le_bytes().to_vec(),
+        ),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let path = fixture(dir.path(), 21, &[1], false);
+        patch(&path, offset, &value);
+        let before = fs::read(&path).unwrap();
+        assert!(
+            inspect_root_retention(dir.path(), &source()).is_err(),
+            "accepted {kind}"
+        );
+        assert!(
+            Log::new(
+                dir.path(),
+                config().with_retention_policy(
+                    RetentionPolicy::default().with_size_of_journal_files(1),
+                )
+            )
+            .is_err(),
+            "opened {kind}"
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before,
+            "changed evidence for {kind}"
+        );
+    }
+}
+
+#[test]
 fn root_inventory_rejects_unsafe_candidates_before_any_pruning() {
     for kind in [
         "quarantine",

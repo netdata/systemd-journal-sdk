@@ -22,6 +22,15 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 DAY = 86_400_000_000
 MIB = 1024 * 1024
+HEADER_DAMAGE = {
+    'entry-array-overflow': (176, (2**64-1).to_bytes(8, 'little')),
+    'entry-array-inside-header': (176, (8).to_bytes(8, 'little')),
+    'entry-array-after-tail': (176, (8*MIB-24).to_bytes(8, 'little')),
+    'tail-array-outside-arena': (256, (2**32-8).to_bytes(4, 'little')),
+    'tail-array-count-outside-arena': (260, (2**32-1).to_bytes(4, 'little')),
+    'tail-entry-overflow': (264, (2**64-1).to_bytes(8, 'little')),
+    'tail-entry-after-tail': (264, (8*MIB-64).to_bytes(8, 'little')),
+}
 
 
 def run(args: list[str], cwd: Path = ROOT) -> str:
@@ -98,7 +107,7 @@ def main() -> None:
             for verifier in bins:
                 assert probe(verifier, 'inspect', maintained) == [expected[1]]
                 assert probe(verifier, 'read', maintained) == sorted(map(str, [now-40*DAY, now-20*DAY]))
-            for damage in ('malformed', 'quarantine'):
+            for damage in ('malformed', 'quarantine', *HEADER_DAMAGE):
                 unsafe = evidence / f'{writer}-{reader}-{damage}'
                 shutil.copytree(fixture, unsafe)
                 path = next(unsafe.rglob('history@*.journal'))
@@ -106,7 +115,9 @@ def main() -> None:
                     path.rename(path.with_suffix('.journal~'))
                 else:
                     with path.open('r+b') as stream:
-                        stream.write(b'BROKEN!!')
+                        offset, value = HEADER_DAMAGE.get(damage, (0, b'BROKEN!!'))
+                        stream.seek(offset)
+                        stream.write(value)
                 before = snapshot(unsafe)
                 assert probe(reader, 'reject', unsafe) == ['rejected']
                 assert snapshot(unsafe) == before, 'preflight changed journal evidence'

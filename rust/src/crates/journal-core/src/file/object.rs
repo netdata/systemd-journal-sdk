@@ -161,9 +161,19 @@ impl JournalHeader {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
         let tail = self.tail_object_offset.map_or(0, NonZeroU64::get);
-        if tail != 0 && (tail < self.header_size || tail % 8 != 0 || tail > end || end - tail < 16)
-        {
-            return Err(JournalError::ObjectExceedsFileBounds);
+        if (tail == 0) != (self.n_objects == 0) {
+            return Err(JournalError::InvalidObjectLocation);
+        }
+        for (offset, size) in [
+            (self.tail_object_offset, size_of::<ObjectHeader>() as u64),
+            (
+                self.entry_array_offset,
+                size_of::<OffsetArrayObjectHeader>() as u64,
+            ),
+        ] {
+            if let Some(offset) = offset {
+                self.validate_arena_object(offset.get(), size, end)?;
+            }
         }
         for offset in [self.data_hash_table_offset, self.field_hash_table_offset]
             .into_iter()
@@ -173,7 +183,36 @@ impl JournalHeader {
                 return Err(JournalError::ObjectExceedsFileBounds);
             }
         }
+        if self.header_size >= 264 && self.tail_entry_array_offset != 0 {
+            let item_size = if self.has_incompatible_flag(HeaderIncompatibleFlags::Compact) {
+                size_of::<u32>()
+            } else {
+                size_of::<u64>()
+            } as u64;
+            let size = size_of::<OffsetArrayObjectHeader>() as u64
+                + u64::from(self.tail_entry_array_n_entries) * item_size;
+            self.validate_arena_object(u64::from(self.tail_entry_array_offset), size, end)?;
+        }
+        if self.header_size >= 272 && self.tail_entry_offset != 0 {
+            self.validate_arena_object(
+                self.tail_entry_offset,
+                size_of::<EntryObjectHeader>() as u64,
+                end,
+            )?;
+        }
         Ok(end)
+    }
+
+    fn validate_arena_object(&self, offset: u64, size: u64, end: u64) -> Result<()> {
+        if offset < self.header_size
+            || offset % 8 != 0
+            || offset > self.tail_object_offset.map_or(0, NonZeroU64::get)
+            || offset > end
+            || size > end - offset
+        {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        Ok(())
     }
 
     /// Empty files may inherit a sequence counter, but not per-file ENTRY state.

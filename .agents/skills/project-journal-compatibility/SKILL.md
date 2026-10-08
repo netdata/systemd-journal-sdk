@@ -75,6 +75,12 @@ Do not use this skill for:
   Live inventory must reject missing/replaced active files instead of reporting
   false-empty success, and maintenance must validate it before mutation.
   Preserve separate safe-maintenance errors and fatal archive-mutation errors.
+  Fixed-header inventory MUST validate every header-addressed object extent
+  against the declared arena and allocated object tail, including ENTRY-array
+  and tail-entry hints. Reuse stable-header validation with append recovery and
+  excluded-writer snapshots; corruption in array contents remains outside the
+  header-only inventory contract. Exercise malformed header offsets in both
+  languages and require failed preflight to preserve journal bytes.
 - For deterministic regular uncompressed writer output, the layout target is byte-for-byte identity with the systemd v260.1 reference ingester for the accepted corpus. Writers must match systemd object order, alignment, initial allocation envelope, v260 header fields, entry-array growth, tail metadata, and hash-chain header behavior for that slice.
 - Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.
 - Header readers must use the on-disk `header_size` when validating object and hash-table locations. Do not compare historical file offsets against the current in-memory v260 `JournalHeader` struct size, and do not expose bytes beyond the on-disk header as newer header fields.

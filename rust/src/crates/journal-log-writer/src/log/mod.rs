@@ -772,8 +772,10 @@ impl Log {
     }
 
     /// Applies the configured retention policy without requiring a rotation or
-    /// close. The current active file is counted in retention envelopes and is
-    /// protected from deletion.
+    /// close. By default, the current active file is counted in retention
+    /// envelopes and protected from deletion. Root mode delegates to
+    /// [`Self::maintain_root_retention`], which may finalize an expired active
+    /// file or one requiring new allocation geometry before pruning.
     pub fn enforce_retention(&mut self) -> Result<()> {
         self.ensure_healthy()?;
         if self.config.root_retention {
