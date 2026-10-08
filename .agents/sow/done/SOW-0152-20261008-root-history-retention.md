@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reopened for the user-authorized final-review fixes. The previous completion checkpoint is superseded by the verified lifecycle, error-classification and status defects below. No push or release.
+Sub-state: final-review fixes committed in 643afe1, validated and independently reviewed. No verified blocker remains. The current result supersedes earlier completion checkpoints. No push or release.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 ### Assistant Understanding
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Current work: the final-review regression section records verified defects and authorized repairs. No product decision remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
+Current result: the final-review regression section records verified defects, completed repairs, validation and independent review. No product decision or verified blocker remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
 
 ### Acceptance Criteria
 - Explicit root/source inventory validates identities, filenames, state and header extents without visiting records; rejects unsafe/quarantined candidates before pruning.
@@ -70,7 +70,7 @@ Artifact impact plan:
 - Specs: product-scope records paired root retention behavior.
 - End-user/operator docs: both writer guides and shared API guidance document ownership, accounting, failure and policy updates with verified examples.
 - End-user/operator skills: none exist.
-- SOW lifecycle: reopened in current for the parity correction, then complete only after Rust and cross-language validation/review.
+- SOW lifecycle: completed in done after the paired implementation and final-review repair were validated and independently reviewed.
 - SOW-status.md: both indexes updated on start and completion.
 
 Open-source reference evidence:
@@ -152,8 +152,8 @@ Artifact maintenance gate:
 - Specs: product-scope.md records paired ownership, accounting, lifecycle and errors.
 - End-user/operator docs: Go-API.md, Rust-API.md and Writer-APIs.md document both opt-ins, verified usage and precise limits/ownership/platform caveats.
 - End-user/operator skills: none exist in this repository.
-- SOW lifecycle: reopened in current for final-review fixes. Complete after validation and independent review; the implementation commit precedes review.
-- SOW-status.md: both indexes record the active final-review repair until completion.
+- SOW lifecycle: completed in done after validation and independent review of 643afe1. This completion record is a separate commit under the current commit-before-review instructions.
+- SOW-status.md: both indexes record completed status and no current SDK SOW.
 
 Specs update:
 - Product scope updated with the additive contract; defaults retained.
@@ -175,7 +175,7 @@ Follow-up mapping:
 
 ## Outcome
 
-Reopened for the verified final-review findings below. Runtime repairs and regression coverage are implemented; final validation and independent review remain pending. Earlier whole-feature review is retained only where its assumptions remain valid. Publication/release remains separately authorized; consumer dependency pinning awaits an SDK release.
+Paired root retention and the authorized final-review repairs are complete. Commit 643afe1 passes relevant Go/Rust suites, shared file-behavior checks and documentation validation; independent read-only review found no verified blocker. Default policies are preserved, with the approved Go successor-retry cleanup correction documented and tested. Publication/release remains separately authorized; consumer dependency pinning awaits an SDK release.
 
 ## Lessons Extracted
 
@@ -260,9 +260,9 @@ Parity review repair:
 - The affected Rust core/public SDK/log-writer suite passes again (165 public SDK, 86 core, 14 log unit, 56 existing integration and 23 root integration tests, plus applicable docs), with only the same two independently reproduced macOS group-name tests filtered. Existing compact, historical-header, snapshot and live-growth coverage passes. The changed helper's callers are fixed-header inventory, committed-arena validation for append recovery, and excluded-writer indexed snapshot capture; ordinary live mapping validation remains unchanged.
 - Wiki/docs and Go runtime evidence from 664b3df remain applicable. The new checks inspect fixed header fields only and add no I/O, object traversal or per-entry probes, so prior scaling/default writer measurements remain applicable. The compatibility skill records the shared invariant and evidence-preserving parity tests. Diff and SOW audit checks pass; the focused independent recheck of 3f9101c found no remaining blocker.
 
-Parity completion checkpoint:
+Historical parity completion checkpoint (superseded by the final-review repair below):
 - Independent read-only review of 3f9101c confirms parity with Go's relevant stable header bounds, unchanged ordinary live-reader mapping validation, appropriate stronger append/snapshot checks, corrected rustdoc and preserved rejected file bytes. It retained earlier whole-feature coverage and inspected source plus recorded failing/passing evidence without rerunning tests. No unresolved review blocker remains.
-- Re-evaluated the paired acceptance criteria and remaining references: Rust and Go expose equivalent policies, inventories, lifecycle and failure guarantees; no compatibility adapter, default-policy change or unrelated implementation is included. All deferred-keyword matches are historical reasoning, separately authorized consumer/release work, recorded environment/platform coverage limitations, or existing unrelated pending SOWs. No new implementation is deferred.
+- The earlier parity assessment was contradicted by the final review of 89d8716. The following repair section is the authoritative result for lifecycle, failure and configuration behavior; the unchanged policy/inventory coverage from earlier reviews remains applicable.
 - Local master 2b33553 is an ancestor of the branch after the requested rebase. This final tracking commit records completion separately because the current user instructions require validated implementation commits before independent review. SOW moves to done, both indexes record completion, and final audit/diff/status checks verify consistency. No push, publication or additional history rewrite.
 
 
@@ -312,3 +312,10 @@ Implemented repair and validation evidence:
 - Wiki validation passes all 16 pages; executable example validation passes all 35 examples (19 Go, 16 Rust). SOW audit and `git diff --check` pass. Logs: .local/retention-validation/final-review-go-race.log, final-review-docs.log and final-review-audit.log.
 - Reference scan: `rg -n 'OpenWithOptions|newAppendWriter|recordFailure|LogLifecycleArchived|emitRootArchived' go/journal` and `rg -n 'ActiveFile::create|ActiveFile::open|activate_opened|configured_file_options|archive_root_active' rust/src/crates/journal-log-writer` confirm shared open failure classification and all root archive/creation call sites. Normal rotation remains paired; empty disposal emits no archive. No replaced path or compatibility adapter remains.
 - Readiness assessment: mutation boundaries, rotation configuration and lifecycle ordering interact across both languages. Earlier final review covers unchanged feature behavior, but the repaired boundaries require independent read-only review of the committed fixes and their callers before completion. Performance-sensitive entry paths gain no inventory or filesystem work; the Go defensive slice copy is confined to maintenance/status boundaries.
+
+Final review and completion:
+- Independent read-only review of 89d8716..643afe1 found no verified blocker. Coverage included Rust post-rename ownership/inspection, pre-mutation open versus activation, configured successors, Go append-open uncertainty, lifecycle ordering, copied results, retry cleanup, close/lazy semantics, tests and docs. The reviewer inspected source and recorded evidence without rerunning tests or changing files. Prior independent coverage is retained for unchanged feature behavior.
+- The successful shared matrix JSON omits four human-readable tiny-age labels that were added later; the executed assertions and all four commands are present in .local/retention-validation/final-review-parity.log at lines 30-31, 58-59, 102-103 and 130-131. The reviewer verified this evidence; no test behavior changed after that passing run.
+- Final dispositions: P2-1/2/3 and P3-7 are fixed; P3-9's reproduced permission and age defects are fixed. P3-1/2/3/4/8 are resolved with truthful docs/records and approved behavior retained. P3-6 has recursive evidence assertions in both SDKs. P3-5 remains rejected as an invalid recovered fixture, not a reason to invent identity or weaken verification. The secondary resample error and duplicate startup pass remain nonblocking as assessed above.
+- Re-evaluated the clean target and coupled references: both SDKs deliver the approved owned-root policy with corrected lifecycle and failure guarantees. No compatibility adapter, new dependency, unrelated implementation or in-scope partial remains. Native Windows/Linux runtime and broader offline workspace validation remain explicit limitations, not passing claims.
+- Completion moves this SOW to done and updates both indexes. The implementation was committed before review; this final commit records review and lifecycle only. No push, release or history rewrite.

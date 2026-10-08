@@ -4,7 +4,7 @@ Last updated: 2026-10-08
 
 ## Current
 
-- SOW-0152-20261008 - Root History Retention: in-progress for user-authorized final-review fixes to lifecycle, safe failure classification, status ownership and parity. No push or release.
+- None.
 
 ## Pending
 
@@ -48,6 +48,8 @@ Last updated: 2026-10-08
   decisions. Not executable until the user explicitly resumes it.
 
 ## Recently Closed Or Completed
+
+- SOW-0152-20261008 - Root History Retention: completed. Paired Go/Rust retention with final-review lifecycle, failure-boundary and configuration fixes in 643afe1; regression/parity/docs checks and independent review pass. No push or release.
 
 - SOW-0154 - Project Release Skill: completed. Adds the full-process team
   skill to PR #8, including language parity, CI publication, maintainer tags,
