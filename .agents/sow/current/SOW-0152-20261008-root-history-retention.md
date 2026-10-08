@@ -9,17 +9,21 @@ Sub-state: PR #9 fixes are validated and independently reviewed in ac6ccde. User
 ## Requirements
 
 ### Purpose
+
 Provide equivalent Go and Rust source-owned history retention across machine identities, with idiomatic APIs and unchanged default retention policies. Correct the default Go successor-retry cleanup gap explicitly.
 
 ### User Request
+
 The user approved the root retention design on 2026-10-08: shared age/byte allowance, full file lengths including preallocation, whole-file tail saved-time expiration, fixed caller-selected 24-hour rotation span, no forced hourly archives, cleanup outcomes independent from healthy writes, and compact factual status. Existing consumers retain default retention policies; the final-review approval below accepts the Go successor-retry cleanup correction. The user subsequently required Go/Rust parity for this branch. The earlier Go-only assumption was not a user-approved parity waiver and is superseded. Publication remains a separately authorized operation.
 
 ### Assistant Understanding
+
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
 Current work: the latest GitHub Review section records the validated, independently reviewed PR9 fixes. Authorized publication and four thread resolutions remain pending; prior completed review evidence is historical. No product decision remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
 
 ### Acceptance Criteria
+
 - Explicit root/source inventory validates identities, filenames, state and header extents without visiting records; rejects unsafe/quarantined candidates before pruning.
 - Full file lengths and tail times govern maintenance across current and retained identities; retained active finalization uses existing writer internals.
 - Current live files stay protected except idle expiration or required policy transition; next file remains lazy.
@@ -39,32 +43,41 @@ Risks: deleting unowned or corrupt evidence, accidental stale-policy enforcement
 Status: ready
 
 Problem / root-cause model:
+
 - Existing retention intentionally owns only one machine directory and uses committed size/head time. Consumers needing an exclusive root cannot get correct aggregate maintenance by repeatedly closing a Log.
 
 Evidence reviewed:
+
 - log.go open/rotate/archive lifecycle; log_retention.go default policy; writer.go append-open/archive/release; native header validation; current and pending SOWs; product-scope retention contracts; approved consumer design evidence.
 
 Affected contracts and surfaces:
+
 - Equivalent opt-in Go and Rust Log configuration, root inventory/maintenance APIs, native header/descriptor helpers required by Rust, real-file tests, both published writer guides, product scope and the repository parity rule. No on-disk format or default retention policy change. The final-review repair explicitly corrects Go cleanup after successful successor-creation retry.
 
 Existing patterns to reuse:
+
 - Go parseHeader/readAppendHeader, arena/empty-entry validation, Writer.archiveTo, lifecycle events and policy normalization. Rust JournalHeader bounds/empty-entry validation, ActiveFile/OwnedChain archive and directory-sync lifecycle, config normalization, and existing descriptor/platform dependencies. Inventory must not use JournalFile::open (maps hash tables) or Reader entry expansion.
 
 Risk and blast radius:
+
 - Opt-in strict source ownership only. Caller provides exclusive dedicated root and verifies retained active provenance/content before mutation. Header inventory is not full integrity verification. Validate the complete candidate set before pruning; propagate uncertain mutation as writer failure.
 
 Sensitive data handling plan:
+
 - Synthetic identities and generated file fixtures only. No live journals, host probes, personal data, credentials, production paths or raw external reports in durable artifacts.
 
 Implementation plan:
+
 1. Retain reviewed Go implementation; implement equivalent strict root/source Rust header inventory and live-descriptor identity validation.
 2. Integrate Rust retired/live active finalization without eager successors, full-length/tail-time pruning, original-policy-derived geometry and distinct maintenance/writer failures. Keep readiness with each live file and preserve default semantics.
 3. Add Rust real-file counterparts to Go contract/regression tests, cross-language fixture checks and bounded performance evidence; update docs/spec/rules, run affected suites/docs/audit, commit validated changes for independent review.
 
 Validation plan:
+
 - Real generated journals cover retained identities, archive naming/header mismatches, quarantine, allocation, age head/tail difference, idle/size/policy boundaries, unlink failure and pinned reader snapshots. Run focused/full Go tests and race, inventory benchmark, cross-compile where available, docs validators and SOW audit. No format compatibility claim beyond exercised platforms.
 
 Artifact impact plan:
+
 - AGENTS.md: make language feature parity explicit during development; release skill references the rule.
 - Runtime project skills: document paired opt-in behavior and reference the canonical parity rule.
 - Specs: product-scope records paired root retention behavior.
@@ -74,9 +87,11 @@ Artifact impact plan:
 - SOW-status.md: both indexes updated on start and completion.
 
 Open-source reference evidence:
+
 - No external source implementation is reused. Consumer design supplied by coordinating task is user-approved evidence; local SDK code is the implementation ground truth.
 
 Open decisions:
+
 - Resolved by user approval on 2026-10-08. API spelling is an implementation choice. No push, publication or release authorized.
 
 ## Implications And Decisions
@@ -101,6 +116,7 @@ Failure handling: record failing validation and concrete environmental limitatio
 ## Execution Log
 
 ### 2026-10-08
+
 - Read source/skills/spec and queue inventory; completed gate before source edits. Current user approval fixes the target. Existing branch is feat/root-history-retention from local master.
 - Added root_retention.go inventory, policy/status and maintenance; integrated the opt-in at constructor/open/rotation/close boundaries without changing default retention. Added real-file tests and three benchmark families, Go guide/spec and compatibility skill exception.
 - Real-file tests initially reproduced directory-sync-after-unlink ENOENT; fixed by syncing changed parent directories once, including partial-delete failures. A later regression test reproduced a nil writer panic when changing policy before the first lazy append. The initial flag-based fix was superseded during independent review: maintenance now compares desired/actual geometry, so a newly created writer already matches without a transition flag.
@@ -113,11 +129,13 @@ Failure handling: record failing validation and concrete environmental limitatio
 ## Validation
 
 Acceptance criteria evidence:
+
 - Real file-backed tests cover previous-identity archive and active cleanup, tail-vs-head age, full 8 MiB preallocation accounting, deterministic oldest-file size eviction, shrinking/relaxing and invalid policy, policy copies, 48 idle sweeps without fragmentation, idle expiry/lazy successor, explicit 24-hour span rotation, and empty/lazy policy transitions.
 - Unsafe fixture coverage: quarantine, filename SeqnumID mismatch, directory MachineID mismatch, corrupt tail range/state, truncated arena, ambiguous active/archive target, symlink, invalid machine directory and an unsafe candidate added after construction. Preserved evidence is checked.
 - Synthetic unlink failure does not fail healthy append; retry succeeds. Archive-sync failure poisons subsequent writes and retains evidence. A captured IndexedSnapshot reads its original rows after unlink. Deliberately corrupt ENTRY-array content remains outside header-only inventory, demonstrating that this API does not certify indexes.
 
 Tests or equivalent validation (initial Go implementation; current paired evidence follows under Parity Correction):
+
 - Environment: TMPDIR=/tmp; GOCACHE=/tmp/dem-sdk-go-cache; GOMODCACHE=/tmp/dem-sdk-go-mod; GOPATH=/tmp/dem-sdk-go-path; GOPROXY=off. Caches for docs are repository-local as enforced by their harness.
 - `go -C go test ./...`: pass on darwin/arm64, Go 1.27.1.
 - `go -C go test -race ./...`: pass on darwin/arm64, including existing default Log tests and new root retention tests.
@@ -131,22 +149,27 @@ Tests or equivalent validation (initial Go implementation; current paired eviden
 - `go -C go test ./journal -run '^$' -bench BenchmarkRootRetentionRotation -benchmem -benchtime=100ms -count=3`: forced one-entry rotation 12–15 ms opt-in vs 16–18 ms default in this short filesystem/sync-dominated sample. Opt-in uses roughly 73 KiB/229–235 allocations vs 49 KiB/80 default. These noisy samples bound observed stalls and do not establish a speedup. This was the initial Go-only measurement before the parity correction; no matching stock-systemd custom root policy exists. Rust evidence is recorded in the parity correction below.
 
 Real-use evidence:
+
 - Tests exercise actual Create/Append/ArchiveTo/NewLog/maintenance/read-snapshot filesystem paths with synthetic records; published example compiles and runs the public policy/maintenance API. No live host journals were used.
 
 Reviewer findings:
+
 - Independent read-only review of c4ffeab found two verified blockers: policy changes retained normalized data-hash buckets derived from the old allowance, and a Log-lifetime creation-cleanup flag survived writer detachment, skipping maintenance on the lazy successor. Existing fixed-small-bucket tests masked the allocation defect.
 - Public-API/default-Options regression tests reproduced both before source fixes, including Append and AppendRaw creation boundaries. Both now pass: derived geometry shrinks to an 8 MiB successor, and successor creation removes the older archive under the 8 MiB allowance with a new maintenance outcome. Explicit buckets/allocation size remain unchanged. The implementation retains caller allocation inputs, reuses constructor normalization, compares actual/desired geometry without transition flags, and binds readiness to the actual Writer. A default-Log rotation-cleanup-error regression verifies preserved successful append retry semantics. Focused independent recheck of 41273e1 passed; its coverage remains applicable.
 - Main-agent source inspection earlier identified the unlink-sync and empty-eager-policy issues; both remain fixed and covered.
 - Final focused read-only review by retention_sdk_review (Astra high) of bf2f1e5 found no verified blocker. Coverage included live-file identity before runtime inventory/maintenance, deletion, policy replacement and error classes, pinned readers and shutdown, with earlier SDK coverage retained. The coordinator supplied the review result and authorized completion. Native Windows/Linux runtime limitations remain explicit.
 
 Same-failure scan:
+
 - `rg -n 'enforceRetention\(|enforceRetentionOnOpen|RootRetention' go/journal/log.go go/journal/log_retention.go`: constructor, both append shapes, rotation and close share the opt-in dispatch. Default policies retain original semantics; successful creation after a failed successor attempt now enforces cleanup (the final-review section records this intentional correction). `ensureWriter` is the common fresh-allocation path for both Append and AppendRaw.
 - `rg -n 'writer =|retentionWriter|rootPolicy|rootConfigured' go/journal/log.go go/journal/root_retention.go go/journal/log_retention.go`: all detach paths clear the retained readiness pointer; no pending allocation flag remains. Original caller allocation inputs feed the same normalization helper as construction.
 
 Sensitive data gate:
+
 - Durable changes contain synthetic identities and general contracts only. No raw sensitive data or workstation identities are recorded.
 
 Artifact maintenance gate:
+
 - AGENTS.md: feature parity is explicitly required during development, with user-owned exceptions and acceptance evidence in both languages.
 - Runtime project skills: project-journal-compatibility documents both root opt-ins and header-native validation; release skill references the canonical parity rule.
 - Specs: product-scope.md records paired ownership, accounting, lifecycle and errors.
@@ -156,26 +179,32 @@ Artifact maintenance gate:
 - SOW-status.md: both indexes record completed status and no current SDK SOW.
 
 Specs update:
+
 - Product scope updated with the additive contract; defaults retained.
 
 Project skills update:
+
 - Compatibility skill updated so its earlier default-only retention rule does not contradict this opt-in.
 
 End-user/operator docs update:
+
 - Both language guides and verified examples cover root ownership, status, policy edits, error distinction and lack of exact TTL/physical cap. Shared writer guidance describes the paired contract.
 
 End-user/operator skills update:
+
 - No output/reference skills exist.
 
 Lessons:
+
 - Directory sync after unlink must receive the parent directory. Allocation transitions compare actual writer geometry with newly derived geometry; normalized buckets must not erase the distinction between defaults and caller overrides. Creation cleanup belongs to the current writer instance, and retained readiness pointers must be cleared when writer ownership ends.
 
 Follow-up mapping:
+
 - Consumer adoption is the separately approved coordinating task; its dependency pin awaits a separately authorized SDK release. SDK publication is outside this SOW, not deferred implementation. Native Windows/Linux runtime compatibility limitations are reported, not silently claimed. No independent implementation is bundled or deferred.
 
 ## Outcome
 
-The original paired feature and 643afe1 repairs were validated and independently reviewed. PR9 review fixes are now implemented and locally validated; independent review and publication/thread resolution remain pending. No push has been authorized.
+The paired feature and PR #9 runtime fixes are validated, independently reviewed and published. All six original review threads are resolved. The hosted scan cleared thirteen original Codacy findings; one narrow Python audit annotation needs line alignment. Newly surfaced SOW/index Markdown spacing is being corrected before completing the authorized remote follow-through.
 
 ## Lessons Extracted
 
@@ -194,16 +223,20 @@ Historical completion checkpoint (superseded by the final-review reopening): the
 ## Regression - 2026-10-08
 
 Observed failure and missed invariant:
+
 - Moving the active machine directory outside the configured root leaves the Log holding a live file descriptor, while standalone directory inventory reports zero files and maintenance reports success. Replacing the old machine path with a regular file is also silently ignored as metadata. Consumer query/status requires a missing-file error rather than false-empty success. Initial tests inspected directory-visible files but did not challenge their correspondence with an owned live writer.
 
 Approved repair plan and gate:
+
 - The coordinating task authorizes a narrow SDK-owned Log.InspectRootRetention API, usable on an open failed Log, requiring root opt-in. It combines standalone header inventory with live path/filesystem identity and header-identity checks. Use it internally before maintenance mutations. Reject canonical machine-named non-directories in standalone inventory. Missing-file inventory errors do not poison the writer. No per-record filesystem checks or general concurrent-external-modification guarantee is added.
 - Gate status: ready. Existing caller exclusion, recovery verification, synthetic-fixture/cache/repository boundaries and no-publication constraints remain in effect. Source files, tests, docs and product-scope are affected; other SDK consumers retain defaults. No unresolved user-owned decision remains.
 
 Validation and artifact plan:
+
 - Reproduce existing maintenance false-empty behavior with a public real-filesystem test before repair, then test missing active directory/file, replacement identity, recovery, standalone machine-path type rejection, and inspection after writer failure. Run affected Go tests/race and docs/audit; retain applicable earlier full-suite/benchmark evidence. Document standalone versus live-aware inventories without broadening external-modification guarantees. The coherent fix was committed before coordinated review; review is now complete.
 
 Regression implementation and validation:
+
 - Both initial reproducers failed before the fix: missing live directory produced valid zero inventory/success; a canonical machine-named regular file passed standalone inventory. The live-aware method now checks path presence/filesystem identity with Lstat, fd Stat and SameFile, then verifies file/machine/sequence journal identities in the shared header inventory. Every maintenance sample uses it. Neither this read-only method nor its errors calls writable/recordFailure; failed writer status remains inspectable.
 - Public real-filesystem tests cover a moved machine directory and moved active file, filesystem ENOENT, invalid maintenance inventory, unchanged last-success time, healthy Sync while missing, restoration/recovery, an identical-header replacement inode, changed header identity, and non-opt-in/closed rejection. The existing real-file archive-failure test confirms inspection still works after writer failure.
 - `go -C go test ./journal -run 'TestRoot|TestLog|TestDefaultLogRotation' -count=1`: pass. The same affected suite with `-race` passes. Prior full-suite evidence remains valid for unchanged reader/writer/default paths; this repair does not alter append or file format code.
@@ -213,22 +246,24 @@ Regression implementation and validation:
 - Validation uses the same /tmp and repository-local cache redirection recorded above; no live journals, external state or unapproved repository writes. Durable artifacts contain no sensitive data. SOW audit and diff checks passed before the fix commit; completion artifacts receive the same checks.
 
 Regression outcome:
+
 - Fixed in bf2f1e5. The affected tests/race, docs example/wiki checks and audit passed. Focused independent review found no verified blocker and retained earlier SDK coverage; the coordinator authorized completed/done status. No push or release.
 
 Historical completion checkpoint before parity and final-review repairs: local SDK source was unchanged from reviewed bf2f1e5. This completion commit changes only the SOW lifecycle/current-state record and its indexes. No broad validation rerun is needed for these tracking-only edits.
-
 
 ## Parity Correction - 2026-10-08
 
 User direction: keep Go/Rust parity for feat/root-history-retention and make the requirement visible in repository rules. The release skill already requires accepted functionality in both languages. The prior Go-only assumption was too narrow; it is not retained as an approved exception.
 
 Target and scope:
+
 - Deliver the existing root inventory, tail-time/full-length policy, live-file correspondence, lazy finalization, mutable policy and maintenance-status contract in Rust as well as Go. APIs follow each language's ownership conventions. Defaults, on-disk format and explicit caller writer exclusion remain unchanged.
 - Retain the reviewed Go implementation and regression evidence; add Rust counterparts for the known allocation, successor-readiness, safe-failure and live-path failure classes.
 - Make parity a development rule in AGENTS.md and reference it from release/compatibility guidance. Remove current Go-only claims from docs/specs; preserve prior validation as historical evidence.
 - Release metadata, publication, external consumers and parked unrelated Rust optimization work remain outside this task. No dependencies or compiler-minimum changes are planned.
 
 Investigation and plan:
+
 1. Verify Rust lifecycle/header/identity primitives and the Go contract; obtain bounded independent design challenge.
 2. Implement opt-in Rust APIs, root maintenance and real-file tests using existing native header/writer primitives. Preserve original caller rotation inputs; fresh active files own maintenance readiness.
 3. Document both language surfaces with executable examples, root parity rules and contract/spec updates.
@@ -238,8 +273,8 @@ Baseline at parity start: SDK HEAD5961564 after local-master rebase, working tre
 
 Parity gate: ready. The user request fixes the end state; there is no new product/architecture fork. Rust needs narrow fixed-header and owned-descriptor identity primitives plus archive-without-successor lifecycle, using existing dependencies. Error/result spelling and helper organization are routine language-specific implementation choices. Baseline all-feature Rust log-writer suite passes. Independent design inspection completed and its verified constraints were incorporated into the implementation.
 
-
 Parity implementation and validation checkpoint:
+
 - Rust exposes the paired opt-in, fixed-header inventory, opening-identity snapshots and live descriptor checks, value policy updates, lazy Archived events, tail/length pruning and Arc-backed typed outcomes. Startup and mutation reuse existing writer lifecycles; no on-disk format or default policy changes. Root rejects namespaces/artifact sizing. Infallible artifact-sizer builder cannot bypass validation or mutate evidence during close/drop.
 - Existing source patterns exposed two regressions during self-review: resetting default-mode creation readiness changed cleanup-error retry behavior; unconditional root close maintenance pruned histories when no active existed or an empty file was discarded. Both public regression tests failed before fixes and pass afterward. A third focused unit test reproduced a retained empty recovered current active; the fix reuses startup disposal for empties while forbidding unsupported-file quarantine in root mode.
 - Rust 1.91.0 (declared minimum), darwin/arm64: log-writer all-features passes 22 unit tests, 56 existing integration tests, 22 new public root tests and 2 doc tests. Core/public SDK/log-writer default-feature suites pass with two pre-existing macOS group-name assertions filtered: 165 public SDK, 86 core, 14 log unit, 56 existing integration, 22 root integration tests plus applicable docs. The two filtered tests were separately reproduced at unchanged HEAD5961564: macOS resolves GID 0 to wheel, while those reader tests require root. No unrelated reader fix is bundled.
@@ -253,6 +288,7 @@ Parity implementation and validation checkpoint:
 - Independent design investigation found the mapped-header identity trap, original-policy normalization, fresh-file readiness and artifact-sizer builder bypass; all are implemented/tested. Independent final implementation review of 664b3df identified the fixed-header blocker and misleading rustdoc addressed below; prior whole-feature coverage remains applicable.
 
 Parity review repair:
+
 - Independent review of 664b3df identified a verified deletion-safety blocker: Rust's shared stable-arena validator omits ENTRY-array and tail-entry header offset bounds enforced by Go. Patching an expired archive's entry_array_offset to u64::MAX makes Go reject/preserve it, but Rust accepts inventory and deletes it during maintenance. The reproducer uses both compiled public API probes on copied synthetic fixtures.
 - Repair plan: complete JournalHeader::validated_arena_end's fixed-header bounds once for retention inventory, append recovery and excluded-writer snapshot callers. Preserve ordinary live-reader mapping validation and the documented lack of object/index traversal in inventory. Add real-file rejection/evidence-preservation cases to Rust and the shared matrix; rerun affected core, public snapshot and directory writer suites. No format change or new ownership contract.
 - Review also found misleading enforce_retention rustdoc claiming unconditional active-file protection. Clarify root mode's already-approved expiry/allocation finalization behavior.
@@ -261,18 +297,20 @@ Parity review repair:
 - Wiki/docs and Go runtime evidence from 664b3df remain applicable. The new checks inspect fixed header fields only and add no I/O, object traversal or per-entry probes, so prior scaling/default writer measurements remain applicable. The compatibility skill records the shared invariant and evidence-preserving parity tests. Diff and SOW audit checks pass; the focused independent recheck of 3f9101c found no remaining blocker.
 
 Historical parity completion checkpoint (superseded by the final-review repair below):
+
 - Independent read-only review of 3f9101c confirms parity with Go's relevant stable header bounds, unchanged ordinary live-reader mapping validation, appropriate stronger append/snapshot checks, corrected rustdoc and preserved rejected file bytes. It retained earlier whole-feature coverage and inspected source plus recorded failing/passing evidence without rerunning tests. No unresolved review blocker remains.
 - The earlier parity assessment was contradicted by the final review of 89d8716. The following repair section is the authoritative result for lifecycle, failure and configuration behavior; the unchanged policy/inventory coverage from earlier reviews remains applicable.
 - Local master 2b33553 is an ancestor of the branch after the requested rebase. This final tracking commit records completion separately because the current user instructions require validated implementation commits before independent review. SOW moves to done, both indexes record completion, and final audit/diff/status checks verify consistency. No push, publication or additional history rewrite.
 
-
 ## Regression - 2026-10-08 Final Review
 
 User authorization and current target:
+
 - The user requested fixes after a read-only accept/reject assessment of the final review of 89d8716. This authorizes the verified runtime defects, coupled tests/docs/records, and the stated recommendation to retain Go cleanup on successful creation after a safe failed successor attempt as an intentional default-mode correction.
 - Preserve the approved root retention policy: full lengths, tail age, no newest-file grace, lazy successors even after eager startup finalization, complete fail-closed inventory, and caller-verified recovered active files. No compatibility adapters, release, push or unrelated work.
 
 Verified cause and evidence:
+
 - Rust keeps an active-file handle at its pre-rename path when directory sync fails after archive rename; standalone inventory succeeds but Log inventory fails NotFound. A fault-injected real-file test reproduces this.
 - Rust successor options inherit compactness from the recovered header, while root maintenance derives desired geometry from current configuration. Reopening a regular 4-GiB configuration as compact with an 8-GiB rotation limit reproduces removal of the empty successor and an append unwrap panic.
 - Go live root archives omit observer events; retired finalization emits Rotated without a successor. A retained archive after policy-change finalization produces no event.
@@ -283,12 +321,14 @@ Verified cause and evidence:
 Repair gate: ready. The requested fixes and approved existing contracts fix the target; no unresolved product decision remains.
 
 Repair plan:
+
 1. Define lifecycle ownership and mutation boundaries explicitly. Rust archive failure must release detached active ownership while keeping failure terminal; new root successors must use the same configured options as geometry checks. Separate safe pre-mutation retired-open failures from uncertain post-mutation failures in both SDKs.
 2. Emit a coherent Go archive-without-successor lifecycle event for root live/retired finalization and close. Preserve normal Rotated semantics. Isolate stored Go result ownership and align age normalization.
 3. Add failing-before/fixed-after regressions for the reachable failures, strengthen recursive evidence-preservation tests, and extend shared file tests at affected lifecycle boundaries. Retain Go default cleanup-on-retry and test/document its intentional correction.
 4. Clarify newest-file deletion under a too-small allowance, Close maintenance, root eager/lazy semantics and metadata-directory readability. Correct completion claims and example counts. Validate affected/full SDK suites as available, shared tests and examples, commit coherent fixes, obtain independent review, resolve verified blockers and then close the SOW.
 
 Finding dispositions:
+
 - P2-1/2/3: verified production/contract defects; fix.
 - P3-1/3/4: clarify docs, retain approved behavior. Close retention is already documented in both general guides; clarify root-specific consequences.
 - P3-2: preserve and explicitly document cleanup-on-creation after a safe failed successor attempt; it follows the existing per-created-writer rule.
@@ -297,11 +337,13 @@ Finding dispositions:
 - P3-9: fix reproduced age precision and pre-mutation poisoning defects. Dropped secondary error and duplicate startup maintenance remain nonblocking and unchanged: the first maintenance error remains visible and invalid samples remain unknown; a repeated startup sweep is bounded. Neither is needed for the ownership/allocation repairs, and no aggregate error API is added.
 
 Risk and validation:
+
 - The main risk is moving failure boundaries too late, permitting writes after partial mutation, or losing archive events/sequence state during successor replacement. Regression tests must exercise actual journal files, both append shapes and compact changes in both directions, failure before and after rename, healthy append after permission recovery, and preserved poisoned status after uncertain mutation.
 - Source changes remain in this SDK. Synthetic identities and fixtures only; no host probes, native services or live journals. Isolated caches/output remain under /tmp or .local; no dependency/compiler changes. Existing native Windows/Linux and offline workspace limitations remain explicit.
 - Current instructions require validated local commits before independent review. Read-only reviewers must not edit or launch agents. Completion tracking follows review rather than claiming the implementation reviewed before it is.
 
 Implemented repair and validation evidence:
+
 - Rust active ownership is detached before live archive mutation. `ActiveFile::activate_opened` marks the explicit mutation boundary after nonmutating open/validation; post-mutation errors remain fatal. Root initial/successor creation and geometry checks share configured options. Default-mode inherited-successor behavior is retained.
 - Go append-open validates before writable mapping and classifies mapping/header-publication failures as uncertain. Retired open/validation failures remain safe. Root finalization/close emit Archived before pruning, stored inventories are copied, and unsafe preflight tests compare recursive file contents.
 - Four Rust failures reproduced before fixes: post-rename inspection, compact-layout transitions, read-only retired open and 1-ns expiry. Permanent tests cover both layout directions, raw/structured append, sequence readback, a real PermissionDenied path, and fatal retired post-mutation failure. All-feature log-writer suite passes 24 unit, 56 existing integration, 26 root integration and 2 doc tests; evidence: .local/claude-review-triage/rust-full-after-fix.log.
@@ -314,6 +356,7 @@ Implemented repair and validation evidence:
 - Readiness assessment: mutation boundaries, rotation configuration and lifecycle ordering interact across both languages. Earlier final review covers unchanged feature behavior, but the repaired boundaries require independent read-only review of the committed fixes and their callers before completion. Performance-sensitive entry paths gain no inventory or filesystem work; the Go defensive slice copy is confined to maintenance/status boundaries.
 
 Final review and completion:
+
 - Independent read-only review of 89d8716..643afe1 found no verified blocker. Coverage included Rust post-rename ownership/inspection, pre-mutation open versus activation, configured successors, Go append-open uncertainty, lifecycle ordering, copied results, retry cleanup, close/lazy semantics, tests and docs. The reviewer inspected source and recorded evidence without rerunning tests or changing files. Prior independent coverage is retained for unchanged feature behavior.
 - The successful shared matrix JSON omits four human-readable tiny-age labels that were added later; the executed assertions and all four commands are present in .local/retention-validation/final-review-parity.log at lines 30-31, 58-59, 102-103 and 130-131. The reviewer verified this evidence; no test behavior changed after that passing run.
 - Final dispositions: P2-1/2/3 and P3-7 are fixed; P3-9's reproduced permission and age defects are fixed. P3-1/2/3/4/8 are resolved with truthful docs/records and approved behavior retained. P3-6 has recursive evidence assertions in both SDKs. P3-5 remains rejected as an invalid recovered fixture, not a reason to invent identity or weaken verification. The secondary resample error and duplicate startup pass remain nonblocking as assessed above.
@@ -323,12 +366,14 @@ Final review and completion:
 ## Regression - 2026-10-08 GitHub Review
 
 Authorization and target:
-- User requests fixes for PR #9 bot suggestions, reply/resolution of wrong or nit-only threads, and valid Codacy findings including nits. Scope is selected GitHub bot comments and Codacy, with the mirrored CodeQL alert. No human reply, unrelated analyzer backlog, review trigger, policy weakening or push is authorized.
+
+- User requests fixes for PR #9 bot suggestions, reply/resolution of wrong or nit-only threads, and valid Codacy findings including nits. Scope is selected GitHub bot comments and Codacy, with the mirrored CodeQL alert. No human reply, unrelated analyzer backlog, review trigger or policy weakening is authorized. Push authorization was subsequently granted as recorded below.
 - PR head equals local 1abb52d, base local master 2b33553. Six inline comments (one already fixed/resolved) and fourteen Added Codacy issues were fetched completely. Codacy pagination reports total14; GitHub pages were shorter than100 and every thread comment page is complete. Evidence is ignored .local/pr9-review; no token is saved there.
 
 Repair gate: ready. Existing approved public behavior and the request fix the target.
 
 Root causes and dispositions:
+
 - Empty retired-file removal increments DeletedFiles only after directory sync; a sync failure underreports actual removal. Rust has the same ordering for both live and retired empty actives. Count removals when unlink succeeds and preserve errors/unknown inventory.
 - Go append-open classifies checkArenaSize failure as uncertain even though it precedes mutation, relevant to oversized files on32-bit Unix. Run the shared mapping-size preflight before the mutation boundary; retain fatal classification after mapping begins.
 - Go/Rust root examples should close normally to demonstrate shutdown retention; reserve CloseWithoutRetention for the explicitly documented no-prune use case. Clarify that8MiB is new SDK allocation granularity, not an inventory acceptance or allowance floor.
@@ -336,17 +381,20 @@ Root causes and dispositions:
 - Codacy: seven complexity/length findings across Rust inventory/header validation and three shared probes, one Python spacing finding. Decompose coherent operations without changing guards or test assertions. Six security-audit findings cover Windows FFI, Rust test CLI arguments and Python subprocess execution; audit each exact construct and document narrow rule-specific suppression for verified safe necessary operations, following repository patterns. No global analyzer exclusion.
 
 Plan and ownership:
+
 1. Coordinator owns Go runtime/tests, docs/spec/SOW, remote triage and final integration. Reproduce deletion status before fixing, investigate32-bit execution availability and retain exact mutation boundaries.
 2. One implementer exclusively owns rust/src/crates/journal-log-writer/** and rust/src/crates/journal-core/src/file/{header_inventory.rs,mmap.rs}: paired deletion fix, bounded inventory decomposition, audited FFI annotations and relevant tests.
 3. Another implementer exclusively owns tests/interoperability/root_retention/** and tests/interoperability/run_root_retention_parity.py: behavior-preserving scenario decomposition, audited security annotations, spacing and matrix checks. No overlapping writers; agents do not commit or post reviews.
 4. Run relevant Go/Rust suites, shared2x2matrix, docs, local analyzers where available and audit. Commit validated changes before any warranted independent review, retain earlier review coverage where valid, then reply/resolve each bot thread individually with evidence. Remote code must not be described as fixed before the commit is present there. If pushing is necessary, present the completed result and request authorization as the final step.
 
 Validation and risk:
+
 - Failure accounting must preserve successful unlink counts even on later sync failure, keep current writer healthy, and prevent pruning after uncertain writer mutation. File validation refactoring must preserve all header/identity/ownership guards and complete preflight. Test refactoring must preserve every scenario and assertion.
 - Caches/temp output stay under this repository or /tmp, all fixtures synthetic. No host journal/identity probes, dependency/compiler changes or services. Existing offline Rust-workspace and native Windows/Linux execution gaps remain explicit.
 - Current native-agent review instructions override the absent legacy external-reviewers harness, as recorded in prior decisions. This gate records user authorization before source or remote mutations.
 
 GitHub repair implementation and evidence:
+
 - Go retired empty removal and Rust live/retired empty removal now update the attempt counter at successful unlink, before directory sync. Before logs demonstrate underreported zero counts; after regressions prove one deletion, retained error, unchanged last-success, unknown inventory and healthy retry. Evidence: .local/pr9-review/go-before.log, go-after.log, rust-empty-count-before.log, rust-retired-empty-count-before.log and rust-writer-after.log.
 - Go32-bit Unix size preflight was reproduced with a sparse2GiB retained active: mapping-size rejection incorrectly carried ErrWriterFailed. The same compiled regression passes after moving the existing checkArenaSize preflight ahead of the mutation boundary. Execution used the already installed Debian Docker image, no network, with386 emulation; no images/tools were installed. Files: go-386-before.log and go-386-after.log. An existing test timestamp expression overflowed int during386 compilation; a one-line uint64-before-addition correction in reader_directory_test.go is coupled test portability work.
 - Rust inventory scanning and fixed-header validation are decomposed into coherent helpers while retaining all guard conditions and ordering. Shared test probes are split by scenario/build/orchestration: all17 Python assert ASTs and8 scenario bodies per Go/Rust are preserved. New allocation wording and normal-close root examples are updated in both guides/shared guide/spec.
@@ -358,9 +406,15 @@ GitHub repair implementation and evidence:
 - Review readiness: the two runtime corrections plus preserved guard decomposition touch deletion/failure behavior. Obtain a bounded independent review of the committed repair and relevant callers; prior feature/Claude PASS coverage remains applicable outside this change. No product contract fork or unapproved scope expansion remains.
 
 GitHub repair readiness checkpoint:
+
 - Validated implementation is ac6ccde. Independent read-only review of 1abb52d..ac6ccde found no verified blocker. Coverage included successful-unlink accounting through later sync failure; poisoning, retry, close and drop paths; Go size preflight before mutation; Rust inventory/header guard preservation; probe scenarios/assertions; narrow audit annotations; and documentation. The reviewer inspected source, regression logs and the passing14-check matrix and ran git diff --check without editing files or rerunning tests. Earlier unchanged-feature review remains applicable.
 - Local Semgrep before/after reproduction found the two Windows unsafe audit findings before and zero selected findings after. The Rust args and Python taint warnings did not reproduce with the cached engine and fetched rules; their annotations are justified by construct inspection, not a claimed failing-before run. Hosted Codacy validation remains pending publication.
 - Final remote refresh still reports head1abb52d and the same four open bot threads. CodeQL is no longer a failed check after the test-only dismissal; Codacy remains action_required on the old head. No new bot finding or material validation gap appeared.
 - The clean target and scope remain satisfied by the local implementation; only publication and the already-authorized per-thread replies/resolutions remain. Request explicit push authorization under the user's standing Git rule before publishing ac6ccde and the tracking records.
 
 Publication authorization: the user explicitly selected "Push and finish the PR review" after reviewing the completed fixes and independent-review result. This authorizes pushing the validated fixes and completion records to feat/root-history-retention and posting/resolving the four addressed bot threads. No release or history rewrite is included.
+
+Hosted scan follow-through:
+
+- Published validated fixes through0a39f35 and replied/resolved all four accepted threads individually. All six original threads are resolved. The current hosted scan cleared thirteen of the fourteen original Codacy findings. Its Opengrep engine reports the intentional argv sink on the argument line, while the narrow annotation was above the call; move the exact rule annotation to that reported line. The parsed Python AST is unchanged.
+- Reopening the tracked SOW makes it eligible for existing Codacy scanning; the done queue is excluded by the established configuration. The current scan exposes fifty-two Markdown spacing findings in this SOW and its indexes. Correct blank lines around headings/lists and repeated blank lines; keep all prose and evidence. Do not broaden analyzer exclusions or treat moving to done as a formatting fix. These mechanical corrections need direct verification, not another runtime review.

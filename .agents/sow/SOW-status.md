@@ -4,7 +4,7 @@ Last updated: 2026-10-08
 
 ## Current
 
-- SOW-0152-20261008 - Root History Retention: in-progress for PR #9 bot review and Codacy fixes; prior implementation independently reviewed. No push authorized yet.
+- SOW-0152-20261008 - Root History Retention: in-progress: reviewed PR #9 fixes are published and original threads resolved; completing hosted analyzer formatting findings.
 
 ## Pending
 
@@ -48,7 +48,6 @@ Last updated: 2026-10-08
   decisions. Not executable until the user explicitly resumes it.
 
 ## Recently Closed Or Completed
-
 
 - SOW-0154 - Project Release Skill: completed. Adds the full-process team
   skill to PR #8, including language parity, CI publication, maintainer tags,
