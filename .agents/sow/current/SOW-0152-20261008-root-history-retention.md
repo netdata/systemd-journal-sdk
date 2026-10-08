@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: PR #9 fixes are validated and independently reviewed in ac6ccde. Awaiting push authorization before resolving the four addressed bot threads; the CodeQL false-positive thread is already resolved.
+Sub-state: PR #9 fixes are validated and independently reviewed in ac6ccde. User authorized publishing the fixes and completion records and resolving the four addressed bot threads; remote follow-through is in progress.
 
 ## Requirements
 
@@ -362,3 +362,5 @@ GitHub repair readiness checkpoint:
 - Local Semgrep before/after reproduction found the two Windows unsafe audit findings before and zero selected findings after. The Rust args and Python taint warnings did not reproduce with the cached engine and fetched rules; their annotations are justified by construct inspection, not a claimed failing-before run. Hosted Codacy validation remains pending publication.
 - Final remote refresh still reports head1abb52d and the same four open bot threads. CodeQL is no longer a failed check after the test-only dismissal; Codacy remains action_required on the old head. No new bot finding or material validation gap appeared.
 - The clean target and scope remain satisfied by the local implementation; only publication and the already-authorized per-thread replies/resolutions remain. Request explicit push authorization under the user's standing Git rule before publishing ac6ccde and the tracking records.
+
+Publication authorization: the user explicitly selected "Push and finish the PR review" after reviewing the completed fixes and independent-review result. This authorizes pushing the validated fixes and completion records to feat/root-history-retention and posting/resolving the four addressed bot threads. No release or history rewrite is included.
