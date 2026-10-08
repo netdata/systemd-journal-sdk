@@ -40,7 +40,8 @@ def run(args: list[str], cwd: Path = ROOT) -> str:
         # The caller intentionally selects Cargo; remaining argv uses synthetic fixtures.
         # No shell expansion or untrusted journal content is executed.
         result = subprocess.run(  # nosec B603
-            args, cwd=cwd, check=True, text=True, shell=False,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+            args, cwd=cwd, check=True, text=True, shell=False,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
     except subprocess.CalledProcessError as exc:
         print(f"command failed in {cwd}, status {exc.returncode}: {exc.stderr}", file=sys.stderr)

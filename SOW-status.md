@@ -7,7 +7,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- SOW-0152-20261008 - Root History Retention: in-progress: reviewed PR #9 fixes are published and original threads resolved; completing hosted analyzer formatting findings.
+- None.
 
 ## Pending
 
@@ -37,6 +37,8 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 
 ## Done
+
+- SOW-0152-20261008 - Root History Retention: completed. Paired Go/Rust implementation and PR #9 review fixes validated and independently reviewed; published fixes, resolved review threads and hosted-check cleanup are recorded in the completed SOW.
 
 - `SOW-0154-20261007-project-release-skill.md` - completed. Adds the team
   release skill, parity and publication/recovery gates, operator routing and

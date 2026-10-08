@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: PR #9 fixes are validated and independently reviewed in ac6ccde. User authorized publishing the fixes and completion records and resolving the four addressed bot threads; remote follow-through is in progress.
+Sub-state: completed. Reviewed runtime fixes and hosted-check cleanup are delivered; all nine remaining GitHub review threads are resolved. The user authorized publication of fixes and completion records. The final annotation wrapping preserves the Python AST; latest hosted validation is recorded below.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Current work: the latest GitHub Review section records the validated, independently reviewed PR9 fixes. Authorized publication and four thread resolutions remain pending; prior completed review evidence is historical. No product decision remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
+Current result: the latest GitHub Review section records the validated, independently reviewed and published PR9 fixes. All current review threads are resolved; the final completion commit records the hosted-check cleanup. Prior intermediate readiness statements are historical. No product decision remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
 
 ### Acceptance Criteria
 
@@ -204,7 +204,7 @@ Follow-up mapping:
 
 ## Outcome
 
-The paired feature and PR #9 runtime fixes are validated, independently reviewed and published. All six original review threads are resolved. The hosted scan cleared thirteen original Codacy findings; one narrow Python audit annotation needs line alignment. Newly surfaced SOW/index Markdown spacing is being corrected before completing the authorized remote follow-through.
+The paired feature and PR #9 fixes are validated, independently reviewed and published. All nine remaining review threads are resolved; Codacy removed its corrected formatting comments. Hosted scanning cleared all fourteen original findings and the fifty-two SOW/index spacing findings. A subsequent line-length warning on the narrow Python audit annotation is corrected in the completion commit without changing the parsed program. Final hosted checks may still be running; this record does not claim merge readiness or authorize a release.
 
 ## Lessons Extracted
 
@@ -405,7 +405,7 @@ GitHub repair implementation and evidence:
 - Same-cause search: `rg -n 'finalizeRetiredActive|discardEmptyOpenedWriter|DeletedFiles|syncJournalDirectory' go/journal` and `rg -n 'archive_root_active|finalize_retired_root_active|deleted_files|sync_empty_root_directory' rust/src/crates/journal-log-writer` covers empty/live/retired/prune paths; other removal counters already precede sync. `checkArenaSize` remains the common platform bound validation, reused before append-open's mutation boundary.
 - Review readiness: the two runtime corrections plus preserved guard decomposition touch deletion/failure behavior. Obtain a bounded independent review of the committed repair and relevant callers; prior feature/Claude PASS coverage remains applicable outside this change. No product contract fork or unapproved scope expansion remains.
 
-GitHub repair readiness checkpoint:
+Historical pre-publication readiness checkpoint:
 
 - Validated implementation is ac6ccde. Independent read-only review of 1abb52d..ac6ccde found no verified blocker. Coverage included successful-unlink accounting through later sync failure; poisoning, retry, close and drop paths; Go size preflight before mutation; Rust inventory/header guard preservation; probe scenarios/assertions; narrow audit annotations; and documentation. The reviewer inspected source, regression logs and the passing14-check matrix and ran git diff --check without editing files or rerunning tests. Earlier unchanged-feature review remains applicable.
 - Local Semgrep before/after reproduction found the two Windows unsafe audit findings before and zero selected findings after. The Rust args and Python taint warnings did not reproduce with the cached engine and fetched rules; their annotations are justified by construct inspection, not a claimed failing-before run. Hosted Codacy validation remains pending publication.
@@ -418,3 +418,13 @@ Hosted scan follow-through:
 
 - Published validated fixes through0a39f35 and replied/resolved all four accepted threads individually. All six original threads are resolved. The current hosted scan cleared thirteen of the fourteen original Codacy findings. Its Opengrep engine reports the intentional argv sink on the argument line, while the narrow annotation was above the call; move the exact rule annotation to that reported line. The parsed Python AST is unchanged.
 - Reopening the tracked SOW makes it eligible for existing Codacy scanning; the done queue is excluded by the established configuration. The current scan exposes fifty-two Markdown spacing findings in this SOW and its indexes. Correct blank lines around headings/lists and repeated blank lines; keep all prose and evidence. Do not broaden analyzer exclusions or treat moving to done as a formatting fix. These mechanical corrections need direct verification, not another runtime review.
+
+GitHub review completion:
+
+- Accepted and fixed: inaccurate empty-file deletion counts after directory-sync failure in Go and Rust; safe Go32-bit mapping-size rejection incorrectly poisoning the current writer; normal-close examples; and precise new-allocation wording. All four original actionable threads received individual evidence-based replies and were resolved after publication. The previously fixed archive-event thread stayed resolved.
+- Rejected the CodeQL synthetic-identifier finding as test-only; dismissed alert3691 with its provenance rationale and replied/resolved its thread. No host identity is read. The fourteen original Codacy findings were addressed through coherent decomposition, Python spacing and six justified narrow audit annotations. Hosted scanning confirms those findings are cleared.
+- The reopened tracked SOW exposed fifty-two Markdown spacing findings. Commit9f5ad63 corrects the spacing without hiding the current file from analysis, and the hosted scan confirms clearance. Codacy subsequently removed its twenty-five suggestion threads. Two newly arrived stale-status findings were already corrected in9f5ad63; each received a reply and resolution. The third new spacing thread was resolved by the reviewing bot. A complete GraphQL refresh confirms nine remaining threads, all resolved.
+- The hosted scanner reported the intentional subprocess argv sink on its argument line. Placing the exact annotation there cleared the security audit; the resulting187-character line triggered E501. The final layout places the annotation immediately above that argument on its own135-character line. Parsed Python AST equality proves behavior unchanged; no broad suppression or analyzer configuration change is added.
+- The final corrections are formatting and current-state records only. Direct diff/AST/line-length verification and SOW audit are proportionate; the earlier runtime, race,386 regression, shared matrix, examples and independent-review evidence remain valid. No further runtime review or repeated broad test run is warranted.
+- Final pre-completion remote snapshot is9f5ad63: original findings cleared; Codacy only requests the now-corrected E501 line; Rust coverage/analysis and WIP remain running. Passing Go/docs/analyzer checks and a neutral CodeQL aggregate do not establish all-checks-green. No new runtime finding was reported.
+- Both status indexes move this SOW to completed/done. The user-authorized final push includes the annotation wrapping and completion records. No release, history rewrite, unrelated implementation or deferred in-scope fix remains.
