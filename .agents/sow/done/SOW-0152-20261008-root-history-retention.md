@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reopened live-writer inventory regression is fixed and locally validated; coordinated review/completion pending.
+Sub-state: SDK implementation through bf2f1e5 and the reopened regression are validated and independently reviewed; completed locally, without push or release.
 
 ## Requirements
 
@@ -16,20 +16,22 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 
 ### Assistant Understanding
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
-Inferences: an explicit strict-naming Log opt-in plus standalone header inventory is the narrow reusable owner surface.
-Unknowns: no product decisions remain; portable runtime validation availability will be reported.
+Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
+Unknowns: no unresolved product decisions or verified blockers remain. Native Windows/Linux runtime validation limitations are recorded below.
 
 ### Acceptance Criteria
 - Explicit root/source inventory validates identities, filenames, state and header extents without visiting records; rejects unsafe/quarantined candidates before pruning.
 - Full file lengths and tail times govern maintenance across current and retained identities; retained active finalization uses existing writer internals.
 - Current live files stay protected except idle expiration or required policy transition; next file remains lazy.
 - Valid policy replacement precedes maintenance; invalid policy leaves files and policy unchanged. Safe cleanup failures do not fail appends; uncertain mutation remains fatal.
+- Live-aware inventory rejects missing/replaced active paths and mismatched identities before maintenance; failed writers remain inspectable for status.
 - Existing defaults/file format remain unchanged; real file fixtures, benchmark, docs/spec, audit and independent review support delivery.
 
 ## Analysis
 
 Sources checked: go/journal/log.go, log_retention.go, writer.go, header_validation.go, current product-scope.md, project skills, pending/current SOW inventories, approved consumer design and evidence.
-Current state: root scope is absent; file metadata is available through readAppendHeader/parseHeader and arena validation. Current retention errors escape through rotation before append. Current SOW queue is empty; pending integration, timestamp-lane, reader and Rust performance work has no overlap with this bounded opt-in.
+Pre-implementation state: root scope was absent; file metadata was available through readAppendHeader/parseHeader and arena validation. Retention errors escaped through rotation before append. The initial current SOW queue was empty; pending integration, timestamp-lane, reader and Rust performance work had no overlap with this bounded opt-in.
+Delivered state: the opt-in covers owned identities, file lengths/tail saved times, lazy lifecycle/policy changes, separate cleanup outcomes, and live writer correspondence. Default consumers and file format remain unchanged.
 Risks: deleting unowned or corrupt evidence, accidental stale-policy enforcement, archive failure suppression, per-record inventory cost, and reader behavior after unlink.
 
 ## Pre-Implementation Gate
@@ -68,7 +70,7 @@ Artifact impact plan:
 - Specs: product-scope gains opt-in Go retention contract.
 - End-user/operator docs: Go writer guide documents ownership, accounting, failure and policy update semantics.
 - End-user/operator skills: none exist.
-- SOW lifecycle: this tracked current SOW remains in-progress through independent review.
+- SOW lifecycle: completed in done after independent review, including the reopened regression.
 - SOW-status.md: both indexes updated on start and completion.
 
 Open-source reference evidence:
@@ -106,7 +108,7 @@ Failure handling: record failing validation and concrete environmental limitatio
 - Dependency lookup was unavailable with isolated empty caches; copied already-installed module data read-only into /tmp and the docs harness local cache. No dependency versions changed.
 - Independent-review reproducers failed before fixes: 32 GiB to 8 MiB left a 50,331,648-byte successor with a 47,721,920-byte data hash table; 1 GiB to 8 MiB maintenance followed by either append API left two 8 MiB files without a new maintenance attempt. Public-API regression tests use default Options and verify explicit bucket/allocation overrides as well.
 - Follow-up implementation retains caller allocation inputs, reuses constructor normalization for policy edits, removes pending-geometry flags, and ties cleanup readiness to the current Writer. Every detach clears that pointer to release closed-writer buffers. Rotation preserves the existing default API's behavior after cleanup errors; a regression test guards the successful append retry while that error persists. A reverted-policy test verifies no unnecessary archive when effective geometry again matches the live writer.
-- Follow-up validation: focused root/Log/default-retry tests, full Go tests and full race tests pass; the root public example and all 16 wiki pages pass. Final added reverted-policy regression passes separately after those full suites. No filesystem/index/format algorithm or benchmarked inventory path changed; earlier cost evidence remains applicable, so benchmarks were not repeated. Review remains required before completion.
+- Follow-up validation: focused root/Log/default-retry tests, full Go tests and full race tests pass; the root public example and all 16 wiki pages pass. Final added reverted-policy regression passes separately after those full suites. No filesystem/index/format algorithm or benchmarked inventory path changed; earlier cost evidence remains applicable, so benchmarks were not repeated. The required focused review subsequently passed, as recorded below.
 
 ## Validation
 
@@ -133,8 +135,9 @@ Real-use evidence:
 
 Reviewer findings:
 - Independent read-only review of c4ffeab found two verified blockers: policy changes retained normalized data-hash buckets derived from the old allowance, and a Log-lifetime creation-cleanup flag survived writer detachment, skipping maintenance on the lazy successor. Existing fixed-small-bucket tests masked the allocation defect.
-- Public-API/default-Options regression tests reproduced both before source fixes, including Append and AppendRaw creation boundaries. Both now pass: derived geometry shrinks to an 8 MiB successor, and successor creation removes the older archive under the 8 MiB allowance with a new maintenance outcome. Explicit buckets/allocation size remain unchanged. The implementation retains caller allocation inputs, reuses constructor normalization, compares actual/desired geometry without transition flags, and binds readiness to the actual Writer. A default-Log rotation-cleanup-error regression verifies preserved successful append retry semantics. Focused independent recheck is required after the validated follow-up commit.
-- Main-agent source inspection earlier identified the unlink-sync and empty-eager-policy issues; both remain fixed and covered. The review gate is satisfied; native Windows/Linux runtime limitations remain explicit.
+- Public-API/default-Options regression tests reproduced both before source fixes, including Append and AppendRaw creation boundaries. Both now pass: derived geometry shrinks to an 8 MiB successor, and successor creation removes the older archive under the 8 MiB allowance with a new maintenance outcome. Explicit buckets/allocation size remain unchanged. The implementation retains caller allocation inputs, reuses constructor normalization, compares actual/desired geometry without transition flags, and binds readiness to the actual Writer. A default-Log rotation-cleanup-error regression verifies preserved successful append retry semantics. Focused independent recheck of 41273e1 passed; its coverage remains applicable.
+- Main-agent source inspection earlier identified the unlink-sync and empty-eager-policy issues; both remain fixed and covered.
+- Final focused read-only review by retention_sdk_review (Astra high) of bf2f1e5 found no verified blocker. Coverage included live-file identity before runtime inventory/maintenance, deletion, policy replacement and error classes, pinned readers and shutdown, with earlier SDK coverage retained. The coordinator supplied the review result and authorized completion. Native Windows/Linux runtime limitations remain explicit.
 
 Same-failure scan:
 - `rg -n 'enforceRetention\(|enforceRetentionOnOpen|RootRetention' go/journal/log.go go/journal/log_retention.go`: constructor, both append shapes, rotation and close share the opt-in dispatch. Default methods retain original semantics. `ensureWriter` is the common fresh-allocation path for both Append and AppendRaw.
@@ -150,7 +153,7 @@ Artifact maintenance gate:
 - End-user/operator docs: Go-API.md adds verified usage and precise limits/ownership/platform caveats.
 - End-user/operator skills: none exist in this repository.
 - SOW lifecycle: completed in done after independent review. Current user instructions require a validated implementation commit before review, so completion cannot be bundled in that first commit.
-- SOW-status.md: canonical and convenience indexes point to the active SOW.
+- SOW-status.md: canonical and convenience indexes record completed status and no remaining current SDK SOW.
 
 Specs update:
 - Product scope updated with the additive contract; defaults retained.
@@ -168,11 +171,11 @@ Lessons:
 - Directory sync after unlink must receive the parent directory. Allocation transitions compare actual writer geometry with newly derived geometry; normalized buckets must not erase the distinction between defaults and caller overrides. Creation cleanup belongs to the current writer instance, and retained readiness pointers must be cleared when writer ownership ends.
 
 Follow-up mapping:
-- Consumer adoption remains the separately approved coordinating task. Native Windows/Linux runtime compatibility limitations are reported, not silently claimed. No independent implementation is bundled or deferred.
+- Consumer adoption is the separately approved coordinating task; its dependency pin awaits a separately authorized SDK release. SDK publication is outside this SOW, not deferred implementation. Native Windows/Linux runtime compatibility limitations are reported, not silently claimed. No independent implementation is bundled or deferred.
 
 ## Outcome
 
-Initial implementation and both verified independent-review fixes are locally validated; focused independent recheck pending.
+The approved Go-only SDK prerequisite is complete through bf2f1e5, including the two allocation/lifecycle review fixes and the live-inventory regression. Local validation and required independent review passed with no verified blocker. The result is ready for the requested local two-PR delivery; publication/release is not authorized here. Consumer dependency pinning awaits a separate SDK release.
 
 ## Lessons Extracted
 
@@ -184,7 +187,7 @@ No independent work added. Consumer adoption is owned by the coordinating task.
 
 ## Regression Log
 
-No reopened regression; this is an explicit additive opt-in.
+The 2026-10-08 live-writer inventory regression was reopened, reproduced, fixed in bf2f1e5, validated and independently reviewed. Its evidence follows.
 
 Completion checkpoint: the approved SDK target is complete without a DEM compatibility path. Re-review reproduced the corrected 32-GiB-to-8-MiB transition (48-MiB old allocation to 8-MiB successor) and lazy creation cleanup (one 8-MiB active, updated maintenance time). Every verified finding is fixed; no optional review item extends this scope. Completion record is a separate commit because current user instructions require implementation commits before independent review.
 
@@ -198,7 +201,7 @@ Approved repair plan and gate:
 - Gate status: ready. Existing caller exclusion, recovery verification, synthetic-fixture/cache/repository boundaries and no-publication constraints remain in effect. Source files, tests, docs and product-scope are affected; other SDK consumers retain defaults. No unresolved user-owned decision remains.
 
 Validation and artifact plan:
-- Reproduce existing maintenance false-empty behavior with a public real-filesystem test before repair, then test missing active directory/file, replacement identity, recovery, standalone machine-path type rejection, and inspection after writer failure. Run affected Go tests/race and docs/audit; retain applicable earlier full-suite/benchmark evidence. Document standalone versus live-aware inventories without broadening external-modification guarantees. Commit the coherent fix before coordinated review; keep the SOW in progress.
+- Reproduce existing maintenance false-empty behavior with a public real-filesystem test before repair, then test missing active directory/file, replacement identity, recovery, standalone machine-path type rejection, and inspection after writer failure. Run affected Go tests/race and docs/audit; retain applicable earlier full-suite/benchmark evidence. Document standalone versus live-aware inventories without broadening external-modification guarantees. The coherent fix was committed before coordinated review; review is now complete.
 
 Regression implementation and validation:
 - Both initial reproducers failed before the fix: missing live directory produced valid zero inventory/success; a canonical machine-named regular file passed standalone inventory. The live-aware method now checks path presence/filesystem identity with Lstat, fd Stat and SameFile, then verifies file/machine/sequence journal identities in the shared header inventory. Every maintenance sample uses it. Neither this read-only method nor its errors calls writable/recordFailure; failed writer status remains inspectable.
@@ -207,7 +210,9 @@ Regression implementation and validation:
 - `python3 tests/docs/check_wiki_docs.py`: all 16 wiki pages pass. `python3 tests/docs/verify_examples.py --only go-root-retention`: the updated public example passes, including live-aware inspection.
 - `go -C go test ./journal -run '^$' -bench BenchmarkInspectLiveRootRetention -benchtime=200ms -benchmem -count=3`: one live file with 1 or 10,000 records takes about 35–36 microseconds, about 5.3 KiB and 37 allocations per inspection on darwin/arm64. This demonstrates record-count independence only; it does not measure archive/unlink/fsync stalls or establish a speedup over previous runs.
 - Code search confirms only existing maintenance boundaries invoke the new check internally; no per-record filesystem probes were added. Standalone root scanning now reserves canonical machine names for directories. Docs, product scope and the compatibility skill distinguish startup inventory from live-aware status/query inventory, with caller exclusion still required. Native Windows/Linux runtime caveats remain unchanged.
-- Validation uses the same /tmp and repository-local cache redirection recorded above; no live journals, external state or unapproved repository writes. Durable artifacts contain no sensitive data. SOW audit and diff checks must pass before the follow-up commit.
+- Validation uses the same /tmp and repository-local cache redirection recorded above; no live journals, external state or unapproved repository writes. Durable artifacts contain no sensitive data. SOW audit and diff checks passed before the fix commit; completion artifacts receive the same checks.
 
 Regression outcome:
-- Fix locally validated; retain current/in-progress until coordinated review and completion. No push or release.
+- Fixed in bf2f1e5. The affected tests/race, docs example/wiki checks and audit passed. Focused independent review found no verified blocker and retained earlier SDK coverage; the coordinator authorized completed/done status. No push or release.
+
+Final completion checkpoint: local SDK source is unchanged from reviewed bf2f1e5. This completion commit changes only the SOW lifecycle/current-state record and its indexes. No broad validation rerun is needed for these tracking-only edits.

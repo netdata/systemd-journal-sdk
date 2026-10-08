@@ -7,7 +7,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- SOW-0152 - Root History Retention: in-progress, reopened for live-writer inventory correspondence.
+None.
 
 ## Pending
 
@@ -37,6 +37,8 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 
 ## Done
+
+- `SOW-0152-20261008-root-history-retention.md` - completed locally through bf2f1e5, including reviewed allocation/lifecycle fixes and the live-inventory regression. No verified blocker, push or release; consumer pinning awaits a separate SDK release.
 
 - `SOW-0154-20261007-project-release-skill.md` - completed. Adds the team
   release skill, parity and publication/recovery gates, operator routing and
