@@ -362,6 +362,7 @@ func TestRootInventoryMetadataDirectoriesAndMissingRoot(t *testing.T) {
 func TestRootRetentionEmptyPolicyTransition(t *testing.T) {
 	dir := t.TempDir()
 	cfg := rootTestConfig()
+	cfg.Options.DataHashTableBuckets = 0
 	cfg.OpenMode = LogOpenEager
 	cfg.RetentionPolicy = RetentionPolicy{}.WithMaxBytes(1024 * 1024 * 1024)
 	l := rootOpen(t, dir, cfg)

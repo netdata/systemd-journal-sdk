@@ -486,7 +486,12 @@ allocation geometry; empty files are discarded. Ordinary idle sweeps keep the
 same file, and the successor stays lazy. Verified retired-machine active files
 are archived through the existing writer lifecycle. `SetRootRetentionPolicy`
 installs copied valid limits without applying either old or new limits;
-`RootRetentionPolicy()` returns a copy. Explicit rotation limits stay fixed.
+`RootRetentionPolicy()` returns a copy. Policy-derived hash-table sizing is
+recomputed from the new allowance; caller-explicit hash buckets or allocation
+size remain fixed. Maintenance compares the live allocation geometry with the
+effective policy, so edits reverted before maintenance do not force an archive.
+Each newly created successor receives creation cleanup. Explicit rotation limits
+stay fixed.
 
 Safe inventory/unlink/directory-sync errors are maintenance failures and do not
 turn successful appends into failures. Read `LastRootRetentionResult()` after

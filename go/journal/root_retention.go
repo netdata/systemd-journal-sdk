@@ -206,7 +206,8 @@ func (l *Log) RootRetentionPolicy() RetentionPolicy { return cloneRetentionPolic
 // SetRootRetentionPolicy validates and installs an independent policy copy.
 // It does not enforce old or new limits. Maintenance finalizes the active file
 // only if a changed derived file-size limit requires new allocation geometry.
-// Explicit rotation limits remain in effect. Invalid policies change nothing.
+// Derived hash-table sizing is recalculated; caller-explicit allocation options
+// and rotation limits remain in effect. Invalid policies change nothing.
 func (l *Log) SetRootRetentionPolicy(policy RetentionPolicy) error {
 	if !l.rootRetention {
 		return fmt.Errorf("journal: root retention is not enabled")
@@ -219,21 +220,19 @@ func (l *Log) SetRootRetentionPolicy(policy RetentionPolicy) error {
 	}
 	policy = cloneRetentionPolicy(policy)
 	rotation := deriveRotationPolicy(l.rootRotation, policy, l.options.Compact)
-	oldSize, newSize := rotationSize(l.rotation), rotationSize(rotation)
+	// Reapply caller overrides before normalization: l.options already contains
+	// bucket counts derived from the previous policy.
+	options := l.options
+	options.MaxFileSize = l.rootConfiguredMaxSize
+	options.DataHashTableBuckets = l.rootConfiguredDataBuckets
+	options, err := normalizeRotatedLogOptions(options, rotation, LogIdentityStrict)
+	if err != nil {
+		return err
+	}
 	l.retention = policy
 	l.rotation = rotation
-	if l.rootConfiguredMaxSize == 0 {
-		l.options.MaxFileSize = newSize
-	}
-	l.rootPolicyRotate = l.rootPolicyRotate || oldSize != newSize
+	l.options = options
 	return nil
-}
-
-func rotationSize(p RotationPolicy) uint64 {
-	if p.MaxFileSize != nil {
-		return *p.MaxFileSize
-	}
-	return 0
 }
 
 func cloneRetentionPolicy(p RetentionPolicy) RetentionPolicy {
@@ -324,12 +323,14 @@ func (l *Log) finalizeRootActives(inv RootRetentionInventory, now time.Time, exp
 		live := l.writer != nil && file.Path == l.activePath()
 		if live {
 			expired := file.Entries > 0 && expireLive && rootExpired(file, l.retention, now)
-			if !expired && !l.rootPolicyRotate {
+			allocationChanged := l.writer.header.dataHashTableSize != uint64(l.options.DataHashTableBuckets)*hashItemSize
+			if !expired && !allocationChanged {
 				continue
 			}
 			if file.Entries == 0 {
 				w := l.writer
 				l.writer = nil
+				l.retentionWriter = nil
 				l.entriesInFile = 0
 				if err := l.discardEmptyOpenedWriter(w); err != nil {
 					return err
@@ -355,7 +356,6 @@ func (l *Log) finalizeRootActives(inv RootRetentionInventory, now time.Time, exp
 			result.DeletedFiles++
 		}
 	}
-	l.rootPolicyRotate = false
 	return nil
 }
 

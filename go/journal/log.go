@@ -205,16 +205,16 @@ type LogConfig struct {
 // not safe for concurrent method calls; callers must serialize writes to the
 // single writer instance.
 type Log struct {
-	rootRetention         bool
-	rootRotation          RotationPolicy
-	rootConfiguredMaxSize uint64
-	rootPolicyRotate      bool
-	rootResult            RootRetentionResult
-	rootAttempted         bool
-	configuredDir         string
-	machineDir            string
-	source                string
-	active                string
+	rootRetention             bool
+	rootRotation              RotationPolicy
+	rootConfiguredMaxSize     uint64
+	rootConfiguredDataBuckets int
+	rootResult                RootRetentionResult
+	rootAttempted             bool
+	configuredDir             string
+	machineDir                string
+	source                    string
+	active                    string
 
 	options         Options
 	rotation        RotationPolicy
@@ -225,13 +225,13 @@ type Log struct {
 	artifacts       LogArtifactSizer
 	fieldNamePolicy FieldNamePolicy
 
-	writer        *Writer
-	entriesInFile int
-	closed        bool
-	failure       error
-	openRetention bool
-	lastRealtime  uint64
-	lastMonotonic uint64
+	writer          *Writer
+	entriesInFile   int
+	closed          bool
+	failure         error
+	retentionWriter *Writer
+	lastRealtime    uint64
+	lastMonotonic   uint64
 }
 
 func (l *Log) writable() error {
@@ -296,21 +296,22 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	}
 
 	l := &Log{
-		rootRetention:         config.RootRetention,
-		rootRotation:          cloneRotationPolicy(config.RotationPolicy),
-		rootConfiguredMaxSize: config.Options.MaxFileSize,
-		configuredDir:         dir,
-		machineDir:            machineDir,
-		source:                prepared.source,
-		options:               prepared.options,
-		rotation:              prepared.rotation,
-		retention:             config.RetentionPolicy,
-		strict:                config.StrictSystemdNaming,
-		syncOnArchive:         logSyncOnArchive(config),
-		lifecycle:             config.Lifecycle,
-		artifacts:             config.ArtifactSizer,
-		fieldNamePolicy:       prepared.logFieldPolicy,
-		entriesInFile:         0,
+		rootRetention:             config.RootRetention,
+		rootRotation:              cloneRotationPolicy(config.RotationPolicy),
+		rootConfiguredMaxSize:     config.Options.MaxFileSize,
+		rootConfiguredDataBuckets: config.Options.DataHashTableBuckets,
+		configuredDir:             dir,
+		machineDir:                machineDir,
+		source:                    prepared.source,
+		options:                   prepared.options,
+		rotation:                  prepared.rotation,
+		retention:                 config.RetentionPolicy,
+		strict:                    config.StrictSystemdNaming,
+		syncOnArchive:             logSyncOnArchive(config),
+		lifecycle:                 config.Lifecycle,
+		artifacts:                 config.ArtifactSizer,
+		fieldNamePolicy:           prepared.logFieldPolicy,
+		entriesInFile:             0,
 	}
 
 	if config.RootRetention {
@@ -330,10 +331,11 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			if l.writer != nil {
 				err = errors.Join(err, l.writer.Close())
 				l.writer = nil
+				l.retentionWriter = nil
 			}
 			return nil, err
 		}
-		l.openRetention = l.writer != nil
+		l.retentionWriter = l.writer
 	} else if err := l.enforceRetentionOnOpen(); err != nil {
 		return nil, err
 	}
@@ -361,10 +363,7 @@ func prepareNewLogConfig(dir string, config LogConfig) (preparedLogConfig, error
 	rotation := deriveRotationPolicy(config.RotationPolicy, config.RetentionPolicy, config.Options.Compact)
 	options := config.Options
 	options.FieldNamePolicy = logWriterFieldNamePolicy(config.Options.FieldNamePolicy)
-	if options.MaxFileSize == 0 && rotation.MaxFileSize != nil {
-		options.MaxFileSize = *rotation.MaxFileSize
-	}
-	opts, err := normalizeLogOptions(options, config.IdentityMode)
+	opts, err := normalizeRotatedLogOptions(options, rotation, config.IdentityMode)
 	if err != nil {
 		return preparedLogConfig{}, err
 	}
@@ -737,6 +736,7 @@ func (l *Log) close(enforceRetention bool) error {
 		if l.writer != nil {
 			closeErr = l.writer.Close()
 			l.writer = nil
+			l.retentionWriter = nil
 		}
 		l.closed = true
 		return errors.Join(err, closeErr)
@@ -748,6 +748,7 @@ func (l *Log) close(enforceRetention bool) error {
 	if l.writer.header.nEntries == 0 && l.strict {
 		if err := l.writer.Close(); err != nil {
 			l.writer = nil
+			l.retentionWriter = nil
 			l.closed = true
 			return l.recordFailure(err)
 		}
@@ -756,6 +757,7 @@ func (l *Log) close(enforceRetention bool) error {
 			removeErr = nil
 		}
 		l.writer = nil
+		l.retentionWriter = nil
 		l.active = ""
 		l.closed = true
 		return removeErr
@@ -768,6 +770,7 @@ func (l *Log) close(enforceRetention bool) error {
 		if l.writer != nil {
 			err = errors.Join(err, l.writer.Close())
 			l.writer = nil
+			l.retentionWriter = nil
 		}
 		l.closed = true
 		return err
@@ -847,7 +850,6 @@ func (l *Log) ensureWriter(entryOpts EntryOptions, reason LogLifecycleReason) er
 		return l.recordFailure(err)
 	}
 	l.writer = w
-	l.rootPolicyRotate = false // The new writer already uses the installed allocation policy.
 	l.entriesInFile = 0
 	if reason != LogLifecycleReasonRotation {
 		l.emitLifecycle(LogLifecycleEvent{
@@ -904,6 +906,9 @@ func (l *Log) rotate(entryOpts EntryOptions) error {
 		ArchivedPath: archivedPath,
 		ActivePath:   l.activePath(),
 	})
+	// Rotation owns this creation's cleanup attempt, including the default
+	// policy's retry behavior after a cleanup error.
+	l.retentionWriter = l.writer
 	return l.enforceRetention(l.activePath())
 }
 
@@ -932,12 +937,14 @@ func (l *Log) archiveActive() (string, error) {
 			l.options.BootID = bootID
 			l.options.HeadSeqnum = nextSeqnum
 			l.writer = nil
+			l.retentionWriter = nil
 			l.entriesInFile = 0
 			l.active = ""
 		}
 		return archivePath, err
 	}
 	l.writer = nil
+	l.retentionWriter = nil
 	l.entriesInFile = 0
 	l.active = ""
 	return archivePath, nil
@@ -1072,6 +1079,13 @@ func align8Saturating(v uint64) uint64 {
 		return ^uint64(0) &^ (objectAlignment - 1)
 	}
 	return align8(v)
+}
+
+func normalizeRotatedLogOptions(opts Options, rotation RotationPolicy, mode LogIdentityMode) (Options, error) {
+	if opts.MaxFileSize == 0 && rotation.MaxFileSize != nil {
+		opts.MaxFileSize = *rotation.MaxFileSize
+	}
+	return normalizeLogOptions(opts, mode)
 }
 
 func normalizeLogOptions(opts Options, mode LogIdentityMode) (Options, error) {

@@ -33,13 +33,13 @@ func (l *Log) EnforceRetention() error {
 }
 
 func (l *Log) enforceRetentionOnOpen() error {
-	if l.openRetention || l.writer == nil {
+	if l.writer == nil || l.retentionWriter == l.writer {
 		return nil
 	}
 	if err := l.enforceRetention(l.activePath()); err != nil {
 		return err
 	}
-	l.openRetention = true
+	l.retentionWriter = l.writer
 	return nil
 }
 

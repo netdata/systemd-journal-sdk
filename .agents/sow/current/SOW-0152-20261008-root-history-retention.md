@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: implementation and local validation complete; awaiting independent review.
+Sub-state: both independent-review blockers fixed and locally validated; focused recheck pending.
 
 ## Requirements
 
@@ -101,9 +101,12 @@ Failure handling: record failing validation and concrete environmental limitatio
 ### 2026-10-08
 - Read source/skills/spec and queue inventory; completed gate before source edits. Current user approval fixes the target. Existing branch is feat/root-history-retention from local master.
 - Added root_retention.go inventory, policy/status and maintenance; integrated the opt-in at constructor/open/rotation/close boundaries without changing default retention. Added real-file tests and three benchmark families, Go guide/spec and compatibility skill exception.
-- Real-file tests initially reproduced directory-sync-after-unlink ENOENT; fixed by syncing changed parent directories once, including partial-delete failures. A later regression test reproduced a nil writer panic when changing policy before the first lazy append; fresh writer creation now clears pending geometry rotation because it uses the new policy.
+- Real-file tests initially reproduced directory-sync-after-unlink ENOENT; fixed by syncing changed parent directories once, including partial-delete failures. A later regression test reproduced a nil writer panic when changing policy before the first lazy append. The initial flag-based fix was superseded during independent review: maintenance now compares desired/actual geometry, so a newly created writer already matches without a transition flag.
 - Empty eager policy updates now discard the old empty writer and leave a lazy successor. Invalid policies are copied/validated before mutation; unsafe ownership inventory is rejected before pruning.
 - Dependency lookup was unavailable with isolated empty caches; copied already-installed module data read-only into /tmp and the docs harness local cache. No dependency versions changed.
+- Independent-review reproducers failed before fixes: 32 GiB to 8 MiB left a 50,331,648-byte successor with a 47,721,920-byte data hash table; 1 GiB to 8 MiB maintenance followed by either append API left two 8 MiB files without a new maintenance attempt. Public-API regression tests use default Options and verify explicit bucket/allocation overrides as well.
+- Follow-up implementation retains caller allocation inputs, reuses constructor normalization for policy edits, removes pending-geometry flags, and ties cleanup readiness to the current Writer. Every detach clears that pointer to release closed-writer buffers. Rotation preserves the existing default API's behavior after cleanup errors; a regression test guards the successful append retry while that error persists. A reverted-policy test verifies no unnecessary archive when effective geometry again matches the live writer.
+- Follow-up validation: focused root/Log/default-retry tests, full Go tests and full race tests pass; the root public example and all 16 wiki pages pass. Final added reverted-policy regression passes separately after those full suites. No filesystem/index/format algorithm or benchmarked inventory path changed; earlier cost evidence remains applicable, so benchmarks were not repeated. Review remains required before completion.
 
 ## Validation
 
@@ -129,10 +132,13 @@ Real-use evidence:
 - Tests exercise actual Create/Append/ArchiveTo/NewLog/maintenance/read-snapshot filesystem paths with synthetic records; published example compiles and runs the public policy/maintenance API. No live host journals were used.
 
 Reviewer findings:
-- Independent read-only review is required and pending coordination. Main-agent source inspection independently identified the unlink-sync and empty-eager-policy issues; both are fixed and covered. Do not mark completed until independent review resolves material findings.
+- Independent read-only review of c4ffeab found two verified blockers: policy changes retained normalized data-hash buckets derived from the old allowance, and a Log-lifetime creation-cleanup flag survived writer detachment, skipping maintenance on the lazy successor. Existing fixed-small-bucket tests masked the allocation defect.
+- Public-API/default-Options regression tests reproduced both before source fixes, including Append and AppendRaw creation boundaries. Both now pass: derived geometry shrinks to an 8 MiB successor, and successor creation removes the older archive under the 8 MiB allowance with a new maintenance outcome. Explicit buckets/allocation size remain unchanged. The implementation retains caller allocation inputs, reuses constructor normalization, compares actual/desired geometry without transition flags, and binds readiness to the actual Writer. A default-Log rotation-cleanup-error regression verifies preserved successful append retry semantics. Focused independent recheck is required after the validated follow-up commit.
+- Main-agent source inspection earlier identified the unlink-sync and empty-eager-policy issues; both remain fixed and covered. Do not mark completed until independent review resolves material findings.
 
 Same-failure scan:
 - `rg -n 'enforceRetention\(|enforceRetentionOnOpen|RootRetention' go/journal/log.go go/journal/log_retention.go`: constructor, both append shapes, rotation and close share the opt-in dispatch. Default methods retain original semantics. `ensureWriter` is the common fresh-allocation path for both Append and AppendRaw.
+- `rg -n 'writer =|retentionWriter|rootPolicy|rootConfigured' go/journal/log.go go/journal/root_retention.go go/journal/log_retention.go`: all detach paths clear the retained readiness pointer; no pending allocation flag remains. Original caller allocation inputs feed the same normalization helper as construction.
 
 Sensitive data gate:
 - Durable changes contain synthetic identities and general contracts only. No raw sensitive data or workstation identities are recorded.
@@ -159,14 +165,14 @@ End-user/operator skills update:
 - No output/reference skills exist.
 
 Lessons:
-- Directory sync after unlink must receive the parent directory. Pending allocation-policy changes must be cleared when a new writer already uses the policy; otherwise automatic maintenance can discard the just-created writer.
+- Directory sync after unlink must receive the parent directory. Allocation transitions compare actual writer geometry with newly derived geometry; normalized buckets must not erase the distinction between defaults and caller overrides. Creation cleanup belongs to the current writer instance, and retained readiness pointers must be cleared when writer ownership ends.
 
 Follow-up mapping:
 - Consumer adoption remains the separately approved coordinating task. Native Windows/Linux runtime compatibility limitations are reported, not silently claimed. No independent implementation is bundled or deferred.
 
 ## Outcome
 
-Implementation locally validated; independent review pending.
+Initial implementation and both verified independent-review fixes are locally validated; focused independent recheck pending.
 
 ## Lessons Extracted
 
