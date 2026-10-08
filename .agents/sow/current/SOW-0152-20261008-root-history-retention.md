@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: reopened for authorized PR #9 bot comments and all 14 current Codacy findings. Prior reviewed implementation is 1abb52d. No push authorized yet.
+Sub-state: PR #9 fixes are validated and independently reviewed in ac6ccde. Awaiting push authorization before resolving the four addressed bot threads; the CodeQL false-positive thread is already resolved.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 ### Assistant Understanding
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Current work: the latest GitHub Review section records the PR9 fixes and validation. Independent review and authorized publication/thread resolution remain pending; prior completed review evidence is historical. No product decision remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
+Current work: the latest GitHub Review section records the validated, independently reviewed PR9 fixes. Authorized publication and four thread resolutions remain pending; prior completed review evidence is historical. No product decision remains open. Earlier parity review found a shared Rust header-bound validation gap, fixed and independently rechecked in 3f9101c. Native Windows/Linux runtime and broader workspace validation limitations remain explicit below.
 
 ### Acceptance Criteria
 - Explicit root/source inventory validates identities, filenames, state and header extents without visiting records; rejects unsafe/quarantined candidates before pruning.
@@ -356,3 +356,9 @@ GitHub repair implementation and evidence:
 - CodeQL3691 was dismissed as used in tests and its thread replied/resolved. The probe writes fixed synthetic identifiers and uses Source::Unknown(history), never source_basename's User(uid) branch or host journals. One prior archive-event thread was already fixed/resolved at643afe1. Four valid new bot threads remain pending publication of the current fixes before reply/resolution.
 - Same-cause search: `rg -n 'finalizeRetiredActive|discardEmptyOpenedWriter|DeletedFiles|syncJournalDirectory' go/journal` and `rg -n 'archive_root_active|finalize_retired_root_active|deleted_files|sync_empty_root_directory' rust/src/crates/journal-log-writer` covers empty/live/retired/prune paths; other removal counters already precede sync. `checkArenaSize` remains the common platform bound validation, reused before append-open's mutation boundary.
 - Review readiness: the two runtime corrections plus preserved guard decomposition touch deletion/failure behavior. Obtain a bounded independent review of the committed repair and relevant callers; prior feature/Claude PASS coverage remains applicable outside this change. No product contract fork or unapproved scope expansion remains.
+
+GitHub repair readiness checkpoint:
+- Validated implementation is ac6ccde. Independent read-only review of 1abb52d..ac6ccde found no verified blocker. Coverage included successful-unlink accounting through later sync failure; poisoning, retry, close and drop paths; Go size preflight before mutation; Rust inventory/header guard preservation; probe scenarios/assertions; narrow audit annotations; and documentation. The reviewer inspected source, regression logs and the passing14-check matrix and ran git diff --check without editing files or rerunning tests. Earlier unchanged-feature review remains applicable.
+- Local Semgrep before/after reproduction found the two Windows unsafe audit findings before and zero selected findings after. The Rust args and Python taint warnings did not reproduce with the cached engine and fetched rules; their annotations are justified by construct inspection, not a claimed failing-before run. Hosted Codacy validation remains pending publication.
+- Final remote refresh still reports head1abb52d and the same four open bot threads. CodeQL is no longer a failed check after the test-only dismissal; Codacy remains action_required on the old head. No new bot finding or material validation gap appeared.
+- The clean target and scope remain satisfied by the local implementation; only publication and the already-authorized per-thread replies/resolutions remain. Request explicit push authorization under the user's standing Git rule before publishing ac6ccde and the tracking records.
