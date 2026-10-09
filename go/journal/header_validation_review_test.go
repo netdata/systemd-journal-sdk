@@ -48,6 +48,7 @@ func TestStableHeaderRejectsPopulationContradictions(t *testing.T) {
 		{"aggregate fields exceed objects", func(h *journalHeader) { h.nFields = h.nObjects }},
 		{"aggregate tags exceed objects", func(h *journalHeader) { h.nTags = h.nObjects }},
 		{"aggregate arrays exceed objects", func(h *journalHeader) { h.nEntryArrays = h.nObjects }},
+		{"declared hash tables exceed objects", func(h *journalHeader) { h.nData++ }},
 		{"cached count exceeds entries", func(h *journalHeader) { h.tailEntryArrayNEntries = uint32(h.nEntries + 1) }},
 		{"missing cached offset", func(h *journalHeader) { h.tailEntryArrayOffset = 0 }},
 		{"cached count without arrays", func(h *journalHeader) { h.entryArrayOffset, h.tailEntryArrayOffset = 0, 0 }},
@@ -100,7 +101,7 @@ func TestStableHeaderHistoricalPopulationGates(t *testing.T) {
 func TestStableHeaderAcceptsPopulationBoundaries(t *testing.T) {
 	h, size := stableHeaderFixture(t, false)
 	h.nObjects = h.arenaSize / objectHeaderSize
-	h.nData = h.nObjects - h.nEntries - h.nFields - h.nTags - h.nEntryArrays
+	h.nData = h.nObjects - h.nEntries - h.nFields - h.nTags - h.nEntryArrays - 2
 	if _, err := h.validateDeclaredArena(size); err != nil {
 		t.Fatalf("rejected equal aggregate bound: %v", err)
 	}
@@ -108,5 +109,37 @@ func TestStableHeaderAcceptsPopulationBoundaries(t *testing.T) {
 	h.nEntries = 0
 	if _, err := h.validateDeclaredArena(size); err != nil {
 		t.Fatalf("rejected absent array pair: %v", err)
+	}
+}
+
+// Both table declarations are in the oldest supported header. Later category
+// counters consume the budget only when their complete fields are present.
+func TestStableHeaderHashTablePopulationBoundaries(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		original, size := stableHeaderFixture(t, compact)
+		for _, headerSize := range []uint64{headerMinSize, original.headerSize} {
+			for tables := 0; tables < 4; tables++ {
+				h := original
+				h.headerSize = headerSize
+				if headerSize == headerMinSize {
+					h.nObjects = 3 // One entry plus the two declared tables.
+				}
+				if tables&1 == 0 {
+					h.dataHashTableOffset, h.dataHashTableSize = 0, 0
+					h.nObjects--
+				}
+				if tables&2 == 0 {
+					h.fieldHashTableOffset, h.fieldHashTableSize = 0, 0
+					h.nObjects--
+				}
+				if _, err := h.validateDeclaredArena(size); err != nil {
+					t.Fatalf("rejected exact budget: compact=%v header=%d tables=%d: %v", compact, headerSize, tables, err)
+				}
+				h.nObjects--
+				if _, err := h.validateDeclaredArena(size); err == nil {
+					t.Errorf("accepted insufficient budget: compact=%v header=%d tables=%d", compact, headerSize, tables)
+				}
+			}
+		}
 	}
 }

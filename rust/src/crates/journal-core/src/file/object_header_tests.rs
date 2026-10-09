@@ -37,11 +37,18 @@ fn stable_header_rejects_population_contradictions() {
         ("arrays exceed objects", |h| {
             h.n_entry_arrays = h.n_objects + 1
         }),
-        ("aggregate entries exceed objects", |h| h.n_entries = h.n_objects),
+        ("aggregate entries exceed objects", |h| {
+            h.n_entries = h.n_objects
+        }),
         ("aggregate data exceed objects", |h| h.n_data = h.n_objects),
-        ("aggregate fields exceed objects", |h| h.n_fields = h.n_objects),
+        ("aggregate fields exceed objects", |h| {
+            h.n_fields = h.n_objects
+        }),
         ("aggregate tags exceed objects", |h| h.n_tags = h.n_objects),
-        ("aggregate arrays exceed objects", |h| h.n_entry_arrays = h.n_objects),
+        ("aggregate arrays exceed objects", |h| {
+            h.n_entry_arrays = h.n_objects
+        }),
+        ("declared hash tables exceed objects", |h| h.n_data += 1),
         ("cached count exceeds entries", |h| {
             h.tail_entry_array_n_entries = h.n_entries as u32 + 1
         }),
@@ -108,11 +115,48 @@ fn stable_header_accepts_population_boundaries() {
         - header.n_entries
         - header.n_fields
         - header.n_tags
-        - header.n_entry_arrays;
+        - header.n_entry_arrays
+        - 2;
     header.validated_arena_end(size).unwrap();
     header.entry_array_offset = None;
     header.tail_entry_array_offset = 0;
     header.tail_entry_array_n_entries = 0;
     header.n_entries = 0;
     header.validated_arena_end(size).unwrap();
+}
+
+// Both tables predate the optional category counters in historical headers.
+#[test]
+fn stable_header_hash_table_population_boundaries() {
+    for compact in [false, true] {
+        let (original, size) = stable_header_fixture(compact);
+        for header_size in [208, original.header_size] {
+            for tables in 0..4 {
+                let mut header = original;
+                header.header_size = header_size;
+                if header_size == 208 {
+                    header.n_objects = 3; // One entry plus the two declared tables.
+                }
+                if tables & 1 == 0 {
+                    header.data_hash_table_offset = None;
+                    header.data_hash_table_size = None;
+                    header.n_objects -= 1;
+                }
+                if tables & 2 == 0 {
+                    header.field_hash_table_offset = None;
+                    header.field_hash_table_size = None;
+                    header.n_objects -= 1;
+                }
+                assert!(
+                    header.validated_arena_end(size).is_ok(),
+                    "rejected exact budget: compact={compact} header={header_size} tables={tables}"
+                );
+                header.n_objects -= 1;
+                assert!(
+                    header.validated_arena_end(size).is_err(),
+                    "accepted insufficient budget: compact={compact} header={header_size} tables={tables}"
+                );
+            }
+        }
+    }
 }

@@ -41,11 +41,11 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
-- SOW-0152-20261008 - Root History Retention: completed. Human-review fixes
-  are published through 993279f and the response was posted on PR #9.
-  Cubic review 5474943738: six corrections accepted, one format relaxation
-  rejected with evidence; aggregate validation and documentation checks pass.
-  The separate writer-offset lead is tracked in pending SOW-0155.
+- SOW-0152-20261008 - Root History Retention: completed. Prior review fixes
+  were published through 731a37d. Human review 5475128273 is repaired: both
+  SDKs count declared hash-table objects; paired regressions, affected Go/Rust
+  suites and all 14 retention parity groups pass. Push and response authorized.
+  The separate writer-offset lead remains in pending SOW-0155.
 
 - `SOW-0154-20261007-project-release-skill.md` - completed. Adds the team
   release skill, parity and publication/recovery gates, operator routing and

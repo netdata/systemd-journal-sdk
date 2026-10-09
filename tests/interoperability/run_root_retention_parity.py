@@ -45,6 +45,7 @@ HEADER_COUNTER_DAMAGE = {
     'arrays-exceed-objects': (232, 8, 144, 1, 1),
     'tail-array-exceeds-entries': (260, 4, 152, 1, 1),
     'aggregate-data-exceeds-objects': (208, 8, 144, 1, 0),
+    'declared-hash-tables-exceed-objects': (208, 8, 208, 1, 1),
 }
 
 

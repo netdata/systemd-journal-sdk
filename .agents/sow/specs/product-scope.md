@@ -435,7 +435,9 @@ An inventory mismatch alone does not poison the writer. These boundary checks
 assume caller exclusion and do not promise protection against concurrent
 external modification. Ordinary nonrotating appends add no filesystem checks.
 Inventory is not full verification. Counts of disjoint present object categories
-must fit within the total object count; absent historical counters are ignored.
+must fit within the total object count, including one object for each declared
+DATA_HASH_TABLE and FIELD_HASH_TABLE. Absent historical counters are ignored;
+the table declarations are present in every supported header version.
 Stable-header population checks also apply to append recovery and excluded-writer
 snapshots, and remain separate from ordinary live-reader mapping validation.
 Root retention counts file lengths including preallocation, expires by tail

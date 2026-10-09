@@ -54,8 +54,11 @@ func (h *journalHeader) validateHeaderPopulation() error {
 		return fmt.Errorf("%w: object population exceeds bounds", errInvalidJournal)
 	}
 	// Object types are disjoint; subtraction also avoids aggregate overflow.
+	// Each nonzero hash-table offset declares one object without a count field.
 	remaining := h.nObjects - h.nEntries
 	for _, field := range []struct{ end, count uint64 }{
+		{120, min(h.dataHashTableOffset, 1)},
+		{136, min(h.fieldHashTableOffset, 1)},
 		{216, h.nData},
 		{224, h.nFields},
 		{232, h.nTags},

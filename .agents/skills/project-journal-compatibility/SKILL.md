@@ -96,7 +96,10 @@ Do not use this skill for:
   Stable validation MUST also enforce fixed-header object/category population
   bounds and cached offset/count agreement, using complete on-disk field gates
   for historical headers. The aggregate of present disjoint object categories
-  MUST fit within the total; use checked addition or a remaining-object budget.
+  MUST fit within the total, including one object for each declared DATA/FIELD
+  hash table; those two object types have no dedicated count fields. Use checked
+  addition or a remaining-object budget. Test exact and insufficient budgets
+  with zero, one and two table declarations, including historical headers.
   Test small in-bounds contradictions, not only overflowing offsets. Do not impose stable counter consistency on live mapping validation.
 - For deterministic regular uncompressed writer output, the layout target is byte-for-byte identity with the systemd v260.1 reference ingester for the accepted corpus. Writers must match systemd object order, alignment, initial allocation envelope, v260 header fields, entry-array growth, tail metadata, and hash-chain header behavior for that slice.
 - Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.

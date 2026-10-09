@@ -214,8 +214,11 @@ impl JournalHeader {
             return Err(JournalError::InvalidObjectLocation);
         }
         // Object types are disjoint; subtraction also avoids aggregate overflow.
+        // Each present hash-table offset declares one object without a count field.
         let mut remaining = self.n_objects - self.n_entries;
         for (end, count) in [
+            (120, u64::from(self.data_hash_table_offset.is_some())),
+            (136, u64::from(self.field_hash_table_offset.is_some())),
             (216, self.n_data),
             (224, self.n_fields),
             (232, self.n_tags),

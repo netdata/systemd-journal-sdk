@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: cubic review 5474943738 is complete: six comments accepted and repaired, one validator-relaxation suggestion rejected with format evidence. Human-review fixes were published through 993279f and replied to on 2026-10-09.
+Sub-state: human review 5475128273 is addressed. Both SDKs count declared hash tables in the population budget; paired regressions, affected suites, cross-language preservation checks and SOW audit pass.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Current result: human review 5474585093 is addressed in published df8c215/993279f, with response https://github.com/netdata/systemd-journal-sdk/pull/9#issuecomment-6088470864. Cubic review 5474943738 is verified: aggregate population bounds, retry wording and four stale status records are corrected; the zero-hint fallback is rejected because it violates fixed-header format rules. The distinct pre-existing writer-offset concern is tracked in pending SOW-0155. Current repair validation passes with the explicit platform/offline gaps below.
+Current result: prior human and cubic corrections were published through 731a37d. Human review 5475128273 identified the remaining implicit hash-table count omission; both stable validators now include those objects in the checked budget. New regressions fail before the correction and pass afterward in both languages and all four producer/consumer combinations. The separate writer-offset lead remains in pending SOW-0155. The latest user authorization includes pushing and replying; delivery is confirmed by the remote commit/comment, not by local completion alone.
 
 ### Acceptance Criteria
 
@@ -204,11 +204,11 @@ Follow-up mapping:
 
 ## Outcome
 
-The selected human and cubic findings are dispositioned. Human-review delivery is verified through 993279f and its posted response. Cubic review 5474943738 has six accepted corrections and one evidence-based rejection; the bounded repair passes relevant validation. The source-analysis lead about regular-writer offset narrowing is separately tracked in SOW-0155, with no implementation authorization. This completion record reports code/review evidence; hosted checks for later pushes must be assessed on their own commit. No release is authorized.
+The selected human and cubic findings are dispositioned. Prior repairs were published through 731a37d. Human review 5475128273 is accepted and repaired in both languages: the stable object budget now includes both declared hash-table objects, with historical field gates retained. Regression, race, affected Rust and cross-language evidence passes. SOW-0155 separately tracks the pre-existing writer-offset lead without implementation authorization. Push and response are authorized; hosted checks and publication must be verified on the delivered commit. No release is authorized.
 
 ## Lessons Extracted
 
-Header-native inventory has stable cost as entry count grows; recovery verification remains a separate owner responsibility. The compatibility skill and Go guide capture these boundaries.
+Header-native inventory has stable cost as entry count grows; recovery verification remains a separate owner responsibility. The compatibility skill and Go guide capture these boundaries. Population invariants must account for every declared object type, including types without explicit counters; derive the model from the format and writer, not only the list of header counters.
 
 ## Followup
 
@@ -517,7 +517,7 @@ Plan, validation and ownership:
 
 Risk, scope and artifacts:
 
-- Header inventory is fixed-size consistency validation, not full object/index verification. Present population categories must fit within the total, but the total may include hash-table or future object types. No record scanning, new dependencies or per-append filesystem work. The arena/total check remains before subtraction.
+- Header inventory is fixed-size consistency validation, not full object/index verification. Present population categories must fit within the total. This checkpoint omitted implicit hash-table counts; review 5475128273 below corrects that incomplete model. Unreported historical or future categories may still leave an unused budget. No record scanning, new dependencies or per-append filesystem work. The arena/total check remains before subtraction.
 - Changes use synthetic journals and existing offline caches/output under /tmp or ignored .local. No host journals, identity probes or services. Native Linux/Windows execution gaps remain explicit. Updated acceptance evidence belongs in tests, docs/spec/compatibility guidance and this tracked SDK SOW.
 
 Finding dispositions and scope:
@@ -537,3 +537,113 @@ Repair validation and readiness:
 - Source scan `rg -n 'validateHeaderPopulation|validate_header_population|validateDeclaredArena|validated_arena_end'` over the changed validators and their writer/root/snapshot callers confirms the correction is shared. Ordinary live mapping validation is untouched. The change replaces four independent comparisons with four checked subtractions; no additional I/O, allocations, record-dependent loop or benchmark claim is introduced.
 - Readiness assessment: direct verification is sufficient for the bounded aggregate-budget correction and prose/status changes. The invariant is disjoint object counts, subtraction follows a checked initial bound, and every present-field subtraction is guarded; real-file parity and broad affected suites check integration. Cubic supplied independent challenge of this invariant; prior human/independent lifecycle review remains applicable. The separate format question received independent read-only source investigation and main-agent verification. No further material uncertainty remains in this repair that calls for another review round.
 - Compatibility guidance and product scope record the aggregate rule, and Go prose matches the already-correct shared/Rust preflight contract. Six accepted thread IDs and the rejected suggestion are listed above. SOW moves back to done with both indexes updated and SOW-0155 pending. Lizard on changed helpers/tests/shared harness shows no configured warnings; audit reports initialization complete and clean, and diff checks pass.
+
+## Regression - 2026-10-09 Human Review 5475128273
+
+Authorization and target:
+
+- The user explicitly requested fixing, pushing and answering this review. Restore
+  the approved rejection-before-pruning contract in both languages; no format or
+  public API change. Earlier lifecycle review and validation remain applicable.
+- Gate status: ready. This regression section supplements the original gate.
+
+Problem / root-cause model and evidence:
+
+- The aggregate budget enumerated five explicit counters but omitted the two
+  implicit hash-table object counts. Both are distinct object types, counted by
+  the writers and upstream systemd. Earlier boundary fixtures repeated the same
+  incomplete model by assigning the whole budget to those five categories.
+- At 731a37d, scratch public-API probes created one-row archives with six objects,
+  increased only n_data from one to two, and demonstrated inventory acceptance
+  followed by archive deletion at one-byte startup retention in all four Go/Rust
+  producer/consumer combinations. Evidence: ignored
+  .local/pr9-human-review-5475128273/report.json.
+- Upstream: systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced,
+  docs/JOURNAL_FILE_FORMAT.md:578-584 and
+  src/libsystemd/sd-journal/journal-file.c:1262-1268.
+
+Affected surfaces and existing patterns:
+
+- Shared stable-header population validators, paired header tests, the existing
+  real-file inventory/startup preservation matrix, compatibility skill and spec.
+  Reuse the checked remaining-object budget and historical complete-field gates.
+  Live-reader mapping validation, record/index traversal, retention policy and
+  the separately tracked writer-offset investigation remain unchanged.
+
+Risk and sensitive data handling:
+
+- Incorrect table presence or historical gates could reject valid old headers.
+  Count each declared table once, validate its extent using existing checks, and
+  cover absent declarations and historical explicit counters. Constant-size
+  header arithmetic only; no new allocations, dependencies or I/O.
+- Synthetic journals only; generated evidence and caches stay in .local or /tmp.
+  No host journals, identity probes, secrets or personal data in durable records.
+
+Implementation and validation plan:
+
+1. Add paired unit regressions and a real-file n_data-plus-one matrix case;
+   demonstrate failure before runtime edits. Correct the positive budget fixture.
+2. Include both declared table objects in the common checked budget. Verify
+   exact and insufficient budgets for table presence and historical headers.
+3. Run affected Go race, Rust core/writer suites and rebuilt cross-language
+   retention matrix. Inspect same-failure callers, diffs and SOW audit.
+4. Assess independent review need against the bounded change and prior evidence;
+   complete coherent tracked SDK records, commit, push and reply with evidence.
+
+Artifact impact and decisions:
+
+- Update compatibility guidance and product scope to explicitly include implicit
+  object types. Public guide contracts are already correct; examples are
+  unchanged. No AGENTS, public API, dependency or output-skill changes required.
+- Reopen this original SDK SOW and both indexes, then complete them together with
+  the fix. No new follow-up is needed for the accepted finding. SOW-0155 remains
+  an independently tracked, unauthorized investigation.
+- No open user-owned decision; correction preserves the approved contract.
+
+Repair result, validation and readiness:
+
+- Both stable validators consume one budget item per declared hash-table offset
+  using the same checked subtraction as the explicit counters. Extent validation
+  remains separate and still rejects incomplete offset/size pairs. All seven
+  current object types are accounted for; missing historical category fields are
+  skipped, and no equality/full-graph verification requirement is introduced.
+- Before runtime edits, paired header tests failed for the n_data-plus-one case
+  and insufficient budgets with one/two tables in regular/compact and oldest/
+  current headers. The real-file parity matrix also failed with accepted unsafe
+  inventory. Logs: .local/pr9-human-review-5475128273/{go,rust,parity}-before.log.
+- After correction, Go `go test -race ./...` passes. Rust core passes 90 tests
+  (three existing documentation tests ignored); writer all-features passes
+  26 unit, 56 existing integration, 26 root integration, six lifecycle and two
+  documentation tests. Public SDK passes 165 tests, with the same two known
+  macOS root/wheel name-assumption tests explicitly excluded as prior validation.
+  Logs: go-race.log, rust-core.log, rust-writer.log and rust-public.log in the same
+  evidence directory. No native Linux/Windows runtime claim is made; the prior
+  offline optional all-features-core dependency gap remains unchanged.
+- Rebuilt Go/Rust parity matrix passes all 14 scenario groups. The new real-file
+  case exercises both inventories and startup at a one-byte allowance, retaining
+  original journal bytes across all four producer/consumer combinations. Report:
+  .local/retention-parity/run-rjeqhyee/report.json.
+- Same-failure search: `rg -n
+  'validateHeaderPopulation|validate_header_population|validateDeclaredArena|validated_arena_end'
+  across go/journal, Rust core and log-writer confirms shared use by inventory,
+  append recovery and snapshots, plus Go strict verification. Ordinary live
+  mapping validation is unchanged. Compared the budget against Go verifyObject
+  and Rust ObjectType: ENTRY, DATA, FIELD, TAG, ENTRY_ARRAY, DATA_HASH_TABLE and
+  FIELD_HASH_TABLE are all covered. No remaining replacement/reference migration.
+- Readiness assessment: direct verification suffices for this bounded correction.
+  The human review independently identifies the missing object types and supplies
+  the authoritative format/model; the implementation adds them to the existing
+  checked budget. Main-agent review verified both declarations, all seven current
+  types, complete-field gates, overflow bounds and unchanged live-reader rules.
+  Paired failing-before/passing-after tests and actual filesystem preservation
+  cover the reachable consequence. Earlier independent lifecycle review remains
+  applicable; this correction changes no ownership/mutation sequence. No material
+  uncertainty remains requiring another independent review round.
+- Compatibility skill and product spec now state the implicit count invariant.
+  Public guides/examples, AGENTS and dependencies are unchanged because their
+  contracts already require safe rejection. No output skills exist. Sensitive
+  data gate: synthetic fixtures, sanitized summaries and ignored local evidence
+  only. No new deferral: the selected finding is fully fixed; SOW-0155 remains
+  independent. The SOW audit reports initialization complete and clean, and
+  whitespace/diff checks pass. This SOW and both indexes return to completed/done
+  in the same commit as the validated repair.
