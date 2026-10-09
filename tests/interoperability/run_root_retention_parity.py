@@ -31,6 +31,19 @@ HEADER_DAMAGE = {
     'tail-array-count-outside-arena': (260, (2**32-1).to_bytes(4, 'little')),
     'tail-entry-overflow': (264, (2**64-1).to_bytes(8, 'little')),
     'tail-entry-after-tail': (264, (8*MIB-64).to_bytes(8, 'little')),
+    'tail-array-without-offset': (256, bytes(4)),
+    'tail-array-without-count': (260, bytes(4)),
+    'tail-array-without-first': (176, bytes(8)),
+}
+# destination offset/width, reference counter offset, divisor before adding one.
+HEADER_COUNTER_DAMAGE = {
+    'objects-exceed-arena': (144, 8, 96, 16),
+    'entries-exceed-objects': (152, 8, 144, 1),
+    'data-exceed-objects': (208, 8, 144, 1),
+    'fields-exceed-objects': (216, 8, 144, 1),
+    'tags-exceed-objects': (224, 8, 144, 1),
+    'arrays-exceed-objects': (232, 8, 144, 1),
+    'tail-array-exceeds-entries': (260, 4, 152, 1),
 }
 
 
@@ -57,6 +70,23 @@ def snapshot(root: Path) -> dict[str, str]:
 def row(machine: int, count: int, head: int, tail: int, active: bool = False,
         seq: int = 1) -> str:
     return f"{bytes([machine] * 16).hex()} {8*MIB} {count} {seq} {seq+count-1} {head} {tail} {str(active).lower()}"
+
+
+def damage_header(path: Path, damage: str) -> None:
+    with path.open('r+b') as stream:
+        header = stream.read(272)
+        if damage in HEADER_COUNTER_DAMAGE:
+            offset, width, reference, divisor = HEADER_COUNTER_DAMAGE[damage]
+            count = int.from_bytes(header[reference:reference+8], 'little')
+            value = (count // divisor + 1).to_bytes(width, 'little')
+        elif damage == 'tail-array-before-first':
+            offset = 256
+            first = int.from_bytes(header[176:184], 'little')
+            value = (first - 8).to_bytes(4, 'little')
+        else:
+            offset, value = HEADER_DAMAGE.get(damage, (0, b'BROKEN!!'))
+        stream.seek(offset)
+        stream.write(value)
 
 
 def build_probes(options, output: Path, bins: dict[str, Path]) -> None:
@@ -99,17 +129,14 @@ def check_reader(writer, reader, bins, evidence, fixture, now, expected, checks,
         for verifier in bins:
             assert probe(verifier, 'inspect', limited) == sorted(survivors)
             assert probe(verifier, 'read', limited) == sorted(map(str, times))
-    for damage in ('malformed', 'quarantine', *HEADER_DAMAGE):
+    for damage in ('malformed', 'quarantine', *HEADER_DAMAGE, *HEADER_COUNTER_DAMAGE, 'tail-array-before-first'):
         unsafe = evidence / f'{writer}-{reader}-{damage}'
         shutil.copytree(fixture, unsafe)
         path = next(unsafe.rglob('history@*.journal'))
         if damage == 'quarantine':
             path.rename(path.with_suffix('.journal~'))
         else:
-            with path.open('r+b') as stream:
-                offset, value = HEADER_DAMAGE.get(damage, (0, b'BROKEN!!'))
-                stream.seek(offset)
-                stream.write(value)
+            damage_header(path, damage)
         before = snapshot(unsafe)
         assert probe(reader, 'reject', unsafe) == ['rejected']
         assert snapshot(unsafe) == before, 'preflight changed journal evidence'

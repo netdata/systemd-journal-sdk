@@ -74,6 +74,12 @@ Do not use this skill for:
   substitute Reader entry-vector expansion.
   Live inventory must reject missing/replaced active files instead of reporting
   false-empty success, and maintenance must validate it before mutation.
+  Root close, disposal and rotation MUST share live-path/header ownership
+  preflight before mutation or ownership detachment. Archive and lazy-creation
+  destinations MUST be absent. Reject safely, preserve bytes and permit healthy
+  rotation/creation retry after path restoration; rejected close releases only.
+  Test changes completed between SDK calls, with caller exclusion during calls,
+  and cover empty actives after policy setters as well as lazy successors.
   Preserve separate safe-maintenance errors and fatal archive-mutation errors:
   failed retired-file open/validation before mutation must not poison a healthy
   current writer. Detach outgoing ownership before archive mutations so even
@@ -87,6 +93,10 @@ Do not use this skill for:
   excluded-writer snapshots; corruption in array contents remains outside the
   header-only inventory contract. Exercise malformed header offsets in both
   languages and require failed preflight to preserve journal bytes.
+  Stable validation MUST also enforce fixed-header object/category population
+  bounds and cached offset/count agreement, using complete on-disk field gates
+  for historical headers. Test small in-bounds contradictions, not only overflowing
+  offsets. Do not impose stable counter consistency on live mapping validation.
 - For deterministic regular uncompressed writer output, the layout target is byte-for-byte identity with the systemd v260.1 reference ingester for the accepted corpus. Writers must match systemd object order, alignment, initial allocation envelope, v260 header fields, entry-array growth, tail metadata, and hash-chain header behavior for that slice.
 - Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.
 - Header readers must use the on-disk `header_size` when validating object and hash-table locations. Do not compare historical file offsets against the current in-memory v260 `JournalHeader` struct size, and do not expose bytes beyond the on-disk header as newer header fields.

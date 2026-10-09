@@ -112,17 +112,8 @@ func (l *Log) InspectRootRetention() (RootRetentionInventory, error) {
 		return RootRetentionInventory{}, errWriterClosed
 	}
 	if l.writer != nil {
-		path := l.activePath()
-		named, err := os.Lstat(path)
-		if err != nil {
+		if err := validateRootWriterPath(l.writer, l.activePath()); err != nil {
 			return RootRetentionInventory{}, err
-		}
-		live, err := l.writer.file.Stat()
-		if err != nil {
-			return RootRetentionInventory{}, err
-		}
-		if !named.Mode().IsRegular() || !os.SameFile(named, live) {
-			return RootRetentionInventory{}, rootCandidateError(path, "active path no longer names the live writer file")
 		}
 	}
 	inventory, err := InspectRootRetention(l.configuredDir, l.source)
@@ -136,13 +127,69 @@ func (l *Log) InspectRootRetention() (RootRetentionInventory, error) {
 		if file.Path != l.activePath() {
 			continue
 		}
-		live := l.writer.header
-		if !file.Active || file.header.fileID != live.fileID || file.MachineID != live.machineID || file.SeqnumID != live.seqnumID {
-			return RootRetentionInventory{}, rootCandidateError(file.Path, "active journal identity disagrees with live writer")
+		if err := validateRootWriterHeader(l.writer, file); err != nil {
+			return RootRetentionInventory{}, err
 		}
 		return inventory, nil
 	}
 	return RootRetentionInventory{}, rootCandidateError(l.activePath(), "live writer is missing from root inventory")
+}
+
+func validateRootWriterPath(w *Writer, path string) error {
+	named, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	live, err := w.file.Stat()
+	if err != nil {
+		return err
+	}
+	if !named.Mode().IsRegular() || !os.SameFile(named, live) {
+		return rootCandidateError(path, "active path no longer names the live writer file")
+	}
+	return nil
+}
+
+func validateRootWriterHeader(w *Writer, file RootRetentionFile) error {
+	live := w.header
+	if !file.Active || file.header.fileID != live.fileID || file.MachineID != live.machineID || file.SeqnumID != live.seqnumID {
+		return rootCandidateError(file.Path, "active journal identity disagrees with live writer")
+	}
+	return nil
+}
+
+// Check only at lifecycle boundaries, before metadata writes, unlink or rename.
+// The caller still excludes external changes throughout the operation.
+func (l *Log) preflightRootActive(w *Writer) error {
+	if !l.rootRetention {
+		return nil
+	}
+	path := l.activePath()
+	if err := validateRootWriterPath(w, path); err != nil {
+		return err
+	}
+	file, err := inspectRootFile(path, l.source, w.header.machineID)
+	if err != nil {
+		return err
+	}
+	if err := validateRootWriterHeader(w, file); err != nil {
+		return err
+	}
+	if w.header.nEntries > 0 {
+		return requireRootPathAbsent(l.archivePathFor(w.header))
+	}
+	return nil
+}
+
+func requireRootPathAbsent(path string) error {
+	_, err := os.Lstat(path)
+	if err == nil {
+		return rootCandidateError(path, "destination already exists")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func ownedRootName(name, source string) bool {
@@ -215,7 +262,7 @@ func validateRootHeader(h journalHeader, size uint64, machine UUID) error {
 	if h.machineID != machine || isZeroUUID(h.fileID) || isZeroUUID(h.seqnumID) || h.state > stateArchived {
 		return errInvalidJournal
 	}
-	if h.nEntries > 0 && (h.entryArrayOffset == 0 || h.nEntries > h.nObjects || h.headEntrySeqnum == 0 || h.tailEntrySeqnum < h.headEntrySeqnum || h.tailEntrySeqnum-h.headEntrySeqnum < h.nEntries-1 || h.tailEntryRealtime < h.headEntryRealtime) {
+	if h.nEntries > 0 && (h.entryArrayOffset == 0 || h.headEntrySeqnum == 0 || h.tailEntrySeqnum < h.headEntrySeqnum || h.tailEntrySeqnum-h.headEntrySeqnum < h.nEntries-1 || h.tailEntryRealtime < h.headEntryRealtime) {
 		return errInvalidJournal
 	}
 	return nil

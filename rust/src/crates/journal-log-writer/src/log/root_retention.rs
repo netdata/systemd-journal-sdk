@@ -46,6 +46,14 @@ fn invalid(path: &Path, reason: &str) -> WriterError {
     WriterError::InvalidPath(format!("{}: {reason}", path.display()))
 }
 
+fn require_absent(path: &Path, reason: &str) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(invalid(path, reason)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(super) fn validate_source(source: &Source) -> Result<String> {
     let name = super::chain::source_basename(source);
     if name.is_empty()
@@ -414,13 +422,9 @@ impl Log {
         Ok(())
     }
 
-    /// Finalizes the current writer without creating a successor. Counts empty
-    /// unlinks before syncing their directory. Uncertain archive failures poison.
-    pub(super) fn archive_root_active(
-        &mut self,
-        reason: LogLifecycleReason,
-        deleted_files: &mut usize,
-    ) -> Result<()> {
+    /// Checks the outgoing path and destination before any archive mutation or
+    /// ownership detachment. Callers exclude external changes during the call.
+    fn preflight_root_active(&self) -> Result<()> {
         let Some(active) = self.active_file.as_ref() else {
             return Ok(());
         };
@@ -443,12 +447,35 @@ impl Log {
                 .parent()
                 .unwrap()
                 .join(archive_name(&self.chain.source_name, &header));
-            match std::fs::symlink_metadata(&target) {
-                Ok(_) => return Err(invalid(&target, "archive target already exists")),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            require_absent(&target, "archive target already exists")?;
         }
+        Ok(())
+    }
+
+    pub(super) fn preflight_root_rotation(&self) -> Result<()> {
+        if self.active_file.is_some() {
+            return self.preflight_root_active();
+        }
+        // A lazy successor must not adopt or truncate an externally restored
+        // active that this Log does not own.
+        let target = self
+            .chain
+            .path
+            .join(format!("{}.journal", self.chain.source_name));
+        require_absent(&target, "unexpected active path already exists")
+    }
+
+    /// Finalizes the current writer without creating a successor. Counts empty
+    /// unlinks before syncing their directory. Uncertain archive failures poison.
+    pub(super) fn archive_root_active(
+        &mut self,
+        reason: LogLifecycleReason,
+        deleted_files: &mut usize,
+    ) -> Result<()> {
+        self.preflight_root_active()?;
+        let Some(active) = self.active_file.as_ref() else {
+            return Ok(());
+        };
         if active.journal_file.journal_header_ref().n_entries == 0 {
             let file = active.repository_file.clone();
             std::fs::remove_file(file.path())?;

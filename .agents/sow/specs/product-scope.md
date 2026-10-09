@@ -417,16 +417,26 @@ equivalent caller-owned root/source retention across machine identities. This
 opt-in requires strict active naming,
 caller writer exclusion, verified recovery provenance/indexes and no artifact
 sizer. `InspectRootRetention` reads fixed-size headers, validates canonical
-machine/sequence/archive identities and header extents, and fails the complete
-inventory for unsafe source candidates. Missing roots are errors; unrelated
+machine/sequence/archive identities, header extents and internal population/pair
+consistency, and fails the complete inventory for unsafe source candidates. Missing roots are errors; unrelated
 caller metadata directories are allowed when readable to exclude source
 candidates, but canonical machine-named entries must be directories. After open,
 `Log.InspectRootRetention` additionally proves
 the active path still names the live writer file and journal identities; it is
 available after writer failure and is reused by maintenance before mutations.
+Root disposal, closing and rotation also preflight the held file's pathname and
+header identity before mutation. Archive and lazy-creation destinations must be
+absent; a safe rejection preserves file contents and names. Creation/rotation
+rejections leave ownership healthy for retry after restoring paths; explicit
+close releases resources without writing after preflight rejection. Empty root
+writers accept their first entry before size/duration threshold rotation, including
+after a policy update. Default-mode and low-level creation contracts are unchanged.
 An inventory mismatch alone does not poison the writer. These boundary checks
 assume caller exclusion and do not promise protection against concurrent
-external modification. Inventory is not full verification.
+external modification. Ordinary nonrotating appends add no filesystem checks.
+Inventory is not full verification. Stable-header population checks also apply to
+append recovery and excluded-writer snapshots, respect absent historical fields,
+and remain separate from ordinary live-reader mapping validation.
 Root retention counts file lengths including preallocation, expires by tail
 saved time, and evicts whole files in tail/path order. Default retention policies
 and file format are unchanged; Go now applies cleanup after a successful

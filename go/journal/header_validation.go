@@ -12,6 +12,9 @@ func (h *journalHeader) validateDeclaredArena(fileSize uint64) (uint64, error) {
 		return 0, fmt.Errorf("%w: declared arena exceeds file", errInvalidJournal)
 	}
 	end := h.headerSize + h.arenaSize
+	if err := h.validateHeaderPopulation(); err != nil {
+		return 0, err
+	}
 	if (h.tailObjectOffset == 0) != (h.nObjects == 0) {
 		return 0, fmt.Errorf("%w: object count and tail disagree", errInvalidJournal)
 	}
@@ -44,6 +47,37 @@ func (h *journalHeader) validateDeclaredArena(fileSize uint64) (uint64, error) {
 		}
 	}
 	return end, nil
+}
+
+func (h *journalHeader) validateHeaderPopulation() error {
+	if h.nObjects > h.arenaSize/objectHeaderSize || h.nEntries > h.nObjects {
+		return fmt.Errorf("%w: object population exceeds bounds", errInvalidJournal)
+	}
+	for _, field := range []struct{ end, count uint64 }{
+		{216, h.nData},
+		{224, h.nFields},
+		{232, h.nTags},
+		{240, h.nEntryArrays},
+	} {
+		if h.headerSize >= field.end && field.count > h.nObjects {
+			return fmt.Errorf("%w: object type count exceeds object population", errInvalidJournal)
+		}
+	}
+	return h.validateTailArrayPopulation()
+}
+
+func (h *journalHeader) validateTailArrayPopulation() error {
+	if h.headerSize < 264 {
+		return nil
+	}
+	offset, count := uint64(h.tailEntryArrayOffset), uint64(h.tailEntryArrayNEntries)
+	if h.entryArrayOffset > offset || (h.entryArrayOffset == 0 && offset != 0) {
+		return fmt.Errorf("%w: entry array tail disagrees with first array", errInvalidJournal)
+	}
+	if (offset == 0) != (count == 0) || count > h.nEntries {
+		return fmt.Errorf("%w: entry array tail disagrees with entry population", errInvalidJournal)
+	}
+	return nil
 }
 
 func (h *journalHeader) validateArenaHashTables(end uint64) error {

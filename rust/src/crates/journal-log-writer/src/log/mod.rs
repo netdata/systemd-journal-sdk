@@ -150,6 +150,13 @@ impl Log {
         let Some(active_file) = &self.active_file else {
             return true;
         };
+        // A policy update can observe metadata above a tiny size limit before
+        // the first entry. Root history must never contain empty archives.
+        if self.config.root_retention
+            && active_file.journal_file.journal_header_ref().n_entries == 0
+        {
+            return false;
+        }
         if self.rotation_state.should_rotate() {
             return true;
         }
@@ -902,6 +909,9 @@ impl Log {
     #[tracing::instrument(skip_all, fields(active_file))]
     fn rotate(&mut self, head_realtime: u64, reason: LogLifecycleReason) -> Result<()> {
         self.ensure_healthy()?;
+        if self.config.root_retention {
+            self.preflight_root_rotation()?;
+        }
         self.poisoned = true;
         self.prepare_initial_rotation()?;
         let max_file_size = self.config.rotation_policy.size_of_journal_file;

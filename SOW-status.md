@@ -1,13 +1,13 @@
 # SOW Status
 
-Last updated: 2026-10-08
+Last updated: 2026-10-09
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- None.
+- SOW-0152-20261008 - Root History Retention: in-progress for human review 5474585093. Repair root lifecycle ownership preflight and stable-header consistency in both languages.
 
 ## Pending
 
@@ -37,8 +37,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 
 ## Done
-
-- SOW-0152-20261008 - Root History Retention: completed. Paired Go/Rust implementation and PR #9 review fixes validated and independently reviewed; published fixes, resolved review threads and hosted-check cleanup are recorded in the completed SOW.
 
 - `SOW-0154-20261007-project-release-skill.md` - completed. Adds the team
   release skill, parity and publication/recovery gates, operator routing and

@@ -199,11 +199,21 @@ Both implementations require strict active names and exclusive caller ownership.
 The caller must verify recovered active files before opening the writer. Inventory
 reads directory entries, file metadata and fixed-size headers without expanding
 records. It rejects malformed or quarantined source candidates, symlinks,
-ambiguous identities and filename/header mismatches before pruning. A missing
+ambiguous identities, filename/header mismatches and inconsistent fixed-header
+counts or cached offset/count pairs before pruning. A missing
 root is an error. Canonical machine-named entries must be directories; unrelated
 metadata directories are allowed when they contain no source candidates and
 must be readable so inventory can establish that exclusion.
 Live-aware inventory also rejects a missing or replaced active file.
+
+Before root close, empty-file disposal or rotation, both SDKs check that the active
+pathname still names the owned file. They reject occupied archive destinations
+and unexpected active paths at lazy creation before changing file contents or
+names. Failed creation/rotation preflight returns an error without poisoning the
+writer; callers can restore the expected paths and retry. Rejected close releases
+resources without rewriting the files. These checks cover changes completed
+between calls and require caller exclusion throughout each call; they add no
+filesystem checks to ordinary nonrotating appends.
 
 The shared policy:
 

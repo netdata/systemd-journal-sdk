@@ -1,10 +1,10 @@
 # SOW Status
 
-Last updated: 2026-10-08
+Last updated: 2026-10-09
 
 ## Current
 
-- None.
+- SOW-0152-20261008 - Root History Retention: in-progress for human review 5474585093. Repair root lifecycle ownership preflight and stable-header consistency in both languages.
 
 ## Pending
 
@@ -48,8 +48,6 @@ Last updated: 2026-10-08
   decisions. Not executable until the user explicitly resumes it.
 
 ## Recently Closed Or Completed
-
-- SOW-0152-20261008 - Root History Retention: completed. Paired Go/Rust implementation and PR #9 review fixes validated and independently reviewed; published fixes, resolved review threads and hosted-check cleanup are recorded in the completed SOW.
 
 - SOW-0154 - Project Release Skill: completed. Adds the full-process team
   skill to PR #8, including language parity, CI publication, maintainer tags,

@@ -332,10 +332,18 @@ The caller MUST serialize access, exclude other writers and directory changes,
 and verify recovered active files' provenance and indexes before opening the
 log. `inspect_root_retention(root, &source)` supplies header-only inventory
 before open; `log.inspect_root_retention()` also validates the live file's
-filesystem and journal identities. Missing or replaced files are errors, and
+filesystem and journal identities. Header checks also reject inconsistent
+object counts and cached offset/count pairs. Missing or replaced files are errors,
+and
 inspection remains available after writer poisoning. Neither API verifies
 payloads/indexes or protects against concurrent external modification. See
 [[Writer-APIs|Writer APIs]] for the shared ownership and accounting contract.
+
+Root rotation, close and drop check live-file ownership before mutation. Archive
+and lazy successor destinations must be unoccupied. Creation or rotation
+preflight errors leave the writer healthy for retry after restoring the expected
+paths. Failed close/drop preflight preserves both the held file and the named
+replacement. Checks occur at lifecycle boundaries, not on every append.
 
 <!-- verify-example: lang=rust id=rust-root-retention -->
 ```rust

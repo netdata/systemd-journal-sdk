@@ -439,13 +439,21 @@ the live writer's filesystem file and journal identities. Missing or replaced
 live files are errors, not empty history; inventory errors alone do not poison
 the writer. The method requires an open root-retention Log. Both forms validate
 canonical machine directories, filename/header machine and sequence identities,
-archive state and header bounds. It rejects source quarantine names, symlinks,
+archive state, header bounds and internal counter/offset consistency. It rejects
+source quarantine names, symlinks,
 ambiguous identities and malformed candidates before pruning. Unrelated caller
 metadata directories, such as `identity/`, are permitted when they contain no
 source candidates and must be readable so inventory can establish that exclusion. A missing or inaccessible root is an error, not zero history.
-This inventory does not verify payloads/indexes or certify provenance. Checks
-run at inventory/maintenance boundaries and do not protect against concurrent
-external modification. Canonical machine-named entries must be directories.
+This inventory does not verify payloads/indexes or certify provenance. Canonical
+machine-named entries must be directories.
+
+Root close, empty-file disposal and rotation check live-file ownership before
+changing either the held file or its pathname. Archives and lazy successors must
+have unoccupied destination paths. A rejected creation or rotation returns an
+error without poisoning the writer, so the caller can restore the expected paths
+and retry. A rejected close releases resources without rewriting either file.
+These checks run at lifecycle boundaries, not on every append; callers must still
+exclude external changes throughout each SDK call.
 
 <!-- verify-example: lang=go id=go-root-retention -->
 ```go

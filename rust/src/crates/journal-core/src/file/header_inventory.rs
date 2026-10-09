@@ -43,7 +43,6 @@ fn validate_retention_metadata(header: &JournalHeader) -> Result<()> {
         || header.tail_object_offset.is_none()
         || (header.n_entries > 0
             && (header.entry_array_offset.is_none()
-                || header.n_entries > header.n_objects
                 || header.head_entry_seqnum == 0
                 || header.tail_entry_seqnum < header.head_entry_seqnum
                 || header.tail_entry_seqnum - header.head_entry_seqnum < header.n_entries - 1

@@ -4,6 +4,9 @@ use crate::file::object_compression::{
 };
 use crate::file::offset_array::{Cursor, InlinedCursor, List};
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+#[cfg(test)]
+#[path = "object_header_tests.rs"]
+mod header_tests;
 use zerocopy::{
     ByteSlice, ByteSliceMut, FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice,
     SplitByteSliceMut,
@@ -160,6 +163,7 @@ impl JournalHeader {
         if end > file_size {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
+        self.validate_header_population()?;
         let tail = self.tail_object_offset.map_or(0, NonZeroU64::get);
         if (tail == 0) != (self.n_objects == 0) {
             return Err(JournalError::InvalidObjectLocation);
@@ -201,6 +205,41 @@ impl JournalHeader {
             )?;
         }
         Ok(end)
+    }
+
+    fn validate_header_population(&self) -> Result<()> {
+        if self.n_objects > self.arena_size / size_of::<ObjectHeader>() as u64
+            || self.n_entries > self.n_objects
+        {
+            return Err(JournalError::InvalidObjectLocation);
+        }
+        for (end, count) in [
+            (216, self.n_data),
+            (224, self.n_fields),
+            (232, self.n_tags),
+            (240, self.n_entry_arrays),
+        ] {
+            if self.header_size >= end && count > self.n_objects {
+                return Err(JournalError::InvalidObjectLocation);
+            }
+        }
+        self.validate_tail_array_population()
+    }
+
+    fn validate_tail_array_population(&self) -> Result<()> {
+        if self.header_size < 264 {
+            return Ok(());
+        }
+        let first = self.entry_array_offset.map_or(0, NonZeroU64::get);
+        let offset = u64::from(self.tail_entry_array_offset);
+        let count = u64::from(self.tail_entry_array_n_entries);
+        if first > offset || (first == 0 && offset != 0) {
+            return Err(JournalError::InvalidObjectLocation);
+        }
+        if (offset == 0) != (count == 0) || count > self.n_entries {
+            return Err(JournalError::InvalidObjectLocation);
+        }
+        Ok(())
     }
 
     fn validate_arena_object(&self, offset: u64, size: u64, end: u64) -> Result<()> {

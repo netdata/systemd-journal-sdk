@@ -590,6 +590,9 @@ func (l *Log) attachOpenedWriter(w *Writer) {
 }
 
 func (l *Log) discardEmptyOpenedWriter(w *Writer) error {
+	if err := l.preflightRootActive(w); err != nil {
+		return errors.Join(err, w.release())
+	}
 	if err := w.Close(); err != nil {
 		return l.recordFailure(err)
 	}
@@ -750,21 +753,12 @@ func (l *Log) close(enforceRetention bool) error {
 		return nil
 	}
 	if l.writer.header.nEntries == 0 && l.strict {
-		if err := l.writer.Close(); err != nil {
-			l.writer = nil
-			l.retentionWriter = nil
-			l.closed = true
-			return l.recordFailure(err)
-		}
-		removeErr := os.Remove(l.activePath())
-		if errors.Is(removeErr, os.ErrNotExist) {
-			removeErr = nil
-		}
+		err := l.discardEmptyOpenedWriter(l.writer)
 		l.writer = nil
 		l.retentionWriter = nil
 		l.active = ""
 		l.closed = true
-		return removeErr
+		return err
 	}
 	protectedPath := l.activePath()
 	if l.strict {
@@ -772,7 +766,8 @@ func (l *Log) close(enforceRetention bool) error {
 	}
 	if _, err := l.archiveActive(); err != nil {
 		if l.writer != nil {
-			err = errors.Join(err, l.writer.Close())
+			// Safe preflight rejection must not write through the held descriptor.
+			err = errors.Join(err, l.writer.release())
 			l.writer = nil
 			l.retentionWriter = nil
 		}
@@ -844,6 +839,11 @@ func (l *Log) ensureWriter(entryOpts EntryOptions, reason LogLifecycleReason) er
 		opts.HeadSeqnum = 1
 	}
 	if l.strict {
+		if l.rootRetention {
+			if err := requireRootPathAbsent(l.systemdActivePath()); err != nil {
+				return err
+			}
+		}
 		l.active = l.systemdActivePath()
 	} else {
 		headRealtime := entryOpts.RealtimeUsec
@@ -929,6 +929,9 @@ func (l *Log) captureAppendState() {
 func (l *Log) archiveActive() (string, error) {
 	if l.writer == nil {
 		return "", nil
+	}
+	if err := l.preflightRootActive(l.writer); err != nil {
+		return "", err
 	}
 	nextSeqnum := l.writer.nextSeqnum
 	seqnumID := l.writer.header.seqnumID
