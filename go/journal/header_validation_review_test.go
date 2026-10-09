@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func stableHeaderFixture(t *testing.T, compact bool) (journalHeader, uint64) {
+func stableHeaderFixture(t *testing.T, compact bool, entries int) (journalHeader, uint64) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "header.journal")
 	opts := testOptions()
@@ -15,8 +15,10 @@ func stableHeaderFixture(t *testing.T, compact bool) (journalHeader, uint64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = w.Append([]Field{StringField("MESSAGE", "header")}, EntryOptions{RealtimeUsec: 1_000_000, MonotonicUsec: 1}); err != nil {
-		t.Fatal(err)
+	for i := 0; i < entries; i++ {
+		if err = w.Append([]Field{StringField("MESSAGE", "header")}, EntryOptions{RealtimeUsec: 1_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err = w.Close(); err != nil {
 		t.Fatal(err)
@@ -57,7 +59,7 @@ func TestStableHeaderRejectsPopulationContradictions(t *testing.T) {
 		{"tail array before first", func(h *journalHeader) { h.tailEntryArrayOffset = uint32(h.entryArrayOffset - 8) }},
 	}
 	for _, compact := range []bool{false, true} {
-		original, size := stableHeaderFixture(t, compact)
+		original, size := stableHeaderFixture(t, compact, 1)
 		if _, err := original.validateDeclaredArena(size); err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +76,7 @@ func TestStableHeaderRejectsPopulationContradictions(t *testing.T) {
 }
 
 func TestStableHeaderHistoricalPopulationGates(t *testing.T) {
-	original, size := stableHeaderFixture(t, false)
+	original, size := stableHeaderFixture(t, false, 1)
 	for _, tc := range []struct {
 		end  uint64
 		edit func(*journalHeader)
@@ -99,14 +101,14 @@ func TestStableHeaderHistoricalPopulationGates(t *testing.T) {
 }
 
 func TestStableHeaderAcceptsPopulationBoundaries(t *testing.T) {
-	h, size := stableHeaderFixture(t, false)
+	h, size := stableHeaderFixture(t, false, 1)
 	h.nObjects = h.arenaSize / objectHeaderSize
 	h.nData = h.nObjects - h.nEntries - h.nFields - h.nTags - h.nEntryArrays - 2
 	if _, err := h.validateDeclaredArena(size); err != nil {
 		t.Fatalf("rejected equal aggregate bound: %v", err)
 	}
 	h.entryArrayOffset, h.tailEntryArrayOffset, h.tailEntryArrayNEntries = 0, 0, 0
-	h.nEntries = 0
+	h.nEntries, h.nEntryArrays = 0, 0
 	if _, err := h.validateDeclaredArena(size); err != nil {
 		t.Fatalf("rejected absent array pair: %v", err)
 	}
@@ -116,7 +118,7 @@ func TestStableHeaderAcceptsPopulationBoundaries(t *testing.T) {
 // counters consume the budget only when their complete fields are present.
 func TestStableHeaderHashTablePopulationBoundaries(t *testing.T) {
 	for _, compact := range []bool{false, true} {
-		original, size := stableHeaderFixture(t, compact)
+		original, size := stableHeaderFixture(t, compact, 1)
 		for _, headerSize := range []uint64{headerMinSize, original.headerSize} {
 			for tables := 0; tables < 4; tables++ {
 				h := original
@@ -138,6 +140,33 @@ func TestStableHeaderHashTablePopulationBoundaries(t *testing.T) {
 				h.nObjects--
 				if _, err := h.validateDeclaredArena(size); err == nil {
 					t.Errorf("accepted insufficient budget: compact=%v header=%d tables=%d", compact, headerSize, tables)
+				}
+			}
+		}
+	}
+}
+
+func TestStableHeaderArrayReferencePopulation(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		for _, entries := range []int{1, 32} {
+			original, size := stableHeaderFixture(t, compact, entries)
+			if (original.entryArrayOffset == uint64(original.tailEntryArrayOffset)) != (entries == 1) {
+				t.Fatal("fixture does not exercise the expected distinct array locations")
+			}
+			for _, tc := range []struct{ header, single, multiple uint64 }{
+				{232, 0, 0}, {240, 1, 1}, {256, 1, 1}, {264, 1, 2}, {272, 1, 2},
+			} {
+				minimum := tc.single
+				if entries == 32 {
+					minimum = tc.multiple
+				}
+				for count := uint64(0); count <= original.nEntryArrays; count++ {
+					h := original
+					h.headerSize, h.nEntryArrays = tc.header, count
+					_, err := h.validateDeclaredArena(size)
+					if (err == nil) != (count >= minimum) {
+						t.Errorf("compact=%v entries=%d header=%d arrays=%d minimum=%d: %v", compact, entries, tc.header, count, minimum, err)
+					}
 				}
 			}
 		}

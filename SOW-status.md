@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-10-09
+Last updated: 2026-10-10
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
@@ -11,6 +11,9 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Pending
 
+- SOW-0156 - Fixed-Header Consistency Audit: separate follow-up agreed in
+  PR #9. Define invariants, audit both SDKs, then implement/test missing rules.
+  Not activated by the current array-count repair.
 - SOW-0155 - Writer Tail Offset Representability: source-analysis lead from PR #9.
   Investigate regular writers' unchecked tail-offset narrowing; no implementation
   or public behavior decision is authorized.
@@ -41,11 +44,10 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
-- SOW-0152-20261008 - Root History Retention: completed. Prior review fixes
-  were published through 731a37d. Human review 5475128273 is repaired: both
-  SDKs count declared hash-table objects; paired regressions, affected Go/Rust
-  suites and all 14 retention parity groups pass. Push and response authorized.
-  The separate writer-offset lead remains in pending SOW-0155.
+- SOW-0152-20261008 - Root History Retention: completed. Review 5475871638
+  is repaired locally in both SDKs; Go race, Rust suites and all 18 retention
+  parity groups pass. Earlier repairs were published through 907389e. Broader
+  header auditing is separate pending SOW-0156; writer-offset lead is SOW-0155.
 
 - `SOW-0154-20261007-project-release-skill.md` - completed. Adds the team
   release skill, parity and publication/recovery gates, operator routing and

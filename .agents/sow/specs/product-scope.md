@@ -437,7 +437,10 @@ external modification. Ordinary nonrotating appends add no filesystem checks.
 Inventory is not full verification. Counts of disjoint present object categories
 must fit within the total object count, including one object for each declared
 DATA_HASH_TABLE and FIELD_HASH_TABLE. Absent historical counters are ignored;
-the table declarations are present in every supported header version.
+the table declarations are present in every supported header version. When the
+ENTRY_ARRAY counter is present, it must cover the distinct nonzero first/cached-tail
+array locations declared by complete header fields. Equal pointers count once;
+additional arrays, including DATA-associated arrays, are permitted.
 Stable-header population checks also apply to append recovery and excluded-writer
 snapshots, and remain separate from ordinary live-reader mapping validation.
 Root retention counts file lengths including preallocation, expires by tail

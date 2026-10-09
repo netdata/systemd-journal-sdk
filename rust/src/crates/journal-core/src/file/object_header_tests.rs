@@ -1,7 +1,7 @@
 use super::*;
 use crate::file::{JournalFile, JournalFileOptions, JournalWriter};
 
-fn stable_header_fixture(compact: bool) -> (JournalHeader, u64) {
+fn stable_header_fixture(compact: bool, entries: u64) -> (JournalHeader, u64) {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("header.journal");
     let repository = crate::repository::File::from_path(&path).unwrap();
@@ -12,9 +12,11 @@ fn stable_header_fixture(compact: bool) -> (JournalHeader, u64) {
     )
     .unwrap();
     let mut writer = JournalWriter::new(&mut file, 1, identity).unwrap();
-    writer
-        .add_entry(&mut file, &[b"MESSAGE=header"], 1_000_000, 1)
-        .unwrap();
+    for i in 0..entries {
+        writer
+            .add_entry(&mut file, &[b"MESSAGE=header"], 1_000_000 + i, i + 1)
+            .unwrap();
+    }
     file.sync().unwrap();
     (
         *file.journal_header_ref(),
@@ -64,7 +66,7 @@ fn stable_header_rejects_population_contradictions() {
         }),
     ];
     for compact in [false, true] {
-        let (original, size) = stable_header_fixture(compact);
+        let (original, size) = stable_header_fixture(compact, 1);
         original.validated_arena_end(size).unwrap();
         for (name, edit) in cases {
             let mut header = original;
@@ -81,7 +83,7 @@ fn stable_header_rejects_population_contradictions() {
 
 #[test]
 fn stable_header_historical_population_gates() {
-    let (original, size) = stable_header_fixture(false);
+    let (original, size) = stable_header_fixture(false, 1);
     let cases: &[(u64, HeaderEdit)] = &[
         (216, |h| h.n_data = h.n_objects),
         (224, |h| h.n_fields = h.n_objects),
@@ -109,7 +111,7 @@ fn stable_header_historical_population_gates() {
 
 #[test]
 fn stable_header_accepts_population_boundaries() {
-    let (mut header, size) = stable_header_fixture(false);
+    let (mut header, size) = stable_header_fixture(false, 1);
     header.n_objects = header.arena_size / 16;
     header.n_data = header.n_objects
         - header.n_entries
@@ -122,6 +124,7 @@ fn stable_header_accepts_population_boundaries() {
     header.tail_entry_array_offset = 0;
     header.tail_entry_array_n_entries = 0;
     header.n_entries = 0;
+    header.n_entry_arrays = 0;
     header.validated_arena_end(size).unwrap();
 }
 
@@ -129,7 +132,7 @@ fn stable_header_accepts_population_boundaries() {
 #[test]
 fn stable_header_hash_table_population_boundaries() {
     for compact in [false, true] {
-        let (original, size) = stable_header_fixture(compact);
+        let (original, size) = stable_header_fixture(compact, 1);
         for header_size in [208, original.header_size] {
             for tables in 0..4 {
                 let mut header = original;
@@ -156,6 +159,40 @@ fn stable_header_hash_table_population_boundaries() {
                     header.validated_arena_end(size).is_err(),
                     "accepted insufficient budget: compact={compact} header={header_size} tables={tables}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn stable_header_array_reference_population() {
+    for compact in [false, true] {
+        for entries in [1, 32] {
+            let (original, size) = stable_header_fixture(compact, entries);
+            assert_eq!(
+                original.entry_array_offset.unwrap().get()
+                    == u64::from(original.tail_entry_array_offset),
+                entries == 1
+            );
+            for (header_size, single, multiple) in [
+                (232, 0, 0),
+                (240, 1, 1),
+                (256, 1, 1),
+                (264, 1, 2),
+                (272, 1, 2),
+            ] {
+                let minimum = if entries == 1 { single } else { multiple };
+                for count in 0..=original.n_entry_arrays {
+                    let mut header = original;
+                    header.header_size = header_size;
+                    header.n_entry_arrays = count;
+                    assert_eq!(
+                        header.validated_arena_end(size).is_ok(),
+                        count >= minimum,
+                        "compact={compact} entries={entries} header={header_size} arrays={count} minimum={minimum}"
+                    );
+                    header.validate_reader_mappings(size).unwrap();
+                }
             }
         }
     }

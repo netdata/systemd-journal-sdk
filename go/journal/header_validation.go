@@ -72,10 +72,13 @@ func (h *journalHeader) validateHeaderPopulation() error {
 		}
 		remaining -= field.count
 	}
-	return h.validateTailArrayPopulation()
+	return h.validateArrayPopulation()
 }
 
-func (h *journalHeader) validateTailArrayPopulation() error {
+func (h *journalHeader) validateArrayPopulation() error {
+	if h.headerSize >= 240 && h.nEntryArrays < h.minimumEntryArrays() {
+		return fmt.Errorf("%w: array count does not cover declared locations", errInvalidJournal)
+	}
 	if h.headerSize < 264 {
 		return nil
 	}
@@ -87,6 +90,18 @@ func (h *journalHeader) validateTailArrayPopulation() error {
 		return fmt.Errorf("%w: entry array tail disagrees with entry population", errInvalidJournal)
 	}
 	return nil
+}
+
+// The first and cached tail may name the same array; DATA arrays can add more.
+func (h *journalHeader) minimumEntryArrays() uint64 {
+	var count uint64
+	if h.entryArrayOffset != 0 {
+		count++
+	}
+	if h.headerSize >= 264 && h.tailEntryArrayOffset != 0 && uint64(h.tailEntryArrayOffset) != h.entryArrayOffset {
+		count++
+	}
+	return count
 }
 
 func (h *journalHeader) validateArenaHashTables(end uint64) error {

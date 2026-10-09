@@ -232,10 +232,13 @@ impl JournalHeader {
             }
             remaining -= count;
         }
-        self.validate_tail_array_population()
+        self.validate_array_population()
     }
 
-    fn validate_tail_array_population(&self) -> Result<()> {
+    fn validate_array_population(&self) -> Result<()> {
+        if self.header_size >= 240 && self.n_entry_arrays < self.minimum_entry_arrays() {
+            return Err(JournalError::InvalidObjectLocation);
+        }
         if self.header_size < 264 {
             return Ok(());
         }
@@ -249,6 +252,17 @@ impl JournalHeader {
             return Err(JournalError::InvalidObjectLocation);
         }
         Ok(())
+    }
+
+    // The first and cached tail may name the same array; DATA arrays can add more.
+    fn minimum_entry_arrays(&self) -> u64 {
+        let first = self.entry_array_offset.map_or(0, NonZeroU64::get);
+        let tail = if self.header_size >= 264 {
+            u64::from(self.tail_entry_array_offset)
+        } else {
+            0
+        };
+        u64::from(first != 0) + u64::from(tail != 0 && tail != first)
     }
 
     fn validate_arena_object(&self, offset: u64, size: u64, end: u64) -> Result<()> {

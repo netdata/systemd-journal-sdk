@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: human review 5475128273 is addressed. Both SDKs count declared hash tables in the population budget; paired regressions, affected suites, cross-language preservation checks and SOW audit pass.
+Sub-state: review 5475871638 is repaired in both SDKs. Array-count lower bounds, historical gates, real-file preservation, affected suites and audit pass. Broader auditing is tracked separately in pending SOW-0156.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Current result: prior human and cubic corrections were published through 731a37d. Human review 5475128273 identified the remaining implicit hash-table count omission; both stable validators now include those objects in the checked budget. New regressions fail before the correction and pass afterward in both languages and all four producer/consumer combinations. The separate writer-offset lead remains in pending SOW-0155. The latest user authorization includes pushing and replying; delivery is confirmed by the remote commit/comment, not by local completion alone.
+Current result: prior fixes are published through 907389e. The user authorized the concrete array-count correction from review 5475871638; it is implemented and validated locally in both SDKs. Real-file tests reject and preserve both malformed cases across all four producer/consumer combinations. Broader header auditing is separate pending SOW-0156; the writer-offset lead remains SOW-0155. This iteration records a local repair, not a new push, reply or release.
 
 ### Acceptance Criteria
 
@@ -204,7 +204,7 @@ Follow-up mapping:
 
 ## Outcome
 
-The selected human and cubic findings are dispositioned. Prior repairs were published through 731a37d. Human review 5475128273 is accepted and repaired in both languages: the stable object budget now includes both declared hash-table objects, with historical field gates retained. Regression, race, affected Rust and cross-language evidence passes. SOW-0155 separately tracks the pre-existing writer-offset lead without implementation authorization. Push and response are authorized; hosted checks and publication must be verified on the delivered commit. No release is authorized.
+The concrete finding in review 5475871638 is repaired: a present ENTRY_ARRAY counter must cover the distinct complete first/tail declarations, with additional arrays permitted. Paired failing-before/passing-after tests, Go race, Rust suites and all 18 retention parity groups pass. The earlier fixes through 907389e remain published; this repair is local. The broader model audit is separately tracked in SOW-0156 and the writer-offset lead in SOW-0155. No broader audit or release is claimed.
 
 ## Lessons Extracted
 
@@ -212,7 +212,7 @@ Header-native inventory has stable cost as entry count grows; recovery verificat
 
 ## Followup
 
-Consumer adoption is owned by the coordinating task. SOW-0155-20261009-writer-tail-offset-representability preserves the distinct pre-existing writer-side lead from cubic comment 4234196552; no implementation is authorized by that pending record.
+Consumer adoption remains the coordinating task. SOW-0155-20261009-writer-tail-offset-representability tracks the independent writer-side lead. SOW-0156-20261010-fixed-header-consistency-audit tracks the separately agreed invariant-model review and paired audit; it is not executed here. No part of the accepted concrete array-count correction is deferred.
 
 ## Regression Log
 
@@ -647,3 +647,111 @@ Repair result, validation and readiness:
   independent. The SOW audit reports initialization complete and clean, and
   whitespace/diff checks pass. This SOW and both indexes return to completed/done
   in the same commit as the validated repair.
+
+
+## Regression - 2026-10-10 Array References And Population
+
+Authorization and scope:
+
+- User approved fixing review 5475871638 after explicitly separating the broader
+  header audit. The correction restores this feature's rejection-before-pruning
+  contract. The missing comparison predates this PR; this heading denotes SOW
+  reopening, not a regression introduced into previously shipped SDK behavior.
+- Gate status: ready. This bounded plan supplements the original gate. No new
+  format, public API, dependency or retention-policy decision is required.
+
+Root cause, evidence and affected surfaces:
+
+- Shared stable-header checks constrain array pointers and counters separately,
+  but do not require the array counter to cover the distinct declared locations.
+  Existing helper returns before header size 264, so the first-array/count rule
+  must also work for complete counters at sizes 240 through 256.
+- At 907389e, synthetic Go archives with one and 32 rows still passed inventory
+  after n_entry_arrays was reduced to zero and one respectively. Startup with
+  one-byte allowance and normal 30-day cleanup of 40-day-old files deleted them.
+  Records remained readable. Rust source has the equivalent missing relation.
+  No healthy writer or actual crash producing those states has been demonstrated.
+- Evidence: review 5475871638, comment 6090690960, scope comment 6090888921,
+  go/journal/header_validation.go, both array allocators, paired header tests and
+  the real-file retention matrix. Upstream systemd/systemd @
+  c0a5a2516d28601fb3afc1a77d7b42fcfe38fced,
+  docs/JOURNAL_FILE_FORMAT.md:223-224,627-635 defines arrays and their counters.
+- Affected surfaces: shared Go/Rust stable validation and its inventory/recovery/
+  snapshot callers. Reuse complete-field gates, population budget and existing
+  tail consistency checks. Ordinary live mapping checks stay unchanged.
+
+Plan, risks and validation:
+
+1. Add paired failing unit tests using actual one/32-row fixture headers, covering
+   absent/present counters, absent/present tail fields, equal/distinct pointers,
+   exact minima and additional arrays. Add both real-file preservation cases to
+   every Go/Rust producer-consumer pairing.
+2. Enforce n_entry_arrays >= distinct declared nonzero array locations when its
+   complete field exists. Use cached-tail metadata only when complete. Preserve
+   current offset ordering, entry-count checks and aggregate population budget.
+3. Run Go race, Rust core/writer/public suites and the rebuilt parity matrix.
+   Review bounds and same-failure callers, then complete SDK audit and commit.
+- Risks: historical-header rejection and accidentally requiring an exact count;
+  tests explicitly permit unreferenced arrays and ignore absent counter fields.
+  Fixed-size arithmetic only; no object traversal, new I/O or allocation.
+- Sensitive data: synthetic journals only. Scratch and isolated caches stay
+  under .local or /tmp; no host journals, identities or private data in artifacts.
+
+Artifact and follow-up plan:
+
+- Update the compatibility skill and product spec with the array lower bound.
+  Public docs already promise internal count/offset checks; no example, AGENTS,
+  dependency or output-skill changes are needed. Reopen/complete this SOW and
+  both indexes coherently with implementation.
+- Track the separately agreed systematic audit as pending SOW-0156; do not
+  execute it here. SOW-0155's writer-offset investigation remains independent.
+- Assess review depth after verification; retain the human review's invariant
+  analysis and prior independent lifecycle coverage where unchanged.
+
+
+Repair validation and completion:
+
+- Both new unit tests failed before runtime edits: Go accepted insufficient
+  counts for regular/compact and historical/current headers; Rust failed at
+  header size 240 with one declared array and zero count. The Go real-file
+  preservation check also failed before the fix. Evidence under ignored
+  .local/array-count-review: go-before.log, rust-before.log, parity-before.log.
+- Array validation now applies the lower bound before the existing cached-tail
+  checks. The counter requires a complete field (240 bytes); cached locations
+  require the complete tail fields (264 bytes). Equal pointers count once.
+  The aggregate upper budget, ordering, cached-entry counts and live-reader
+  mapping validation remain unchanged. Helpers are named for the complete
+  array population responsibility, not only cached tails.
+- Go `go -C go test -race ./...` passes. Rust 1.91 core passes 91 tests with three
+  existing doc tests ignored. Writer all-features passes 26 unit, 56 existing
+  integration, 26 root integration, six lifecycle and two doc tests. Public SDK
+  passes 165 tests with the same two documented macOS group-name assumptions
+  excluded. Logs: go-race.log, rust-core.log, rust-writer.log, rust-public.log.
+- Rebuilt retention matrix passes all 18 groups, including both actual one-row
+  and 32-row file corruptions for all four Go/Rust writer-reader pairings. Both
+  inventory and startup reject before deletion, and hashes of all retained
+  files remain unchanged. Report: .local/retention-parity/run-iillnquy/report.json.
+  Native Linux/Windows execution was not performed. No current healthy-writer
+  trigger or physical crash reproducer is claimed for the malformed input.
+- Same-failure/reference scan: `rg -n
+  'validateTailArrayPopulation|validate_tail_array_population|minimumEntryArrays|minimum_entry_arrays|validateDeclaredArena|validated_arena_end'
+  over Go journal and Rust core/log-writer finds no remaining old helper calls.
+  Current shared callers remain inventory, recovery and snapshots, plus Go
+  verification. No public name, compatibility adapter or caller migration.
+- Readiness assessment: direct verification is sufficient for this bounded
+  correction. The human review supplies independent format/invariant analysis;
+  the fix implements exactly that rule. Paired real-writer headers exercise
+  equal/distinct references, extra DATA arrays, complete/absent fields and empty
+  declarations. Lower bounds are zero through two with no overflow or traversal.
+  Earlier lifecycle review remains applicable: no mutation ordering changed.
+  The separately agreed broader model audit is not a prerequisite invented for
+  this repair and is not claimed complete. No material uncertainty remains in
+  the concrete correction that requires another independent review round.
+- Artifact maintenance: product spec and compatibility skill capture the lower
+  bound. Public guides already promise count/offset consistency, so no public
+  prose/examples change is required; AGENTS, dependencies and output skills are
+  unchanged. The original SOW and both indexes return to completed/done together
+  with this validated implementation; new SOW-0156 is pending only. Sensitive
+  data gate: synthetic identities/fixtures and sanitized records, isolated tools
+  and caches in /tmp, no private data or host journals. SOW audit reports complete
+  and clean; diff checks pass. No known concrete finding is left unfixed.

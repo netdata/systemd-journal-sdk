@@ -110,6 +110,27 @@ def build_probes(options, output: Path, bins: dict[str, Path]) -> None:
     shutil.copy2(target / 'debug/root-retention-parity-probe', bins['rust'])
 
 
+def check_array_population(writer, reader, bins, evidence, now, checks, probe) -> None:
+    for entries, count in ((1, 0), (32, 1)):
+        root = evidence / f'{writer}-{reader}-array-population-{entries}'
+        root.mkdir()
+        run([str(bins[writer]), 'fixture', str(root), str(now), str(entries)])
+        assert probe(reader, 'inspect', root) == [row(21, entries, now, now+entries-1)]
+        path = next(root.rglob('history@*.journal'))
+        with path.open('r+b') as stream:
+            header = stream.read(272)
+            first = int.from_bytes(header[176:184], 'little')
+            tail = int.from_bytes(header[256:260], 'little')
+            assert first != 0 and tail != 0
+            assert (first == tail) == (entries == 1), 'fixture array locations'
+            stream.seek(232)
+            stream.write(count.to_bytes(8, 'little'))
+        before = snapshot(root)
+        assert probe(reader, 'reject', root) == ['rejected']
+        assert snapshot(root) == before, 'array population rejection changed evidence'
+    checks.append(f'{writer} writer / {reader} declared array population and preservation')
+
+
 def check_reader(writer, reader, bins, evidence, fixture, now, expected, checks, probe) -> None:
     assert probe(reader, 'inspect', fixture) == expected
     assert probe(reader, 'read', fixture) == sorted(map(str, [now-40*DAY]*3 + [now-20*DAY]))
@@ -143,6 +164,7 @@ def check_reader(writer, reader, bins, evidence, fixture, now, expected, checks,
         assert probe(reader, 'reject', unsafe) == ['rejected']
         assert snapshot(unsafe) == before, 'preflight changed journal evidence'
     checks.append(f'{writer} writer / {reader} inventory, readback, age, size/count tail/path order, unsafe preflight')
+    check_array_population(writer, reader, bins, evidence, now, checks, probe)
     tiny_age = evidence / f'{writer}-tiny-age-by-{reader}'
     tiny_age.mkdir()
     run([str(bins[writer]), 'fixture', str(tiny_age), str(now), '1'])
