@@ -35,15 +35,16 @@ HEADER_DAMAGE = {
     'tail-array-without-count': (260, bytes(4)),
     'tail-array-without-first': (176, bytes(8)),
 }
-# destination offset/width, reference counter offset, divisor before adding one.
+# Destination offset/width, reference counter offset, divisor and increment.
 HEADER_COUNTER_DAMAGE = {
-    'objects-exceed-arena': (144, 8, 96, 16),
-    'entries-exceed-objects': (152, 8, 144, 1),
-    'data-exceed-objects': (208, 8, 144, 1),
-    'fields-exceed-objects': (216, 8, 144, 1),
-    'tags-exceed-objects': (224, 8, 144, 1),
-    'arrays-exceed-objects': (232, 8, 144, 1),
-    'tail-array-exceeds-entries': (260, 4, 152, 1),
+    'objects-exceed-arena': (144, 8, 96, 16, 1),
+    'entries-exceed-objects': (152, 8, 144, 1, 1),
+    'data-exceed-objects': (208, 8, 144, 1, 1),
+    'fields-exceed-objects': (216, 8, 144, 1, 1),
+    'tags-exceed-objects': (224, 8, 144, 1, 1),
+    'arrays-exceed-objects': (232, 8, 144, 1, 1),
+    'tail-array-exceeds-entries': (260, 4, 152, 1, 1),
+    'aggregate-data-exceeds-objects': (208, 8, 144, 1, 0),
 }
 
 
@@ -76,9 +77,9 @@ def damage_header(path: Path, damage: str) -> None:
     with path.open('r+b') as stream:
         header = stream.read(272)
         if damage in HEADER_COUNTER_DAMAGE:
-            offset, width, reference, divisor = HEADER_COUNTER_DAMAGE[damage]
+            offset, width, reference, divisor, increment = HEADER_COUNTER_DAMAGE[damage]
             count = int.from_bytes(header[reference:reference+8], 'little')
-            value = (count // divisor + 1).to_bytes(width, 'little')
+            value = (count // divisor + increment).to_bytes(width, 'little')
         elif damage == 'tail-array-before-first':
             offset = 256
             first = int.from_bytes(header[176:184], 'little')

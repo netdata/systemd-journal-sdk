@@ -449,9 +449,11 @@ machine-named entries must be directories.
 
 Root close, empty-file disposal and rotation check live-file ownership before
 changing either the held file or its pathname. Archives and lazy successors must
-have unoccupied destination paths. A rejected creation or rotation returns an
-error without poisoning the writer, so the caller can restore the expected paths
-and retry. A rejected close releases resources without rewriting either file.
+have unoccupied destination paths. A creation or rotation rejected by these
+preflight checks returns an error without poisoning the writer, so the caller can
+restore the expected paths and retry. Errors after file mutation starts can poison
+the writer. A close rejected by preflight releases resources without rewriting
+either file.
 These checks run at lifecycle boundaries, not on every append; callers must still
 exclude external changes throughout each SDK call.
 

@@ -213,15 +213,21 @@ impl JournalHeader {
         {
             return Err(JournalError::InvalidObjectLocation);
         }
+        // Object types are disjoint; subtraction also avoids aggregate overflow.
+        let mut remaining = self.n_objects - self.n_entries;
         for (end, count) in [
             (216, self.n_data),
             (224, self.n_fields),
             (232, self.n_tags),
             (240, self.n_entry_arrays),
         ] {
-            if self.header_size >= end && count > self.n_objects {
+            if self.header_size < end {
+                continue;
+            }
+            if count > remaining {
                 return Err(JournalError::InvalidObjectLocation);
             }
+            remaining -= count;
         }
         self.validate_tail_array_population()
     }

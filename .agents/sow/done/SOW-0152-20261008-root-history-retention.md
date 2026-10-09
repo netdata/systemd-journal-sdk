@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: human review 5474585093 repairs are validated and independently reviewed in df8c215. All three findings are accepted and fixed. Completion records are committed separately; these new commits remain local.
+Sub-state: cubic review 5474943738 is complete: six comments accepted and repaired, one validator-relaxation suggestion rejected with format evidence. Human-review fixes were published through 993279f and replied to on 2026-10-09.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Current result: all three findings from human review 5474585093 are verified and repaired in both SDKs. The same boundary correction covers unexpected lazy active files and a reproduced Rust empty-archive transition after policy updates. Local validation and independent review pass with the documented existing platform gaps. Earlier GitHub bot fixes remain published; these new repairs are local, with no human reply posted. No implementation remains for this repair.
+Current result: human review 5474585093 is addressed in published df8c215/993279f, with response https://github.com/netdata/systemd-journal-sdk/pull/9#issuecomment-6088470864. Cubic review 5474943738 is verified: aggregate population bounds, retry wording and four stale status records are corrected; the zero-hint fallback is rejected because it violates fixed-header format rules. The distinct pre-existing writer-offset concern is tracked in pending SOW-0155. Current repair validation passes with the explicit platform/offline gaps below.
 
 ### Acceptance Criteria
 
@@ -204,7 +204,7 @@ Follow-up mapping:
 
 ## Outcome
 
-All three findings in human review 5474585093 are accepted and fixed in df8c215, together with the coupled lazy-creation and empty-root rotation cases. Relevant validation and independent review pass; the SOW is complete. These new commits remain local and no human reply is posted. Earlier hosted-check results apply to earlier commits and do not establish remote CI status for these repairs. No release is authorized.
+The selected human and cubic findings are dispositioned. Human-review delivery is verified through 993279f and its posted response. Cubic review 5474943738 has six accepted corrections and one evidence-based rejection; the bounded repair passes relevant validation. The source-analysis lead about regular-writer offset narrowing is separately tracked in SOW-0155, with no implementation authorization. This completion record reports code/review evidence; hosted checks for later pushes must be assessed on their own commit. No release is authorized.
 
 ## Lessons Extracted
 
@@ -212,7 +212,7 @@ Header-native inventory has stable cost as entry count grows; recovery verificat
 
 ## Followup
 
-No independent work added. Consumer adoption is owned by the coordinating task.
+Consumer adoption is owned by the coordinating task. SOW-0155-20261009-writer-tail-offset-representability preserves the distinct pre-existing writer-side lead from cubic comment 4234196552; no implementation is authorized by that pending record.
 
 ## Regression Log
 
@@ -489,4 +489,51 @@ Final review and completion checkpoint:
 - Fresh independent Astra/high reviewer root_retention_human_fix_review examined 32f9a76..df8c215 and relevant callers, without editing code or launching agents. No blocker found. Coverage included lifecycle ordering/ownership, safe retry versus fatal mutation, default-mode preservation, historical header gates, separate live mappings, transition-only filesystem cost, docs and real-file regression evidence.
 - The reviewer independently reran the focused Go lifecycle/header cases, six Rust lifecycle groups and three Rust header tests; all passed. Full suites, native platform tests and the shared matrix were not independently repeated; main-agent evidence and its limitations remain recorded above.
 - The reviewer caught an evidence-command typo: the writer package is systemd-journal-sdk-log-writer, not journal-log-writer. The validation record is corrected; the actual earlier log already showed the intended package tested. This tracking-only correction does not invalidate runtime validation or review.
-- No verified blocker, deferred repair or new independent implementation remains. Paired docs/spec/skill changes capture the delivered contract outside this SOW. Status moves to completed/done and both indexes are updated. SOW audit reports initialization complete and clean; final diff checks are clean. No source changes follow the reviewed implementation commit. No push, human reply, resolution or release is performed in this review iteration.
+- No verified blocker, deferred repair or new independent implementation remains. Paired docs/spec/skill changes capture the delivered contract outside this SOW. Status moves to completed/done and both indexes are updated. SOW audit reports initialization complete and clean; final diff checks are clean. No source changes follow the reviewed implementation commit. At that local completion checkpoint no remote action had occurred. The subsequent authorized push reached 993279f and the human response was posted at https://github.com/netdata/systemd-journal-sdk/pull/9#issuecomment-6088470864. No release occurred.
+
+## Regression - 2026-10-09 Cubic Review 5474943738
+
+Repair gate: ready. The verified aggregate-count and documentation corrections are complete. The large-offset validator suggestion is rejected after the format investigation recorded below.
+
+Authorization and target:
+
+- The user requests verification and fixes or evidence-based rejection of cubic findings on PR #9. Earlier authorization to push and reply on this PR remains in effect for the review follow-up. No merge, release or review dismissal is authorized.
+- All seven selected comments and their seven unresolved threads were fetched completely, with no further pages. Baseline is clean 993279f; hosted checks pass or are intentionally skipped. No unrelated current SOW overlaps this repair.
+- Clean target: stable header validation rejects impossible totals of disjoint present object categories in both SDKs; absent historical fields remain ignored and ordinary live mappings unchanged. Consumer docs promise retry only for preflight rejection. Publication records report verified delivery without describing a published commit as local. Determine the format-valid behavior for the alleged wrapped cached offset before changing any relevant contract.
+
+Evidence and root cause:
+
+- Go writer_objects.go/writer_init.go/writer_arrays.go and Rust writer.rs/writer_entry_arrays.rs increment individual counters for disjoint object types, while the total counts all objects. The stable validator only compares each type against the total, allowing combined counts greater than that total. Boundary tests accidentally endorse this impossible combination.
+- Go ensureWriter sends Create errors to recordFailure; its preflight path returns directly before creation. The Go guide says any rejected creation/rotation remains retryable, while the shared guide already specifies preflight. Narrow the paired spec/wording consistently.
+- Prior publication was verified in ignored delivery evidence but current SOW/index summaries were not updated. Replace those stale summaries with the known published commits and posted-response link. Preserve earlier timing evidence as historical.
+- Cubic's claimed zero-hint fallback conflicts with the pinned fixed-header consistency rule. A bounded independent read-only investigation checks format and writer reachability; a cast alone does not justify accepting corrupt files.
+
+Plan, validation and ownership:
+
+1. Main agent owns the SOW, aggregate validators and paired tests/shared matrix, docs/spec/skill updates. First reproduce aggregate rejection failure in both languages and the real-file shared matrix. Use a remaining-object budget so accumulation cannot overflow; replace impossible acceptance fixtures with valid per-counter and aggregate boundaries.
+2. One read-only Astra/high investigator owns assessment of the large-offset claim, source pointers and any reproducer needed. No implementation overlap, source edits or spawned agents. Resolve evidence before dependent implementation; escalate only a genuine product/format fork.
+3. Validate affected Go/Rust core/writer/snapshot behavior, the expanded shared matrix and required docs; retain earlier lifecycle/race evidence where unchanged. Document limitations. Commit validated changes before any independent review required by the final risk assessment; reuse existing reviewed contracts where their assumptions hold.
+4. Record a disposition per comment, complete SOW/audit checks, refresh selected findings/CI before authorized push, and reply to/resolve selected bot threads individually with specific evidence. No unsupported claim that post-push CI or all PR review sources are complete.
+
+Risk, scope and artifacts:
+
+- Header inventory is fixed-size consistency validation, not full object/index verification. Present population categories must fit within the total, but the total may include hash-table or future object types. No record scanning, new dependencies or per-append filesystem work. The arena/total check remains before subtraction.
+- Changes use synthetic journals and existing offline caches/output under /tmp or ignored .local. No host journals, identity probes or services. Native Linux/Windows execution gaps remain explicit. Updated acceptance evidence belongs in tests, docs/spec/compatibility guidance and this tracked SDK SOW.
+
+Finding dispositions and scope:
+
+- Accepted 4234196577: disjoint object counts can each be within n_objects while their aggregate exceeds it. Both validators now consume a remaining-object budget after proving n_entries <= n_objects; absent historical fields are skipped. Corrected boundary fixtures test an aggregate exactly at the bound instead of assigning the total to every category.
+- Accepted 4234196520: Go retry prose now names preflight rejection, and the paired spec is equally precise. Errors after mutation remain under the existing terminal-failure contract. The shared/Rust guides already name preflight and need no change.
+- Accepted 4234196582,4234196593,4234196603,4234196608: the human fixes were published through 993279f and replied to at issuecomment-6088470864. Updated current/Outcome/index summaries and qualified the earlier pre-publication checkpoint as historical. Completion records avoid volatile unpublished/no-reply claims without a dated checkpoint.
+- Rejected 4234196552's validator relaxation: systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced, src/libsystemd/sd-journal/journal-file.c:618-628 explicitly rejects first-array > cached tail and zero-offset/nonzero-count disagreement. Rust writer_entry_arrays.rs:152-166 and Go writer_arrays.go:69-85 scanning when the hint is zero does not make wrapped metadata valid; most oversized offsets wrap to nonzero wrong locations instead. Main-agent tracing and independent Astra/high source review agree. No runtime reproduction was claimed for this separate writer concern.
+- The unchecked regular-writer casts are pre-existing, in unchanged producer code, and require an allocation/publication and failure-contract decision rather than a validator exception. Recorded in pending SOW-0155-20261009-writer-tail-offset-representability with exact source evidence, reproduction requirements and explicit lack of implementation approval. The current validation fix is complete without permitting invalid headers; this lead is not relabeled as a valid fallback.
+
+Repair validation and readiness:
+
+- Both new aggregate-counter regression suites failed before implementation: Go accepted all five over-budget categories in regular and compact fixtures; Rust accepted the first aggregate case; historical present-counter gates failed in both. The unchanged probe binaries also failed at the new real-file aggregate-DATA case. Logs are under .local/pr9-cubic-5474943738: go-before.log, rust-before.log and parity-before.log.
+- After the shared remaining-budget correction, `go -C go test -race ./...` passes. Rust default core passes 89 tests with three existing doc tests ignored. `cargo test --manifest-path rust/Cargo.toml -p systemd-journal-sdk-log-writer --all-features` passes 26 unit, 56 prior integration, 26 root integration, six lifecycle groups and two docs. The public SDK suite passes 165 tests, excluding the same two previously reproduced macOS root/wheel group-name assumptions. Logs: go-race.log, rust-core.log, rust-writer.log and rust-public.log.
+- An attempted combined core/writer all-features invocation stopped on uncached allocative 0.3.6 in offline mode. No dependency was installed. This is the previously recorded optional all-feature workspace gap; the actual changed core behavior is exercised by its default suite, all-feature writer, public SDK and paired probes. Native Linux/Windows execution remains untested locally.
+- Rebuilt Go/Rust parity matrix passes all 14 scenario groups, including the new aggregate corruption and unchanged-byte startup/inventory assertions for both producers/consumers. Report: .local/retention-parity/run-4dfkm_ok/report.json. Wiki validator passes 16 pages; all 35 compiled/executed examples pass. Earlier actual lifecycle byte-preservation regressions remain unchanged and pass within these suites.
+- Source scan `rg -n 'validateHeaderPopulation|validate_header_population|validateDeclaredArena|validated_arena_end'` over the changed validators and their writer/root/snapshot callers confirms the correction is shared. Ordinary live mapping validation is untouched. The change replaces four independent comparisons with four checked subtractions; no additional I/O, allocations, record-dependent loop or benchmark claim is introduced.
+- Readiness assessment: direct verification is sufficient for the bounded aggregate-budget correction and prose/status changes. The invariant is disjoint object counts, subtraction follows a checked initial bound, and every present-field subtraction is guarded; real-file parity and broad affected suites check integration. Cubic supplied independent challenge of this invariant; prior human/independent lifecycle review remains applicable. The separate format question received independent read-only source investigation and main-agent verification. No further material uncertainty remains in this repair that calls for another review round.
+- Compatibility guidance and product scope record the aggregate rule, and Go prose matches the already-correct shared/Rust preflight contract. Six accepted thread IDs and the rejected suggestion are listed above. SOW moves back to done with both indexes updated and SOW-0155 pending. Lizard on changed helpers/tests/shared harness shows no configured warnings; audit reports initialization complete and clean, and diff checks pass.

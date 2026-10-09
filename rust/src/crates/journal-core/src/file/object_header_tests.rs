@@ -37,6 +37,11 @@ fn stable_header_rejects_population_contradictions() {
         ("arrays exceed objects", |h| {
             h.n_entry_arrays = h.n_objects + 1
         }),
+        ("aggregate entries exceed objects", |h| h.n_entries = h.n_objects),
+        ("aggregate data exceed objects", |h| h.n_data = h.n_objects),
+        ("aggregate fields exceed objects", |h| h.n_fields = h.n_objects),
+        ("aggregate tags exceed objects", |h| h.n_tags = h.n_objects),
+        ("aggregate arrays exceed objects", |h| h.n_entry_arrays = h.n_objects),
         ("cached count exceeds entries", |h| {
             h.tail_entry_array_n_entries = h.n_entries as u32 + 1
         }),
@@ -71,10 +76,10 @@ fn stable_header_rejects_population_contradictions() {
 fn stable_header_historical_population_gates() {
     let (original, size) = stable_header_fixture(false);
     let cases: &[(u64, HeaderEdit)] = &[
-        (216, |h| h.n_data = h.n_objects + 1),
-        (224, |h| h.n_fields = h.n_objects + 1),
-        (232, |h| h.n_tags = h.n_objects + 1),
-        (240, |h| h.n_entry_arrays = h.n_objects + 1),
+        (216, |h| h.n_data = h.n_objects),
+        (224, |h| h.n_fields = h.n_objects),
+        (232, |h| h.n_tags = h.n_objects),
+        (240, |h| h.n_entry_arrays = h.n_objects),
         (264, |h| {
             h.tail_entry_array_n_entries = h.n_entries as u32 + 1
         }),
@@ -99,11 +104,11 @@ fn stable_header_historical_population_gates() {
 fn stable_header_accepts_population_boundaries() {
     let (mut header, size) = stable_header_fixture(false);
     header.n_objects = header.arena_size / 16;
-    header.n_entries = header.n_objects;
-    header.n_data = header.n_objects;
-    header.n_fields = header.n_objects;
-    header.n_tags = header.n_objects;
-    header.n_entry_arrays = header.n_objects;
+    header.n_data = header.n_objects
+        - header.n_entries
+        - header.n_fields
+        - header.n_tags
+        - header.n_entry_arrays;
     header.validated_arena_end(size).unwrap();
     header.entry_array_offset = None;
     header.tail_entry_array_offset = 0;

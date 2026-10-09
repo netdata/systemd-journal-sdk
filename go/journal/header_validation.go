@@ -53,15 +53,21 @@ func (h *journalHeader) validateHeaderPopulation() error {
 	if h.nObjects > h.arenaSize/objectHeaderSize || h.nEntries > h.nObjects {
 		return fmt.Errorf("%w: object population exceeds bounds", errInvalidJournal)
 	}
+	// Object types are disjoint; subtraction also avoids aggregate overflow.
+	remaining := h.nObjects - h.nEntries
 	for _, field := range []struct{ end, count uint64 }{
 		{216, h.nData},
 		{224, h.nFields},
 		{232, h.nTags},
 		{240, h.nEntryArrays},
 	} {
-		if h.headerSize >= field.end && field.count > h.nObjects {
-			return fmt.Errorf("%w: object type count exceeds object population", errInvalidJournal)
+		if h.headerSize < field.end {
+			continue
 		}
+		if field.count > remaining {
+			return fmt.Errorf("%w: object type counts exceed object population", errInvalidJournal)
+		}
+		remaining -= field.count
 	}
 	return h.validateTailArrayPopulation()
 }

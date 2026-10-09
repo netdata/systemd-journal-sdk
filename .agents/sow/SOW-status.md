@@ -8,6 +8,9 @@ Last updated: 2026-10-09
 
 ## Pending
 
+- SOW-0155 - Writer Tail Offset Representability: source-analysis lead from PR #9.
+  Investigate regular writers' unchecked tail-offset narrowing; no implementation
+  or public behavior decision is authorized.
 - SOW-0153 - Consumer Documentation Release Clarity: open. Tracks pre-existing
   Go stability guidance naming `go/v0.3.0` and Rust writer-state method
   discoverability. No implementation is authorized; documentation approach
@@ -49,9 +52,11 @@ Last updated: 2026-10-09
 
 ## Recently Closed Or Completed
 
-- SOW-0152-20261008 - Root History Retention: completed. Human review
-  5474585093 findings are accepted and fixed in df8c215; paired validation and
-  independent review pass. New fixes remain local; no human reply posted.
+- SOW-0152-20261008 - Root History Retention: completed. Human-review fixes
+  are published through 993279f and the response was posted on PR #9.
+  Cubic review 5474943738: six corrections accepted, one format relaxation
+  rejected with evidence; aggregate validation and documentation checks pass.
+  The separate writer-offset lead is tracked in pending SOW-0155.
 
 - SOW-0154 - Project Release Skill: completed. Adds the full-process team
   skill to PR #8, including language parity, CI publication, maintainer tags,

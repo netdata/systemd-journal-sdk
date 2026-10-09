@@ -11,6 +11,9 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Pending
 
+- SOW-0155 - Writer Tail Offset Representability: source-analysis lead from PR #9.
+  Investigate regular writers' unchecked tail-offset narrowing; no implementation
+  or public behavior decision is authorized.
 - `SOW-0153-20261007-consumer-docs-release-clarity.md` - open. Tracks stale Go
   consumable-version prose and Rust writer-state method discoverability;
   documentation design and implementation remain unapproved.
@@ -38,9 +41,11 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
-- SOW-0152-20261008 - Root History Retention: completed. Human review
-  5474585093 findings are accepted and fixed in df8c215; paired validation and
-  independent review pass. New fixes remain local; no human reply posted.
+- SOW-0152-20261008 - Root History Retention: completed. Human-review fixes
+  are published through 993279f and the response was posted on PR #9.
+  Cubic review 5474943738: six corrections accepted, one format relaxation
+  rejected with evidence; aggregate validation and documentation checks pass.
+  The separate writer-offset lead is tracked in pending SOW-0155.
 
 - `SOW-0154-20261007-project-release-skill.md` - completed. Adds the team
   release skill, parity and publication/recovery gates, operator routing and

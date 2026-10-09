@@ -427,16 +427,17 @@ available after writer failure and is reused by maintenance before mutations.
 Root disposal, closing and rotation also preflight the held file's pathname and
 header identity before mutation. Archive and lazy-creation destinations must be
 absent; a safe rejection preserves file contents and names. Creation/rotation
-rejections leave ownership healthy for retry after restoring paths; explicit
-close releases resources without writing after preflight rejection. Empty root
+preflight rejections leave ownership healthy for retry after restoring paths;
+explicit close releases resources without writing after preflight rejection. Empty root
 writers accept their first entry before size/duration threshold rotation, including
 after a policy update. Default-mode and low-level creation contracts are unchanged.
 An inventory mismatch alone does not poison the writer. These boundary checks
 assume caller exclusion and do not promise protection against concurrent
 external modification. Ordinary nonrotating appends add no filesystem checks.
-Inventory is not full verification. Stable-header population checks also apply to
-append recovery and excluded-writer snapshots, respect absent historical fields,
-and remain separate from ordinary live-reader mapping validation.
+Inventory is not full verification. Counts of disjoint present object categories
+must fit within the total object count; absent historical counters are ignored.
+Stable-header population checks also apply to append recovery and excluded-writer
+snapshots, and remain separate from ordinary live-reader mapping validation.
 Root retention counts file lengths including preallocation, expires by tail
 saved time, and evicts whole files in tail/path order. Default retention policies
 and file format are unchanged; Go now applies cleanup after a successful

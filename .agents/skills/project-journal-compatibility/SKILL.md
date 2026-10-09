@@ -95,8 +95,9 @@ Do not use this skill for:
   languages and require failed preflight to preserve journal bytes.
   Stable validation MUST also enforce fixed-header object/category population
   bounds and cached offset/count agreement, using complete on-disk field gates
-  for historical headers. Test small in-bounds contradictions, not only overflowing
-  offsets. Do not impose stable counter consistency on live mapping validation.
+  for historical headers. The aggregate of present disjoint object categories
+  MUST fit within the total; use checked addition or a remaining-object budget.
+  Test small in-bounds contradictions, not only overflowing offsets. Do not impose stable counter consistency on live mapping validation.
 - For deterministic regular uncompressed writer output, the layout target is byte-for-byte identity with the systemd v260.1 reference ingester for the accepted corpus. Writers must match systemd object order, alignment, initial allocation envelope, v260 header fields, entry-array growth, tail metadata, and hash-chain header behavior for that slice.
 - Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.
 - Header readers must use the on-disk `header_size` when validating object and hash-table locations. Do not compare historical file offsets against the current in-memory v260 `JournalHeader` struct size, and do not expose bytes beyond the on-disk header as newer header fields.
