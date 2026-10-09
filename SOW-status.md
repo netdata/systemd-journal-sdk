@@ -7,7 +7,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- SOW-0152-20261008 - Root History Retention: in-progress for human review 5474585093. Repair root lifecycle ownership preflight and stable-header consistency in both languages.
+- None.
 
 ## Pending
 
@@ -37,6 +37,10 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 
 ## Done
+
+- SOW-0152-20261008 - Root History Retention: completed. Human review
+  5474585093 findings are accepted and fixed in df8c215; paired validation and
+  independent review pass. New fixes remain local; no human reply posted.
 
 - `SOW-0154-20261007-project-release-skill.md` - completed. Adds the team
   release skill, parity and publication/recovery gates, operator routing and

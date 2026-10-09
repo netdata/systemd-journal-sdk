@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: human review 5474585093 repairs are implemented and validated locally; independent review is next. Earlier completion is superseded by this repair; see the dated regression section.
+Sub-state: human review 5474585093 repairs are validated and independently reviewed in df8c215. All three findings are accepted and fixed. Completion records are committed separately; these new commits remain local.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ The user approved the root retention design on 2026-10-08: shared age/byte allow
 
 Facts: default Log retention is machine-local, committed-byte and head-time based. Reader.OpenFile expands offsets; internal header parsing does not. Writer.archiveTo supplies existing archive durability and failure semantics.
 Delivered surface: explicit strict-naming Log opt-in, standalone startup inventory, and live-aware Log inventory for runtime queries/status.
-Current result: all three findings from human review 5474585093 are verified and repaired in both SDKs. The same boundary correction covers unexpected lazy active files and a reproduced Rust empty-archive transition after policy updates. Local validation passes with the documented existing platform gaps; independent review is pending. Earlier GitHub bot fixes remain published. These new repairs are local, with no human reply posted.
+Current result: all three findings from human review 5474585093 are verified and repaired in both SDKs. The same boundary correction covers unexpected lazy active files and a reproduced Rust empty-archive transition after policy updates. Local validation and independent review pass with the documented existing platform gaps. Earlier GitHub bot fixes remain published; these new repairs are local, with no human reply posted. No implementation remains for this repair.
 
 ### Acceptance Criteria
 
@@ -204,7 +204,7 @@ Follow-up mapping:
 
 ## Outcome
 
-The paired feature remains on PR #9. Human review 5474585093 identified three real gaps after the prior bot-review completion. Their repairs and coupled lifecycle cases are validated locally; independent review is required before this reopened SOW closes. Publication of these repairs and a human reply are not performed. Earlier hosted-check results belong to the earlier commits, not the new local work.
+All three findings in human review 5474585093 are accepted and fixed in df8c215, together with the coupled lazy-creation and empty-root rotation cases. Relevant validation and independent review pass; the SOW is complete. These new commits remain local and no human reply is posted. Earlier hosted-check results apply to earlier commits and do not establish remote CI status for these repairs. No release is authorized.
 
 ## Lessons Extracted
 
@@ -460,7 +460,6 @@ Validation and artifact requirements:
 - Source-reference scans cover root create/archive/disposal call sites and all stable-validator callers. Document boundary preconditions and header consistency in paired API/shared docs, product scope and compatibility guidance. No unrelated pending SOW overlaps this ownership/validation repair.
 - Synthetic identities only; no host journals/identity probes, services, new packages or compiler changes. Existing isolated Go/Rust caches and outputs stay under /tmp or ignored .local. Native Windows runtime remains untested. Current native review instructions supersede the unavailable historical external-reviewers harness; reviewers remain read-only and cannot launch agents.
 
-
 Implementation and reproduction:
 
 - Accepted all three human findings. Go root close/disposal/rotation now share path/held-file and header-identity preflight; rejected close uses release-only cleanup. Rust rotation reuses the existing safe root-finalization check before poisoning or detaching ownership. Both reject occupied archive destinations and unexpected lazy active paths before creation. Ordinary nonrotating append paths and low-level creation semantics remain unchanged.
@@ -473,10 +472,10 @@ Validation of the repair:
 
 - Cache isolation uses the existing /tmp/dem-sdk-go-cache, /tmp/dem-sdk-go-mod, /tmp/dem-sdk-go-path, /tmp/dem-sdk-cargo and /tmp/dem-sdk-rustup; output targets are under /tmp or ignored .local. Go runs with GOPROXY=off; Rust runs with CARGO_NET_OFFLINE=true. No dependencies, compiler versions, services or host journals changed.
 - `go -C go test ./...` and `go -C go test -race ./...`: pass, including all new lifecycle/header regressions and existing default Log, snapshot and recovery tests. Logs: go-full.log and go-race.log.
-- Rust journal-core suite: 89 tests pass, three existing doc tests ignored. `cargo test --manifest-path rust/Cargo.toml -p journal-log-writer --all-features`: 26 unit, 56 existing integration, 26 root-retention integration, six lifecycle test groups and two doc tests pass. Logs: rust-header-after.log and rust-writer-all-features.log.
+- Rust journal-core suite: 89 tests pass, three existing doc tests ignored. `cargo test --manifest-path rust/Cargo.toml -p systemd-journal-sdk-log-writer --all-features`: 26 unit, 56 existing integration, 26 root-retention integration, six lifecycle test groups and two doc tests pass. Logs: rust-header-after.log and rust-writer-all-features.log.
 - Rust public SDK suite: 165 tests pass, including concurrent append/snapshot and historical-header cases. Two unchanged macOS group-resolution tests fail because group ID zero resolves to wheel rather than root: plugin_compatible_profile_caches_user_group_resolution and plugin_compatible_profile_resolves_user_group_ids_explicitly. Repeating with exactly those two tests excluded passes. Logs: rust-public.log and rust-public-supported.log. Native Linux/Windows runtime and the previously recorded broader offline workspace gaps remain untested.
 - `python3 tests/interoperability/run_root_retention_parity.py --cargo /tmp/dem-sdk-cargo/bin/cargo --benchmark`: 14 scenario groups pass with expanded header damage coverage; report .local/retention-parity/run-1107m1ea/report.json. Header-only inventory averages 33.7-37.3 microseconds across Go/Rust writers/readers for one versus 10,000 entries, 1,000 iterations each. Rust is a debug build; these local samples support record-count-independent work, not a throughput or speedup claim. New lifecycle checks add fixed metadata/header reads only at transitions.
-- Wiki validation passes all 16 pages; verified examples pass 35/35. No example code changed. Lizard checks of changed helpers/tests and the shared matrix show no configured complexity/length violations. `git diff --check` passes. SOW audit and independent review are recorded at the final checkpoint below.
+- Wiki validation passes all 16 pages; verified examples pass 35/35. No example code changed. Lizard checks of changed helpers/tests and the shared matrix show no new configured complexity/length violations. A broader scan misparses the unchanged Rust LogArtifactSizer trait declaration as a long method; the same warning reproduces on baseline 32f9a76 and is not a source defect. `git diff --check` passes. SOW audit and independent review are recorded at the final checkpoint below.
 
 Reference search and clean-target assessment:
 
@@ -484,3 +483,10 @@ Reference search and clean-target assessment:
 - `rg -n 'preflight_root|archive_root_active|archive\(|rotate\(|remove_file\(|rename\(' rust/src/crates/journal-log-writer/src/log`: root creation/rotation and close/drop/maintenance share the boundary checks. Retired/startup mutation remains preceded by complete inventory. Default chain and low-level writer paths are intentionally unchanged.
 - `rg -n 'validateDeclaredArena|validated_arena_end|validate_file_size' go/journal rust/src/crates/journal-core/src rust/src/journal/src`: stronger fixed-header validation covers root inventory, append recovery, excluded-writer snapshots and existing stable verification; live mappings remain separate. Coupled tests/docs/spec/compatibility guidance are updated. No deferred implementation or unrelated pending work is included.
 - Readiness assessment: these ownership/error boundaries and shared header callers warrant one fresh independent reviewer who did not implement them. Review the coherent repair and relevant callers, retaining earlier whole-feature evidence where unchanged. Current instructions require a validated implementation commit before that read-only review, with completion tracking in a follow-up commit.
+
+Final review and completion checkpoint:
+
+- Fresh independent Astra/high reviewer root_retention_human_fix_review examined 32f9a76..df8c215 and relevant callers, without editing code or launching agents. No blocker found. Coverage included lifecycle ordering/ownership, safe retry versus fatal mutation, default-mode preservation, historical header gates, separate live mappings, transition-only filesystem cost, docs and real-file regression evidence.
+- The reviewer independently reran the focused Go lifecycle/header cases, six Rust lifecycle groups and three Rust header tests; all passed. Full suites, native platform tests and the shared matrix were not independently repeated; main-agent evidence and its limitations remain recorded above.
+- The reviewer caught an evidence-command typo: the writer package is systemd-journal-sdk-log-writer, not journal-log-writer. The validation record is corrected; the actual earlier log already showed the intended package tested. This tracking-only correction does not invalidate runtime validation or review.
+- No verified blocker, deferred repair or new independent implementation remains. Paired docs/spec/skill changes capture the delivered contract outside this SOW. Status moves to completed/done and both indexes are updated. SOW audit reports initialization complete and clean; final diff checks are clean. No source changes follow the reviewed implementation commit. No push, human reply, resolution or release is performed in this review iteration.

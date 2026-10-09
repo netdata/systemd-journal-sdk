@@ -4,7 +4,7 @@ Last updated: 2026-10-09
 
 ## Current
 
-- SOW-0152-20261008 - Root History Retention: in-progress for human review 5474585093. Repair root lifecycle ownership preflight and stable-header consistency in both languages.
+- None.
 
 ## Pending
 
@@ -48,6 +48,10 @@ Last updated: 2026-10-09
   decisions. Not executable until the user explicitly resumes it.
 
 ## Recently Closed Or Completed
+
+- SOW-0152-20261008 - Root History Retention: completed. Human review
+  5474585093 findings are accepted and fixed in df8c215; paired validation and
+  independent review pass. New fixes remain local; no human reply posted.
 
 - SOW-0154 - Project Release Skill: completed. Adds the full-process team
   skill to PR #8, including language parity, CI publication, maintainer tags,
