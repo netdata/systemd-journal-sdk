@@ -12,6 +12,9 @@ func (h *journalHeader) validateDeclaredArena(fileSize uint64) (uint64, error) {
 		return 0, fmt.Errorf("%w: declared arena exceeds file", errInvalidJournal)
 	}
 	end := h.headerSize + h.arenaSize
+	if err := h.validateHeaderPopulation(); err != nil {
+		return 0, err
+	}
 	if (h.tailObjectOffset == 0) != (h.nObjects == 0) {
 		return 0, fmt.Errorf("%w: object count and tail disagree", errInvalidJournal)
 	}
@@ -44,6 +47,61 @@ func (h *journalHeader) validateDeclaredArena(fileSize uint64) (uint64, error) {
 		}
 	}
 	return end, nil
+}
+
+func (h *journalHeader) validateHeaderPopulation() error {
+	if h.nObjects > h.arenaSize/objectHeaderSize || h.nEntries > h.nObjects {
+		return fmt.Errorf("%w: object population exceeds bounds", errInvalidJournal)
+	}
+	// Object types are disjoint; subtraction also avoids aggregate overflow.
+	// Each nonzero hash-table offset declares one object without a count field.
+	remaining := h.nObjects - h.nEntries
+	for _, field := range []struct{ end, count uint64 }{
+		{120, min(h.dataHashTableOffset, 1)},
+		{136, min(h.fieldHashTableOffset, 1)},
+		{216, h.nData},
+		{224, h.nFields},
+		{232, h.nTags},
+		{240, h.nEntryArrays},
+	} {
+		if h.headerSize < field.end {
+			continue
+		}
+		if field.count > remaining {
+			return fmt.Errorf("%w: object type counts exceed object population", errInvalidJournal)
+		}
+		remaining -= field.count
+	}
+	return h.validateArrayPopulation()
+}
+
+func (h *journalHeader) validateArrayPopulation() error {
+	if h.headerSize >= 240 && h.nEntryArrays < h.minimumEntryArrays() {
+		return fmt.Errorf("%w: array count does not cover declared locations", errInvalidJournal)
+	}
+	if h.headerSize < 264 {
+		return nil
+	}
+	offset, count := uint64(h.tailEntryArrayOffset), uint64(h.tailEntryArrayNEntries)
+	if h.entryArrayOffset > offset || (h.entryArrayOffset == 0 && offset != 0) {
+		return fmt.Errorf("%w: entry array tail disagrees with first array", errInvalidJournal)
+	}
+	if (offset == 0) != (count == 0) || count > h.nEntries {
+		return fmt.Errorf("%w: entry array tail disagrees with entry population", errInvalidJournal)
+	}
+	return nil
+}
+
+// The first and cached tail may name the same array; DATA arrays can add more.
+func (h *journalHeader) minimumEntryArrays() uint64 {
+	var count uint64
+	if h.entryArrayOffset != 0 {
+		count++
+	}
+	if h.headerSize >= 264 && h.tailEntryArrayOffset != 0 && uint64(h.tailEntryArrayOffset) != h.entryArrayOffset {
+		count++
+	}
+	return count
 }
 
 func (h *journalHeader) validateArenaHashTables(end uint64) error {

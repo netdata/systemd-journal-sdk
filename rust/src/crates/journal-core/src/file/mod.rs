@@ -6,6 +6,9 @@ mod file_mut;
 mod file_payload;
 pub mod filter;
 mod guarded_cell;
+mod header_inventory;
+#[doc(hidden)]
+pub use header_inventory::read_retention_header;
 pub mod hash;
 pub mod lock;
 pub mod mmap;

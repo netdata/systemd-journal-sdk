@@ -371,6 +371,55 @@ impl<M: MemoryMap> WindowManager<M> {
         Err(JournalError::ObjectExceedsFileBounds)
     }
 
+    pub(super) fn names_same_file(&self, path: &std::path::Path) -> Result<bool> {
+        let named = std::fs::symlink_metadata(path)?;
+        if !named.is_file() {
+            return Ok(false);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let live = self.file.metadata()?;
+            Ok(named.dev() == live.dev() && named.ino() == live.ino())
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            };
+            fn identity(file: &File) -> std::io::Result<(u32, u32, u32)> {
+                let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+                // SAFETY: the borrowed File keeps its handle valid for this call;
+                // info provides writable, aligned storage for the full output struct.
+                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+                if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) }
+                    == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // SAFETY: a nonzero return from GetFileInformationByHandle
+                // initializes the entire output struct; failure returned above.
+                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+                let info = unsafe { info.assume_init() };
+                Ok((
+                    info.dwVolumeSerialNumber,
+                    info.nFileIndexHigh,
+                    info.nFileIndexLow,
+                ))
+            }
+            Ok(identity(&self.file)? == identity(&File::open(path)?)?)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "live journal identity is unavailable on this platform",
+            )
+            .into())
+        }
+    }
+
     pub(crate) fn read_exact_at(&mut self, position: u64, output: &mut [u8]) -> Result<()> {
         let end = position
             .checked_add(output.len() as u64)

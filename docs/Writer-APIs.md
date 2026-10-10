@@ -183,6 +183,77 @@ its empty archive. Construct a new writer with the intended policy for
 subsequent retention enforcement. Normal Rust `close()` keeps applying its
 policy when archiving a file, except when discarding an empty strict-named file.
 
+## Dedicated Root History
+
+This feature is unreleased.
+
+Go `LogConfig.RootRetention` and Rust `Config::with_root_retention(true)` add
+an explicit policy for a caller-owned root/source across machine identities.
+Use this when retained history must share one allowance even after machine
+identity changes. Default retention policies remain machine-local, with
+committed-byte accounting and archive-head-age expiry. Go also corrects an
+existing default-mode gap: a successful successor-creation retry now applies
+retention after a preceding safe creation failure.
+
+Both implementations require strict active names and exclusive caller ownership.
+The caller must verify recovered active files before opening the writer. Inventory
+reads directory entries, file metadata and fixed-size headers without expanding
+records. It rejects malformed or quarantined source candidates, symlinks,
+ambiguous identities, filename/header mismatches and inconsistent fixed-header
+counts or cached offset/count pairs before pruning. A missing
+root is an error. Canonical machine-named entries must be directories; unrelated
+metadata directories are allowed when they contain no source candidates and
+must be readable so inventory can establish that exclusion.
+Live-aware inventory also rejects a missing or replaced active file.
+
+Before root close, empty-file disposal or rotation, both SDKs check that the active
+pathname still names the owned file. They reject occupied archive destinations
+and unexpected active paths at lazy creation before changing file contents or
+names. Failed creation/rotation preflight returns an error without poisoning the
+writer; callers can restore the expected paths and retry. Rejected close releases
+resources without rewriting the files. These checks cover changes completed
+between calls and require caller exclusion throughout each call; they add no
+filesystem checks to ordinary nonrotating appends.
+
+The shared policy:
+
+- Counts full directory-visible file lengths, including preallocation, across
+  all retained identities. New SDK files allocate at least 8 MiB; existing files
+  are counted at their actual length, and smaller allowances are accepted.
+  Unlinked files pinned by readers are excluded.
+- Expires whole files by their newest saved journal realtime, independently of
+  producer event time. Size/count pressure removes oldest tails first, with
+  canonical path as the deterministic tie-breaker.
+- Protects a live active from size eviction. Explicit maintenance finalizes it
+  for idle age expiry or required allocation changes, leaving the next file lazy.
+  Eager startup can also leave a lazy successor after finalizing a recovered file.
+- Runs on startup, active-file creation, rotation, closing a nonempty active,
+  and explicit maintenance. Closing an unopened or empty Log does not sweep
+  history. Close without retention finalizes without pruning. Finalized files
+  lose live protection: policy shrinkage or a too-small allowance can delete even the
+  newest file immediately, without a grace period.
+- Emits `Archived` when finalization succeeds without a successor, before any
+  deletion; ordinary `Rotated` events keep both old and successor identities.
+  Empty-file disposal is not an archive event.
+- Installs valid replacement policies before enforcement, preserves explicit
+  rotation limits, and recalculates derived allocation geometry.
+- Reports safe cleanup failures independently from healthy appends; uncertain
+  archive mutation remains a writer failure and stops pruning. Opening or
+  validating a retired file before mutation may fail without poisoning the
+  healthy current writer. Failed writers remain inspectable for status.
+
+Positive age limits below one microsecond normalize to one microsecond in both
+SDKs; larger limits use whole microseconds.
+
+This is neither an exact record TTL nor a hard physical disk cap. With a 24-hour
+file span and successful hourly cleanup, age overhang is about one day plus one
+hour under advancing clocks; existing files keep their actual spans. Size pressure
+can remove history earlier. Preallocation, active growth, pinned readers and
+failed cleanup can exceed the allowance. The SDK does not schedule cleanup.
+
+See [[Go-API|Go API]] and [[Rust-API|Rust API]] for executable examples, policy
+updates, inventory and maintenance outcomes.
+
 ## Identity And Locking
 
 Core writers do not discover host identity. Pass machine ID, boot ID, and

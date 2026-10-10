@@ -19,8 +19,13 @@ type retentionRun struct {
 
 // EnforceRetention applies the configured retention policy without requiring a
 // rotation or close. The current active file is counted in retention envelopes
-// and protected from deletion.
+// and protected from deletion by default. With RootRetention it delegates to
+// MaintainRootRetention, which can finalize an idle expired active file.
 func (l *Log) EnforceRetention() error {
+	if l.rootRetention {
+		_, err := l.MaintainRootRetention(time.Now())
+		return err
+	}
 	if err := l.writable(); err != nil {
 		return err
 	}
@@ -28,17 +33,24 @@ func (l *Log) EnforceRetention() error {
 }
 
 func (l *Log) enforceRetentionOnOpen() error {
-	if l.openRetention || l.writer == nil {
+	if l.writer == nil || l.retentionWriter == l.writer {
 		return nil
 	}
 	if err := l.enforceRetention(l.activePath()); err != nil {
 		return err
 	}
-	l.openRetention = true
+	l.retentionWriter = l.writer
 	return nil
 }
 
 func (l *Log) enforceRetention(protectedPath string) error {
+	if l.rootRetention {
+		_, err := l.maintainRootRetention(time.Now(), false)
+		if errors.Is(err, ErrWriterFailed) {
+			return err
+		}
+		return nil
+	}
 	run, err := l.newRetentionRun(protectedPath)
 	if err != nil {
 		return err

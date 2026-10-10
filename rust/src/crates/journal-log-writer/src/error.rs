@@ -3,6 +3,10 @@ use thiserror::Error;
 /// Errors that can occur during journal writing operations.
 #[derive(Error, Debug)]
 pub enum WriterError {
+    /// Stored root maintenance failure, shared with the latest outcome.
+    #[error("root retention: {0}")]
+    RootRetention(#[source] std::sync::Arc<WriterError>),
+
     /// Failed to serialize value to journal entry format
     #[error("serialization error: {0}")]
     Serialization(String),

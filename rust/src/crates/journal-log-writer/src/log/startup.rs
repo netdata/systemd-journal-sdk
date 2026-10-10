@@ -52,6 +52,7 @@ pub(super) struct ActiveFile {
     pub(super) repository_file: repository::File,
     pub(super) journal_file: JournalFile<MmapMut>,
     pub(super) writer: JournalWriter,
+    pub(super) identity: ([u8; 16], [u8; 16], [u8; 16]),
 }
 
 impl ActiveFile {
@@ -60,10 +61,19 @@ impl ActiveFile {
         repository_file: repository::File,
         fallback_boot_id: uuid::Uuid,
     ) -> Result<Self> {
-        use journal_core::file::JournalState;
-
-        let mut journal_file =
+        let journal_file =
             JournalFile::<MmapMut>::open_for_append(&repository_file, 8 * 1024 * 1024)?;
+        Self::activate_opened(repository_file, journal_file, fallback_boot_id)
+    }
+
+    /// Begins mutation of an already opened journal. Callers that distinguish
+    /// safe open failures from uncertain mutation must establish ownership first.
+    pub(super) fn activate_opened(
+        repository_file: repository::File,
+        mut journal_file: JournalFile<MmapMut>,
+        fallback_boot_id: uuid::Uuid,
+    ) -> Result<Self> {
+        use journal_core::file::JournalState;
         journal_file.journal_header_mut().state = JournalState::Online as u8;
         let header = journal_file.journal_header_ref();
         let next_seqnum = header.tail_entry_seqnum.saturating_add(1);
@@ -73,10 +83,13 @@ impl ActiveFile {
         }
         let writer = JournalWriter::new(&mut journal_file, next_seqnum, boot_id)?;
 
+        let header = journal_file.journal_header_ref();
+        let identity = (header.file_id, header.machine_id, header.seqnum_id);
         Ok(Self {
             repository_file,
             journal_file,
             writer,
+            identity,
         })
     }
 
@@ -86,46 +99,36 @@ impl ActiveFile {
         seqnum_id: uuid::Uuid,
         boot_id: uuid::Uuid,
         next_seqnum: u64,
-        max_file_size: Option<u64>,
-        _head_realtime: u64,
-        compression: Compression,
-        compression_threshold: usize,
-        compact: bool,
-        strict_systemd_naming: bool,
-        live_publish_every_entries: u64,
-        file_mode: u32,
+        head_realtime: u64,
+        config: &Config,
     ) -> Result<Self> {
         let head_seqnum = next_seqnum;
 
-        let repository_file = if strict_systemd_naming {
+        let repository_file = if config.strict_systemd_naming {
             chain.create_active_file()?
         } else {
-            chain.create_chain_file(seqnum_id, head_seqnum, _head_realtime)?
+            chain.create_chain_file(seqnum_id, head_seqnum, head_realtime)?
         };
 
-        let options = JournalFileOptions::new(chain.machine_id, boot_id, seqnum_id)
-            .with_window_size(8 * 1024 * 1024)
-            .with_compact(compact)
-            .with_optimized_buckets(None, max_file_size)
-            .with_keyed_hash(true)
-            .with_compression(compression)
-            .with_file_mode(file_mode)
-            .with_compress_threshold(compression_threshold);
+        let options = configured_file_options(config, chain.machine_id, boot_id, seqnum_id);
 
         let mut journal_file = JournalFile::create(&repository_file, options)?;
         let mut writer = JournalWriter::new_with_compression(
             &mut journal_file,
             head_seqnum,
             boot_id,
-            compression,
-            compression_threshold,
+            config.compression,
+            config.compression_threshold,
         )?;
-        writer.set_live_publish_every_entries(live_publish_every_entries);
+        writer.set_live_publish_every_entries(config.live_publish_every_entries);
 
+        let header = journal_file.journal_header_ref();
+        let identity = (header.file_id, header.machine_id, header.seqnum_id);
         Ok(Self {
             repository_file,
             journal_file,
             writer,
+            identity,
         })
     }
 
@@ -168,10 +171,13 @@ impl ActiveFile {
         )?;
         writer.set_live_publish_every_entries(live_publish_every_entries);
 
+        let header = journal_file.journal_header_ref();
+        let identity = (header.file_id, header.machine_id, header.seqnum_id);
         Ok(Self {
             repository_file,
             journal_file,
             writer,
+            identity,
         })
     }
 
@@ -198,6 +204,22 @@ impl ActiveFile {
     }
 }
 
+pub(super) fn configured_file_options(
+    config: &Config,
+    machine_id: uuid::Uuid,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
+) -> JournalFileOptions {
+    JournalFileOptions::new(machine_id, boot_id, seqnum_id)
+        .with_window_size(8 * 1024 * 1024)
+        .with_compact(config.compact)
+        .with_optimized_buckets(None, config.rotation_policy.size_of_journal_file)
+        .with_keyed_hash(true)
+        .with_compression(config.compression)
+        .with_file_mode(config.file_mode)
+        .with_compress_threshold(config.compression_threshold)
+}
+
 pub(super) fn replaceable_active_open_error(err: &WriterError) -> bool {
     matches!(
         err,
@@ -209,6 +231,7 @@ pub(super) fn open_existing_active_file(
     chain: &mut OwnedChain,
     repository_file: repository::File,
     boot_id: uuid::Uuid,
+    allow_disposal: bool,
 ) -> Result<Option<ActiveFile>> {
     match ActiveFile::open(repository_file.clone(), boot_id) {
         Ok(opened) => {
@@ -224,7 +247,7 @@ pub(super) fn open_existing_active_file(
                 Ok(Some(opened))
             }
         }
-        Err(err) if replaceable_active_open_error(&err) => {
+        Err(err) if allow_disposal && replaceable_active_open_error(&err) => {
             chain.dispose_replaceable_active_file(&repository_file)?;
             Ok(None)
         }
@@ -255,7 +278,8 @@ pub(super) fn replace_strict_online_chain_file(
     let Some(repository_file) = chain.online_chain_file()? else {
         return Ok(());
     };
-    let Some(mut opened) = open_existing_active_file(chain, repository_file.clone(), boot_id)?
+    let Some(mut opened) =
+        open_existing_active_file(chain, repository_file.clone(), boot_id, true)?
     else {
         return Ok(());
     };
@@ -289,7 +313,9 @@ pub(super) fn open_existing_active_for_config(
     else {
         return Ok(None);
     };
-    open_existing_active_file(chain, repository_file, boot_id)
+    // Never dispose an unsupported recovered active in root mode. Empty
+    // valid actives still follow the existing lazy startup lifecycle.
+    open_existing_active_file(chain, repository_file, boot_id, !config.root_retention)
 }
 
 pub(super) fn adopt_active_file_identity(
@@ -401,6 +427,14 @@ pub(super) fn open_startup_active_file(
 
 pub(super) fn build_startup_state(path: &Path, config: Config) -> Result<StartupState> {
     let config = normalize_config(config)?;
+    if config.root_retention {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                super::inspect_root_retention(path, &config.origin.source)?;
+            }
+        }
+    }
     let mut chain = create_startup_chain(path, &config)?;
     let startup_active = open_startup_active_file(&mut chain, &config)?;
     let rotation_state =

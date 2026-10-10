@@ -53,5 +53,6 @@ pub use journal_core::file::{
 };
 pub use log::{
     Config, EntryTimestamps, Log, LogArtifactSizer, LogIdentityMode, LogLifecycleEvent,
-    LogLifecycleObserver, LogLifecycleReason, LogOpenMode, RetentionPolicy, RotationPolicy,
+    LogLifecycleObserver, LogLifecycleReason, LogOpenMode, RetentionPolicy, RootRetentionFile,
+    RootRetentionInventory, RootRetentionResult, RotationPolicy, inspect_root_retention,
 };

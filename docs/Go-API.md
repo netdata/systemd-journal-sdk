@@ -420,6 +420,131 @@ remove an empty active file with strict systemd naming, retain its archive with
 chain naming, and are idempotent after closure; calling `Close()`
 after `CloseWithoutRetention()` does not retroactively apply the old policy.
 
+## Dedicated Root Retention
+
+This feature is unreleased.
+
+Use `LogConfig.RootRetention: true` when one caller owns a dedicated root and
+source across machine identity changes. This opt-in requires
+`StrictSystemdNaming: true` and does not accept an `ArtifactSizer`. The default
+Log behavior remains machine-local, committed-byte and archive-head-age based.
+
+The caller MUST serialize Log calls and directory changes, exclude independent
+writers, and verify the provenance and index integrity of recovered active
+files before `NewLog`. Owned files must use nondecreasing saved realtime (as
+Log does). `InspectRootRetention(root, source)` supplies header-only inventory
+before open. After open, use `log.InspectRootRetention()` for queries and status,
+including after writer failure: it also checks that the active path still names
+the live writer's filesystem file and journal identities. Missing or replaced
+live files are errors, not empty history; inventory errors alone do not poison
+the writer. The method requires an open root-retention Log. Both forms validate
+canonical machine directories, filename/header machine and sequence identities,
+archive state, header bounds and internal counter/offset consistency. It rejects
+source quarantine names, symlinks,
+ambiguous identities and malformed candidates before pruning. Unrelated caller
+metadata directories, such as `identity/`, are permitted when they contain no
+source candidates and must be readable so inventory can establish that exclusion. A missing or inaccessible root is an error, not zero history.
+This inventory does not verify payloads/indexes or certify provenance. Canonical
+machine-named entries must be directories.
+
+Root close, empty-file disposal and rotation check live-file ownership before
+changing either the held file or its pathname. Archives and lazy successors must
+have unoccupied destination paths. A creation or rotation rejected by these
+preflight checks returns an error without poisoning the writer, so the caller can
+restore the expected paths and retry. Errors after file mutation starts can poison
+the writer. A close rejected by preflight releases resources without rewriting
+either file.
+These checks run at lifecycle boundaries, not on every append; callers must still
+exclude external changes throughout each SDK call.
+
+<!-- verify-example: lang=go id=go-root-retention -->
+```go
+machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
+if err != nil { return err }
+bootID, err := journal.ParseUUID("ffeeddccbbaa99887766554433221100")
+if err != nil { return err }
+log, err := journal.NewLog("/var/log/journal-sdk", journal.LogConfig{
+    Source: "example-history",
+    Options: journal.Options{MachineID: machineID, BootID: bootID},
+    StrictSystemdNaming: true,
+    RootRetention: true,
+    RotationPolicy: journal.RotationPolicy{}.WithMaxDuration(24 * time.Hour),
+    RetentionPolicy: journal.RetentionPolicy{}.
+        WithMaxAge(30 * 24 * time.Hour).WithMaxBytes(1024 * 1024 * 1024),
+})
+if err != nil { return err }
+defer log.Close()
+if err := log.Append([]journal.Field{journal.StringField("MESSAGE", "saved")},
+    journal.EntryOptions{MonotonicUsec: 1}); err != nil { return err }
+// Install a valid replacement before maintenance; invalid policies change nothing.
+if err := log.SetRootRetentionPolicy(journal.RetentionPolicy{}.
+    WithMaxAge(30 * 24 * time.Hour).WithMaxBytes(2 * 1024 * 1024 * 1024)); err != nil {
+    return err
+}
+result, err := log.MaintainRootRetention(time.Now())
+if err != nil { return err }
+inventory, err := log.InspectRootRetention()
+if err != nil { return err }
+fmt.Println(inventory.Bytes, len(inventory.Files), result.LastSuccessfulAt)
+```
+
+Root maintenance counts full directory-visible file lengths, including
+preallocation, across all owned machine directories. Age eviction uses each
+file's tail saved realtime; size/file-count eviction chooses oldest tail first,
+then canonical path as a deterministic identity/sequence tie-breaker. Saved
+realtime is not producer event time. Whole-file expiry is not an exact row TTL;
+a live file is protected from size pressure, and an append/allocation can exceed
+the allowance. With the example's 24-hour file span and successful hourly
+maintenance, age overhang is about one day plus one hour under advancing clocks.
+The SDK does not schedule maintenance. Existing files keep their actual spans.
+New SDK files allocate at least 8 MiB; existing files are counted at their
+actual length, and smaller allowances are accepted. Once an active file is
+finalized, it loses size protection: a smaller allowance or policy shrink can delete even the newest
+file in the same maintenance pass. There is no newest-file grace period.
+
+`NewLog` applies root maintenance even for lazy archived-only histories.
+Automatic cleanup also runs on active-file creation, rotation and `Close` of
+a nonempty active file. Closing an unopened or empty Log does not sweep history.
+`CloseWithoutRetention` finalizes the active file without pruning. Explicit
+`MaintainRootRetention(now)` (or `EnforceRetention()`) finalizes an idle active
+only when its tail expires or a changed derived size policy needs fresh
+allocation geometry; empty files are discarded. Ordinary idle sweeps keep the
+same file, and the successor stays lazy. Even eager construction may therefore
+return without an active file after startup maintenance finalizes a recovered
+file. Verified retired-machine active files are archived through the existing
+writer lifecycle. `SetRootRetentionPolicy`
+installs copied valid limits without applying either old or new limits;
+`RootRetentionPolicy()` returns a copy. Policy-derived hash-table sizing is
+recomputed from the new allowance; caller-explicit hash buckets or allocation
+size remain fixed. Maintenance compares the live allocation geometry with the
+effective policy, so edits reverted before maintenance do not force an archive.
+Each newly created successor receives creation cleanup. Explicit rotation limits
+stay fixed.
+
+Successful root finalization emits `LogLifecycleArchived` before any retention
+deletion, including retired-file maintenance and close. Its `ArchivedPath` names
+the finalized file and `ActivePath` is empty; ordinary rotations retain their
+existing `LogLifecycleRotated` event with both paths. Empty-file disposal is not
+an archive event.
+
+Creation cleanup also runs in default mode when a retry successfully creates
+a successor after an earlier safe creation failure. This corrects the previous
+case where that retry could skip retention.
+
+Safe inventory/unlink/directory-sync errors are maintenance failures and do not
+turn successful appends into failures. Read `LastRootRetentionResult()` after
+automatic boundaries: it retains `AttemptedAt`, `LastSuccessfulAt`, `Err`, and a
+post-attempt inventory only when `InventoryValid` is true. Explicit maintenance
+also returns the error. Returned inventories are independent copies of retained
+status. Unknown inventory must not be displayed as zero. Failure to open or
+validate a retired file before mutation leaves the current writer healthy.
+Uncertain writer/archive mutations still fail the Log and preserve evidence;
+writer failure must be reported separately. Failed maintenance can leave excess
+bytes indefinitely. Readers holding a removed file may continue reading it;
+those pinned bytes remain allocated until readers close and are excluded from
+directory-visible accounting. Windows opens permit delete sharing, but runtime
+unlink behavior must be validated on the consumer's supported Windows setup.
+
 ## Field-Name Policy
 
 <!-- verify-example: lang=go id=go-field-name-policy -->

@@ -1,0 +1,13 @@
+[package]
+name = "root-retention-parity-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+journal-core = { package = "systemd-journal-sdk-core", path = "../../../../rust/src/crates/journal-core" }
+journal-log-writer = { package = "systemd-journal-sdk-log-writer", path = "../../../../rust/src/crates/journal-log-writer" }
+journal-registry = { package = "systemd-journal-sdk-registry", path = "../../../../rust/src/crates/journal-registry" }
+uuid = "1.24.0"

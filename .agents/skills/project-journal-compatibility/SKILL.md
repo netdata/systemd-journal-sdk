@@ -61,6 +61,50 @@ Do not use this skill for:
 - The reusable live-concurrency harness is under `tests/conformance/live/`. Writer tests should use the configured monotonically increasing sequence field, default `LIVE_SEQ`, so stock readers prove complete ordered visibility.
 - Stock reader harness adapters may retry transient active-writer `ENODATA` open/read failures or partial snapshots only while the writer is active. After the writer exits, final ordered reads and `journalctl --verify --file` must pass.
 - High-level directory writers must apply configured retention once when an active writer is opened or created. Existing-active reopen and eager open enforce during construction; lazy archived-only construction remains side-effect-free until the first append opens the active file, then retention runs before the first entry is written. Active/current files must remain protected and normal retention deletion lifecycle events must be reused.
+- Apply the **Go/Rust Feature Parity** development rule in `AGENTS.md`;
+  consumer language alone does not justify a feature gap.
+- Go's explicit `LogConfig.RootRetention` and Rust's
+  `Config::with_root_retention(true)` are exceptions to the default
+  machine-local lifecycle rules above: archived-only startup also maintains
+  the owned root, file lengths and tail times govern deletion, and live files
+  may be finalized for idle expiry or allocation-policy changes. Recovered
+  active files require caller verification/exclusion. Use header-native
+  `InspectRootRetention` before open and `Log.InspectRootRetention` for live
+  query/status inventory (Rust exposes equivalent snake_case APIs); do not
+  substitute Reader entry-vector expansion.
+  Live inventory must reject missing/replaced active files instead of reporting
+  false-empty success, and maintenance must validate it before mutation.
+  Root close, disposal and rotation MUST share live-path/header ownership
+  preflight before mutation or ownership detachment. Archive and lazy-creation
+  destinations MUST be absent. Reject safely, preserve bytes and permit healthy
+  rotation/creation retry after path restoration; rejected close releases only.
+  Test changes completed between SDK calls, with caller exclusion during calls,
+  and cover empty actives after policy setters as well as lazy successors.
+  Preserve separate safe-maintenance errors and fatal archive-mutation errors:
+  failed retired-file open/validation before mutation must not poison a healthy
+  current writer. Detach outgoing ownership before archive mutations so even
+  a post-rename failure leaves evidence inspectable. New root files, successors
+  and allocation checks must share configured options rather than inheriting
+  stale recovered layout. Exercise regular/compact transitions through both
+  append APIs, pre/post-mutation failures, and archive-before-delete events.
+  Fixed-header inventory MUST validate every header-addressed object extent
+  against the declared arena and allocated object tail, including ENTRY-array
+  and tail-entry hints. Reuse stable-header validation with append recovery and
+  excluded-writer snapshots; corruption in array contents remains outside the
+  header-only inventory contract. Exercise malformed header offsets in both
+  languages and require failed preflight to preserve journal bytes.
+  Stable validation MUST also enforce fixed-header object/category population
+  bounds and cached offset/count agreement, using complete on-disk field gates
+  for historical headers. The aggregate of present disjoint object categories
+  MUST fit within the total, including one object for each declared DATA/FIELD
+  hash table; those two object types have no dedicated count fields. Use checked
+  addition or a remaining-object budget. Test exact and insufficient budgets
+  with zero, one and two table declarations, including historical headers.
+  A present ENTRY_ARRAY counter MUST cover the distinct nonzero first/tail
+  array locations declared by complete header fields. Equal pointers count once;
+  additional arrays are permitted. Test historical counters before cached-tail
+  fields exist and preserve bytes on inventory/startup rejection.
+  Test small in-bounds contradictions, not only overflowing offsets. Do not impose stable counter consistency on live mapping validation.
 - For deterministic regular uncompressed writer output, the layout target is byte-for-byte identity with the systemd v260.1 reference ingester for the accepted corpus. Writers must match systemd object order, alignment, initial allocation envelope, v260 header fields, entry-array growth, tail metadata, and hash-chain header behavior for that slice.
 - Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.
 - Header readers must use the on-disk `header_size` when validating object and hash-table locations. Do not compare historical file offsets against the current in-memory v260 `JournalHeader` struct size, and do not expose bytes beyond the on-disk header as newer header fields.

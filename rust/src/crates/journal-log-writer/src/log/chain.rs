@@ -14,7 +14,7 @@ use uuid::Uuid;
 #[allow(unused_imports)]
 use tracing::{error, info, instrument};
 
-fn source_basename(source: &Source) -> String {
+pub(super) fn source_basename(source: &Source) -> String {
     match source {
         Source::System => "system".to_string(),
         Source::User(uid) => format!("user-{uid}"),
@@ -64,6 +64,8 @@ pub(super) struct OwnedChain {
     pub(super) inner: repository::Chain,
     pub(super) file_sizes: HashMap<File, u64>,
     pub(super) total_size: u64,
+    #[cfg(test)]
+    pub(super) fail_archive_directory_sync: bool,
 }
 
 pub(super) struct RetentionOutcome {
@@ -133,6 +135,8 @@ impl OwnedChain {
             inner: repository::Chain::default(),
             file_sizes: HashMap::default(),
             total_size: 0,
+            #[cfg(test)]
+            fail_archive_directory_sync: false,
         };
 
         for entry in std::fs::read_dir(&chain.path)? {
@@ -458,6 +462,12 @@ impl OwnedChain {
         let renamed = file.path() != archived.path() && std::path::Path::new(file.path()).exists();
         if renamed {
             std::fs::rename(file.path(), archived.path())?;
+            #[cfg(test)]
+            if self.fail_archive_directory_sync {
+                return Err(
+                    std::io::Error::other("injected archive directory sync failure").into(),
+                );
+            }
             sync_directory(&self.path)?;
         }
 

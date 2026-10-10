@@ -1,0 +1,269 @@
+use journal_core::file::{
+    Direction, JournalFile, JournalFileOptions, JournalReader, JournalState, JournalWriter, Mmap,
+    MmapMut,
+};
+use journal_log_writer::{
+    Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
+    RotationPolicy, inspect_root_retention,
+};
+use journal_registry::{Origin, Source, repository::File};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+    time::{Duration, UNIX_EPOCH},
+};
+use uuid::Uuid;
+const DAY: u64 = 86_400_000_000;
+fn id(n: u8) -> Uuid {
+    Uuid::from_bytes([n; 16])
+}
+fn source() -> Source {
+    Source::Unknown("history".into())
+}
+fn config() -> Config {
+    Config::new(
+        Origin {
+            machine_id: Some(id(1)),
+            namespace: None,
+            source: source(),
+        },
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    )
+    .with_boot_id(id(2))
+    .with_strict_systemd_naming(true)
+    .with_root_retention(true)
+}
+fn inventory(root: &Path) {
+    for f in inspect_root_retention(root, &source()).unwrap().files {
+        println!(
+            "{} {} {} {} {} {} {} {}",
+            f.machine_id.simple(),
+            f.bytes,
+            f.entries,
+            f.head_seqnum,
+            f.tail_seqnum,
+            f.head_realtime,
+            f.tail_realtime,
+            f.active
+        )
+    }
+}
+fn append_entry(log: &mut Log, stamp: u64) {
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=live"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(stamp)
+            .with_entry_monotonic_usec(1),
+    )
+    .unwrap();
+}
+
+#[derive(Default)]
+struct LifecycleEvents(Mutex<Vec<&'static str>>);
+impl LogLifecycleObserver for LifecycleEvents {
+    fn on_event(&self, event: &LogLifecycleEvent) {
+        let name = match event {
+            LogLifecycleEvent::Archived { archived, .. } => {
+                assert!(Path::new(archived.path()).is_file());
+                "archived"
+            }
+            LogLifecycleEvent::Created { .. } => "created",
+            LogLifecycleEvent::Rotated { .. } => "rotated",
+            LogLifecycleEvent::RetainedDeleted { .. } => "deleted",
+        };
+        self.0.lock().unwrap().push(name);
+    }
+}
+
+fn fixture(root: &Path, now: u64, args: &[String]) {
+    let count: usize = args.get(4).map(|s| s.parse().unwrap()).unwrap_or(0);
+    for n in 21..=23 {
+        if count > 0 && n != 21 {
+            continue;
+        }
+        let times = if count > 0 {
+            (0..count).map(|i| now + i as u64).collect::<Vec<_>>()
+        } else if n == 22 {
+            vec![now - 40 * DAY, now - 20 * DAY]
+        } else {
+            vec![now - 40 * DAY]
+        };
+        let dir = root.join(id(n).simple().to_string());
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.journal");
+        let file = File::from_path(&path).unwrap();
+        let opts = JournalFileOptions::new(id(n), id(2), id(3))
+            .with_data_hash_table_buckets(32)
+            .with_field_hash_table_buckets(16);
+        let mut journal = JournalFile::<MmapMut>::create(&file, opts).unwrap();
+        let mut writer = JournalWriter::new(&mut journal, 1, id(2)).unwrap();
+        for (i, t) in times.iter().enumerate() {
+            writer
+                .add_entry(&mut journal, &[b"MESSAGE=fixture"], *t, i as u64 + 1)
+                .unwrap();
+        }
+        journal.journal_header_mut().state = if n == 23 {
+            JournalState::Offline
+        } else {
+            JournalState::Archived
+        } as u8;
+        journal.sync().unwrap();
+        drop(writer);
+        drop(journal);
+        if n != 23 {
+            fs::rename(
+                &path,
+                dir.join(format!(
+                    "history@{}-{:016x}-{:016x}.journal",
+                    id(3).simple(),
+                    1,
+                    times[0]
+                )),
+            )
+            .unwrap();
+        }
+    }
+}
+
+fn benchmark(root: &Path) {
+    let start = std::time::Instant::now();
+    for _ in 0..1000 {
+        assert_eq!(
+            inspect_root_retention(root, &source()).unwrap().files.len(),
+            1
+        );
+    }
+    println!("{}", start.elapsed().as_nanos() / 1000);
+}
+
+fn maintain(root: &Path, now: u64, mode: &str) {
+    let mut log = Log::new(root, config()).unwrap();
+    let policy = match mode {
+        "maintain-size" => RetentionPolicy::default().with_size_of_journal_files(8 << 20),
+        "maintain-count" => RetentionPolicy::default().with_number_of_journal_files(2),
+        _ => RetentionPolicy::default()
+            .with_duration_of_journal_files(Duration::from_micros(30 * DAY)),
+    };
+    log.set_root_retention_policy(policy).unwrap();
+    let r = log
+        .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now))
+        .unwrap();
+    println!("deleted {}", r.deleted_files);
+    log.close_without_retention().unwrap();
+    inventory(root)
+}
+
+fn lifecycle(root: &Path, now: u64, mode: &str) {
+    let policy = RetentionPolicy::default().with_size_of_journal_files(if mode == "policy" {
+        32 << 30
+    } else {
+        4 << 20
+    });
+    let events = Arc::new(LifecycleEvents::default());
+    let mut log = Log::new(root, config().with_retention_policy(policy))
+        .unwrap()
+        .with_lifecycle_observer(events.clone());
+    append_entry(&mut log, now);
+    events.0.lock().unwrap().clear();
+    if mode == "policy" {
+        log.set_root_retention_policy(
+            RetentionPolicy::default().with_size_of_journal_files(8 << 20),
+        )
+        .unwrap();
+        let r = log
+            .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now))
+            .unwrap();
+        assert_eq!(r.deleted_files, 1);
+        assert!(r.inventory.files.is_empty());
+        assert!(log.active_path().is_none());
+        assert_eq!(*events.0.lock().unwrap(), ["archived", "deleted"]);
+        append_entry(&mut log, now + 1);
+        log.close_without_retention().unwrap();
+    } else {
+        log.close().unwrap();
+        assert_eq!(*events.0.lock().unwrap(), ["archived", "deleted"]);
+    }
+    inventory(root)
+}
+
+fn tiny_age(root: &Path, now: u64) {
+    let mut log = Log::new(root, config()).unwrap();
+    log.set_root_retention_policy(
+        RetentionPolicy::default().with_duration_of_journal_files(Duration::from_nanos(1)),
+    )
+    .unwrap();
+    let r = log
+        .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now))
+        .unwrap();
+    assert_eq!(r.deleted_files, 0);
+    assert_eq!(r.inventory.files.len(), 1);
+    let r = log
+        .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now + 1))
+        .unwrap();
+    assert_eq!(r.deleted_files, 1);
+    assert!(r.inventory.files.is_empty());
+    log.close_without_retention().unwrap();
+    println!("kept then expired");
+}
+
+fn reject(root: &Path) {
+    assert!(inspect_root_retention(root, &source()).is_err());
+    assert!(
+        Log::new(
+            root,
+            config()
+                .with_retention_policy(RetentionPolicy::default().with_size_of_journal_files(1))
+        )
+        .is_err()
+    );
+    println!("rejected")
+}
+
+fn live(root: &Path, now: u64) {
+    let mut log = Log::new(root, config()).unwrap();
+    append_entry(&mut log, now);
+    log.set_root_retention_policy(
+        RetentionPolicy::default().with_duration_of_journal_files(Duration::from_micros(30 * DAY)),
+    )
+    .unwrap();
+    let r = log
+        .maintain_root_retention(UNIX_EPOCH + Duration::from_micros(now + 31 * DAY))
+        .unwrap();
+    assert!(r.inventory.files.is_empty());
+    assert!(log.active_path().is_none());
+    append_entry(&mut log, now + 32 * DAY);
+    log.close_without_retention().unwrap();
+    inventory(root)
+}
+
+fn read(root: &Path) {
+    for f in inspect_root_retention(root, &source()).unwrap().files {
+        let file = JournalFile::<Mmap>::open_path(&f.path, f.bytes).unwrap();
+        let mut reader = JournalReader::default();
+        while reader.step(&file, Direction::Forward).unwrap() {
+            println!("{}", reader.get_realtime_usec(&file).unwrap());
+        }
+    }
+}
+
+fn main() {
+    // Controlled test CLI: paths and mode come from the synthetic parity harness.
+    // nosemgrep: rust.lang.security.args.args
+    let args: Vec<_> = std::env::args().collect();
+    let root = Path::new(&args[2]);
+    let now: u64 = args[3].parse().unwrap();
+    match args[1].as_str() {
+        "fixture" => fixture(root, now, &args),
+        "benchmark" => benchmark(root),
+        "inspect" => inventory(root),
+        "maintain" | "maintain-size" | "maintain-count" => maintain(root, now, &args[1]),
+        "policy" | "close-small" => lifecycle(root, now, &args[1]),
+        "tiny-age" => tiny_age(root, now),
+        "reject" => reject(root),
+        "live" => live(root, now),
+        "read" => read(root),
+        _ => panic!("unknown mode"),
+    }
+}

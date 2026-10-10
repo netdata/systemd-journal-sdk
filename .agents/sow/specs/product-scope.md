@@ -412,6 +412,69 @@ Current writer performance certification status:
   those implementations now live under `experiments/` and are not product
   performance or correctness gates.
 
+Go `LogConfig.RootRetention` and Rust `Config::with_root_retention(true)` provide
+equivalent caller-owned root/source retention across machine identities. This
+opt-in requires strict active naming,
+caller writer exclusion, verified recovery provenance/indexes and no artifact
+sizer. `InspectRootRetention` reads fixed-size headers, validates canonical
+machine/sequence/archive identities, header extents and internal population/pair
+consistency, and fails the complete inventory for unsafe source candidates. Missing roots are errors; unrelated
+caller metadata directories are allowed when readable to exclude source
+candidates, but canonical machine-named entries must be directories. After open,
+`Log.InspectRootRetention` additionally proves
+the active path still names the live writer file and journal identities; it is
+available after writer failure and is reused by maintenance before mutations.
+Root disposal, closing and rotation also preflight the held file's pathname and
+header identity before mutation. Archive and lazy-creation destinations must be
+absent; a safe rejection preserves file contents and names. Creation/rotation
+preflight rejections leave ownership healthy for retry after restoring paths;
+explicit close releases resources without writing after preflight rejection. Empty root
+writers accept their first entry before size/duration threshold rotation, including
+after a policy update. Default-mode and low-level creation contracts are unchanged.
+An inventory mismatch alone does not poison the writer. These boundary checks
+assume caller exclusion and do not promise protection against concurrent
+external modification. Ordinary nonrotating appends add no filesystem checks.
+Inventory is not full verification. Counts of disjoint present object categories
+must fit within the total object count, including one object for each declared
+DATA_HASH_TABLE and FIELD_HASH_TABLE. Absent historical counters are ignored;
+the table declarations are present in every supported header version. When the
+ENTRY_ARRAY counter is present, it must cover the distinct nonzero first/cached-tail
+array locations declared by complete header fields. Equal pointers count once;
+additional arrays, including DATA-associated arrays, are permitted.
+Stable-header population checks also apply to append recovery and excluded-writer
+snapshots, and remain separate from ordinary live-reader mapping validation.
+Root retention counts file lengths including preallocation, expires by tail
+saved time, and evicts whole files in tail/path order. Default retention policies
+and file format are unchanged; Go now applies cleanup after a successful
+successor-creation retry following a safe creation failure.
+`MaintainRootRetention` finalizes verified retired active
+files and only seals live actives for idle expiry or required size-policy
+allocation changes, leaving successors lazy even after eager startup. Startup,
+creation, rotation, closing a nonempty active and explicit maintenance enforce
+the policy. Closing an unopened or empty Log does not sweep history. New SDK files
+allocate at least 8 MiB; existing files are counted at their actual length and
+smaller allowances are accepted; finalized files have no newest-file grace period and
+may be deleted immediately under a smaller allowance. Close without retention
+finalizes without pruning. Positive ages below one microsecond normalize to
+one microsecond. Safe pre-mutation open/validation and cleanup errors remain in
+`RootRetentionResult` (attempt/last-success times and valid-or-unknown sample)
+without failing healthy appends; uncertain archive mutation still fails the
+writer. `SetRootRetentionPolicy` validates/copies/installs before enforcement;
+explicit rotation limits survive changes. This is neither exact TTL nor a
+physical disk cap; preallocation/active growth/pinned readers and failed cleanup
+can exceed the allowance. Rust exposes equivalent snake_case methods, Copy policy
+values, SystemTime timestamps, and retained typed errors through Arc. The public
+Rust SDK reexports inventory/result APIs. Both SDKs emit an Archived event after
+successful finalization without a successor and before deletion, including
+retired files and close; ordinary Rotated events remain unchanged. Go result
+inventories do not alias retained status. New root files and allocation checks
+use current configuration, including compact layout, while recovered files
+retain their on-disk layout until finalized.
+Rust root configuration rejects namespaces and artifact sizing; adding an artifact
+sizer with the infallible builder causes mutation validation errors and preserves
+files on close/drop. Root functionality ships in both languages; publication
+remains a separate release operation.
+
 Current Go writer feature slice:
 
 - regular journal files by default and compact journal files when
