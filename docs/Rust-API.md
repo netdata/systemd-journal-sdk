@@ -8,8 +8,14 @@ The normal Rust dependency is the public SDK package:
 <!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.9.0" }
+journal = { package = "systemd-journal-sdk", version = "0.10.0" }
 ```
+
+Upgrading from Rust `0.9.x`: `0.10.0` adds the public `Config.root_retention`
+field and the `LogLifecycleEvent::Archived` and `WriterError::RootRetention`
+variants. None of these types is `#[non_exhaustive]`, so exhaustive `Config`
+struct literals and enum matches without a wildcard arm must handle the
+additions. `Config::new` keeps root retention disabled.
 
 Upgrading from Rust `0.8.x`: `0.9.0` adds the `SdkError::Cancelled` and
 `JournalError::WriterPoisoned` variants. Neither enum is `#[non_exhaustive]`,
@@ -23,8 +29,8 @@ type you need. For example, structured directory writes currently use
 <!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.9.0" }
-journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.9.0" }
+journal = { package = "systemd-journal-sdk", version = "0.10.0" }
+journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.10.0" }
 ```
 
 Callers that intentionally want local-host identity can also depend on
@@ -35,7 +41,7 @@ the writer explicitly.
 <!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
-journal_host = { package = "systemd-journal-sdk-host", version = "0.9.0" }
+journal_host = { package = "systemd-journal-sdk-host", version = "0.10.0" }
 ```
 
 ## Read One File
@@ -317,7 +323,7 @@ host files return an error so collectors do not silently switch identity.
 
 ## Dedicated Root Retention
 
-This feature is unreleased. It adds the public `Config.root_retention` field,
+Rust `0.10.0` adds this feature. It adds the public `Config.root_retention` field,
 `LogLifecycleEvent::Archived` variant and `WriterError::RootRetention` variant.
 Callers using exhaustive struct literals or enum matches must handle these
 additions when upgrading; `Config::new` keeps root retention disabled.

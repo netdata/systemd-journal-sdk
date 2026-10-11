@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-10-10
+Last updated: 2026-10-11
 
 ## Current
 
@@ -8,6 +8,9 @@ Last updated: 2026-10-10
 
 ## Pending
 
+- SOW-0158 - v0.10.0 Publication: open. Release workflow dispatch, paired
+  `v0.10.0`/`go/v0.10.0` tags and `verify-go` after the release PR merges.
+  Publication and tag pushes are not yet authorized.
 - SOW-0156 - Fixed-Header Consistency Audit: separate follow-up agreed in
   PR #9. Define invariants, audit both SDKs, then implement/test missing rules.
   Not activated by the current array-count repair.
@@ -54,6 +57,10 @@ Last updated: 2026-10-10
   decisions. Not executable until the user explicitly resumes it.
 
 ## Recently Closed Or Completed
+
+- SOW-0157 - v0.10.0 Release Preparation: completed in the release PR. Bumps
+  Rust metadata and install examples to `0.10.0`, versions the root retention
+  notes and adds the Rust `0.9.x` migration note. Publication is SOW-0158.
 
 - SOW-0152-20261008 - Root History Retention: completed. Review 5475871638
   is repaired locally in both SDKs; Go race, Rust suites and all 18 retention

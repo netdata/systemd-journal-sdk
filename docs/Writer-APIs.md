@@ -185,7 +185,7 @@ policy when archiving a file, except when discarding an empty strict-named file.
 
 ## Dedicated Root History
 
-This feature is unreleased.
+Rust and Go `0.10.0` add this feature.
 
 Go `LogConfig.RootRetention` and Rust `Config::with_root_retention(true)` add
 an explicit policy for a caller-owned root/source across machine identities.

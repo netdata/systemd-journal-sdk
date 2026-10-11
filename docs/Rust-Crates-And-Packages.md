@@ -6,7 +6,7 @@ Use `systemd-journal-sdk` for normal Rust integrations:
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.9.0" }
+journal = { package = "systemd-journal-sdk", version = "0.10.0" }
 ```
 
 The alias keeps source imports in the form:

@@ -3,14 +3,16 @@
 This module contains pure-Go systemd journal reader and writer components. It
 does not use CGO, native addons, or libsystemd linkage.
 
-Install Go release `v0.9.0`:
+Install Go release `v0.10.0`:
 
 ```sh
-go get github.com/netdata/systemd-journal-sdk/go@v0.9.0
+go get github.com/netdata/systemd-journal-sdk/go@v0.10.0
 ```
 
-This release adds bounded `IndexedSnapshot` traversal and strict offline index
-verification. `Log.CloseWithoutRetention()`, for closing before changing
+This release adds opt-in dedicated root history retention
+(`LogConfig.RootRetention`). Bounded `IndexedSnapshot` traversal and strict
+offline index verification are available since `v0.9.0`.
+`Log.CloseWithoutRetention()`, for closing before changing
 retention settings, is available since `v0.8.2`. Go `1.26.2` or newer is required.
 
 Import path:

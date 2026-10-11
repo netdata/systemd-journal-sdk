@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-10-10
+Last updated: 2026-10-11
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
@@ -11,6 +11,9 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Pending
 
+- `SOW-0158-20261011-v0-10-0-publication.md` - open. Rust Release workflow,
+  paired `v0.10.0`/`go/v0.10.0` tags and Go verification after the release PR
+  merges; not yet authorized.
 - SOW-0156 - Fixed-Header Consistency Audit: separate follow-up agreed in
   PR #9. Define invariants, audit both SDKs, then implement/test missing rules.
   Not activated by the current array-count repair.
@@ -43,6 +46,10 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 
 ## Done
+
+- `SOW-0157-20261011-v0-10-0-release.md` - completed in the release PR.
+  Prepared paired `0.10.0` versions, install guidance, root retention release
+  notes and the Rust migration note; publication is pending SOW-0158.
 
 - SOW-0152-20261008 - Root History Retention: completed. Review 5475871638
   is repaired locally in both SDKs; Go race, Rust suites and all 18 retention
