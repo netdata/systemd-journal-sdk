@@ -11,9 +11,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Pending
 
-- `SOW-0158-20261011-v0-10-0-publication.md` - open. Rust Release workflow,
-  paired `v0.10.0`/`go/v0.10.0` tags and Go verification after the release PR
-  merges; not yet authorized.
 - SOW-0156 - Fixed-Header Consistency Audit: separate follow-up agreed in
   PR #9. Define invariants, audit both SDKs, then implement/test missing rules.
   Not activated by the current array-count repair.
@@ -47,9 +44,12 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- `SOW-0158-20261011-v0-10-0-publication.md` - completed. Release CI
+  published and verified eight Rust `0.10.0` crates; paired annotated tags
+  target `288efe015c45`, and fresh exact Rust/Go consumers pass.
 - `SOW-0157-20261011-v0-10-0-release.md` - completed in the release PR.
   Prepared paired `0.10.0` versions, install guidance, root retention release
-  notes and the Rust migration note; publication is pending SOW-0158.
+  notes and the Rust migration note; publication completed in SOW-0158.
 
 - SOW-0152-20261008 - Root History Retention: completed. Review 5475871638
   is repaired locally in both SDKs; Go race, Rust suites and all 18 retention
