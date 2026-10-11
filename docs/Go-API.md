@@ -7,7 +7,7 @@ Install the Go submodule:
 
 <!-- illustrative-only: registry install command -->
 ```sh
-go get github.com/netdata/systemd-journal-sdk/go@v0.9.0
+go get github.com/netdata/systemd-journal-sdk/go@v0.10.0
 ```
 
 Import the journal package:
@@ -422,7 +422,7 @@ after `CloseWithoutRetention()` does not retroactively apply the old policy.
 
 ## Dedicated Root Retention
 
-This feature is unreleased.
+Go `v0.10.0` adds this feature.
 
 Use `LogConfig.RootRetention: true` when one caller owns a dedicated root and
 source across machine identity changes. This opt-in requires

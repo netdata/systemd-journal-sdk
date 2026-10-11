@@ -18,7 +18,7 @@ alias it as `journal` in Cargo dependencies to keep the existing
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.9.0" }
+journal = { package = "systemd-journal-sdk", version = "0.10.0" }
 ```
 
 The Rust workspace also publishes lower-level project-prefixed packages for
@@ -35,11 +35,14 @@ Netdata Rust integrations:
 
 ## Go Module Release
 
-Go consumers install `github.com/netdata/systemd-journal-sdk/go@v0.9.0`.
-The paired Rust/Go `0.9.0` release adds the IndexedSnapshot surface and strict
-offline index verification. Root `v0.9.0` and submodule `go/v0.9.0` tags must
-identify the same release source commit, and Rust registry packages `0.9.0` are
-published from that commit.
+Go consumers install `github.com/netdata/systemd-journal-sdk/go@v0.10.0`.
+The paired Rust/Go `0.10.0` release adds opt-in dedicated root history
+retention and stricter stable-header validation for append recovery and
+excluded-writer snapshots. Root `v0.10.0` and submodule
+`go/v0.10.0` tags must identify the same release source commit, and Rust
+registry packages `0.10.0` are published from that commit. The previous paired
+`0.9.0` release added the IndexedSnapshot surface and strict offline index
+verification.
 
 Earlier staggered release: Go `0.8.2` added `Log.CloseWithoutRetention()`; Rust
 registry packages advanced separately to `0.8.2` from a later merged commit, and

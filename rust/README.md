@@ -11,7 +11,7 @@ alias if existing code should import it as `journal`:
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.9.0" }
+journal = { package = "systemd-journal-sdk", version = "0.10.0" }
 ```
 
 The workspace also publishes project-prefixed lower-level packages for
@@ -533,6 +533,12 @@ for API examples, caller exclusion, borrowed payloads and recovery costs. Failur
 after a possible file or publication-state mutation prevent further mutation and
 preserve uncertain files during cleanup. Validation and capacity failures known
 to precede mutation leave the writer reusable.
+
+Upgrading from Rust `0.9.x`: `0.10.0` adds the public `Config.root_retention`
+field and the `LogLifecycleEvent::Archived` and `WriterError::RootRetention`
+variants. None of these types is `#[non_exhaustive]`, so exhaustive `Config`
+struct literals and enum matches without a wildcard arm must handle the
+additions. `Config::new` keeps root retention disabled.
 
 Upgrading from Rust `0.8.x`: `0.9.0` adds the `SdkError::Cancelled` and
 `JournalError::WriterPoisoned` variants. Neither enum is `#[non_exhaustive]`,
