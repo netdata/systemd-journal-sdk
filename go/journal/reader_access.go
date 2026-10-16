@@ -154,7 +154,7 @@ func newReaderAccessor(file *os.File, opts ReaderOptions) (readerAccessor, Reade
 		if err != nil {
 			return nil, ReaderAccessStats{}, err
 		}
-		return accessor, accessor.stats(), nil
+		return accessor, accessor.statsValue, nil
 	}
 
 	mmapBackend, err := newMmapReaderBackend(file)
@@ -162,7 +162,7 @@ func newReaderAccessor(file *os.File, opts ReaderOptions) (readerAccessor, Reade
 		accessor, mmapErr := newRollingReaderAccessor(file, opts, mmapBackend, fileSize, "")
 		if mmapErr == nil {
 			if probeErr := accessor.probeInitialWindow(); probeErr == nil {
-				return accessor, accessor.stats(), nil
+				return accessor, accessor.statsValue, nil
 			} else {
 				_ = accessor.close()
 				err = probeErr
@@ -185,7 +185,7 @@ func newReaderAccessor(file *os.File, opts ReaderOptions) (readerAccessor, Reade
 	if readAtErr != nil {
 		return nil, ReaderAccessStats{}, readAtErr
 	}
-	return accessor, accessor.stats(), nil
+	return accessor, accessor.statsValue, nil
 }
 
 func newRollingReaderAccessor(file *os.File, opts ReaderOptions, backend readerWindowBackend, fileSize uint64, fallbackReason string) (*rollingReaderAccessor, error) {

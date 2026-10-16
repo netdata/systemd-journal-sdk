@@ -2,10 +2,15 @@
 
 ## Status
 
-Status: completed
+Status: paused
 
 Sub-state: implementation, local/macOS/Windows validation, three whole-SOW
 review rounds, final cleanup, and final local validation are complete.
+
+Regression reopened 2026-10-16: the static core-runtime guard misses standard
+Go process-launch API variants. Tracking is paused; no SDK runtime impurity is
+proved and no scanner implementation is authorized by this finding. Preserve
+the active SOW-0108, then SOW-0159, then SOW-0121 execution order.
 
 ## Requirements
 
@@ -706,3 +711,84 @@ Append regression entries here only after this SOW was completed or closed and
 later testing or use found broken behavior. Use a dated `## Regression -
 YYYY-MM-DD` heading at the end of the file. Never prepend regression content
 above the original SOW narrative.
+
+## Regression - 2026-10-16
+
+### What Broke And Evidence
+
+The completed outcome says the static guard rejects subprocess APIs in core
+runtime files (Acceptance Criteria: original lines 108-109; Validation Plan:
+273-274; implemented scan: 493-496). `tests/runtime_purity/test_core_runtime_purity.py:100` recognizes
+`exec.Command(` but not `exec.CommandContext(`. The same pattern collection
+also misses `os.StartProcess(` and `syscall.ForkExec(`. In-memory matching of the
+actual pattern list confirms the existing positive control and all three
+misses. No example process was executed and no core source was mutated.
+
+The issue was found during SOW-0108 external review. It predates that repair.
+The reviewed runtime contains no newly introduced process-launch path; the
+reviewed `exec.CommandContext` use is an allowed test-binary child for mmap
+failure isolation. This is a guard-coverage regression, not evidence that the
+current SDK launches an external program.
+
+### Why Previous Validation Missed It
+
+The guard checks current source against selected literal patterns. Passing that
+scan does not show that equivalent standard APIs would be detected. The source
+list is also explicit, so its intended module coverage needs an audit before
+claiming a complete core-runtime boundary.
+
+### Regression Pre-Implementation Gate
+
+Status: needs-user-decision; paused tracking only.
+
+- Problem/root cause: literal API patterns cover one Go spelling without
+  proving equivalent standard process-launch variants or module coverage.
+- Evidence reviewed: the scanner pattern and source lists, this SOW's original
+  validation promises, AGENTS.md runtime layers and the SOW-0108 read-only
+  external finding. Private static evidence remains with the originating repair.
+- Affected contracts: enforcement of the pure core SDK boundary in both Go and
+  Rust; tests and optional helpers retain their documented exceptions. No SDK
+  API, journal bytes or runtime behavior changes are proposed here.
+- Existing patterns: reuse the scanner's explicit core/import checks and
+  representative synthetic snippets; inspect both language surfaces before
+  choosing the enforcement mechanism.
+- Risk/blast radius: an incomplete gate can miss an unwanted core dependency;
+  an overbroad replacement can falsely reject tests, CLI code or optional
+  services. Keep runtime source and performance unchanged.
+- Sensitive-data handling: use synthetic snippets and relative source pointers
+  only; no identities, host inputs, credentials or live journals are needed.
+- Implementation plan: audit actual core modules and language call forms,
+  present the bounded enforcement options, record the user's choice, then
+  implement the approved scanner/test changes as this SOW alone.
+- Validation plan: use positive and negative mutation/snippet controls for
+  supported process-launch variants and the allowed test/helper boundaries;
+  run the existing purity suite and prove module inventory coverage. Record
+  lexical-analysis limitations rather than promising detection of arbitrary
+  language indirection.
+- Artifact impact: review AGENTS.md and the compatibility skill for workflow
+  consequences; update specs only if the enforcement/public contract changes;
+  consumer API docs need no change for a scanner-only repair. No output skills
+  exist. Maintain this SOW and both status indexes when reopened, activated or
+  closed.
+- Open decisions: the coverage/enforcement approach requires investigation and
+  user design approval on activation. Current authorization is tracking only;
+  no implementation or priority change is authorized.
+
+### Current Validation And Artifact Mapping
+
+- Static evidence: the actual regex list flags the `exec.Command` control and
+  misses all three standard alternatives; no executable fixture was launched.
+- Same-failure search: the explicit source list and both-language process-call
+  patterns are implicated. Full module/alias analysis is required on activation,
+  not claimed complete by this tracking record.
+- Runtime validation: not run for this record because no runtime or scanner
+  implementation changes. A passing current scan would not disprove the gap.
+- Review: the original external finding is non-blocking for SOW-0108 and is
+  retained there. External-review authorization for this SOW must be decided
+  separately; authorization for SOW-0108/0159/0121 does not extend here.
+- Artifacts: original narrative remains first, this dated regression is appended,
+  and current/paused state plus both indexes will reflect reopening. No code,
+  public spec or consumer-document change accompanies tracking.
+- Follow-up: all guard repair work remains owned here; no new SOW number or
+  execution dependency is created. Scope/design approval remains required
+  before implementation.

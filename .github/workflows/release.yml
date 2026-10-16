@@ -116,7 +116,7 @@ jobs:
         run: cargo test --manifest-path "$RELEASE_SOURCE/rust/Cargo.toml" --workspace --locked
       - name: Test Go
         working-directory: .local/release/source/go
-        run: go test ./...
+        run: go test -count=1 ./...
 
   publish:
     name: Publish and verify Rust crates

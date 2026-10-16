@@ -702,6 +702,22 @@ Accepted reader API layers:
   file-path verification APIs are covered by the same bounded access contract:
   object-graph and sealed TAG/HMAC verification read through reader-backed byte
   sources rather than materializing the whole journal file in memory.
+  Internal indexed facet/histogram aggregation must also preserve DATA values
+  across nested posting and ENTRY reads, including mmap eviction and positioned
+  read scratch reuse. Aggregation map keys are owned. Go materializes map keys
+  for contributing values and reuses a histogram key across the DATA object's
+  matching entries without repeated decompression. Indexed results and counters
+  must match across access bounds.
+  Go ENTRY-index header validation uses fitting native cache views and a fixed
+  reader-owned buffer for cached crossing/non-power-of-two-window reads. Header
+  acquisition uses constant per-reader storage instead of a fresh header buffer
+  for each offset; cache-window metadata follows the existing bounded-accessor
+  contract. Header bytes are consumed before any subsequent accessor read.
+  Native Go journal input on Linux uses a blocking read-only descriptor with
+  atomic close-on-exec, interrupted-open retry, typed path errors and normal
+  symlink following. This avoids unnecessary regular-file poller setup while
+  preserving sized random access. Whole-file compressed sources and non-Linux
+  readers retain their existing platform opening paths.
 - Idiomatic file and directory readers expose language-native entry objects,
   binary field values, repeated field values, cursor/realtime metadata, field
   enumeration, unique value enumeration, and boot listing for the accepted file

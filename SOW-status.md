@@ -1,16 +1,36 @@
 # SOW Status
 
-Last updated: 2026-10-11
+Last updated: 2026-10-16
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- None.
+- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - paused
+  SDK workstream, next after the completed SOW-0108 combined commit.
+  Implementation authorized; default recovery/status approved.
+  Traversal/stream repairs and recovery internals are implemented locally.
+  Normal EOF plus status is approved. Public wiring, performance and final
+  validation/review remain open.
+- `SOW-0121-20260621-file-backed-journalctl-full-parity.md` - paused for SDK-first
+  execution, then complete v262 CLI parity. Native PCRE2 and the Go CLI CGO
+  exception are approved, retaining the performance gate.
+- `SOW-0045-20260528-go-reader-alignment-optimization.md` - reopened and paused
+  for a separately reproduced healthy empty/EOF refresh positioning regression.
+  Unique-triggered refresh shares the failure. Keep the approved active repair,
+  SDK and journalctl execution order; no positioning implementation is mixed in.
+
+- `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md` -
+  regression reopened and paused for static guard coverage. No SDK process
+  launch is demonstrated; scanner changes remain unapproved and do not alter
+  the active repair, SDK and journalctl sequence.
 
 ## Pending
 
+- SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Tracks
+  unchanged decoder allocation measured during SOW-0108; no redesign is
+  authorized and no dependency is added to the current execution chain.
 - SOW-0156 - Fixed-Header Consistency Audit: separate follow-up agreed in
   PR #9. Define invariants, audit both SDKs, then implement/test missing rules.
   Not activated by the current array-count repair.
@@ -34,7 +54,8 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0122-20260621-journalctl-performance-followups.md` - open. Tracks
   non-blocking SOW-0121 performance follow-up for indexed
   `--list-invocations`, portable `--follow` scalability, and large-fixture
-  performance evidence.
+  performance evidence. It does not replace the mandatory no-regression gates
+  in the requested SDK and journalctl workstreams.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable Rust/Go `v1.0.0` SDK with Rust registry publication where applicable, Go module tags, and clean consumer install validation after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
 - `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.
 - `SOW-0049-20260528-netdata-reader-plugin-sdk-integration.md` - open. Integrate SDK reader/facade paths into Netdata OTEL signal viewer, no-libsystemd systemd-journal plugin mode, and static packaging after reader gates are accepted.
@@ -44,6 +65,13 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- `SOW-0108-20260614-cross-language-reader-window-accessor.md` - completed
+  again: Go indexed value lifetimes, bounded hybrid headers, native opener and
+  initial statistics are repaired. Full local checks and adjudicated review
+  pass; Qwen/Kimi coverage gaps and Mimo's disproven claim are retained. The
+  118 timing cases have 79 improvements, 39 inconclusive results and no flag;
+  uncertainty remains explicit. All 1,176 measured allocation pairs avoid
+  increases. Commit repair/lifecycle together, then resume SDK work.
 - `SOW-0158-20261011-v0-10-0-publication.md` - completed. Release CI
   published and verified eight Rust `0.10.0` crates; paired annotated tags
   target `288efe015c45`, and fresh exact Rust/Go consumers pass.
@@ -103,11 +131,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
   `4619776b74311338b1689b2ab1fb0936b7746e49`; both tags resolve to that commit,
   all eight Rust crates are published and non-yanked, and clean Go `1.26.2`
   and Rust `1.91.0` registry-consumer checks pass.
-- `SOW-0121-20260621-file-backed-journalctl-full-parity.md` - completed again
-  after replacing the mixed-directory count-only boot assertion with complete
-  normalized stock-oracle row comparison and an oracle-completeness check.
-  Full-feature mixed validation passed 42/42; tagged-v260.1 directory and query
-  validation passed.
 - `SOW-0115-20260616-portable-writer-identity-helpers.md` - completed after a
   2026-07-27 regression repair supplied deterministic synthetic identity to
   two missed internal Rust executable paths; all affected directory,
@@ -183,7 +206,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0109-20260614-python-node-netdata-edge-parity.md` - completed. Python and Node now match the Rust reference for the remaining scoped Netdata edge parity gaps discovered after SOW-0107: Python `data_only && delta` keeps analysis enabled, Python/Node expose and wire candidate-row callbacks, and Node no longer drops Explorer rows only because `commitRealtime` is zero. Focused tests, full Python/Node suites, Netdata function comparators, `git diff --check`, SOW audit, and all six reviewer votes passed.
 - `SOW-0105-20260611-node-explorer-netdata-parity.md` - completed after reconciliation. The Node Explorer API, Netdata function API, stdin wrapper, source selector labels, facade unique-values visitor, and TypeScript definitions landed in SOW-0105; the remaining review-discovered parity gaps were completed by SOW-0107 and SOW-0109 before closure.
 - `SOW-0107-20260613-python-node-explorer-sampling-engine.md` - completed. Python and Node now match the Rust Explorer/Netdata behavior for the scoped parity gaps: row-level sampling decision/estimation, Python Netdata FTS, Python `PRIORITY` facet sorting, Python/Node Index Compare validation, and O(1) indexed row collection. Local validation, four-peer high-row comparator evidence, `git diff --check`, and six production-grade reviewer votes passed; remaining reviewer-discovered edge parity items are tracked by SOW-0109.
-- `SOW-0108-20260614-cross-language-reader-window-accessor.md` - completed after regression repair. Rust and Go public file-path verification APIs now use bounded reader-backed byte sources instead of materializing whole journal files; Go verifier source slices return owned buffers to avoid mmap/window aliasing hazards. Focused Rust/Go tiny-window sealed verifier tests, `go test ./...`, affected Rust package tests, the shared verify matrix, wiki docs validation, `git diff --check`, SOW audit, and all six reviewer votes passed.
 - `SOW-0104-20260611-python-explorer-netdata-parity.md` - completed. The Python SDK carries the full Rust feature surface (Explorer, Netdata logs function API with source selector labels and the complete tail/delta/sampling contract, stdin wrapper, `python/pyproject.toml` metadata, facade unique-values visitor). Parity proven by three-peer content comparison against the Rust wrapper and the installed Netdata plugin: 10/10 one-shot fixtures on the live journal and 5/5 stateful sequences on a frozen fixture; 5/5 `PRODUCTION GRADE: YES` reviewer verdicts in one round.
 - `SOW-0103-20260611-docs-api-perception-and-verified-examples.md` - completed. Consumer wiki restructured around API-perception decision paths with a new `Journalctl-CLI` page; all 31 Rust/Go wiki examples are machine-verified against synthetic fixtures by `tests/docs/verify_examples.py`, enforced by the extended wiki validator and the new `docs-examples.yml` workflow; new `project-docs-authoring` skill; reviewer round 3 returned 5/5 `PRODUCTION GRADE: YES`.
 - `SOW-0065-20260530-parallel-language-parity-closure.md` - closed without implementation on 2026-06-11, superseded by the docs-and-parity program SOW-0103 through SOW-0106 after all prerequisites completed and Go parity was already delivered by SOW-0095/SOW-0102; the user chose sequential SOWs with external implementer `llm-netdata-cloud/minimax-m3-coder` and the other `llm-netdata-cloud` pool models as read-only reviewers.
@@ -200,7 +222,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0055-20260529-rust-seek-cursor-systemd-parity.md`
 - `SOW-0026-20260526-netdata-sdk-integration.md`
 - `SOW-0063-20260530-cross-platform-portability.md`
-- `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md`
 - `SOW-0067-20260530-go-cross-platform-portability.md`
 - `SOW-0068-20260530-rust-cross-platform-portability.md`
 - `SOW-0069-20260530-python-cross-platform-portability.md`

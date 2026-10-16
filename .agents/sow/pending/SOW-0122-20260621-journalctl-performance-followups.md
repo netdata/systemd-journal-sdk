@@ -4,7 +4,9 @@
 
 Status: open
 
-Sub-state: pending activation after SOW-0121 close.
+Sub-state: pending activation after reopened SOW-0121 closes. This separate
+scalability opportunity does not replace mandatory performance preservation in
+the user-requested SDK/journalctl workstreams prepared on 2026-10-14.
 
 ## Requirements
 
@@ -24,8 +26,9 @@ should be tracked before release-quality performance claims.
 
 Facts:
 
-- SOW-0121 brought Rust and Go file-backed `journalctl` correctness parity to
-  the shared stock-oracle parser, directory, and query matrices.
+- SOW-0121 passed its shared stock-oracle parser, directory, and query matrices
+  at its earlier close. New combinations failed the 2026-10-14 audit; the
+  originating SOW is reopened and owns those correctness repairs.
 - `--list-invocations` still derives invocation ranges by iterating matching
   entries instead of using a more systemd-like indexed discovery path.
 - `--follow` uses portable polling over explicit file/directory inputs. That
@@ -60,15 +63,19 @@ Unknowns:
 
 Sources checked:
 
-- `.agents/sow/done/SOW-0121-20260621-file-backed-journalctl-full-parity.md`
+- `.agents/sow/current/SOW-0121-20260621-file-backed-journalctl-full-parity.md`
 - `.agents/sow/specs/product-scope.md`
 - `.agents/sow/specs/journalctl-v260-parity-matrix.md`
 - `docs/Journalctl-CLI.md`
 
 Current state:
 
-- Correctness parity is validated by SOW-0121.
+- Current correctness gaps and mandatory no-regression performance evidence
+  belong to reopened SOW-0121; SDK primitive repairs belong to SOW-0159.
 - Performance work remains for invocation listing and follow scalability.
+- This SOW remains pending and is not a third active workstream in the new
+  two-SOW request. Broader optimizations here are not prerequisites for measuring
+  or preserving performance of fixes in SOW-0121 and SOW-0159.
 
 Risks:
 
@@ -199,6 +206,14 @@ Failure handling:
 
 - Created as the explicit follow-up mapping for SOW-0121 residual performance
   work.
+
+### 2026-10-14
+
+- Updated the dependency/reference after SOW-0121 regression reopening. The
+  user requires performance as-is or better for both requested workstreams;
+  their correctness and no-regression gates cannot be deferred to this SOW.
+- Kept broad invocation/follow scalability work pending without activation or
+  merging it into the two requested scopes.
 
 ## Validation
 

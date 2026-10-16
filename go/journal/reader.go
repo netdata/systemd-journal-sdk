@@ -177,9 +177,8 @@ type Reader struct {
 	offsetArrayItemSizeBytes uint64
 	dataPayloadOffsetBytes   uint64
 
-	cursor    uint64
-	position  int
-	direction Direction
+	entrySlotHeaderBuffer [objectHeaderSize]byte
+	direction             Direction
 
 	entryOffsets []uint64
 	entryIndex   int
@@ -188,13 +187,13 @@ type Reader struct {
 	currentHeader       entryHeader
 	currentHeaderOffset uint64
 	currentHeaderValid  bool
+	entryDataActive     bool
 
 	filter *filterBuilder
 
 	entryDataOffsets      []uint64
 	entryDataOffsetsEntry uint64
 	entryDataIndex        int
-	entryDataActive       bool
 
 	uniqueField         string
 	uniqueHeadOffset    uint64
@@ -291,7 +290,7 @@ func (r *Reader) Close() error {
 
 func openJournalFile(path string) (*os.File, string, error) {
 	if !strings.HasSuffix(path, ".zst") {
-		f, err := openReaderFile(path)
+		f, err := openNativeReaderFile(path)
 		return f, "", err
 	}
 
@@ -677,9 +676,26 @@ func entryOffsetArrayItem(src []byte, itemSize uint64) uint64 {
 	return binary.LittleEndian.Uint64(src[:regularOffsetArrayItemSize])
 }
 
+func (r *Reader) readEntrySlotHeader(offset uint64) ([]byte, error) {
+	windowSize := r.options.WindowSize
+	if windowSize == 0 {
+		windowSize = defaultReaderWindowSize
+	}
+	if windowSize >= objectHeaderSize && windowSize&(windowSize-1) == 0 &&
+		offset&(windowSize-1) <= windowSize-objectHeaderSize {
+		return r.readSlice(offset, objectHeaderSize)
+	}
+	// Crossing temp slices issue a file read even when both chunks are cached.
+	header := r.entrySlotHeaderBuffer[:]
+	if err := r.readAt(header, offset); err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
 func (r *Reader) validEntryObjectOffset(offset uint64) (bool, error) {
-	headerBuf := make([]byte, objectHeaderSize)
-	if err := r.readAt(headerBuf, offset); err != nil {
+	headerBuf, err := r.readEntrySlotHeader(offset)
+	if err != nil {
 		return false, err
 	}
 	objHeader, err := parseObjectHeader(headerBuf)

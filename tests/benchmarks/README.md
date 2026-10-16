@@ -51,6 +51,97 @@ profile outputs under `.local/benchmarks/`; `--loops` repeats the selected
 read case inside one process to collect enough samples and is not used by the
 shared checksum-comparison harness.
 
+Go indexed aggregation has focused lifetime and allocation controls in
+`go/journal/explorer_window_lifetime_test.go`. From `go/`, run:
+
+```sh
+go test -count=1 ./journal -run '^TestExplorerIndexedWindow'
+go test ./journal -run '^$' -bench '^BenchmarkExplorerIndexedValueOwnership$' -benchmem
+```
+
+The first command forces bounded-window eviction and temporary-buffer reuse,
+checks both journal layouts and all codecs, and compares complete indexed
+results and counters. The raw benchmark covers dense/sparse, low/high-cardinality
+facets and histograms. Reader opening, fixture construction and reader close are
+outside its timer.
+
+`BenchmarkExplorerIndexedCompressedValueOwnership` reads a prebuilt corpus
+selected by `JOURNAL_SDK_EXPLORER_COMPRESSED_CORPUS`; it skips when that variable
+is unset. The directory contains
+`{regular,compact}/{zstd,xz,lz4}/{low,high,singleton}.journal`. Each file has 2,048
+rows using the test helper's synthetic `VALUE`/`SELECT` patterns. Low cardinality
+uses the dense query with 2,197 updates; high cardinality uses the sparse query
+with 34 updates; true singletons use the sparse query with 32 updates. The
+benchmark checks indexed/traversal output, actual decompression, update totals,
+and a window large enough to avoid eviction or temporary copies before timing.
+Generate and validate the corpus once, then freeze its hashes and the complete
+matching benchmark helper in both builds. Record per-case timing and allocation
+samples; a successful forced-window repair must still pass the valid-control
+performance gate.
+
+Pilot one CLI-helper iteration before increasing `--loops`: a sequential full
+scan can cost much more than an indexed query. Each Go helper loop opens and
+closes a fresh reader and computes result checksums/sorted summaries; these costs
+are inside `read_seconds`. Reported ExplorerStats describe the final loop.
+CPU profiling also covers post-timer work; `--memprofile` forces GC after reader
+close, so cumulative allocation and live-after-GC memory answer different
+questions. These helper timings differ from the aggregation-only Go benchmarks
+above.
+
+Go ENTRY-slot header reads have additional controls in
+`go/journal/reader_header_access_test.go` and
+`go/journal/reader_header_bench_test.go`. From `go/`, run:
+
+```sh
+go test -count=1 ./journal -run '^(TestEntrySlotHeader|TestReaderAllocationShape|TestNativeReaderFile|TestReaderAccessorInitial)'
+go test ./journal -run '^$' -bench '^BenchmarkReader(Allocation|Open|EntryHeader)$' -benchmem
+```
+
+The access tests cover default, tiny and non-power-of-two windows, fitting and
+crossing headers, cached work, partial failures, closed readers, row pins,
+eviction and live ENTRY-array growth. Header acquisition preserves raw bytes;
+the ENTRY validator retains its separate format/error policy.
+
+The opening benchmark times fresh open/count checks/close for valid empty and
+five-row journals in both layouts and backends. Its optional large cases use
+`JOURNAL_SDK_READER_OPEN_CORPUS/{regular,compact}/system.journal`, each containing
+100,000 rows. Freeze those files before comparing builds. Fixture generation,
+preflight and teardown are outside the benchmark timer. The header benchmark
+also measures constrained eviction and pinned-window paths.
+
+To compare small opens against the exact same files, optionally set
+`JOURNAL_SDK_READER_OPEN_SMALL_CORPUS` to a directory containing
+`{regular,compact}/system.journal`, each with five entries. The normal generated
+fixtures remain the default. Freeze the shared files' hashes and retain a
+generated-file control with the same binaries. Extending a benchmark helper
+also changes test linking; a timing change after rebuilding does not by itself
+establish that fixture generation caused an earlier difference.
+
+Measure allocation class as well as raw struct size: `TestReaderAllocationShape`
+retains 4,096 separately allocated readers and reports runtime size-class counts;
+`BenchmarkReaderAllocation` records the corresponding allocation cost. A small
+field can cross an allocator class. Reader storage reuse must be checked for
+each architecture; identical 64-bit offsets do not establish identical 32-bit
+layout. Keep this complete benchmark helper identical in both timing builds.
+The direct-helper access, native-file opener and initial-statistics tests cover
+candidate contracts; exclude those correctness-only files from both timing builds, record
+the exclusions/hashes, and run them separately with the candidate. Preserve
+matching pure-build flags and record per-case allocation counts/bytes alongside
+complete query measurements.
+
+Linux native-journal opening avoids regular-file poller setup through a blocking
+descriptor. Its tests cover read-only/close-on-exec flags, path errors, symlinks,
+descriptor closure and sparse offsets above 2 GiB; run these on amd64 and 386.
+The direct opener bypasses Go's internal test-cache input observation. Run
+fixture-dependent validation uncached with `-count=1` and retain file hashes.
+Compare complete reader operations as well as opener primitives; fewer syscalls
+alone do not establish whole-reader performance. Whole-file `.zst` sources use
+the existing opener and retain their streaming/staging checks.
+
+Constructor-statistics controls check empty/nonempty backends and initial mmap
+fallback. They compare explicit counters, modes and fallback reason with a fresh
+statistics query when constructor work reuses an existing snapshot.
+
 The writer-core harness aligns initial hash table sizing across systemd and
 SDK drivers with the systemd v260.1 formula:
 `data=max(max_size_bytes*4/768/3,2047)` and `field=1023`. The default

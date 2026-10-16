@@ -1209,40 +1209,68 @@ func (r *Reader) visitFieldDataObjects(field []byte, visit func(uint64, dataHead
 
 func (r *Reader) indexedCountFacetGroup(query ExplorerQuery, group facetPassGroup, candidates explorerCandidateSet, result *ExplorerResult) error {
 	result.Stats.FacetRowsMatched += candidates.count
+	allCandidates := candidates.all
+	candidateOffsets := candidates.offsets
+	allPostings := allCandidates && uint64(len(r.entryOffsets)) == r.header.nEntries
 	for _, facetIndex := range group.facetIndices {
 		if facetIndex < 0 || facetIndex >= len(query.Facets) {
 			continue
 		}
 		field := query.Facets[facetIndex]
+		fieldHasEquals := bytes.IndexByte(field, '=') >= 0
 		values := make(map[string]uint64)
 		rowsWithField := make(map[uint64]struct{})
-		err := r.visitFieldDataObjects(field, func(_ uint64, header dataHeader, payload []byte) error {
-			payloadField, value, ok := splitRawPayload(payload)
-			if !ok || !bytes.Equal(payloadField, field) {
+		var count, visited uint64
+		visit := func(entryOffset uint64) error {
+			visited++
+			if !allCandidates {
+				if _, ok := candidateOffsets[entryOffset]; !ok {
+					return nil
+				}
+			}
+			count++
+			rowsWithField[entryOffset] = struct{}{}
+			return nil
+		}
+		err := r.visitFieldDataObjects(field, func(offset uint64, header dataHeader, payload []byte) error {
+			if fieldHasEquals || len(payload) <= len(field) || payload[len(field)] != '=' || !bytes.Equal(payload[:len(field)], field) {
 				return nil
 			}
-			var count uint64
-			if err := r.visitDataEntryOffsets(header, func(entryOffset uint64) error {
-				result.Stats.DataRefsSeen++
-				if candidates.contains(entryOffset) {
-					count++
-					rowsWithField[entryOffset] = struct{}{}
-				}
-				return nil
-			}); err != nil {
+			value := payload[len(field)+1:]
+			var key string
+			if allPostings && header.nEntries != 0 {
+				key = string(value)
+			}
+			count = 0
+			err := r.visitDataEntryOffsets(header, visit)
+			if err != nil {
 				return err
 			}
+			compressed := header.object.flag&(objectCompressedXZ|objectCompressedLZ4|objectCompressedZSTD) != 0
 			if count != 0 {
-				values[string(value)] += count
+				if !allPostings {
+					// Posting arrays can invalidate an uncompressed value.
+					if !compressed && header.nEntries > 1 && len(value) != 0 {
+						valueOffset := offset + (header.object.size - uint64(len(value)))
+						current, err := r.readSlice(valueOffset, uint64(len(value)))
+						if err != nil {
+							return err
+						}
+						value = current
+					}
+					key = string(value)
+				}
+				values[key] += count
 				result.Stats.FacetUpdates += count
 			}
 			result.Stats.DataObjectsClassified++
 			result.Stats.DataPayloadsLoaded++
-			if header.object.flag&(objectCompressedXZ|objectCompressedLZ4|objectCompressedZSTD) != 0 {
+			if compressed {
 				result.Stats.PayloadsDecompressed++
 			}
 			return nil
 		})
+		result.Stats.DataRefsSeen += visited
 		if err != nil {
 			return err
 		}
@@ -1260,39 +1288,113 @@ func (r *Reader) indexedCountHistogram(query ExplorerQuery, candidates explorerC
 		return nil
 	}
 	field := result.Histogram.Field
+	fieldHasEquals := bytes.IndexByte(field, '=') >= 0
+	allCandidates := candidates.all
+	candidateOffsets := candidates.offsets
+	ownInlineValue := false
+	if query.AfterRealtimeUsec == nil && query.BeforeRealtimeUsec == nil && len(result.Histogram.Buckets) != 0 {
+		first := result.Histogram.Buckets[0]
+		width := first.EndRealtimeUsec - first.StartRealtimeUsec
+		if width == 0 {
+			width = 1
+		}
+		// Every possible timestamp must select a bucket before owning a singleton early.
+		ownInlineValue = (^uint64(0)-first.StartRealtimeUsec)/width <= uint64(^uint(0)>>1)
+	}
 	rowsWithField := make(map[uint64]struct{})
-	err := r.visitFieldDataObjects(field, func(_ uint64, header dataHeader, payload []byte) error {
-		payloadField, value, ok := splitRawPayload(payload)
-		if !ok || !bytes.Equal(payloadField, field) {
+	err := r.visitFieldDataObjects(field, func(offset uint64, header dataHeader, payload []byte) error {
+		if fieldHasEquals || len(payload) <= len(field) || payload[len(field)] != '=' || !bytes.Equal(payload[:len(field)], field) {
 			return nil
 		}
-		if err := r.visitDataEntryOffsets(header, func(entryOffset uint64) error {
-			result.Stats.DataRefsSeen++
-			if !candidates.contains(entryOffset) {
+		value := payload[len(field)+1:]
+		compressed := header.object.flag&(objectCompressedXZ|objectCompressedLZ4|objectCompressedZSTD) != 0
+		var err error
+		if header.nEntries == 1 && (compressed || ownInlineValue) {
+			// A singleton needs one key; raw bytes must be owned before ENTRY access.
+			err = r.visitDataEntryOffsets(header, func(entryOffset uint64) error {
+				result.Stats.DataRefsSeen++
+				if !allCandidates {
+					if _, ok := candidateOffsets[entryOffset]; !ok {
+						return nil
+					}
+				}
+				var key string
+				if !compressed {
+					key = string(value)
+				}
+				entryHeader, err := r.readEntryHeaderAt(entryOffset)
+				if err != nil {
+					return err
+				}
+				rowsWithField[entryOffset] = struct{}{}
+				if !timestampInRange(query, entryHeader.realtime) {
+					return nil
+				}
+				bucket := histogramBucketIndex(result.Histogram, entryHeader.realtime)
+				if bucket >= 0 {
+					if compressed {
+						key = string(value)
+					}
+					result.Histogram.Buckets[bucket].Values[key]++
+					result.Stats.HistogramUpdates++
+				}
 				return nil
-			}
-			entryHeader, err := r.readEntryHeaderAt(entryOffset)
+			})
 			if err != nil {
 				return err
 			}
-			rowsWithField[entryOffset] = struct{}{}
-			if !timestampInRange(query, entryHeader.realtime) {
+			if compressed {
+				result.Stats.PayloadsDecompressed++
+			}
+		} else {
+			dataSize := header.object.size
+			var key string
+			keyReady := false
+			err = r.visitDataEntryOffsets(header, func(entryOffset uint64) error {
+				result.Stats.DataRefsSeen++
+				if !allCandidates {
+					if _, ok := candidateOffsets[entryOffset]; !ok {
+						return nil
+					}
+				}
+				entryHeader, err := r.readEntryHeaderAt(entryOffset)
+				if err != nil {
+					return err
+				}
+				rowsWithField[entryOffset] = struct{}{}
+				if !timestampInRange(query, entryHeader.realtime) {
+					return nil
+				}
+				bucket := histogramBucketIndex(result.Histogram, entryHeader.realtime)
+				if bucket >= 0 {
+					if !keyReady {
+						current := value
+						// ENTRY reads may invalidate raw bytes, including the inline posting.
+						if !compressed && len(value) != 0 {
+							valueOffset := offset + (dataSize - uint64(len(value)))
+							var err error
+							current, err = r.readSlice(valueOffset, uint64(len(value)))
+							if err != nil {
+								return err
+							}
+						}
+						key = string(current)
+						keyReady = true
+					}
+					result.Histogram.Buckets[bucket].Values[key]++
+					result.Stats.HistogramUpdates++
+				}
 				return nil
+			})
+			if err != nil {
+				return err
 			}
-			bucket := histogramBucketIndex(result.Histogram, entryHeader.realtime)
-			if bucket >= 0 {
-				result.Histogram.Buckets[bucket].Values[string(value)]++
-				result.Stats.HistogramUpdates++
+			if compressed {
+				result.Stats.PayloadsDecompressed++
 			}
-			return nil
-		}); err != nil {
-			return err
 		}
 		result.Stats.DataObjectsClassified++
 		result.Stats.DataPayloadsLoaded++
-		if header.object.flag&(objectCompressedXZ|objectCompressedLZ4|objectCompressedZSTD) != 0 {
-			result.Stats.PayloadsDecompressed++
-		}
 		return nil
 	})
 	if err != nil {

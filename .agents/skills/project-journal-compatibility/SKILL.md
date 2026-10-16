@@ -131,6 +131,61 @@ Do not use this skill for:
   debug-only discrepancy tool; production reports, benchmarks, or compatibility
   claims with that switch enabled are invalid and must be treated as an
   explorer defect.
+- Indexed aggregation changes must force temporary DATA reuse during nested
+  posting and ENTRY reads. From `go/`, run
+  `go test -count=1 ./journal -run '^TestExplorerIndexedWindow'` for both layouts,
+  all DATA compression modes,
+  mmap/auto eviction and ReadAt scratch reuse. Keep possible mmap faults in child
+  processes. Compare full results and indexed counters, including empty/binary
+  values, singleton DATA, unset/repeated values, time filters, bucket integer
+  boundaries and partial read-error counters. A small fixture or
+  a successful zero-row query does not establish the default-window lifetime.
+  Benchmark matching and unmatched low/high-cardinality queries with
+  `BenchmarkExplorerIndexedValueOwnership`; record allocations separately from
+  elapsed time. Use `BenchmarkExplorerIndexedCompressedValueOwnership` with an
+  explicit `JOURNAL_SDK_EXPLORER_COMPRESSED_CORPUS` for prebuilt codec controls;
+  check indexed/traversal outputs, actual decompression and update totals before
+  timing. Freeze the same complete test helper for baseline and candidate, and
+  exclude fixture construction and reader teardown from timing. An incorrect or
+  crashing baseline cannot certify a speedup.
+- Inspect CLI-helper timer boundaries before interpreting profiles or batching.
+  The Go reader helper opens/closes a fresh reader and checksums/sorts results
+  on every `--loops` iteration; its final ExplorerStats describe the last loop.
+  Pilot one iteration before selecting a batch count for each workload. Keep
+  CPU-profile post-timer activity and heap-profile forced GC separate from
+  query-cost claims; sampled cumulative allocation is not peak live memory.
+- For Go ENTRY-slot header acquisition, run `TestEntrySlotHeader` controls on
+  both backends, default/tiny/non-power-of-two windows, boundary headers,
+  partial errors, closed readers, row pins, eviction and live array growth.
+  Measure `BenchmarkReaderOpen`, `BenchmarkReaderEntryHeader` and
+  `BenchmarkReaderAllocation` with the same complete header benchmark helper
+  in both builds. Record actual allocation classes with
+  `TestReaderAllocationShape`; raw sizeof does not establish heap cost, and
+  64-bit layout preservation does not establish 32-bit layout preservation.
+  Exclude candidate-only direct-helper correctness tests from both timing
+  binaries, document that exclusion and run those tests separately. Preserve
+  the baseline validator's policy when isolating acquisition changes from
+  other paused work, and verify matching pure-build flags and source hashes.
+  For uncertain small-open timings, compare the same immutable five-entry
+  corpus using `JOURNAL_SDK_READER_OPEN_SMALL_CORPUS` and retain a generated-file
+  control with those same binaries. Preserve earlier results: a changed helper
+  can alter test linking even when production source is byte-identical.
+- For Go native-file opener changes, run `TestNativeReaderFile` uncached on
+  amd64 and 386. Verify read-only/blocking/close-on-exec flags, typed path
+  errors, symlink identity, descriptor closure and sparse reads above 2 GiB.
+  Preserve interrupted-open retry, native malformed-file cleanup and existing
+  `.zst` source/staging behavior; build non-Linux delegation targets. The direct
+  Linux opener bypasses Go's internal test-cache input hook, so use `-count=1`
+  for fixture-dependent tests and retain explicit immutable fixture hashes.
+  Exclude candidate-only opener contract tests from both timing builds, as for
+  direct header tests. Primitive syscall savings do not establish full-reader
+  performance; repeat small, large and higher-level reader/query controls.
+- For cached constructor statistics, run `TestReaderAccessorInitial` for
+  empty/nonempty files and initial mmap failure. Verify explicit counters,
+  selected/requested modes and fallback reason against a fresh statistics
+  query. Windows zero-byte raw files fail explicit mmap construction and Auto
+  falls back to ReadAt; preserve that platform behavior in test expectations.
+  Exclude candidate-only statistics tests from both timing builds.
 - Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
 - Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints.
 - Every external-agent prompt must include the canonical repository-boundary block verbatim from `AGENTS.md` or `.agents/skills/project-agent-orchestration/SKILL.md`.

@@ -2,12 +2,18 @@
 
 ## Status
 
-Status: completed
+Status: paused
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: the 2026-07-27 mixed-directory harness regression is repaired and
-validated. Rust and Go behavior did not change.
+Sub-state: reopened on 2026-10-14 after the SDK/CLI audit contradicted the
+completed file-backed parity claim. This is the requested journalctl workstream;
+SOW-0159 is the separate SDK workstream. Regression planning is prepared below.
+Scheduled after SOW-0159 under the user's 2026-10-15 instruction to complete
+both sequentially. No CLI runtime implementation has started. The user selected
+the complete v262 contract and native PCRE2 in the CLIs, including a Go CGO
+exception. Prerequisite SOW-0108 now precedes the SDK SOW. Earlier outcomes
+remain historical evidence.
 
 ## Requirements
 
@@ -2228,3 +2234,289 @@ Validation:
 
 No Rust or Go production source, API, behavior, file format, durability,
 default, or compatibility contract changed.
+
+## Regression - 2026-10-14 File-Backed Parity And Performance Preservation
+
+Status: paused for SDK-first execution. Implementation authorized on 2026-10-15;
+the user selected the complete systemd v262 CLI contract.
+
+### User Request And Workstream Ownership
+
+The user requested two SOWs, SDK and journalctl, with performance maintained or
+improved and no performance harm. The project regression rule requires reusing
+this originating SOW rather than creating a replacement journalctl SOW.
+SOW-0159 owns SDK traversal/decoder/recovery primitives; this record owns CLI
+parsing, dispatch, query controls, rendering, and exit behavior in Rust and Go.
+
+The user approved SDK-first execution on 2026-10-15 because the commands consume
+those primitives. Only one implementation SOW may execute at a time. This CLI
+SOW remains paused until the SDK deliverable passes its gates; this reopening
+does not authorize concurrent implementation.
+
+### What Broke And Evidence
+
+The completed claim of full portable v260.1 parity is contradicted by synthetic
+file-backed comparisons. The command sources below were unchanged between
+audited SDK commits `2b33553` and `dafcdac4b971d04e48768a1f831974f9252061e2`.
+Runtime probes used stock systemd 255.4; expected behavior was also checked in
+exact v260.1 source. They establish the listed failures, not a fresh full
+target-version runtime certification.
+
+| Case | Stock behavior | Observed Rust/Go failure |
+| --- | --- | --- |
+| `-F PRIORITY -n1` / `-n0` | Limit unique values / emit none | Rust ignores the limit; Go dispatches ordinary entry output instead of values. |
+| `-N -nN`, combined action options | Preserve selected enumeration; last action wins | Go line dispatch overrides enumeration; both use fixed action priority. |
+| Cursor or after-cursor plus `-n1` | Emit cursor row or its successor | Both return the final row instead. |
+| Follow with `-S @0` or `--lines=all` | Emit all 1005 initial fixture rows | Both emit only the final ten. |
+| `--no-tail -n1` | Override limit and emit all rows | Both emit one row. |
+| Valid PCRE2 lookahead, for example `(?=.)` | Compile and match | Both current regex engines reject it. |
+| Grep with no matches | Exit 1 | Both exit 0; empty grep/missing MESSAGE has an additional Go mismatch. |
+| `--list-boots -o json` | JSON table data | Both emit a text table. Invocation-list JSON requires the same audit. |
+| Empty/repeated output-field selection | Default/union/set semantics | Empty selection suppresses cat output; Go loses earlier selections; Rust rejects repeats. |
+| Repeated flags/scalars | Stock repeat/override semantics | Rust rejects repeated `-q`, output, lines, and other setters. |
+| Leading/trailing `+` | Parse failure | Both accept malformed disjunction placement. |
+| Empty `--since=` or UTC-suffixed timestamp | Reject empty / accept valid UTC text | Both silently ignore empty time; both reject the valid UTC form. |
+| `--system --user --unit=alpha.service` | Retain system-unit interpretation | Both apply the user-unit rewrite and lose matching rows. |
+
+Source evidence:
+
+- `go/cmd/journalctl/main.go:380`, `:1039`, `:1431`, `:1613`, `:2099`,
+  `:2684`, `:2736`; `go/cmd/journalctl/output.go:49`, `:180`.
+- `rust/src/cmd/journalctl/main.rs:458`, `:548`, `:574`, `:1939`, `:2702`,
+  `:2980`, `:3097`, `:4009`; `rust/src/cmd/journalctl/output.rs:143`.
+- `.local/journalctl-parity-2rx8qht8/behavior-probes.json` and
+  `supplemental-probes.json` contain generated diagnostic results. The counts
+  and cases above are the durable sanitized evidence summary.
+- Both language CLI suites and all 132 parser cases per language passed during
+  the audit. Those successes did not cover these behavioral combinations.
+
+Time bounds with `-F` are not a v260.1 defect: stock and both rewrites enumerate
+all stored values, including outside an empty time interval. v262 changes that
+contract by rejecting scoped `-F`/`-N` combinations. Do not silently implement
+time-windowed enumeration; the compatibility-target decision below is explicit.
+
+### Why Previous Validation Missed It
+
+- Parser probes generally accept any recognized-option result, even a later
+  validation/open error. Name recognition is not operational parity.
+- Grep cases use literal patterns and normally require stock success; no-match
+  exit status and PCRE2-specific syntax were absent from the oracle cases.
+- Follow-since tests supplied `--no-tail` or explicit small limits, masking the
+  default-ten history loss. Cursor/line combinations and enumeration/line
+  combinations were not exercised together.
+- ID listings, repeated options, action order, empty field selections, and
+  malformed separator positions lacked complete semantic/status assertions.
+
+### Pre-Implementation Gate For This Regression
+
+Gate status: target, regex direction and execution order approved; paused until
+prerequisite SOW-0108 and SDK SOW-0159 are complete. The earlier activation gate
+above records historical work; this gate controls this regression implementation.
+
+Problem / root-cause model:
+
+- Independent action booleans and shared show-line handling do not reproduce
+  stock action/argument order. Cursor paths retain the last selected rows rather
+  than stopping after the cursor-relative limit. Follow defaults erase explicit
+  all/since intent. Output and timestamp parsers implement incomplete stock
+  semantics; regex dialect and no-match status differ from PCRE2 journalctl.
+
+Evidence reviewed:
+
+- The cases/source above; current product scope and parity matrix; prior SOW
+  outcomes; shared parser/query/directory/verify harnesses; pending SOW-0122;
+  SDK findings and ownership in SOW-0159; benchmark/reporting contracts.
+
+Affected contracts and surfaces:
+
+- Rust and Go file-backed commands, parser normalization, action dispatch,
+  cursor/line/follow behavior, grep, text/JSON/export output, exit status, public
+  help/docs, shared oracle fixtures, and direct CLI performance measurement.
+- SDK core repairs belong to SOW-0159 and must be consumed without duplicating
+  their decoder or recovery logic in command wrappers.
+
+Existing patterns to reuse:
+
+- FIELD/DATA indexed catalogs and unique visitors; native cursor/ENTRY-array
+  seeking; bounded row selection; shared stock-oracle query/output/follow cases;
+  existing binary-safe rendering and facade lifetime rules.
+
+Risk and blast radius:
+
+- High compatibility risk for scripts consuming exit codes, cursors, limits,
+  JSON, and repeat semantics. High performance risk from extra scans/buffers or
+  a slower universal regex engine. Pure-language/non-Linux constraints remain.
+
+Sensitive data handling plan:
+
+- Use synthetic repository-local files/directories only. Never query host
+  journals or invoke daemon operations, logger, or systemd-cat. Place scratch,
+  caches, profiles, cursor files, and isolated oracle builds under `.local/`.
+  Durable artifacts contain sanitized counts, relative paths, and public commits.
+
+Implementation plan:
+
+1. Resolve target/regex design and ordering; preserve release baseline binaries
+   and fixture/output identities before runtime edits.
+2. Add paired stock-oracle regressions for every case family above, including
+   explicit expected nonzero statuses and complete output/cursor assertions.
+3. Repair parser/dispatch, enumeration/line precedence, cursor-limited seeking,
+   and follow history while preserving indexed paths and bounded state.
+4. Repair approved grep, timestamp, source-scope, and rendering semantics;
+   validate the complete approved option surface after the last material fix.
+5. Run the performance/portability/interoperability gates, update artifacts,
+   obtain whole-SOW review or explicit waiver, audit, and close in one commit.
+
+Validation plan:
+
+- Run `tests/parser-parity/check_v260_manifest.py` and
+  `run_parser_parity.py`, then the query, directory, mixed-directory, and verify
+  matrices plus affected Rust/Go CLI unit/subprocess suites.
+- Require an actual full-feature stock runtime for the approved target; record
+  version, commit, compression and sealing features. PATH systemd 255.4 is
+  supplementary evidence and cannot certify a v260.1 or v262 target.
+- Cover text/binary/repeated fields, all affected output framings, first/last
+  cursor identity, chronological/reverse order, limits zero/one/all, and live
+  file/directory appends. Check both values and return codes without masking
+  reader failures or sorting away order-sensitive mismatches.
+- Preserve Windows/macOS/FreeBSD support; existing toolchains and repository
+  caches only. Additional installations or remote execution need authorization.
+- Apply the performance gate below, repeat the same-failure search, then run
+  `.agents/sow/audit.sh` and require its complete-and-clean verdict.
+
+Artifact impact plan:
+
+- AGENTS.md: existing performance/purity/parity rules suffice unless a baseline
+  or dependency-policy change is explicitly approved.
+- Runtime project skills: update the compatibility workflow for added semantic
+  oracle and CLI performance gates when implemented.
+- Specs: correct the parity matrix/product scope to the accepted shipped target
+  and behavior; do not advertise unimplemented outcomes during preparation.
+- End-user/operator docs: maintain `docs/Journalctl-CLI.md`, help, and related
+  guides for approved behavior, limitations, and migration implications.
+- End-user/operator skills: none exist; check again at close.
+- SOW lifecycle: reopen the original record, preserve its full historical
+  narrative, and append this regression. SOW-0159 owns SDK repairs. SOW-0122
+  remains separate broad scalability work, not an excuse to omit this gate.
+- SOW-status.md: update canonical/root indexes and completion together with the
+  eventual implementation commit, not as a later lifecycle-only commit.
+
+Open-source reference evidence:
+
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced` (`v260.1`):
+  `src/journal/journalctl.c:744`, `:964`, `:1072`, `:1121`;
+  `journalctl-misc.c:187`, `:214`; `journalctl-show.c:73`, `:601`;
+  `src/shared/pcre2-util.c:58`; `src/shared/logs-show.c:1452`.
+- `systemd/systemd @ 8cc40e0c5e9234bf45084751ac53b1fbfe70b492` (`v262`):
+  `src/journal/journalctl.c:958`; `journalctl-filter.c:26`; `NEWS`.
+
+Open decisions:
+
+1. Resolved on 2026-10-16: the user authorized read-only external review after
+   complete local validation, including further rounds after material fixes.
+   This SOW remains paused for SOW-0108 then SOW-0159; review has not run here.
+
+Resolved on 2026-10-15: the user selected the complete v262 CLI contract,
+including a full option/surface delta audit, fixtures and migration documentation.
+The user approved SDK-first sequential execution. The SDK binary-format target
+remains v260.1; the newer CLI target does not change journal bytes or compiler
+minimums.
+The user also approved native PCRE2 in the CLIs only, including a Go CGO
+exception, retaining the performance gate. Core SDK purity and the prohibition
+on system journal linkage remain intact. Dependency/version and portable build
+details require source review and validation during this SOW, not a new product
+design fork. The user selected prerequisite SOW-0108 repair before SDK/CLI work
+resumes; preserve all existing working changes.
+
+### Acceptance Criteria And Performance Gate
+
+- Implement and test every confirmed CLI case family above in both languages;
+  language-specific code differences do not justify different observable results.
+- The user's no-performance-harm instruction is a hard acceptance condition. It
+  overrides generic allowances for a documented slower path in this workstream.
+- Before runtime changes, retain baseline release binaries, compiler/dependency
+  metadata, immutable file/directory fixtures, output sinks, and baseline
+  variance. Alternate baseline/candidate runs with warmups and repeated samples.
+- Require unchanged or improved performance per affected valid-input case. No
+  permissible slowdown percentage or aggregate-score offset is authorized.
+  Inconclusive/noisy results need investigation before claiming acceptance.
+- Measure complete-command elapsed/CPU time, first-output latency, rows/bytes
+  per second, peak RSS, allocation/profile evidence where available, and follow
+  catch-up/append/idle costs. SDK loop benchmarks alone do not certify startup.
+- Include indexed `-N/-F`, low/high-cardinality values, cursor `-n1`, tail/reverse
+  small limits, narrow time ranges, literal/approved complex grep, projected
+  JSON, complete scans, and follow history on small/large synthetic inputs.
+- Validate counts, order, cursors, and output checksums before interpreting
+  timings. A ten-row broken follow result cannot be the performance standard
+  for a correct 1005-row backlog; use equivalent complete work and controls.
+- Preserve FIELD/DATA enumeration, seek/index paths, bounded row selection,
+  reusable DATA, and requested-scope decompression. Do not insert complete
+  archive scans, full-result buffering, repeated parsing/render allocation,
+  full verification, or a disabled fast path to simplify the fixes.
+- Add a focused repeatable process-measurement runner around shared fixtures;
+  no dedicated CLI benchmark currently proves these cases. If core/facade
+  paths change, also run the shared reader-core benchmarks and render reports
+  through `tests/benchmarks/report_benchmarks.py`.
+- Compare equivalent stock and fastest-sibling behavior where practical; record
+  versions and limitations. Profile adverse/uncertain results. Reproducible
+  regressions block acceptance and require redesign rather than a silent waiver.
+
+### Implementation Review And Failure Handling
+
+- CLI implementation is authorized after SOW-0108 and SOW-0159. Native PCRE2
+  direction and the CLI-only Go CGO exception are recorded above; validate
+  dependencies and performance before acceptance. Keep implementation sequential.
+- External review has not been authorized in this conversation. Recommend the
+  full repaired SOW after local validation; use the system-wide reviewer skill
+  only after authorization or record an explicit waiver.
+- Every reviewer remains read-only and receives the canonical repository-boundary
+  block above, the complete SOW scope, source versions, performance evidence,
+  unresolved findings, and prohibition on host-journal probing.
+- Record failed correctness, performance, audit, and review gates. Do not mark
+  this SOW completed or submit an unreviewed parity claim while they remain open.
+
+### Preparation Validation And Artifact Maintenance
+
+- Accepted decisions recorded: two sequential workstreams, SDK first, the
+  complete v262 CLI target and no accepted performance regression. Regex
+  direction and the Go CLI CGO exception are approved; SDK recovery termination
+  belongs to SOW-0159 and uses normal EOF plus explicit status.
+- Tests/evidence: the diagnostic comparisons and 132/132 parser results above
+  are existing investigation evidence; no final implementation PASS is claimed.
+- Preparation validation on 2026-10-14: whitespace, gate/state/index, and exact
+  historical-narrative preservation checks passed. `.agents/sow/audit.sh`
+  reported `SOW initialization complete and clean`, with no sensitive-data
+  patterns in the scanned durable artifacts. Independent read-only planning
+  review found no blocking consistency flaw; this is not implementation approval.
+- Same-failure search: parser/dispatch, show loops, regex construction, field
+  selection, time grammar, and ID-list rendering were inspected in both CLIs.
+  Finish reachability and semantic-interaction scans during implementation.
+- Real-use evidence: synthetic explicit-file reads/follow only; no live host
+  journal, daemon operation, production service, or software install was used.
+
+Sensitive data gate:
+
+- Appended text contains sanitized counts, public source commits, and relative
+  paths only. No raw private data or workstation mirror paths are copied here.
+
+- Artifact maintenance: both SOW indexes and the SOW-0122 dependency/reference
+  notes are updated during preparation. Product behavior/specs/docs are not
+  changed before implementation. There are no output/reference skills to edit.
+- Lessons: recognized options, passing parser probes, and valid closed-file
+  reads do not establish semantic parity or preserved end-to-end performance.
+- Follow-up mapping: all current CLI defects and their performance gate belong
+  here; SDK causes belong to SOW-0159. Indexed invocation listing and general
+  polling scalability remain SOW-0122. Unrelated pending work stays separate.
+- Close only after full implementation, approved target/design, paired
+  correctness/performance evidence, review or waiver, artifact gates, and clean
+  audit. Move back to `done/` and commit with the implementation together.
+
+### Review Authorization - 2026-10-16
+
+The user selected option A, granting standing read-only external-review
+authorization for SOW-0108, SOW-0159 and this CLI SOW at their complete local
+validation milestones, including further rounds after material fixes. Use the
+six named reviewers and the system-wide reviewer skill. Earlier unauthorized
+review notes describe the prior preparation checkpoint and are superseded by
+this decision. Keep complete v262 parity, the CLI-only native PCRE2 decision,
+the no-performance-harm gate and sequential prerequisite execution unchanged.

@@ -16,7 +16,7 @@ SUMMARY_REPORT="${OUT_DIR}/coverage.summary.out"
 SUMMARY="${OUT_DIR}/coverage.txt"
 
 cd "${ROOT}/go"
-run go test -covermode=atomic -coverpkg=./... -coverprofile="${RAW_REPORT}" ./...
+run go test -count=1 -covermode=atomic -coverpkg=./... -coverprofile="${RAW_REPORT}" ./...
 normalize_coverprofile_prefix \
   "${RAW_REPORT}" \
   "${NORMALIZED_REPORT}" \
