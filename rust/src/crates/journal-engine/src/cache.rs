@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 /// v3: Index semantics changed from the v2 ND_REMAPPING-specific behavior, and
 ///     FileIndexKey gained an explicit consumer namespace. Old v2 cache entries
 ///     are not reused across SDK versions with different index rules.
-const CACHE_VERSION: u32 = 3;
+/// v4: Native array traversal rejects missing required links and counted
+///     revisits; older cached indexes may contain incomplete or duplicate rows.
+const CACHE_VERSION: u32 = 4;
 
 /// Cache key for file indexes that includes the file, facets, source timestamp
 /// field, and cache version. Different facet configurations or timestamp fields

@@ -234,11 +234,11 @@ type trackingCLIJournal struct {
 	getEntryCalls int
 }
 
-func (j *trackingCLIJournal) Close() error    { return nil }
-func (j *trackingCLIJournal) AddMatch([]byte) {}
-func (j *trackingCLIJournal) AddDisjunction() {}
-func (j *trackingCLIJournal) AddConjunction() {}
-func (j *trackingCLIJournal) FlushMatches()   {}
+func (j *trackingCLIJournal) Close() error          { return nil }
+func (j *trackingCLIJournal) AddMatch([]byte)       {}
+func (j *trackingCLIJournal) AddDisjunction() error { return nil }
+func (j *trackingCLIJournal) AddConjunction() error { return nil }
+func (j *trackingCLIJournal) FlushMatches()         {}
 func (j *trackingCLIJournal) SeekHead() error {
 	j.seekHeadCalls++
 	return nil

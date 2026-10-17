@@ -100,9 +100,24 @@ and Windows targets. `ReaderAccessReadAt` is retained only for tests,
 diagnostics, constrained-platform investigation, and controlled fallback
 evidence. It is not a production reader mode. If `ReaderAccessAuto` selects
 read-at in production, treat that as a deployment issue to investigate and
-benchmark before accepting. `ReaderBoundsLive` refreshes visible entries when
-active files grow; `ReaderBoundsSnapshot` fixes the visible file state at open
-time.
+benchmark before accepting. `ReaderBoundsLive` can observe active-file growth.
+`ReaderBoundsSnapshot` caps visibility at the original byte extent; it does not
+freeze a logical population. In unreleased source builds, a new exact-filter
+builder can see publications inside that original, preallocated extent.
+Installed healthy filters retain their captured DATA posting populations in
+either bounds mode. Flush and rebuild to include new matches; flushing rewinds
+to the head, so explicitly restore any saved location afterward. Group/build
+errors preserve the pending builder for retry. File/directory/facade handle
+`AddDisjunction` and `AddConjunction` methods now return errors; interfaces and
+callers must handle that result. Use writer-excluded indexed snapshot capture
+when a stable logical artifact is required.
+
+Filtered `Step`/`StepBack` select the nearest matching row in the requested
+direction, including direction reversal after EOF. Selected ENTRY load errors
+retain the last successful file/directory/facade selection for repair/retry.
+Explicit filtered realtime seeks binary-search native posting slots and report
+errors from slots/headers they visit; skipped postings are not certified.
+Ordinary sequential filtering still checks postings as it encounters them.
 
 `VisitEntryPayloads`, `EnumerateEntryPayload`, and
 `SdJournalEnumerateAvailableData` are zero-copy hot paths. Returned or callback

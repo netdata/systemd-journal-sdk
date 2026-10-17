@@ -34,6 +34,11 @@ func main() {
 		listSupportedTests(os.Stdout)
 	case "probe":
 		probeAdapter(os.Stdout)
+	case "inspect-reader":
+		if err := runReaderProbe(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n", os.Args[1])
 		os.Exit(1)

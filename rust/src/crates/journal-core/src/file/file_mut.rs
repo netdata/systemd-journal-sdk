@@ -80,6 +80,10 @@ impl JournalFile<super::mmap::MmapMut> {
             GuardedCell::new(WindowManager::new_writer_owned(fd, window_size, 32)?);
 
         let journal = JournalFile {
+            recovery_enabled: false,
+            recovery: Default::default(),
+            recovery_changed: std::cell::Cell::new(false),
+            filter_recovery_seen: std::cell::Cell::new(false),
             file: file.clone(),
             header_map,
             sanitized_header: None,
@@ -194,6 +198,10 @@ impl<M: MemoryMapMut> JournalFile<M> {
         )?);
 
         let mut jf = JournalFile {
+            recovery_enabled: false,
+            recovery: Default::default(),
+            recovery_changed: std::cell::Cell::new(false),
+            filter_recovery_seen: std::cell::Cell::new(false),
             file: file.clone(),
             header_map,
             sanitized_header: None,

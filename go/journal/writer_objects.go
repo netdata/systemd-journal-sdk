@@ -166,6 +166,7 @@ func (w *Writer) appendHashItem(tableOffset, tableSize uint64, typ uint8, hash, 
 
 func (w *Writer) updateHashChainDepth(typ uint8, head uint64) error {
 	var depth uint64
+	var chain chainGuard
 	for offset := head; offset != 0; {
 		var next uint64
 		switch typ {
@@ -182,6 +183,9 @@ func (w *Writer) updateHashChainDepth(typ uint8, head uint64) error {
 			}
 			next = header.nextHashOffset
 		default:
+			return errInvalidJournal
+		}
+		if !chain.advance(offset, next, false) {
 			return errInvalidJournal
 		}
 		if next != 0 {
@@ -212,6 +216,7 @@ func (w *Writer) findData(hash uint64, payload []byte) (uint64, resolvedDataLink
 	}
 
 	depth := uint64(0)
+	var chain chainGuard
 	for offset := item.head; offset != 0; {
 		header, err := w.readDataHeader(offset)
 		if err != nil {
@@ -236,6 +241,9 @@ func (w *Writer) findData(hash uint64, payload []byte) (uint64, resolvedDataLink
 				w.appendMutated = true
 				w.header.dataHashChainDepth = depth
 			}
+		}
+		if !chain.advance(offset, header.nextHashOffset, false) {
+			return 0, resolvedDataLinkState{}, false, errInvalidJournal
 		}
 		offset = header.nextHashOffset
 	}
@@ -269,6 +277,7 @@ func (w *Writer) findField(hash uint64, payload []byte) (uint64, bool, error) {
 	}
 
 	depth := uint64(0)
+	var chain chainGuard
 	for offset := item.head; offset != 0; {
 		header, stored, err := w.readFieldObject(offset)
 		if err != nil {
@@ -283,6 +292,9 @@ func (w *Writer) findField(hash uint64, payload []byte) (uint64, bool, error) {
 				w.appendMutated = true
 				w.header.fieldHashChainDepth = depth
 			}
+		}
+		if !chain.advance(offset, header.nextHashOffset, false) {
+			return 0, false, errInvalidJournal
 		}
 		offset = header.nextHashOffset
 	}

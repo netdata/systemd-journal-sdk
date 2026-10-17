@@ -1106,6 +1106,7 @@ func (r *Reader) findDataOffsetByPayload(payload []byte) (uint64, bool, error) {
 		return 0, false, err
 	}
 	item := parseHashItem(itemBuf)
+	var chain chainGuard
 	for offset := item.head; offset != 0; {
 		header, err := r.readDataHeaderAt(offset)
 		if err != nil {
@@ -1119,6 +1120,9 @@ func (r *Reader) findDataOffsetByPayload(payload []byte) (uint64, bool, error) {
 			if bytes.Equal(stored, payload) {
 				return offset, true, nil
 			}
+		}
+		if !chain.advance(offset, header.nextHashOffset, false) {
+			return 0, false, errCorruptObject
 		}
 		offset = header.nextHashOffset
 	}
@@ -1139,36 +1143,40 @@ func (r *Reader) readDataPayloadWithHeader(offset uint64, header dataHeader) ([]
 }
 
 func (r *Reader) firstDataEntryOffset(header dataHeader) (uint64, bool, error) {
+	if (header.entryOffset == 0) != (header.nEntries == 0) {
+		return 0, false, errCorruptObject
+	}
+	if r.recovery.Incomplete() {
+		var first uint64
+		stop := errors.New("first recovered posting")
+		err := r.visitRecoveredDataEntryOffsets(header, func(offset uint64) error { first = offset; return stop })
+		if errors.Is(err, stop) {
+			err = nil
+		}
+		return first, first != 0, err
+	}
 	if header.nEntries == 0 {
 		return 0, false, nil
 	}
-	if header.entryOffset != 0 {
-		return header.entryOffset, true, nil
-	}
-	if header.entryArrayOffset == 0 {
-		return 0, false, nil
-	}
-	_, offsets, _, err := r.readEntryArrayChunk(header.entryArrayOffset, 1)
-	if err != nil {
-		return 0, false, err
-	}
-	if len(offsets) == 0 {
-		return 0, false, nil
-	}
-	return offsets[0], true, nil
+	return header.entryOffset, true, nil
 }
 
 func (r *Reader) visitDataEntryOffsets(header dataHeader, visit func(uint64) error) error {
+	if (header.entryOffset == 0) != (header.nEntries == 0) {
+		return errCorruptObject
+	}
+	if r.recovery.Incomplete() {
+		return r.visitRecoveredDataEntryOffsets(header, visit)
+	}
 	if header.nEntries == 0 {
 		return nil
 	}
-	if header.entryOffset != 0 {
-		if err := visit(header.entryOffset); err != nil {
-			return err
-		}
+	if err := visit(header.entryOffset); err != nil {
+		return err
 	}
 	remaining := header.nEntries - 1
 	offset := header.entryArrayOffset
+	highest := offset
 	for offset != 0 && remaining > 0 {
 		arrayHeader, chunkOffsets, used, err := r.readEntryArrayChunk(offset, remaining)
 		if err != nil {
@@ -1180,7 +1188,19 @@ func (r *Reader) visitDataEntryOffsets(header dataHeader, visit func(uint64) err
 			}
 		}
 		remaining -= used
+		if remaining > 0 && arrayHeader.nextArrayOffset != 0 {
+			if arrayHeader.nextArrayOffset <= highest {
+				if err := rejectArrayRevisit(r, header.entryArrayOffset, offset, arrayHeader.nextArrayOffset, errCorruptObject); err != nil {
+					return err
+				}
+			} else {
+				highest = arrayHeader.nextArrayOffset
+			}
+		}
 		offset = arrayHeader.nextArrayOffset
+	}
+	if remaining != 0 {
+		return errCorruptObject
 	}
 	return nil
 }
@@ -1190,10 +1210,14 @@ func (r *Reader) visitFieldDataObjects(field []byte, visit func(uint64, dataHead
 	if err != nil || !ok {
 		return err
 	}
+	var chain chainGuard
 	for offset != 0 {
 		header, err := r.readDataHeaderAt(offset)
 		if err != nil {
 			return err
+		}
+		if !chain.advance(offset, header.nextFieldOffset, true) {
+			return errCorruptObject
 		}
 		payload, err := r.readDataPayloadWithHeader(offset, header)
 		if err != nil {
@@ -1211,7 +1235,7 @@ func (r *Reader) indexedCountFacetGroup(query ExplorerQuery, group facetPassGrou
 	result.Stats.FacetRowsMatched += candidates.count
 	allCandidates := candidates.all
 	candidateOffsets := candidates.offsets
-	allPostings := allCandidates && uint64(len(r.entryOffsets)) == r.header.nEntries
+	allPostings := allCandidates && !r.recovery.Incomplete() && uint64(len(r.entryOffsets)) == r.header.nEntries
 	for _, facetIndex := range group.facetIndices {
 		if facetIndex < 0 || facetIndex >= len(query.Facets) {
 			continue
@@ -2042,7 +2066,6 @@ func (r *Reader) setCurrentEntryOffset(offset uint64, direction Direction) bool 
 	}
 	r.clearCurrentEntryState()
 	r.entryIndex = index
-	r.direction = direction
 	r.realtimeSeek = nil
 	return true
 }
@@ -2310,7 +2333,6 @@ func (r *Reader) seekExplorerBackwardRealtime(usec uint64) {
 	} else {
 		r.entryIndex = idx + 1
 	}
-	r.direction = DirectionBackward
 	r.realtimeSeek = nil
 }
 

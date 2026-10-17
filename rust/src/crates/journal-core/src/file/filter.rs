@@ -1,6 +1,9 @@
 use super::mmap::MemoryMap;
 use crate::error::{JournalError, Result};
-use crate::file::{file::JournalFile, offset_array::InlinedCursor};
+use crate::file::{
+    file::JournalFile,
+    offset_array::{Direction, InlinedCursor},
+};
 use std::num::NonZeroU64;
 
 #[derive(Clone, Debug)]
@@ -12,11 +15,88 @@ pub enum FilterExpr {
 }
 
 impl FilterExpr {
+    pub(super) fn invalidate_position(&mut self) {
+        self.visit_cursors(&mut |cursor| cursor.filter_direction = None);
+    }
+
+    pub(super) fn refresh_recovery<M: MemoryMap>(&mut self, file: &JournalFile<M>) -> Result<()> {
+        Self::refresh_recovery_batch(std::slice::from_mut(self), file)
+    }
+
+    fn refresh_recovery_batch<M: MemoryMap>(
+        expressions: &mut [Self],
+        file: &JournalFile<M>,
+    ) -> Result<()> {
+        file.filter_recovery_seen.set(true);
+        for expression in expressions.iter_mut() {
+            expression.visit_cursors(&mut |cursor| cursor.recovery_pending = true);
+        }
+        loop {
+            let before = (file.recovery_status(), file.recovered_tail_metadata());
+            for expression in expressions.iter_mut() {
+                expression.refresh_recovery_pass(file)?;
+            }
+            if before == (file.recovery_status(), file.recovered_tail_metadata()) {
+                for expression in expressions.iter_mut() {
+                    expression.visit_cursors(&mut |cursor| cursor.recovery_pending = false);
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    fn visit_cursors(&mut self, visit: &mut impl FnMut(&mut InlinedCursor)) {
+        match self {
+            Self::None => {}
+            Self::Match(_, cursor) => visit(cursor),
+            Self::Conjunction(children) | Self::Disjunction(children) => {
+                for child in children {
+                    child.visit_cursors(visit);
+                }
+            }
+        }
+    }
+
+    fn any_cursor(&self, predicate: &impl Fn(&InlinedCursor) -> bool) -> bool {
+        match self {
+            Self::None => false,
+            Self::Match(_, cursor) => predicate(cursor),
+            Self::Conjunction(children) | Self::Disjunction(children) => {
+                children.iter().any(|child| child.any_cursor(predicate))
+            }
+        }
+    }
+
+    fn refresh_recovery_pass<M: MemoryMap>(&mut self, file: &JournalFile<M>) -> Result<()> {
+        match self {
+            Self::None => {}
+            Self::Match(offset, current) => {
+                let mut cursor = match file.reader_data_cursor(*offset)? {
+                    Some(cursor) => cursor,
+                    None => {
+                        let mut cursor = current.clone().empty();
+                        cursor.recovered_population = file.reader_recovery_active();
+                        cursor
+                    }
+                };
+                cursor.recovery_pending = true;
+                cursor.position_pending = true;
+                *current = cursor;
+            }
+            Self::Conjunction(children) | Self::Disjunction(children) => {
+                for child in children {
+                    child.refresh_recovery_pass(file)?;
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn head(&mut self) -> &mut Self {
         match self {
             FilterExpr::None => (),
             FilterExpr::Match(_, ic) => {
                 *ic = ic.head();
+                ic.position_pending = false;
             }
             FilterExpr::Conjunction(filter_exprs) => {
                 for filter_expr in filter_exprs.iter_mut() {
@@ -34,6 +114,21 @@ impl FilterExpr {
     }
 
     pub fn tail<M: MemoryMap>(&mut self, journal_file: &JournalFile<M>) -> Result<&mut Self> {
+        if !journal_file.filter_recovery_seen.get() {
+            self.tail_inner(journal_file)?;
+            return Ok(self);
+        }
+        if journal_file.filter_recovery_seen.get()
+            && self.any_cursor(&|cursor| cursor.recovery_pending)
+        {
+            self.refresh_recovery(journal_file)?;
+        }
+        self.tail_inner(journal_file)?;
+        self.visit_cursors(&mut |cursor| cursor.position_pending = false);
+        Ok(self)
+    }
+
+    fn tail_inner<M: MemoryMap>(&mut self, journal_file: &JournalFile<M>) -> Result<()> {
         match self {
             FilterExpr::None => {}
             FilterExpr::Match(_, ic) => {
@@ -41,17 +136,98 @@ impl FilterExpr {
             }
             FilterExpr::Conjunction(filter_exprs) => {
                 for filter_expr in filter_exprs.iter_mut() {
-                    filter_expr.tail(journal_file)?;
+                    filter_expr.tail_inner(journal_file)?;
                 }
             }
             FilterExpr::Disjunction(filter_exprs) => {
                 for filter_expr in filter_exprs.iter_mut() {
-                    filter_expr.tail(journal_file)?;
+                    filter_expr.tail_inner(journal_file)?;
                 }
             }
         }
 
-        Ok(self)
+        Ok(())
+    }
+
+    fn prepare_recovery<M: MemoryMap>(
+        &mut self,
+        file: &JournalFile<M>,
+        backward: bool,
+    ) -> Result<()> {
+        if !file.filter_recovery_seen.get() {
+            return Ok(());
+        }
+        if self.any_cursor(&|cursor| cursor.recovery_pending) {
+            self.refresh_recovery(file)?;
+        }
+        if self.any_cursor(&|cursor| cursor.position_pending) {
+            if backward {
+                self.tail_inner(file)?;
+                self.visit_cursors(&mut |cursor| cursor.position_pending = false);
+            } else {
+                self.head();
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn seek_realtime<M: MemoryMap>(
+        &mut self,
+        file: &JournalFile<M>,
+        needle: NonZeroU64,
+        direction: Direction,
+    ) -> Result<Option<NonZeroU64>> {
+        self.prepare_recovery(file, false)?;
+        self.invalidate_position();
+        self.seek_realtime_inner(file, needle, direction)
+    }
+
+    fn seek_realtime_inner<M: MemoryMap>(
+        &mut self,
+        file: &JournalFile<M>,
+        mut needle: NonZeroU64,
+        direction: Direction,
+    ) -> Result<Option<NonZeroU64>> {
+        match self {
+            Self::None => Ok(None),
+            Self::Match(_, cursor) => cursor.seek_realtime(file, needle, direction),
+            Self::Conjunction(children) => {
+                let initial = needle;
+                for i in 0..children.len() {
+                    let index = if direction == Direction::Forward {
+                        i
+                    } else {
+                        children.len() - 1 - i
+                    };
+                    let Some(value) =
+                        children[index].seek_realtime_inner(file, needle, direction)?
+                    else {
+                        return Ok(None);
+                    };
+                    needle = value;
+                }
+                if needle == initial {
+                    return Ok(Some(needle));
+                }
+                match direction {
+                    Direction::Forward => self.next_inner(file, needle),
+                    Direction::Backward => self.previous_inner(file, needle),
+                }
+            }
+            Self::Disjunction(children) => {
+                let mut best = None;
+                for child in children {
+                    if let Some(value) = child.seek_realtime_inner(file, needle, direction)? {
+                        best = Some(match (best, direction) {
+                            (Some(old), Direction::Forward) => value.min(old),
+                            (Some(old), Direction::Backward) => value.max(old),
+                            (None, _) => value,
+                        });
+                    }
+                }
+                Ok(best)
+            }
+        }
     }
 
     // Returns the offset of the next matching entry, if any, with an offset
@@ -61,9 +237,21 @@ impl FilterExpr {
         journal_file: &JournalFile<M>,
         needle_offset: NonZeroU64,
     ) -> Result<Option<NonZeroU64>> {
+        self.prepare_recovery(journal_file, false)?;
+        self.next_inner(journal_file, needle_offset)
+    }
+
+    fn next_inner<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        needle_offset: NonZeroU64,
+    ) -> Result<Option<NonZeroU64>> {
         match self {
             FilterExpr::None => Ok(None),
-            FilterExpr::Match(_, ic) => ic.next_until(journal_file, needle_offset),
+            FilterExpr::Match(_, ic) => {
+                ic.prepare_filter_direction(journal_file, Direction::Forward)?;
+                ic.next_until(journal_file, needle_offset)
+            }
             FilterExpr::Conjunction(filter_exprs) => {
                 let mut needle_offset = needle_offset;
 
@@ -71,7 +259,7 @@ impl FilterExpr {
                     let previous_offset = needle_offset;
 
                     for fe in filter_exprs.iter_mut() {
-                        if let Some(new_offset) = fe.next(journal_file, needle_offset)? {
+                        if let Some(new_offset) = fe.next_inner(journal_file, needle_offset)? {
                             needle_offset = new_offset;
                         } else {
                             return Ok(None);
@@ -87,7 +275,7 @@ impl FilterExpr {
                 let mut best_offset: Option<NonZeroU64> = None;
 
                 for fe in filter_exprs.iter_mut() {
-                    if let Some(fe_offset) = fe.next(journal_file, needle_offset)? {
+                    if let Some(fe_offset) = fe.next_inner(journal_file, needle_offset)? {
                         best_offset = match best_offset {
                             Some(offset) => Some(fe_offset.min(offset)),
                             None => Some(fe_offset),
@@ -107,9 +295,21 @@ impl FilterExpr {
         journal_file: &JournalFile<M>,
         needle_offset: NonZeroU64,
     ) -> Result<Option<NonZeroU64>> {
+        self.prepare_recovery(journal_file, true)?;
+        self.previous_inner(journal_file, needle_offset)
+    }
+
+    fn previous_inner<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        needle_offset: NonZeroU64,
+    ) -> Result<Option<NonZeroU64>> {
         match self {
             FilterExpr::None => Ok(None),
-            FilterExpr::Match(_, ic) => ic.previous_until(journal_file, needle_offset),
+            FilterExpr::Match(_, ic) => {
+                ic.prepare_filter_direction(journal_file, Direction::Backward)?;
+                ic.previous_until(journal_file, needle_offset)
+            }
             FilterExpr::Conjunction(filter_exprs) => {
                 let mut needle_offset = needle_offset;
 
@@ -117,7 +317,7 @@ impl FilterExpr {
                     let previous_offset = needle_offset;
 
                     for fe in filter_exprs.iter_mut().rev() {
-                        if let Some(new_offset) = fe.previous(journal_file, needle_offset)? {
+                        if let Some(new_offset) = fe.previous_inner(journal_file, needle_offset)? {
                             needle_offset = new_offset;
                         } else {
                             return Ok(None);
@@ -133,7 +333,7 @@ impl FilterExpr {
                 let mut best_offset: Option<NonZeroU64> = None;
 
                 for fe in filter_exprs.iter_mut() {
-                    if let Some(fe_offset) = fe.previous(journal_file, needle_offset)? {
+                    if let Some(fe_offset) = fe.previous_inner(journal_file, needle_offset)? {
                         best_offset = match best_offset {
                             Some(offset) => Some(fe_offset.max(offset)),
                             None => Some(fe_offset),
@@ -187,7 +387,7 @@ impl JournalFilter {
         let Some(offset) = journal_file.find_data_offset(hash, data)? else {
             return Ok(FilterExpr::None);
         };
-        let Some(ic) = journal_file.data_ref(offset)?.inlined_cursor() else {
+        let Some(ic) = journal_file.reader_data_cursor(offset)? else {
             return Ok(FilterExpr::None);
         };
         Ok(FilterExpr::Match(offset, ic))
@@ -303,6 +503,13 @@ impl JournalFilter {
         self.commit_current(journal_file)?;
         self.commit_level1();
 
+        if journal_file.reader_recovery_active()
+            || self.level0.iter().any(|expr| {
+                expr.any_cursor(&|cursor| cursor.recovery_pending || cursor.recovered_population)
+            })
+        {
+            FilterExpr::refresh_recovery_batch(&mut self.level0, journal_file)?;
+        }
         self.current_matches.clear();
         match self.level0.len() {
             0 => Err(JournalError::MalformedFilter),

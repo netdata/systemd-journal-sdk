@@ -165,20 +165,19 @@ func (o ReaderOptions) normalized() ReaderOptions {
 type Reader struct {
 	file        *os.File
 	header      journalHeader
-	path        string
-	cleanupPath string
 	options     ReaderOptions
 	accessor    readerAccessor
 	fileSize    uint64
+	arenaEnd    uint64
+	entryExtent uint64
+
+	entrySlotHeaderBuffer [objectHeaderSize]byte
 
 	// Cached from immutable per-file layout flags; live refresh updates mutable
 	// header counters/tails, but compact vs regular layout cannot change.
-	entryItemSizeBytes       uint64
-	offsetArrayItemSizeBytes uint64
-	dataPayloadOffsetBytes   uint64
-
-	entrySlotHeaderBuffer [objectHeaderSize]byte
-	direction             Direction
+	entryItemSizeBytes       uint8
+	offsetArrayItemSizeBytes uint8
+	dataPayloadOffsetBytes   uint8
 
 	entryOffsets []uint64
 	entryIndex   int
@@ -188,6 +187,8 @@ type Reader struct {
 	currentHeaderOffset uint64
 	currentHeaderValid  bool
 	entryDataActive     bool
+	allowRecovery       bool
+	staged              bool
 
 	filter *filterBuilder
 
@@ -198,6 +199,10 @@ type Reader struct {
 	uniqueField         string
 	uniqueHeadOffset    uint64
 	uniqueCurrentOffset uint64
+	uniqueChain         chainGuard
+
+	recovery            *readerRecoveryState
+	directoryOrderDirty *bool
 }
 
 type readerRefreshSnapshot struct {
@@ -206,6 +211,7 @@ type readerRefreshSnapshot struct {
 	index    int
 	fileSize uint64
 	visible  readerAccessorVisibleSnapshot
+	recovery *readerRecoveryState
 }
 
 func OpenFile(path string) (*Reader, error) {
@@ -213,12 +219,16 @@ func OpenFile(path string) (*Reader, error) {
 }
 
 func OpenFileWithOptions(path string, opts ReaderOptions) (*Reader, error) {
-	return openFileWithOptions(path, opts, true)
+	return openFileWithPolicy(path, opts, true, true)
 }
 
 // openFileWithOptions opens a journal file. loadEntries=false is only for
 // header and FIELD/DATA-index operations that never traverse ENTRY arrays.
 func openFileWithOptions(path string, opts ReaderOptions, loadEntries bool) (*Reader, error) {
+	return openFileWithPolicy(path, opts, loadEntries, true)
+}
+
+func openFileWithPolicy(path string, opts ReaderOptions, loadEntries, allowRecovery bool) (*Reader, error) {
 	opts = opts.normalized()
 	f, cleanupPath, err := openJournalFile(path)
 	if err != nil {
@@ -245,14 +255,15 @@ func openFileWithOptions(path string, opts ReaderOptions, loadEntries bool) (*Re
 		return nil, errUnsupportedJournal
 	}
 
+	fileSize := accessor.size()
 	r := &Reader{
-		file:        f,
-		header:      header,
-		path:        path,
-		cleanupPath: cleanupPath,
-		options:     opts,
-		accessor:    accessor,
-		fileSize:    accessor.size(),
+		file:          f,
+		header:        header,
+		staged:        cleanupPath != "",
+		options:       opts,
+		accessor:      accessor,
+		fileSize:      fileSize,
+		allowRecovery: allowRecovery,
 	}
 	r.configureLayout()
 
@@ -267,6 +278,11 @@ func openFileWithOptions(path string, opts ReaderOptions, loadEntries bool) (*Re
 }
 
 func (r *Reader) configureLayout() {
+	r.arenaEnd = r.header.headerSize + r.header.arenaSize
+	if r.arenaEnd < r.header.headerSize {
+		r.arenaEnd = 0
+	}
+	r.entryExtent = minUint64(r.arenaEnd, r.fileSize)
 	if r.header.isCompact() {
 		r.entryItemSizeBytes = compactEntryItemSize
 		r.offsetArrayItemSizeBytes = compactOffsetArrayItemSize
@@ -284,7 +300,11 @@ func (r *Reader) Close() error {
 		accessErr = r.accessor.close()
 		r.accessor = nil
 	}
-	closeErr := closeJournalFile(r.file, r.cleanupPath)
+	var cleanupPath string
+	if r.staged {
+		cleanupPath = r.file.Name()
+	}
+	closeErr := closeJournalFile(r.file, cleanupPath)
 	return errors.Join(accessErr, closeErr)
 }
 
@@ -517,10 +537,13 @@ func (r *Reader) clearCurrentEntryState() {
 }
 
 func (r *Reader) currentEntryOffset() (uint64, error) {
-	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
-		return 0, errEndOfEntries
+	if uint(r.entryIndex) < uint(len(r.entryOffsets)) {
+		return r.entryOffsets[r.entryIndex], nil
 	}
-	return r.entryOffsets[r.entryIndex], nil
+	if r.entryIndex == -2 && r.filter != nil && r.filter.overrideOffset != 0 {
+		return r.filter.overrideOffset, nil
+	}
+	return 0, errEndOfEntries
 }
 
 func (r *Reader) readCurrentHeader() (journalHeader, uint64, error) {
@@ -536,7 +559,7 @@ func (r *Reader) Refresh() (bool, error) {
 }
 
 func (r *Reader) refreshEntryOffsets() (bool, error) {
-	if r.cleanupPath != "" || r.options.Bounds == ReaderBoundsSnapshot {
+	if r.staged || r.options.Bounds == ReaderBoundsSnapshot {
 		return false, nil
 	}
 	snapshot := r.refreshSnapshot()
@@ -555,15 +578,27 @@ func (r *Reader) refreshEntryOffsets() (bool, error) {
 	r.applyRefreshState(header, size)
 	if err := r.loadEntryArray(); err != nil {
 		r.restoreRefreshSnapshot(snapshot)
-		return false, nil
+		return false, err
+	}
+	if r.directoryOrderDirty != nil && (snapshot.recovery.Incomplete() || r.recovery.Incomplete()) &&
+		(!sameRecoveryState(snapshot.recovery, r.recovery)) {
+		*r.directoryOrderDirty = true
 	}
 	r.entryIndex = snapshot.index
+	if snapshot.recovery.Incomplete() && len(r.entryOffsets) > len(snapshot.offsets) && snapshot.index >= len(snapshot.offsets) {
+		r.entryIndex = len(snapshot.offsets) - 1
+	}
 	r.clampEntryIndex()
-	return true, nil
+	if r.filter != nil &&
+		(!sameRecoveryState(snapshot.recovery, r.recovery)) {
+		r.filter.stale = true
+	}
+	return header != snapshot.header || size != snapshot.fileSize || !sameRecoveryState(r.recovery, snapshot.recovery) || len(r.entryOffsets) != len(snapshot.offsets), nil
 }
 
 func (r *Reader) sameEntryArrayState(header journalHeader, size uint64) bool {
-	return size == r.fileSize &&
+	return !r.recovery.Incomplete() && size == r.fileSize &&
+		(r.entryOffsets == nil || uint64(len(r.entryOffsets)) == header.nEntries) &&
 		header.nEntries == r.header.nEntries &&
 		header.tailEntryArrayOffset == r.header.tailEntryArrayOffset &&
 		header.tailEntryArrayNEntries == r.header.tailEntryArrayNEntries
@@ -582,43 +617,77 @@ func (r *Reader) refreshSnapshot() readerRefreshSnapshot {
 		index:    r.entryIndex,
 		fileSize: r.fileSize,
 		visible:  r.accessor.snapshotVisibleBounds(),
+		recovery: r.recovery,
 	}
 }
 
 func (r *Reader) applyRefreshState(header journalHeader, size uint64) {
 	r.header = header
-	r.configureLayout()
 	r.fileSize = size
+	r.configureLayout()
 }
 
 func (r *Reader) restoreRefreshSnapshot(snapshot readerRefreshSnapshot) {
 	r.header = snapshot.header
-	r.configureLayout()
 	r.entryOffsets = snapshot.offsets
 	r.entryIndex = snapshot.index
+	r.recovery = snapshot.recovery
+	if r.accessor != nil {
+		physical := r.accessor.snapshotVisibleBounds().fileSize
+		if physical < snapshot.fileSize {
+			r.currentHeaderValid = false
+		}
+		snapshot.fileSize = minUint64(snapshot.fileSize, physical)
+		snapshot.visible.fileSize = minUint64(snapshot.visible.fileSize, physical)
+	}
 	r.fileSize = snapshot.fileSize
+	r.configureLayout()
 	if r.accessor != nil {
 		r.accessor.restoreVisibleBounds(snapshot.visible)
 	}
 }
 
 func (r *Reader) loadEntryArray() error {
+	previousRecovery := r.recovery
+	r.recovery = nil
 	if r.header.entryArrayOffset == 0 {
-		r.entryOffsets = nil
+		r.entryOffsets = []uint64{}
+		if r.header.nEntries != 0 {
+			if r.allowRecovery {
+				return r.retainRecoveredPrefix(nil, RecoveryMissingEntryArray, 0, previousRecovery)
+			}
+			return errCorruptObject
+		}
 		return nil
 	}
 
-	var offsets []uint64
+	offsets := []uint64{}
 	offset := r.header.entryArrayOffset
+	highest := offset
 	remaining := r.header.nEntries
 	for offset != 0 && remaining > 0 {
 		header, chunkOffsets, toRead, err := r.readEntryArrayChunk(offset, remaining)
 		if err != nil {
-			return err
+			return r.recoverEntryArrayFailure(offset, remaining, offsets, chunkOffsets, err, previousRecovery)
 		}
 		offsets = append(offsets, chunkOffsets...)
 		remaining -= toRead
+		if remaining > 0 && header.nextArrayOffset != 0 {
+			if header.nextArrayOffset <= highest {
+				if err := rejectArrayRevisit(r, r.header.entryArrayOffset, offset, header.nextArrayOffset, errCorruptObject); err != nil {
+					return err
+				}
+			} else {
+				highest = header.nextArrayOffset
+			}
+		}
 		offset = header.nextArrayOffset
+	}
+	if remaining != 0 {
+		if r.allowRecovery {
+			return r.retainRecoveredPrefix(offsets, RecoveryMissingEntryArray, offset, previousRecovery)
+		}
+		return errCorruptObject
 	}
 
 	r.entryOffsets = offsets
@@ -633,13 +702,23 @@ func (r *Reader) readEntryArrayChunk(offset uint64, remaining uint64) (offsetArr
 	}
 	toRead := minUint64(remaining, capacity)
 	itemSize := r.offsetArrayItemSize()
-	buf := make([]byte, toRead*itemSize)
-	if err := r.readAt(buf, offset+offsetArrayObjectHeaderSize); err != nil {
-		return offsetArrayHeader{}, nil, 0, err
+	start := offset + offsetArrayObjectHeaderSize
+	bodySize := header.object.size - offsetArrayObjectHeaderSize
+	if start > r.fileSize || bodySize > r.fileSize-start {
+		return header, nil, 0, invalidEntryBodyBounds(start, bodySize, r.fileSize)
+	}
+	// Header capacity bounds this product by the validated object size.
+	byteCount := toRead * itemSize
+	if byteCount > uint64(int(^uint(0)>>1)) {
+		return header, nil, 0, errCorruptObject
+	}
+	buf := make([]byte, byteCount)
+	if err := r.readAt(buf, start); err != nil {
+		return header, nil, 0, err
 	}
 	offsets, err := r.validEntryOffsetsFromArray(buf, itemSize)
 	if err != nil {
-		return offsetArrayHeader{}, nil, 0, err
+		return header, offsets, toRead, err
 	}
 	return header, offsets, toRead, nil
 }
@@ -656,11 +735,11 @@ func (r *Reader) validEntryOffsetsFromArray(buf []byte, itemSize uint64) ([]uint
 	for pos := 0; pos < len(buf); pos += int(itemSize) {
 		off := entryOffsetArrayItem(buf[pos:], itemSize)
 		if off == 0 {
-			continue
+			return offsets, readerTailError{0}
 		}
 		valid, err := r.validEntryObjectOffset(off)
 		if err != nil {
-			return nil, err
+			return offsets, err
 		}
 		if valid {
 			offsets = append(offsets, off)
@@ -694,44 +773,62 @@ func (r *Reader) readEntrySlotHeader(offset uint64) ([]byte, error) {
 }
 
 func (r *Reader) validEntryObjectOffset(offset uint64) (bool, error) {
+	if offset < r.header.headerSize || offset&7 != 0 || offset > r.arenaEnd || r.arenaEnd-offset < objectHeaderSize {
+		return false, errCorruptObject
+	}
 	headerBuf, err := r.readEntrySlotHeader(offset)
 	if err != nil {
 		return false, err
 	}
-	objHeader, err := parseObjectHeader(headerBuf)
-	if err != nil {
-		return false, err
+	if len(headerBuf) < objectHeaderSize {
+		return false, errInvalidJournal
 	}
-	if objHeader.typ == 0 && objHeader.size == 0 {
-		return false, nil
+	typ, size := headerBuf[0], binary.LittleEndian.Uint64(headerBuf[8:16])
+	if typ != objectTypeEntry {
+		return false, invalidEntrySlotHeader(headerBuf, offset)
 	}
-	if objHeader.typ != objectTypeEntry {
+	if size < entryObjectHeaderSize || size&(r.entryItemSize()-1) != 0 {
 		return false, errCorruptObject
+	}
+	if offset > r.entryExtent || size > r.entryExtent-offset {
+		return false, r.invalidEntryExtent(offset, size)
 	}
 	return true, nil
 }
 
 func (r *Reader) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64, error) {
-	buf := make([]byte, offsetArrayObjectHeaderSize)
-	if err := r.readAt(buf, offset); err != nil {
+	if offset < r.header.headerSize || offset&7 != 0 || offset > r.arenaEnd || offsetArrayObjectHeaderSize > r.arenaEnd-offset {
+		return offsetArrayHeader{}, 0, errCorruptObject
+	}
+	buf, err := r.readArraySlotHeader(offset)
+	if err != nil {
 		return offsetArrayHeader{}, 0, err
 	}
 	header, err := parseOffsetArrayHeader(buf)
 	if err != nil {
 		return offsetArrayHeader{}, 0, err
 	}
-	if header.object.typ != objectTypeEntryArray || header.object.size < offsetArrayObjectHeaderSize {
-		return offsetArrayHeader{}, 0, errInvalidJournal
+	if header.object.typ != objectTypeEntryArray || header.object.size <= offsetArrayObjectHeaderSize {
+		return offsetArrayHeader{}, 0, invalidArraySlotHeader(buf, offset)
 	}
 	itemSize := r.offsetArrayItemSize()
-	if (header.object.size-offsetArrayObjectHeaderSize)%itemSize != 0 {
+	bodySize := header.object.size - offsetArrayObjectHeaderSize
+	if bodySize&(itemSize-1) != 0 {
 		return offsetArrayHeader{}, 0, errInvalidJournal
 	}
-	capacity := (header.object.size - offsetArrayObjectHeaderSize) / itemSize
+	if header.object.size > r.arenaEnd-offset {
+		return offsetArrayHeader{}, 0, errCorruptObject
+	}
+	capacity := bodySize >> ((itemSize >> 2) + 1)
 	return header, capacity, nil
 }
 
 func (r *Reader) Next() error {
+	if r.entryIndex == -2 {
+		if err := r.normalizeFilteredPosition(DirectionForward); err != nil {
+			return err
+		}
+	}
 	r.clearCurrentEntryState()
 	if r.realtimeSeek != nil {
 		return r.nextFromRealtimeSeek()
@@ -740,7 +837,6 @@ func (r *Reader) Next() error {
 		r.entryIndex = -1
 	}
 	r.entryIndex++
-	r.direction = DirectionForward
 
 	if r.entryIndex >= len(r.entryOffsets) {
 		return r.nextAfterTailRefresh()
@@ -755,7 +851,6 @@ func (r *Reader) nextFromRealtimeSeek() error {
 	if err != nil {
 		return err
 	}
-	r.direction = DirectionForward
 	idx, err = r.refreshRealtimeSeekIndex(usec, idx)
 	if err != nil {
 		return err
@@ -786,9 +881,7 @@ func (r *Reader) nextAfterTailRefresh() error {
 		return err
 	}
 	if changed && oldLen < len(r.entryOffsets) {
-		if r.entryIndex > oldLen {
-			r.entryIndex = oldLen
-		}
+		r.entryIndex = oldLen
 		if r.entryIndex < len(r.entryOffsets) {
 			return nil
 		}
@@ -798,6 +891,11 @@ func (r *Reader) nextAfterTailRefresh() error {
 }
 
 func (r *Reader) Previous() error {
+	if r.entryIndex == -2 {
+		if err := r.normalizeFilteredPosition(DirectionBackward); err != nil {
+			return err
+		}
+	}
 	r.clearCurrentEntryState()
 	if r.realtimeSeek != nil {
 		idx, err := r.lastRealtimeIndexAtOrBefore(*r.realtimeSeek)
@@ -805,7 +903,6 @@ func (r *Reader) Previous() error {
 		if err != nil {
 			return err
 		}
-		r.direction = DirectionBackward
 		if idx < 0 {
 			r.entryIndex = -1
 			return errStartOfEntries
@@ -816,7 +913,6 @@ func (r *Reader) Previous() error {
 	if r.entryIndex > len(r.entryOffsets) {
 		r.entryIndex = len(r.entryOffsets)
 	}
-	r.direction = DirectionBackward
 	r.entryIndex--
 
 	if r.entryIndex < 0 {
@@ -829,7 +925,6 @@ func (r *Reader) Previous() error {
 func (r *Reader) SeekHead() error {
 	r.clearCurrentEntryState()
 	r.entryIndex = -1
-	r.direction = DirectionForward
 	r.realtimeSeek = nil
 	return nil
 }
@@ -837,13 +932,13 @@ func (r *Reader) SeekHead() error {
 func (r *Reader) SeekTail() error {
 	r.clearCurrentEntryState()
 	r.entryIndex = len(r.entryOffsets)
-	r.direction = DirectionBackward
 	r.realtimeSeek = nil
 	return nil
 }
 
 func (r *Reader) SeekRealtimeUsec(usec uint64) error {
 	r.clearCurrentEntryState()
+	r.entryIndex = -1
 	value := usec
 	r.realtimeSeek = &value
 	return nil
@@ -930,10 +1025,10 @@ func (r *Reader) readEntryDataOffsetsAt(offset uint64, dst []uint64) (entryHeade
 }
 
 func (r *Reader) currentEntryDataOffsets() ([]uint64, error) {
-	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
-		return nil, errEndOfEntries
+	offset, err := r.currentEntryOffset()
+	if err != nil {
+		return nil, err
 	}
-	offset := r.entryOffsets[r.entryIndex]
 	if r.entryDataOffsetsEntry == offset && r.entryDataOffsets != nil {
 		return r.entryDataOffsets, nil
 	}
@@ -967,15 +1062,15 @@ func (r *Reader) hash(payload []byte) uint64 {
 }
 
 func (r *Reader) entryItemSize() uint64 {
-	return r.entryItemSizeBytes
+	return uint64(r.entryItemSizeBytes)
 }
 
 func (r *Reader) offsetArrayItemSize() uint64 {
-	return r.offsetArrayItemSizeBytes
+	return uint64(r.offsetArrayItemSizeBytes)
 }
 
 func (r *Reader) dataPayloadOffset() uint64 {
-	return r.dataPayloadOffsetBytes
+	return uint64(r.dataPayloadOffsetBytes)
 }
 
 func parseEntryHeader(src []byte) (entryHeader, error) {
@@ -1006,22 +1101,25 @@ func (r *Reader) AddMatch(data []byte) {
 	r.filter.addMatch(data)
 }
 
-func (r *Reader) AddDisjunction() {
+func (r *Reader) AddDisjunction() error {
 	if r.filter == nil {
 		r.filter = &filterBuilder{}
 	}
-	r.filter.addDisjunction()
+	r.clearCurrentEntryState()
+	return r.filter.addDisjunction(r)
 }
 
-func (r *Reader) AddConjunction() {
+func (r *Reader) AddConjunction() error {
 	if r.filter == nil {
 		r.filter = &filterBuilder{}
 	}
-	r.filter.addConjunction()
+	r.clearCurrentEntryState()
+	return r.filter.addConjunction(r)
 }
 
 func (r *Reader) FlushMatches() {
 	r.filter = nil
+	_ = r.SeekHead()
 }
 
 func (r *Reader) GetRealtimeUsec() (uint64, error) {
@@ -1068,11 +1166,12 @@ func (r *Reader) SeekCursor(cursor string) error {
 	}
 
 	for {
-		if err := r.Next(); err != nil {
-			if errors.Is(err, errEndOfEntries) {
-				return nil
-			}
+		ok, err := r.Step()
+		if err != nil {
 			return err
+		}
+		if !ok {
+			return r.SeekTail()
 		}
 		current, err := r.GetCursor()
 		if err != nil {
@@ -1108,49 +1207,95 @@ func (r *Reader) TestCursor(cursor string) (bool, error) {
 }
 
 func (r *Reader) Step() (bool, error) {
-	for {
-		if err := r.Next(); err != nil {
-			if errors.Is(err, errEndOfEntries) {
-				return false, nil
-			}
-			return false, err
-		}
-
-		if r.filter == nil {
-			return true, nil
-		}
-
-		entry, err := r.GetEntry()
-		if err != nil {
-			return false, err
-		}
-
-		if r.filter.matches(entry) {
-			return true, nil
-		}
+	if r.filter != nil {
+		return r.stepFiltered(DirectionForward)
 	}
+	err := r.Next()
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, errEndOfEntries) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (r *Reader) StepBack() (bool, error) {
-	for {
-		if err := r.Previous(); err != nil {
-			if errors.Is(err, errStartOfEntries) {
-				return false, nil
+	if r.filter != nil {
+		return r.stepFiltered(DirectionBackward)
+	}
+	err := r.Previous()
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, errStartOfEntries) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+//go:noinline
+func (r *Reader) recoverEntryArrayFailure(offset, remaining uint64, offsets, chunkOffsets []uint64, err error, previousRecovery *readerRecoveryState) error {
+	lost, ok := readerTailFailure(err)
+	if !ok || !r.allowRecovery {
+		return err
+	}
+	reason := RecoveryMissingEntry
+	if lost == offset || lost == offset+offsetArrayObjectHeaderSize {
+		reason = RecoveryMissingEntryArray
+		if lost != offset {
+			chunkOffsets, err = r.recoverPartialArray(offset, remaining)
+			if err != nil {
+				if _, ok := readerTailFailure(err); !ok {
+					return err
+				}
 			}
-			return false, err
-		}
-
-		if r.filter == nil {
-			return true, nil
-		}
-
-		entry, err := r.GetEntry()
-		if err != nil {
-			return false, err
-		}
-
-		if r.filter.matches(entry) {
-			return true, nil
 		}
 	}
+	return r.retainRecoveredPrefix(append(offsets, chunkOffsets...), reason, lost, previousRecovery)
+}
+
+//go:noinline
+func (r *Reader) invalidEntryExtent(offset, size uint64) error {
+	if size > r.arenaEnd-offset {
+		return errCorruptObject
+	}
+	return readerBoundsError{offset, size, r.fileSize}
+}
+
+//go:noinline
+func invalidEntrySlotHeader(header []byte, offset uint64) error {
+	if binary.LittleEndian.Uint64(header[:8]) == 0 && binary.LittleEndian.Uint64(header[8:16]) == 0 {
+		return readerTailError{offset}
+	}
+	return errCorruptObject
+}
+
+//go:noinline
+func invalidEntryBodyBounds(offset, size, fileSize uint64) error {
+	return readerBoundsError{offset, size, fileSize}
+}
+
+func (r *Reader) readArraySlotHeader(offset uint64) ([]byte, error) {
+	windowSize := r.options.WindowSize
+	if windowSize == 0 {
+		windowSize = defaultReaderWindowSize
+	}
+	if windowSize >= offsetArrayObjectHeaderSize && windowSize&(windowSize-1) == 0 &&
+		offset&(windowSize-1) <= windowSize-offsetArrayObjectHeaderSize {
+		return r.readSlice(offset, offsetArrayObjectHeaderSize)
+	}
+	buf := make([]byte, offsetArrayObjectHeaderSize)
+	if err := r.readAt(buf, offset); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+//go:noinline
+func invalidArraySlotHeader(header []byte, offset uint64) error {
+	if binary.LittleEndian.Uint64(header[:8])|binary.LittleEndian.Uint64(header[8:16])|binary.LittleEndian.Uint64(header[16:24]) == 0 {
+		return readerTailError{offset}
+	}
+	return errInvalidJournal
 }

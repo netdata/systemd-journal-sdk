@@ -1,15 +1,9 @@
 # SOW Status
 
-Last updated: 2026-10-16
+Last updated: 2026-10-17
 
 ## Current
 
-- SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: paused; next after
-  the completed prerequisite SOW-0108 combined commit.
-  Implementation authorized; default intact-prefix recovery/status approved.
-  Traversal/stream repairs and recovery internals are implemented locally.
-  Normal EOF plus recovery status is approved; public wiring, performance and
-  final validation/review remain open. Preserve or improve every affected path.
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: paused for
   SDK-first execution, then authorized implementation of complete v262 parity.
   Native PCRE2 and the CLI-only Go CGO exception are approved, with the
@@ -17,7 +11,9 @@ Last updated: 2026-10-16
 - SOW-0045 - Go Reader Alignment Optimization: regression reopened and paused.
   Unchanged HEAD reproduces skipped appends after healthy empty/EOF refresh,
   including unique-triggered refresh. Separate positioning work remains queued;
-  it does not change the active SOW-0108/0159/0121 execution order.
+  a pre-existing directory realtime-seek/getter gap and unfiltered time-probe
+  error suppression are also recorded for that analysis. SOW-0108 is complete;
+  SDK-then-CLI execution remains unchanged.
 
 - SOW-0071 - Runtime Purity And Optional Platform Services: regression
   reopened and paused. The static guard misses standard Go process-launch
@@ -27,6 +23,9 @@ Last updated: 2026-10-16
 
 ## Pending
 
+- SOW-0161 - File Indexer Source Posting Membership: open source-analysis
+  lead, not activated. Investigate inherited source-map target membership and
+  captured-tail handling before selecting any behavior/performance change.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Tracks
   unchanged cumulative dictionary allocation measured during SOW-0108, separate
   from required regression prevention. No decoder redesign is authorized and
@@ -79,6 +78,19 @@ Last updated: 2026-10-16
 
 ## Recently Closed Or Completed
 
+- SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: completed.
+  Both SDKs provide default intact-prefix recovery/status, complete streams,
+  native filtering and approved position/time/error retry behavior. Go floor
+  amd64/386/race checks pass 1,995/1,996/1,995 events, excluding only the unchanged
+  live-stock stress test with a retained isolated pass and earlier deadline
+  failure. Rust floor workspace/allocative checks pass, including 200 SDK tests.
+  Final tools pass 552 shared observations and 63/34/42 v262 verifier/directory/
+  mixed checks; 35 documentation examples and 16 pages pass. Performance is
+  accepted under representative evidence and careful review, with uncertain
+  intervals and adverse history retained. The fresh whole-SOW review has one
+  positive verdict, five coverage gaps and no verified unresolved blocker.
+  The closing audit and combined signed implementation/lifecycle commit accompany
+  completion; journalctl activation follows that commit.
 - SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed
   again with the approved Go indexed aggregation lifetime/header/opener repair.
   Full/race/386/integrated/floor and cross-platform checks pass. The current
@@ -88,7 +100,7 @@ Last updated: 2026-10-16
   adjudicated with no verified blocker; Mimo's P2 is disproven and Qwen/Kimi
   coverage gaps remain explicit. Independent findings are owned by paused
   SOW-0045/SOW-0071 and pending SOW-0160. Preserve SDK/CLI work and resume
-  SOW-0159 only after the combined signed prerequisite commit.
+  SOW-0159 after signed combined prerequisite commit `4c49205`.
 
 - SOW-0158 - v0.10.0 Publication: completed. Release run 38123573886 passed
   both language suites and published/verified all eight Rust `0.10.0` crates.

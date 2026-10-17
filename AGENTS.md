@@ -77,10 +77,15 @@ Mandatory rules:
   be treated as an explorer bug.
 - Treat repeated parsing of reusable DATA objects as a performance bug unless a
   SOW records evidence that the alternative is slower or unsafe.
-- Benchmark and profile hot paths before accepting performance-sensitive code.
-  Compare benchmarks against systemd when practical and against the fastest
-  sibling implementation in this repository; record why if a comparison cannot
-  run.
+- Choose performance evidence by tracing the actual changed work. Careful code
+  review and representative high-level tests can establish that a change does
+  not negatively affect performance. Use existing benchmarks and targeted
+  profiles for credible added costs or observed regressions; do not build or
+  expand a large measurement framework to prove every small detail. An
+  inconclusive timing interval alone is neither proof of equality nor evidence
+  of a regression. Preserve adverse observations and investigate them.
+  Compare equivalent benchmarks against systemd when practical and against the
+  fastest sibling implementation; explain unavailable comparisons.
 - Record any intentionally slower path in the SOW, docs, and tests, with the
   reason, measured cost, and the conditions where it is acceptable.
 

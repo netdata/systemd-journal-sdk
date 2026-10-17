@@ -126,6 +126,10 @@ Do not use this skill for:
   reindex/invalidation impact in the active SOW, product scope, and release
   notes. If not bumped, record why old cache entries remain semantically safe.
 - Avoid unnecessary DATA decompression, repeated `FIELD=value` parsing, allocation, sorting, hashing, or syscalls in reader/writer hot paths. Treat these as regressions unless tests and benchmark evidence prove they are required.
+- Relocated baseline/candidate source copies must include the tests' referenced
+  fixture and helper files at their original relative paths. Check those
+  dependencies before running the suite and verify copied bytes. Select Cargo
+  packages from their manifest names, not directory names or dependency aliases.
 - Explorer column catalogs must be built from FIELD indexes. The Rust
   `ExplorerQuery::debug_collect_column_fields_by_row_traversal` switch is a
   debug-only discrepancy tool; production reports, benchmarks, or compatibility
@@ -258,6 +262,82 @@ Do not use this skill for:
   compact, compact plus DATA-compressed, and sealed files, and on negative
   object type, object size, payload hash, hash-chain, entry-array,
   header-counter, seqnum, monotonic, and TAG/FSS corruption classes.
+- For ordinary traversal or compressed-reader changes, build both conformance
+  adapters and run `tests/interoperability/run_reader_hardening.py` against an
+  explicitly selected file-backed stock oracle. Use a new `.local/` output
+  directory. The paired corpus covers cycles, missing required posting links,
+  acyclic compatibility controls, facade/directory callers, complete Zstandard
+  streams and whole-file staging. `--only chains --only streams` does not
+  validate public crash recovery. Strict verification is a separate gate;
+  ordinary stock corruption handling can differ from the SDK's completeness
+  errors, so record the actual expected contract for each fixture.
+- For recovery changes, test fresh exact queries as well as queries after a
+  full unfiltered drain. Earlier traversal can hide a missing-pointer bug by
+  activating recovery first. Include sparse postings, same-size unpublished
+  tails, partial arrays, forward/reverse/time positioning, directory refresh,
+  and strict capture/append rejection. Release DATA guards before cold recovery
+  reads. Do not replay controlled Explorer callbacks or sampling state to retry
+  a failed indexed operation.
+- Count-bounded ENTRY-array traversal must reject the first required revisit;
+  a lazy unbounded-cycle guard alone can miss it before the count completes.
+  Cover short cycles, descending-prefix/ascending revisits, public Rust Node
+  iteration and writer tail selection before mutation. Preserve acyclic
+  backward links and ignore reader links beyond the declared population.
+  Prefix checks may inspect only already visited arrays, not future headers.
+- Requalification must use one stable observed recovery view across every
+  Boolean branch. Test a failure after an earlier branch was clipped, then
+  ENTRY repair that clears recovery while a later DATA branch still fails,
+  followed by DATA repair/retry. Pending builders and installed expressions
+  must retain retry state and known DATA identities, including empty lists.
+  A failed backward preparation must retain captured populations rather than
+  reread DATA counts after a later append. Check public expression composition
+  where exposed. Clearing matches must rewind file/directory/facade readers
+  without an explicit seek; test this after multiple sparse matches.
+- Filter position controls must cover installing at a resolved row, reversal
+  after EOF and early AND/OR exhaustion, duplicate realtime bounds, and failed
+  selected ENTRY loads followed by getters, repair and retry. Test both SDK and
+  facade APIs, regular/compact layouts and Go access backends. Directory
+  controls must include sequential file transitions, partial merge prefetch,
+  initial unset errors and pending realtime seeks; preserve candidate order
+  through complete retry/EOF traversal. Explicit filtered realtime search checks
+  visited posting slots; separately prove ordinary traversal still encounters
+  damaged skipped slots. Use probe counts plus isolated release comparisons to
+  establish search work and elapsed cost respectively.
+  Test recovery first discovered while sequential traversal crosses files,
+  followed by a later merge-probe error and repair. Internal merge restarts
+  must reuse the inner routine; one public movement owns rollback of its
+  selected child without discarding other prefetched candidates.
+  Install and replace filters at a committed directory row, including group
+  operators. Preserve pending seeks after an initial failed load. Prove native
+  sequential discovery with an unvisited later-file error: nearer rows must
+  remain readable before that file is reached. Raw/filtered mode changes must
+  reuse proven sequential positions as well as filter replacements.
+  Audit strict index consumers for suppressed new traversal errors and cached
+  partial results. Exercise requested facet/source posting chains, positive
+  counts with missing pointers and actual cache omission with a healthy sibling;
+  retain documented value tolerance and propagate required traversal failures.
+- Exercise recovery through public default constructors, not only a private
+  enablement switch. Cover file/directory/facade and whole-file compressed input,
+  normal EOF plus observed status, unchanged declared counters, complete repair
+  and strict verification/capture/append rejection. A zero status is not a
+  full-index integrity result. Preserve errors for unknown secondary posting
+  tails and malformed compressed streams.
+  Run `TestRecoveryEqualCountFacetWithoutPostings` and measure
+  `BenchmarkRecoveryUnmatchedFacet` when changing Go facet shortcuts: incomplete
+  unused array capacity can leave visible and declared counts equal while
+  suppressing postings. Keep the large orphan value out of unmatched key copies;
+  record allocation evidence rather than inferring it from correct results.
+- Before reader performance acceptance, freeze matching helper sources against
+  baseline and candidate SDKs. Keep immutable fixtures and complete semantic
+  counters. `tests/benchmarks/run_reader_regression_comparison.py` alternates
+  order and retains per-process output, measured runs and comparisons even when
+  a later case fails. An unsuccessful baseline is not a valid timing reference.
+- Select representative performance controls from the actual changed work.
+  Careful code review and high-level tests can suffice for unchanged hot work
+  or cold-only checks. Use targeted timing/profiling for credible added costs
+  and observed regressions; do not mechanically expand every API, layout and
+  backend combination or build a large framework for small changes. Retain
+  adverse evidence, and distinguish uncertainty from established equality.
 - Separate reader support for existing historical files from writer feature milestones.
 - Record excluded upstream tests with a reason and extract file-level behavior where practical.
 

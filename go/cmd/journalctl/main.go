@@ -108,8 +108,8 @@ var invocationIDFields = []string{
 type cliJournal interface {
 	Close() error
 	AddMatch([]byte)
-	AddDisjunction()
-	AddConjunction()
+	AddDisjunction() error
+	AddConjunction() error
 	FlushMatches()
 	SeekHead() error
 	SeekTail() error
@@ -1054,8 +1054,7 @@ func addFieldMatches(j cliJournal, field string, values []string) error {
 		}
 		j.AddMatch(match)
 	}
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
 func addInvocationMatches(j cliJournal, id string) error {
@@ -1067,14 +1066,15 @@ func addInvocationMatches(j cliJournal, id string) error {
 	}
 	for i, field := range fields {
 		if i > 0 {
-			j.AddDisjunction()
+			if err := j.AddDisjunction(); err != nil {
+				return err
+			}
 		}
 		if err := addMatchPair(j, field, id); err != nil {
 			return err
 		}
 	}
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
 func addMatchPair(j cliJournal, field, value string) error {
@@ -1106,8 +1106,7 @@ func applyBootMatch(j cliJournal, flags *cliFlags, bootOverride optionalStringFl
 		return err
 	}
 	j.AddMatch(match)
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
 func addMatchGroup(j cliJournal, pairs [][2]string) error {
@@ -1123,8 +1122,7 @@ func addImpossibleMatch(j cliJournal, reason string) error {
 	if err := addMatchPair(j, "__JOURNALCTL_NEVER_MATCH", reason); err != nil {
 		return err
 	}
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
 func addJournalctlUnitMatches(j cliJournal, systemUnits, userUnits []string) error {
@@ -1159,70 +1157,83 @@ func addJournalctlUnitMatches(j cliJournal, systemUnits, userUnits []string) err
 	if !added {
 		return addImpossibleMatch(j, "unit-glob")
 	}
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
 func addSystemUnitMatchGroups(j cliJournal, unit string) error {
 	if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_UNIT", unit}}); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_CGROUP", "/init.scope"}, {"UNIT", unit}}); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addMatchGroup(j, [][2]string{{"_UID", "0"}, {"OBJECT_SYSTEMD_UNIT", unit}}); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addMatchGroup(j, [][2]string{{"MESSAGE_ID", coredumpMessageID}, {"COREDUMP_UNIT", unit}}); err != nil {
 		return err
 	}
 
 	if strings.HasSuffix(unit, ".slice") {
-		j.AddDisjunction()
+		if err := j.AddDisjunction(); err != nil {
+			return err
+		}
 		if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_SLICE", unit}}); err != nil {
 			return err
 		}
 	}
 
-	j.AddDisjunction()
-	return nil
+	return j.AddDisjunction()
 }
 
 func addUserUnitMatchGroups(j cliJournal, unit, uid string, uidOK bool) error {
 	if err := addUserUnitMatchGroup(j, [][2]string{{"_SYSTEMD_USER_UNIT", unit}}, uid, uidOK, false); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addUserUnitMatchGroup(j, [][2]string{{"USER_UNIT", unit}}, uid, uidOK, false); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addUserUnitMatchGroup(j, [][2]string{{"OBJECT_SYSTEMD_USER_UNIT", unit}}, uid, uidOK, true); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addUserUnitMatchGroup(j, [][2]string{{"COREDUMP_USER_UNIT", unit}}, uid, uidOK, true); err != nil {
 		return err
 	}
 
 	if strings.HasSuffix(unit, ".slice") {
-		j.AddDisjunction()
+		if err := j.AddDisjunction(); err != nil {
+			return err
+		}
 		if err := addUserUnitMatchGroup(j, [][2]string{{"_SYSTEMD_USER_SLICE", unit}}, uid, uidOK, false); err != nil {
 			return err
 		}
 	}
 
-	j.AddDisjunction()
-	return nil
+	return j.AddDisjunction()
 }
 
 func addUserUnitMatchGroup(j cliJournal, pairs [][2]string, uid string, uidOK, includeRootUID bool) error {
@@ -1731,7 +1742,9 @@ func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outp
 
 	for _, arg := range matches {
 		if arg == "+" {
-			j.AddDisjunction()
+			if err := j.AddDisjunction(); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if strings.Contains(arg, "=") {
@@ -2209,7 +2222,9 @@ func collectBootsIndexed(j cliJournal) ([]bootInfo, error) {
 		if err := addMatchPair(j, "_BOOT_ID", bootID); err != nil {
 			return nil, err
 		}
-		j.AddConjunction()
+		if err := j.AddConjunction(); err != nil {
+			return nil, err
+		}
 
 		if err := j.SeekHead(); err != nil {
 			return nil, err

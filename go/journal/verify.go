@@ -48,7 +48,7 @@ func verifyFileWithOptions(path string, opts ReaderOptions) error {
 }
 
 func openVerifyReader(path string, opts ReaderOptions) (*Reader, error) {
-	return OpenFileWithOptions(path, opts.WithSnapshot(true))
+	return openFileWithPolicy(path, opts.WithSnapshot(true), true, false)
 }
 
 func verifyReaderStrict(r *Reader) error {

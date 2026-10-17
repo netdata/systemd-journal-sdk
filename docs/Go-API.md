@@ -38,6 +38,8 @@ The Go SDK is pure Go and does not use CGO.
 
 Use `OpenFile` for one journal file.
 
+Recovery diagnostics in this example require an unreleased source build.
+
 <!-- verify-example: lang=go id=go-read-one-file -->
 ```go
 r, err := journal.OpenFile("/var/log/journal/example/system.journal")
@@ -51,8 +53,11 @@ r.SeekHead()
 
 for {
     ok, err := r.Step()
-    if err != nil || !ok {
+    if err != nil {
         return err
+    }
+    if !ok {
+        break
     }
     entry, err := r.GetEntry()
     if err != nil {
@@ -62,10 +67,44 @@ for {
         fmt.Println(string(message))
     }
 }
+
+if status := r.RecoveryStatus(); status.Incomplete() {
+    fmt.Printf("Observed tail loss at offset %d: recovered %d/%d entries\n",
+        status.FirstLostOffset, status.RecoveredEntries, status.DeclaredEntries)
+}
 ```
 
 `GetEntry()` materializes maps and owned payloads. It is convenient, but it is
 not the lowest-cost scan path.
+
+Ordinary readers in that source build return an intact prefix and normal EOF
+after observed tail loss.
+`RecoveryStatus` describes that observation; it is not an integrity certificate.
+Directory readers expose `RecoveryStatuses`, and facade callers use
+`SdJournalRecoveryStatuses`. See [[Reader-APIs|Reader APIs]] for error and
+strict-validation boundaries.
+
+In unreleased source builds, `Step` and facade iteration apply exact matches
+through DATA indexes and posting arrays. Repeated values for one field are OR
+alternatives; different fields are combined with AND. `Next` and `Previous` are
+raw movement helpers; use `Step` and `StepBack` for filtered SDK iteration.
+Filtered reverse movement returns the nearest preceding match, including after
+forward EOF. A selected ENTRY load error preserves the last successful position
+so repairing the input and retrying can return the failed candidate. See
+[[Reader-APIs|Reader APIs]] for explicit realtime-seek validation boundaries.
+
+`AddDisjunction` and `AddConjunction` now return errors on file and directory
+readers and facade handle methods. Check these results as well as iteration
+errors. Interfaces declaring these methods must include the error result;
+standalone `SdJournalAddDisjunction`/`SdJournalAddConjunction` functions already
+returned errors. A pending builder with no valid
+`FIELD=value` match returns `ErrMalformedFilter` when built. See
+[[Reader-APIs|Reader APIs]] for posting damage and live-match refresh behavior.
+
+`FlushMatches` clears the filter and rewinds to the head, matching Rust. To
+continue from an existing location, save and explicitly restore that location
+after clearing. Failed group/build operations retain the pending builder for
+retry; repair the input and retry, or flush to discard the pending matches.
 
 ## Scan Payloads With Minimal Work
 
@@ -204,6 +243,9 @@ if err != nil {
 ```
 
 Use `QueryUnique` only when the caller needs an owned slice of all values.
+Query setup and each stateful enumeration step can fail on damaged chains or
+compressed DATA. Handle both errors and discard incomplete aggregates; see
+[[Reader-APIs|Reader APIs]] for the native-index and compressed-input contracts.
 Directory-level unique enumeration builds an exact 8-entry per-open-reader LRU
 cache from per-file FIELD/DATA chains and reuses it for repeated queries or
 facade stateful restarts while the already-open file set's header signatures

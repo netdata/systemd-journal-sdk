@@ -1,4 +1,6 @@
 // Modules - keep some public for advanced usage
+mod array_chain;
+mod chain_guard;
 pub mod cursor;
 pub mod file;
 mod file_iterators;
@@ -17,12 +19,19 @@ mod object_compression;
 mod object_hash;
 pub mod offset_array;
 pub mod reader;
+mod reader_recovery;
+pub use reader_recovery::{RecoveryReason, RecoveryStatus};
 mod row_view;
 pub mod sigbus;
 mod value_guard;
 pub mod writer;
 mod writer_entry_arrays;
 mod writer_seal;
+mod zstd_stream;
+#[doc(hidden)]
+pub use object_compression::decompress_zstd_payload as decompress_zstd_data;
+#[doc(hidden)]
+pub use zstd_stream::copy_zstd_stream;
 
 // Core functionality
 pub use file::{

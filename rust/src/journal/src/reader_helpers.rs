@@ -241,13 +241,6 @@ pub(super) fn verify_entry_at_strict(
     Ok(())
 }
 
-pub(super) fn recoverable_entry_error(err: &JournalError) -> bool {
-    matches!(
-        err,
-        JournalError::InvalidObjectSize(0) | JournalError::ObjectExceedsFileBounds
-    )
-}
-
 pub(super) fn recoverable_entry_data_error(err: &JournalError) -> bool {
     matches!(
         err,
@@ -265,13 +258,12 @@ pub(super) fn is_zst_file(path: &Path) -> bool {
 
 pub(super) fn decompress_zst_to_temp(path: &Path, prefix: &str) -> Result<PathBuf> {
     let source = File::open(path)?;
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(source)
-        .map_err(|err| SdkError::DecompressionFailed(err.to_string()))?;
     let mut temp_file = tempfile::Builder::new()
         .prefix(prefix)
         .suffix(".journal")
         .tempfile()?;
-    std::io::copy(&mut decoder, &mut temp_file)?;
+    journal_core::file::copy_zstd_stream(source, &mut temp_file)
+        .map_err(|err| SdkError::DecompressionFailed(err.to_string()))?;
     let (dest, temp_path) = temp_file.keep().map_err(|err| err.error)?;
     drop(dest);
     Ok(temp_path)

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"unicode/utf8"
 )
@@ -26,10 +27,14 @@ func (r *Reader) VisitUnique(fieldName string, visit func([]byte) error) error {
 		return err
 	}
 
+	var chain chainGuard
 	for offset != 0 {
 		header, err := r.readDataHeaderAt(offset)
 		if err != nil {
 			return err
+		}
+		if !chain.advance(offset, header.nextFieldOffset, true) {
+			return fmt.Errorf("%w: cyclic FIELD DATA chain", errCorruptObject)
 		}
 		err = r.visitDataPayloadWithHeader(offset, header.object, func(payload []byte) error {
 			if len(payload) <= len(field) || !bytes.Equal(payload[:len(field)], field) || payload[len(field)] != '=' {
@@ -67,6 +72,7 @@ func (r *Reader) QueryUniqueState(fieldName string) error {
 
 func (r *Reader) RestartUniqueState() error {
 	r.uniqueCurrentOffset = r.uniqueHeadOffset
+	r.uniqueChain = chainGuard{}
 	return nil
 }
 
@@ -74,6 +80,7 @@ func (r *Reader) ClearUniqueState() {
 	r.uniqueField = ""
 	r.uniqueHeadOffset = 0
 	r.uniqueCurrentOffset = 0
+	r.uniqueChain = chainGuard{}
 }
 
 func (r *Reader) EnumerateUniquePayload() ([]byte, bool, error) {
@@ -82,10 +89,13 @@ func (r *Reader) EnumerateUniquePayload() ([]byte, bool, error) {
 	}
 	field := []byte(r.uniqueField)
 	offset := r.uniqueCurrentOffset
-	header, err := r.readDataHeaderAt(offset)
+	header, err := r.readUniqueDataHeaderAt(offset)
 	if err != nil {
 		r.ClearUniqueState()
 		return nil, false, err
+	}
+	if !r.uniqueChain.advance(offset, header.nextFieldOffset, true) {
+		return r.uniqueCycleError()
 	}
 	r.uniqueCurrentOffset = header.nextFieldOffset
 
@@ -129,10 +139,14 @@ func (r *Reader) EnumerateFields() (map[string]struct{}, error) {
 			return r.enumerateFieldsByEntryScan()
 		}
 		item := parseHashItem(itemBuf)
+		var chain chainGuard
 		for offset := item.head; offset != 0; {
 			header, payload, err := r.readFieldObjectAt(offset)
 			if err != nil {
 				return r.enumerateFieldsByEntryScan()
+			}
+			if !chain.advance(offset, header.nextHashOffset, false) {
+				return nil, fmt.Errorf("%w: cyclic FIELD hash chain", errCorruptObject)
 			}
 			if utf8.Valid(payload) {
 				fields[string(payload)] = struct{}{}
@@ -156,4 +170,34 @@ func (r *Reader) enumerateFieldsByEntryScan() (map[string]struct{}, error) {
 		}
 	}
 	return fields, nil
+}
+
+//go:noinline
+func (r *Reader) uniqueCycleError() ([]byte, bool, error) {
+	r.ClearUniqueState()
+	return nil, false, fmt.Errorf("%w: cyclic FIELD DATA chain", errCorruptObject)
+}
+
+// Unique enumeration needs no posting or hash metadata.
+type uniqueDataHeader struct {
+	object          objectHeader
+	nextFieldOffset uint64
+}
+
+func (r *Reader) readUniqueDataHeaderAt(offset uint64) (uniqueDataHeader, error) {
+	buf, err := r.readSlice(offset, dataObjectHeaderSize)
+	if err != nil {
+		return uniqueDataHeader{}, err
+	}
+	if len(buf) < dataObjectHeaderSize {
+		return uniqueDataHeader{}, errInvalidJournal
+	}
+	header := uniqueDataHeader{
+		object:          objectHeader{typ: buf[0], flag: buf[1], size: binary.LittleEndian.Uint64(buf[8:16])},
+		nextFieldOffset: binary.LittleEndian.Uint64(buf[32:40]),
+	}
+	if header.object.typ != objectTypeData || header.object.size < r.dataPayloadOffset() {
+		return uniqueDataHeader{}, errCorruptObject
+	}
+	return header, nil
 }

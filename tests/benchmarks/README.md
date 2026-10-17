@@ -41,6 +41,29 @@ model: it refreshes cached file size only when a read would exceed the cached
 end of file. `snapshot` fixes file size at open time for polling/query
 consumers that do not need to observe appends during the current scan.
 
+Both reader helpers provide separate `sdk-digest` and `facade-digest` preflight
+modes for full ordered payload checks. Their `full-payload-fnv64-v1` checksum
+consumes every byte, payload length and row/time marker. Normal scan timing modes
+retain `sampled-payload-v1`, which examines length and endpoint bytes. Compare
+the diagnostic counters across the retained implementations before timing;
+diagnostic hashing time is not a normal scan measurement.
+
+The file SDK diagnostic mode also records final access/mmap counters before
+closing. Go's existing `reader_access_stats` value is captured before scanning;
+`reader_access_stats_after` covers the completed diagnostic read. Directory and
+facade handles do not expose these counters. When Go `--loops` is used, `extra`
+describes the final reader instance, not a cumulative total across loops.
+
+Ordinary native filtering has separate `sdk-filter` and `facade-filter` modes.
+They return ordered timestamp markers without requesting DATA values. Repeated
+`--match` arguments use the SDK's same-field OR / different-field AND rules;
+`--match-hex` accepts binary match bytes. `--filter-repetitions` repeats seeks on
+one reader, `--filter-limit 1` isolates first-result work, `--filter-rebuild`
+installs a fresh expression before each repetition, and `--filter-realtime`
+sets a time anchor. The corresponding `*-filter-digest` modes consume all
+selected payload bytes as an independent preflight. They belong outside timing
+comparisons of metadata-only movement.
+
 Go reader results record `mmap_strategy`. `mmap` is the default SDK reader
 access mode on Unix and is the production hot path. `read-at` remains in the
 harness as an explicit comparison and diagnostic mode.
@@ -50,6 +73,92 @@ and `--loops` for targeted profiling outside the full benchmark harness. Keep
 profile outputs under `.local/benchmarks/`; `--loops` repeats the selected
 read case inside one process to collect enough samples and is not used by the
 shared checksum-comparison harness.
+
+`run_reader_regression_comparison.py` compares retained reader helper binaries
+on immutable existing fixtures. Pass both languages' `--baseline-*` and
+`--candidate-*` binaries, one or more `--fixture` paths, and a new `--out`
+directory under `.local/`. Build each pair with matching benchmark-helper
+source and compiler settings; retain the original SDK implementation in the
+baseline. The runner records binary/fixture SHA-256 hashes and rejects changes
+during measurement.
+
+The default is two warmups and ten measured baseline/candidate pairs. Order
+alternates between pairs. Every run must return the same complete record,
+field, byte and checksum counters. `--case` selects case-name substrings;
+`--cpu` pins the harness and children to an available CPU; `--batch` repeats
+child measurements within each phase and compares their mean read time.
+Catalog cases exercise native FIELD/DATA enumeration, including stateful
+restarts, without row scans. `--surface directory` applies the supported SDK,
+facade and catalog cases to directory fixtures; the directory fingerprint
+includes relative file names and content hashes.
+
+`--surface open-files` treats a directory fixture as an explicit list of its
+journal files, fingerprinting the complete directory. The ordinary-filter
+`--filter-suite` uses the deterministic mixed-cardinality corpus: dense, sparse,
+absent, same-field OR and different-field AND selections, fresh first results
+and repeated boundary restarts. It covers both SDK/facade surfaces, bounds and
+directions. `--filter-time-usec` adds repeated realtime seeks at an explicit
+corpus timestamp that must produce a result in both directions. An independent
+native-byte parser computes ordered timestamp checksums before timing and saves
+`filter-goldens.json`; every language and build must match them. This preflight
+requires native uncompressed mixed-cardinality fixtures. Multi-file inputs must
+have distinct realtime values and sequence/boot order consistent with realtime;
+validate other merge orders separately. The AND
+control intersects overlapping same-field alternatives, with an outcome that
+differs from either group and their union.
+
+Metadata-only filter timings must be preceded by equivalent full-payload digest
+correctness controls. `fresh-first` rebuilds the filter on one open reader;
+`restart-first` repositions the installed filter. Neither repeats reader opening.
+Each helper timer includes one open and close, and reports returned rows rather
+than the number of filter operations. Complete filter arguments are retained in
+each `.command.json`. Scenario names remain separate in comparisons and summaries.
+The normal matrix also includes facade metadata stepping and Rust core modes
+under both bounds, directions and mapping strategies.
+
+`--auxiliary-suite` adds file-only indexed snapshot and verification lifecycles.
+Use `--case indexed` or `--case verify` to select those cases. Snapshot capture
+declares `LOW_CARD_00=low-00-00`; exact and FIELD equality visitors select the
+same population, and every visitor consumes every payload. `indexed-open`
+repeats 1,000 complete opens and reports completed operations in `records`;
+captured entry/value populations are separate `extra` counters. Visitor cases
+report visited rows. All modes include SDK opening, work and cleanup in the
+timer. Indexed snapshots require forward traversal and snapshot bounds.
+
+`verify-index` and `verify-file` report completed successful verifications.
+Their public SDK APIs select their own reader defaults; helpers reject custom
+window/access labels they cannot honor. Go uses `auto`, Rust uses `windowed`,
+and both use the default window size. Use bounded fixtures spanning multiple
+ENTRY arrays for compatibility verification, whose repeated-value work can be
+quadratic. Keep capture, graph verification and ordinary snapshot-bounds reader
+scans separate when interpreting results.
+
+The auxiliary runner saves independent native-byte expectations in
+`auxiliary-goldens.json`, including capture metadata. Before timing, also run
+`indexed-exact-digest`, `indexed-field-digest` and `indexed-all-digest` against
+full-byte expectations on every measured layout and access strategy. Those
+digest companions are deliberately absent from normal timing cases. For one
+compressed/staged fixture, `--auxiliary-golden-source` identifies its native,
+uncompressed original and freezes its hash. This supplies expected contents;
+the full-byte preflight must establish the measured fixture's equivalence.
+Single-frame writer-produced Zstd DATA and whole-file streams need distinct
+controls; skippable-padding fixtures do not establish the native single-frame
+fast path. Fixture creation and external fixture verification stay outside
+the timer.
+
+Raw samples, process statistics, paired timing ratios and bootstrap intervals
+are retained. A reproducible slower case is a regression; an inconclusive
+interval is not evidence of equivalence. Investigate noise or repeated
+slowdowns before accepting a candidate. Select representative cases from the
+actual changed work with `--case`; the full matrix is not a mandatory gate for
+every edit. Careful code review and high-level controls can establish that
+cold-only checks or unchanged hot work do not negatively affect performance.
+Use targeted measurements for credible added costs and adverse observations;
+an uncertain interval alone does not require expanding the measurement suite.
+Standard `summary.json` and
+`manifest.json` files are emitted under each phase and direction. Feed the
+direction-specific directories to `report_benchmarks.py` so forward/backward
+results are compared separately.
 
 Go indexed aggregation has focused lifetime and allocation controls in
 `go/journal/explorer_window_lifetime_test.go`. From `go/`, run:

@@ -485,8 +485,8 @@ Current Go writer feature slice:
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold using the shared systemd threshold policy, including
-  zstd frame content-size metadata required by stock systemd verification and
-  readback of large compressed payloads;
+  zstd frame content-size metadata retained for the v260.1 writer compatibility
+  target and readback of large compressed payloads;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
 - high-level directory writing with Netdata-compatible chain active naming by
@@ -688,6 +688,38 @@ Current shared high-level directory writer API slice:
 
 Readers must support applicable historical journal files represented by the shared fixture suite, including corrupted fixture behavior where the expected result is a controlled error or partial recovery.
 
+Traversed hash, FIELD DATA and ENTRY-array chains must terminate on cycles with
+a controlled error. Ordinary indexed reads retain their native traversal paths
+and accepted acyclic link orders; they do not run a full integrity scan at open.
+A detected cycle must not trigger the field-catalog compatibility row fallback.
+Counted ENTRY-array traversal rejects a required array revisit before consuming
+duplicate slots, including a revisit after an acyclic backward link. Reader
+links beyond the declared population are not traversed or validated. Writer
+tail selection rejects required revisits before modifying a repeated array.
+
+Zstandard DATA and whole-file staging consume complete supported streams,
+including unknown-size, concatenated and skippable frames. Invalid checksums,
+truncated later frames and trailing garbage are errors, not successful decoded
+prefixes. The 768 MiB DATA output limit applies to the aggregate logical DATA
+payload. Whole-file staging is streaming and does not apply that per-DATA limit
+to an entire journal. Known-size single-frame DATA retains its native fast path.
+
+Ordinary Rust/Go SDK file, directory and facade readers recover the intact entry
+prefix by default after observed unavailable ENTRY/ENTRY-array tails. Iteration
+ends with normal EOF; per-file copyable recovery status records the reason,
+associated loss offset, declared count and surviving count. Explicit collection
+diagnostics identify files and allocate on request. Raw header counters remain
+declared. A zero status reports no observed loss, not an integrity certificate;
+native catalog access does not preflight unrelated arrays. Live refresh can
+replace a degraded view after publication or repair.
+
+Recovery retains native index/header access and does not expand DATA rows to
+establish the prefix. Interior holes followed by readable entries, wrong types,
+cycles, malformed nonzero sizes, decompression failures and general I/O errors
+remain errors. Unknown secondary posting tails that could contain surviving
+matches remain errors. Strict verification, excluded-writer IndexedSnapshot
+capture, append-open and retention preconditions remain separate and strict.
+
 Accepted reader API layers:
 
 - Rust and Go readers use bounded reader-memory access for
@@ -787,6 +819,11 @@ Accepted reader API layers:
   consumer-side semantic migrations without changing the physical cache
   directory. Setting the builder namespace does not rewrite keys constructed
   elsewhere with `FileIndexKey::new()`.
+  Unreleased source builds use generation 4 after native-array completeness
+  repairs. Generation-3 entries miss: valid files rebuild on demand once after
+  upgrade. Encountered required native-chain or posting failures fail indexing;
+  existing per-object value tolerance remains. Old storage follows normal
+  cache eviction. Cache-hit algorithms and consumer namespaces are unchanged.
 - Rust and Go also expose explicit Explorer execution
   strategy controls through their idiomatic APIs. `ExplorerStrategy::Traversal`
   is the default and remains the behavior of each product language's ordinary
@@ -898,8 +935,8 @@ Current Go reader feature slice:
   diagnostics, constrained-platform investigation, and controlled fallback
   evidence only. Access stats expose the selected backend, fallback reason,
   window budget, mapped/read-buffer bytes, row-arena peak, and refresh counters;
-- whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
-  through pure-Go dependencies;
+- complete whole-file zstd streams and zstd, xz, and lz4-compressed DATA objects
+  through pure-Go dependencies, including the stream variants above;
 - historical unkeyed-hash journal reading, including LZ4-compressed DATA
   objects, with core reader traversal exposing the file-format entry set rather
   than old systemd 239 same-file duplicate suppression behavior;
@@ -970,8 +1007,8 @@ Current Rust writer feature slice:
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold, including Rust zstd frame content-size metadata
-  required by stock systemd verification, using the shared systemd threshold
-  policy;
+  retained for the v260.1 writer compatibility target, using the shared systemd
+  threshold policy;
 - keyed hash tables using the journal file ID;
 - deterministic file ID selection through `JournalFileOptions::with_file_id()`
   for reference fixture generation and conformance checks;
@@ -1018,8 +1055,9 @@ Current Rust reader feature slice:
 
 - regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
-- whole-file zstd fixtures and zstd, lz4, and xz-compressed DATA objects through
-  pure-Rust dependencies;
+- complete whole-file zstd streams and zstd, lz4, and xz-compressed DATA objects
+  through the existing compression dependencies, including the stream variants
+  above;
 - directory iteration across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
   ordering;
@@ -1029,9 +1067,10 @@ Current Rust reader feature slice:
   systemd-compatible export/json/text formatting;
 - configurable reader bounds through `ReaderOptions`: default `Live` mode uses
   systemd-style cached mutable bounds and refreshes file size only when a read
-  would exceed the cached end of file, while `Snapshot` mode fixes the file
-  size at open time for polling/query use cases that do not need to observe
-  appends during the current scan;
+  would exceed the cached end of file, while `Snapshot` mode caps reads at the
+  original open extent for polling/query use cases that do not need to observe
+  appends during the current scan. Cold recovery can observe physical shrink
+  and later repair up to that original cap;
 - `ReaderOptions` exposes live/snapshot bounds and window size for public
   consumers. Default Rust live readers remain windowed with a 32 MiB window so
   indexed DATA-chain traversal does not remap per small object. Whole-file mmap
@@ -1071,6 +1110,31 @@ Current Rust reader feature slice:
   active;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
+- unreleased exact SDK/facade filters resolve native DATA hash/posting indexes
+  in both languages, preserving same-field OR and different-field AND grouping
+  without expanding unrelated rows. Go `Step`/`StepBack` apply filters; its raw
+  `Next`/`Previous` movement helpers do not. File/directory/facade group operators return
+  errors, and an empty pending Go filter builder returns `ErrMalformedFilter`.
+  Required unknown secondary posting tails remain errors. Healthy installed
+  posting populations stay fixed until rebuilding; recovery can requalify
+  existing DATA identities within the reader's bounds, while absent DATA stays
+  absent until rebuilding. Failed group/build operations retain pending matches
+  for retry. Recovery requalification preserves known DATA identities and retries
+  the whole Boolean view after partial failure. Clearing matches rewinds file,
+  directory and facade readers to the head; callers restore saved locations
+  explicitly when continuation is required. Filtered movement returns the
+  nearest preceding/following match relative to the last successful row,
+  including filter installation/replacement and direction changes after EOF.
+  Directory mutations preserve the committed key and discard prefetched
+  candidates. Proven sequential positions retain sequential traversal rather
+  than probing every file; reversals and merged/recovered states use key-based
+  positioning. Failed selected ENTRY loading retains
+  the previous successful position and permits repair/retry. Explicit filtered
+  realtime seeks search native posting nodes and binary-search their captured
+  slots, selecting the first match at/after the requested time forward and the
+  last at/before it backward. Errors from visited slots/headers propagate;
+  skipped postings are not certified. Ordinary sequential posting traversal
+  retains its existing error-discovery behavior;
 - file-backed Rust journalctl source selection supports `--file`/`-i`,
   repeated `--file` inputs, stock-style glob expansion with no-match
   preservation, and `--directory`; `--file=-` is explicitly unsupported

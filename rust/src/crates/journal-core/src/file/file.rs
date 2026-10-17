@@ -437,6 +437,12 @@ pub struct JournalFile<M: MemoryMap> {
 
     // Forward Secure Sealing options (consumed by JournalWriter on first use)
     pub seal_options: Option<crate::seal::SealOptions>,
+
+    // Keep exceptional recovery state after the frequently accessed mappings.
+    pub(super) recovery_enabled: bool,
+    pub(super) recovery: super::reader_recovery::ReaderRecoveryCell,
+    pub(super) recovery_changed: std::cell::Cell<bool>,
+    pub(super) filter_recovery_seen: std::cell::Cell<bool>,
 }
 
 pub(super) fn map_hash_table<M: MemoryMap>(
@@ -516,6 +522,7 @@ impl<M: MemoryMap> JournalFile<M> {
         let hash_table = hash_table.ok_or(JournalError::MissingHashTable)?;
         let bucket = hash_table.hash_item_ref(hash);
         let mut object_offset = bucket.head_hash_offset;
+        let mut chain = super::chain_guard::ChainGuard::default();
 
         while let Some(offset) = object_offset {
             let object_guard = self.journal_object_ref::<V::Object>(offset)?;
@@ -524,7 +531,9 @@ impl<M: MemoryMap> JournalFile<M> {
                 return Ok(Some(output));
             }
 
-            object_offset = object_guard.next_hash_offset();
+            let next = object_guard.next_hash_offset();
+            chain.advance(offset, next, false)?;
+            object_offset = next;
         }
 
         Ok(None)
@@ -663,6 +672,10 @@ impl<M: MemoryMap> JournalFile<M> {
         let window_manager = GuardedCell::new(window_manager_builder(fd)?);
 
         let journal = JournalFile {
+            recovery_enabled: false,
+            recovery: Default::default(),
+            recovery_changed: std::cell::Cell::new(false),
+            filter_recovery_seen: std::cell::Cell::new(false),
             file,
             header_map,
             sanitized_header,
@@ -740,7 +753,7 @@ impl<M: MemoryMap> JournalFile<M> {
         let header = self.journal_header_ref();
 
         header.entry_array_offset.and_then(|head_offset| {
-            std::num::NonZeroUsize::new(header.n_entries as usize)
+            std::num::NonZeroUsize::new(self.reader_entry_count() as usize)
                 .map(|total_items| offset_array::List::new(head_offset, total_items))
         })
     }
@@ -846,7 +859,11 @@ impl<M: MemoryMap> JournalFile<M> {
                     wm.get_slice(offset.get(), std::mem::size_of::<ObjectHeader>() as u64)?;
                 let header = ObjectHeader::ref_from_bytes(header_slice)
                     .map_err(|_| JournalError::ZerocopyFailure)?;
-                header.validated_size()?
+                let size = header.validated_size()?;
+                if T::EXPECTED_TYPE.is_some_and(|expected| header.type_ != expected as u8) {
+                    return Err(JournalError::InvalidObjectType);
+                }
+                size
             };
 
             // Validate that the object doesn't exceed the journal's arena bounds
@@ -909,7 +926,7 @@ impl<M: MemoryMap> JournalFile<M> {
     where
         F: Fn(NonZeroU64) -> Result<bool>,
     {
-        let Some(cursor) = self.data_ref(data_offset)?.inlined_cursor() else {
+        let Some(cursor) = self.reader_data_cursor(data_offset)? else {
             return Ok(None);
         };
 
@@ -918,6 +935,61 @@ impl<M: MemoryMap> JournalFile<M> {
         };
 
         best_match.value(self)
+    }
+
+    #[doc(hidden)]
+    pub fn reader_data_cursor(
+        &self,
+        offset: NonZeroU64,
+    ) -> Result<Option<offset_array::InlinedCursor>> {
+        let build = || {
+            let result = {
+                let data = self.data_ref(offset)?;
+                self.reader_inlined_cursor(&data.header)
+            };
+            if !matches!(&result, Ok(Some(_))) || self.recovered_last_entry().is_none() {
+                return result;
+            }
+            match result {
+                Ok(Some(cursor)) => cursor.for_reader(self),
+                result => result,
+            }
+        };
+        let result = build();
+        if let Err(err) = &result {
+            if self.recover_reader_tail(err)? {
+                return build();
+            }
+        }
+        result
+    }
+
+    #[doc(hidden)]
+    pub fn reader_inlined_cursor(
+        &self,
+        data: &DataObjectHeader,
+    ) -> Result<Option<offset_array::InlinedCursor>> {
+        let cursor = data.inlined_cursor();
+        if cursor.is_some() {
+            return Ok(cursor);
+        }
+        if data.n_entries.is_none() {
+            return if data.entry_offset.is_none() {
+                Ok(None)
+            } else {
+                Err(JournalError::InvalidOffset)
+            };
+        }
+        let first = data.entry_offset.ok_or(JournalError::InvalidOffset)?;
+        if self.reader_recovery_active()
+            && self
+                .recovered_last_entry()
+                .flatten()
+                .is_none_or(|last| first >= last)
+        {
+            return Ok(Some(offset_array::InlinedCursor::new(first, None)));
+        }
+        Err(JournalError::ObjectExceedsFileBounds)
     }
 
     /// Creates an iterator over all field objects in the field hash table
@@ -931,6 +1003,7 @@ impl<M: MemoryMap> JournalFile<M> {
             field_hash_table,
             current_bucket_index: 0,
             next_field_offset: None,
+            chain: Default::default(),
         };
 
         // Find the first non-empty bucket
@@ -940,13 +1013,36 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 
     pub fn field_head_data_offset(&self, field_name: &[u8]) -> Result<Option<NonZeroU64>> {
-        let field_hash = self.hash(field_name);
-        let Some(field_offset) = self.find_field_offset(field_hash, field_name)? else {
-            return Ok(None);
-        };
+        struct HeadVisitor<'a> {
+            name: &'a [u8],
+            hash: u64,
+        }
+        impl<'a> BucketVisitor<'a> for HeadVisitor<'_> {
+            type Object = FieldObject<&'a [u8]>;
+            type Output = Option<NonZeroU64>;
 
-        let field_guard = self.field_ref(field_offset)?;
-        Ok(field_guard.header.head_data_offset)
+            #[inline(always)]
+            fn visit(
+                &mut self,
+                object: &ValueGuard<'a, Self::Object>,
+            ) -> Result<Option<Self::Output>> {
+                Ok(
+                    (object.hash() == self.hash && object.raw_payload() == self.name)
+                        .then_some(object.header.head_data_offset),
+                )
+            }
+        }
+        let hash = self.hash(field_name);
+        Ok(self
+            .visit_bucket(
+                self.field_hash_table_ref(),
+                hash,
+                HeadVisitor {
+                    name: field_name,
+                    hash,
+                },
+            )?
+            .flatten())
     }
 
     /// Creates an iterator over all DATA objects for the specified field
@@ -957,6 +1053,7 @@ impl<M: MemoryMap> JournalFile<M> {
             journal: self,
             head_data_offset,
             current_data_offset: head_data_offset,
+            chain: Default::default(),
         })
     }
 
@@ -966,20 +1063,12 @@ impl<M: MemoryMap> JournalFile<M> {
         &'a self,
         field_name: &[u8],
     ) -> Result<FieldDataOffsetIterator<'a, M>> {
-        let field_hash = self.hash(field_name);
-        let Some(field_offset) = self.find_field_offset(field_hash, field_name)? else {
-            return Ok(FieldDataOffsetIterator {
-                journal: self,
-                current_data_offset: None,
-            });
-        };
-
-        let field_guard = self.field_ref(field_offset)?;
-        let head_data_offset = field_guard.header.head_data_offset;
+        let head_data_offset = self.field_head_data_offset(field_name)?;
 
         Ok(FieldDataOffsetIterator {
             journal: self,
             current_data_offset: head_data_offset,
+            chain: Default::default(),
         })
     }
 

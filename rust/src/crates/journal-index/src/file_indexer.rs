@@ -12,10 +12,11 @@ use crate::{
     Seconds,
 };
 use journal_core::collections::{HashMap, HashSet};
+use journal_core::error::JournalError;
 use journal_core::file::{HashableObject, JournalFile, Mmap, offset_array::InlinedCursor};
 use journal_registry::File;
 use std::num::NonZeroU64;
-use tracing::{error, trace, warn};
+use tracing::{trace, warn};
 
 /// Default maximum number of unique values to index per field.
 pub const DEFAULT_MAX_UNIQUE_VALUES_PER_FIELD: usize = 500;
@@ -269,6 +270,9 @@ impl FileIndexer {
     ) -> Result<()> {
         let field_data_iterator = match journal_file.field_data_objects(field_name.as_bytes()) {
             Ok(field_data_iterator) => field_data_iterator,
+            Err(JournalError::CyclicObjectChain) => {
+                return Err(JournalError::CyclicObjectChain.into());
+            }
             Err(e) => {
                 warn!(
                     "failed to iterate field data objects for field '{}' in file {}: {:#?}",
@@ -287,8 +291,12 @@ impl FileIndexer {
             }
 
             let (data_payload, inlined_cursor) = {
-                let Ok(data_object) = data_object else {
-                    continue;
+                let data_object = match data_object {
+                    Ok(data_object) => data_object,
+                    Err(JournalError::CyclicObjectChain) => {
+                        return Err(JournalError::CyclicObjectChain.into());
+                    }
+                    Err(_) => continue,
                 };
                 if data_object.raw_payload().len() >= self.limits.max_field_payload_size
                     || data_object.is_compressed()
@@ -298,7 +306,9 @@ impl FileIndexer {
                 }
 
                 let data_payload = String::from_utf8_lossy(data_object.raw_payload()).into_owned();
-                let Some(inlined_cursor) = data_object.inlined_cursor() else {
+                let Some(inlined_cursor) =
+                    journal_file.reader_inlined_cursor(&data_object.header)?
+                else {
                     continue;
                 };
                 (data_payload, inlined_cursor)
@@ -325,10 +335,7 @@ impl FileIndexer {
         tail_object_offset: NonZeroU64,
     ) -> Result<bool> {
         self.entry_offsets.clear();
-        if let Err(err) = inlined_cursor.collect_offsets(journal_file, &mut self.entry_offsets) {
-            warn!("failed to collect entry offsets from DATA object index: {err:?}");
-            return Ok(false);
-        }
+        inlined_cursor.collect_offsets(journal_file, &mut self.entry_offsets)?;
 
         self.entry_indices.clear();
         for entry_offset in self
@@ -338,11 +345,7 @@ impl FileIndexer {
             .filter(|offset| *offset <= tail_object_offset)
         {
             let Some(entry_index) = self.entry_offset_index.get(&entry_offset) else {
-                panic!(
-                    "missing entry offset {} from index (total offsets: {})",
-                    entry_offset,
-                    self.entry_offset_index.len()
-                );
+                return Err(IndexError::MissingOffset);
             };
             self.entry_indices.push(*entry_index as u32);
         }
@@ -374,9 +377,15 @@ impl FileIndexer {
         // Collect all the inlined cursors of the source timestamp field
         self.source_timestamp_cursor_pairs.clear();
         for data_object_result in field_data_iterator {
-            let Ok(data_object) = data_object_result else {
-                warn!("loading data object failed");
-                continue;
+            let data_object = match data_object_result {
+                Ok(data_object) => data_object,
+                Err(JournalError::CyclicObjectChain) => {
+                    return Err(JournalError::CyclicObjectChain.into());
+                }
+                Err(_) => {
+                    warn!("loading data object failed");
+                    continue;
+                }
             };
 
             let Ok(source_timestamp) =
@@ -386,7 +395,7 @@ impl FileIndexer {
                 continue;
             };
 
-            let Some(ic) = data_object.inlined_cursor() else {
+            let Some(ic) = journal_file.reader_inlined_cursor(&data_object.header)? else {
                 use journal_core::file::JournalState;
 
                 let file_state = JournalState::try_from(journal_file.journal_header_ref().state)
@@ -411,13 +420,7 @@ impl FileIndexer {
         for (ts, ic) in self.source_timestamp_cursor_pairs.iter() {
             self.entry_offsets.clear();
 
-            match ic.collect_offsets(journal_file, &mut self.entry_offsets) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("failed to collect offsets from source timestamp: {}", e);
-                    continue;
-                }
-            }
+            ic.collect_offsets(journal_file, &mut self.entry_offsets)?;
 
             for entry_offset in &self.entry_offsets {
                 self.source_timestamp_entry_offset_pairs

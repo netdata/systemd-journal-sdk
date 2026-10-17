@@ -72,6 +72,7 @@ func (w *Writer) entryArrayTailOffset() (uint64, error) {
 		return tailOffset, nil
 	}
 	tailOffset = w.header.entryArrayOffset
+	highest := tailOffset
 	for remaining := w.header.nEntries; ; {
 		header, cap, err := w.readOffsetArrayHeader(tailOffset)
 		if err != nil {
@@ -81,6 +82,13 @@ func (w *Writer) entryArrayTailOffset() (uint64, error) {
 			return tailOffset, nil
 		}
 		remaining -= cap
+		if header.nextArrayOffset <= highest {
+			if err := rejectArrayRevisit(w, w.header.entryArrayOffset, tailOffset, header.nextArrayOffset, errInvalidJournal); err != nil {
+				return 0, err
+			}
+		} else {
+			highest = header.nextArrayOffset
+		}
 		tailOffset = header.nextArrayOffset
 	}
 }
@@ -91,10 +99,21 @@ func (w *Writer) entryArrayTailEntries(tailOffset uint64) (uint64, error) {
 		return tailEntries, nil
 	}
 	tailEntries = w.header.nEntries
+	highest := w.header.entryArrayOffset
 	for offset := w.header.entryArrayOffset; offset != 0 && offset != tailOffset; {
 		h, c, err := w.readOffsetArrayHeader(offset)
 		if err != nil {
 			return 0, err
+		}
+		if c > tailEntries {
+			return 0, errInvalidJournal
+		}
+		if h.nextArrayOffset != 0 && h.nextArrayOffset <= highest {
+			if err := rejectArrayRevisit(w, w.header.entryArrayOffset, offset, h.nextArrayOffset, errInvalidJournal); err != nil {
+				return 0, err
+			}
+		} else {
+			highest = max(highest, h.nextArrayOffset)
 		}
 		tailEntries -= c
 		offset = h.nextArrayOffset
@@ -169,7 +188,7 @@ func (w *Writer) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64
 }
 
 func (w *Writer) offsetArrayCapacity(header offsetArrayHeader) (uint64, error) {
-	if header.object.typ != objectTypeEntryArray || header.object.size < offsetArrayObjectHeaderSize {
+	if header.object.typ != objectTypeEntryArray || header.object.size <= offsetArrayObjectHeaderSize {
 		return 0, errInvalidJournal
 	}
 	itemSize := w.offsetArrayItemSize()
@@ -387,6 +406,7 @@ func (w *Writer) writeCompactDataTail(dataOffset, tailOffset, tailEntries uint64
 func (w *Writer) appendToDataEntryArray(arrayOffset, currentCount, entryOffset uint64) (uint64, uint64, error) {
 	remaining := currentCount
 	offset := arrayOffset
+	highest := offset
 	for {
 		header, cap, err := w.readOffsetArrayHeader(offset)
 		if err != nil {
@@ -411,6 +431,13 @@ func (w *Writer) appendToDataEntryArray(arrayOffset, currentCount, entryOffset u
 				return 0, 0, err
 			}
 			return newOffset, 1, nil
+		}
+		if header.nextArrayOffset <= highest {
+			if err := rejectArrayRevisit(w, arrayOffset, offset, header.nextArrayOffset, errInvalidJournal); err != nil {
+				return 0, 0, err
+			}
+		} else {
+			highest = header.nextArrayOffset
 		}
 		offset = header.nextArrayOffset
 	}

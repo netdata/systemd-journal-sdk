@@ -75,6 +75,9 @@ pub enum JournalError {
     #[error("invalid offset")]
     InvalidOffset,
 
+    #[error("cyclic journal object chain")]
+    CyclicObjectChain,
+
     #[error("zerocopy failure")]
     ZerocopyFailure,
 

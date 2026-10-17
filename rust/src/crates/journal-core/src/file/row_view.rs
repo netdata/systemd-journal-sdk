@@ -66,10 +66,16 @@ impl CurrentRowView {
         self.row_pins_active
     }
 
+    #[inline]
     pub fn clear_pins<M: MemoryMap>(&mut self, file: &JournalFile<M>) -> Result<()> {
         if !self.row_pins_active {
             return Ok(());
         }
+        self.clear_active_pins(file)
+    }
+
+    #[inline(never)]
+    fn clear_active_pins<M: MemoryMap>(&mut self, file: &JournalFile<M>) -> Result<()> {
         file.clear_row_payload_pins()?;
         self.row_pins_active = false;
         Ok(())

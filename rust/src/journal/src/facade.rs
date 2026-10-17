@@ -66,6 +66,10 @@ pub struct SdJournal {
 
 pub type UniqueValue = (String, Vec<u8>);
 
+pub fn SdJournalRecoveryStatuses(journal: &SdJournal) -> Vec<crate::FileRecoveryStatus> {
+    journal.recovery_statuses()
+}
+
 pub fn SdJournalOpen(path: &str, flags: u32) -> std::result::Result<SdJournal, Error> {
     if flags != 0 {
         return Err(Error::Unsupported);
@@ -157,6 +161,12 @@ pub fn SdJournalClose(j: SdJournal) {
 }
 
 impl SdJournal {
+    pub fn recovery_statuses(&self) -> Vec<crate::FileRecoveryStatus> {
+        match &self.reader {
+            ReaderKind::File(reader) => reader.recovery_statuses(),
+            ReaderKind::Directory(reader) => reader.recovery_statuses(),
+        }
+    }
     fn new(reader: ReaderKind) -> Self {
         Self {
             reader,

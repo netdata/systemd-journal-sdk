@@ -1,25 +1,21 @@
 # SOW Status
 
-Last updated: 2026-10-16
+Last updated: 2026-10-17
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - paused
-  SDK workstream, next after the completed SOW-0108 combined commit.
-  Implementation authorized; default recovery/status approved.
-  Traversal/stream repairs and recovery internals are implemented locally.
-  Normal EOF plus status is approved. Public wiring, performance and final
-  validation/review remain open.
 - `SOW-0121-20260621-file-backed-journalctl-full-parity.md` - paused for SDK-first
   execution, then complete v262 CLI parity. Native PCRE2 and the Go CLI CGO
   exception are approved, retaining the performance gate.
 - `SOW-0045-20260528-go-reader-alignment-optimization.md` - reopened and paused
   for a separately reproduced healthy empty/EOF refresh positioning regression.
-  Unique-triggered refresh shares the failure. Keep the approved active repair,
-  SDK and journalctl execution order; no positioning implementation is mixed in.
+  Unique-triggered refresh shares the failure; related pre-existing directory
+  seek/getter state and unfiltered time-probe error suppression are recorded.
+  SDK-then-journalctl execution remains unchanged;
+  no positioning implementation is mixed in.
 
 - `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md` -
   regression reopened and paused for static guard coverage. No SDK process
@@ -28,6 +24,9 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Pending
 
+- SOW-0161 - File Indexer Source Posting Membership: open source-analysis
+  lead, not activated. Investigate inherited source-map target membership and
+  captured-tail handling before selecting any behavior/performance change.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Tracks
   unchanged decoder allocation measured during SOW-0108; no redesign is
   authorized and no dependency is added to the current execution chain.
@@ -65,13 +64,26 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - completed.
+  Both SDKs provide default intact-prefix recovery/status, complete streams,
+  native filtering and approved position/time/error retry behavior. Go floor
+  amd64/386/race checks pass 1,995/1,996/1,995 events, excluding only the unchanged
+  live-stock stress test with a retained isolated pass and earlier deadline
+  failure. Rust floor workspace/allocative checks pass, including 200 SDK tests.
+  Final tools pass 552 shared observations and 63/34/42 v262 verifier/directory/
+  mixed checks; 35 documentation examples and 16 pages pass. Performance is
+  accepted under representative evidence and careful review, with uncertain
+  intervals and adverse history retained. The fresh whole-SOW review has one
+  positive verdict, five coverage gaps and no verified unresolved blocker.
+  The closing audit and combined signed implementation/lifecycle commit accompany
+  completion; journalctl activation follows that commit.
 - `SOW-0108-20260614-cross-language-reader-window-accessor.md` - completed
   again: Go indexed value lifetimes, bounded hybrid headers, native opener and
   initial statistics are repaired. Full local checks and adjudicated review
   pass; Qwen/Kimi coverage gaps and Mimo's disproven claim are retained. The
   118 timing cases have 79 improvements, 39 inconclusive results and no flag;
   uncertainty remains explicit. All 1,176 measured allocation pairs avoid
-  increases. Commit repair/lifecycle together, then resume SDK work.
+  increases. Signed commit `4c49205` keeps repair/lifecycle together.
 - `SOW-0158-20261011-v0-10-0-publication.md` - completed. Release CI
   published and verified eight Rust `0.10.0` crates; paired annotated tags
   target `288efe015c45`, and fresh exact Rust/Go consumers pass.

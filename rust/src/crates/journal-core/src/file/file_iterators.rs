@@ -1,3 +1,4 @@
+use super::chain_guard::ChainGuard;
 use super::file::JournalFile;
 use super::mmap::MemoryMap;
 use super::object::*;
@@ -11,11 +12,13 @@ pub struct FieldIterator<'a, M: MemoryMap> {
     pub(super) field_hash_table: Option<FieldHashTable<&'a [u8]>>,
     pub(super) current_bucket_index: usize,
     pub(super) next_field_offset: Option<NonZeroU64>,
+    pub(super) chain: ChainGuard,
 }
 
 impl<M: MemoryMap> FieldIterator<'_, M> {
     /// Advances to the next non-empty bucket
     pub(super) fn advance_to_next_nonempty_bucket(&mut self) {
+        self.chain.reset();
         // If we don't have a hash table, there's nothing to iterate
         let Some(hash_table) = &self.field_hash_table else {
             return;
@@ -46,8 +49,13 @@ impl<'a, M: MemoryMap> Iterator for FieldIterator<'a, M> {
 
         match self.journal.field_ref(offset) {
             Ok(field_guard) => {
+                let next = field_guard.header.next_hash_offset;
+                if let Err(err) = self.chain.advance(offset, next, false) {
+                    self.next_field_offset = None;
+                    return Some(Err(err));
+                }
                 // Get the next field offset before we return the guard
-                self.next_field_offset = field_guard.header.next_hash_offset;
+                self.next_field_offset = next;
 
                 // If we've reached the end of the chain, move to the next bucket
                 if self.next_field_offset.is_none() {
@@ -70,11 +78,13 @@ pub struct FieldDataIterator<'a, M: MemoryMap> {
     pub(super) journal: &'a JournalFile<M>,
     pub(super) head_data_offset: Option<NonZeroU64>,
     pub(super) current_data_offset: Option<NonZeroU64>,
+    pub(super) chain: ChainGuard,
 }
 
 impl<M: MemoryMap> FieldDataIterator<'_, M> {
     pub(super) fn restart(&mut self) {
         self.current_data_offset = self.head_data_offset;
+        self.chain.reset();
     }
 }
 
@@ -86,8 +96,13 @@ impl<'a, M: MemoryMap> Iterator for FieldDataIterator<'a, M> {
 
         match self.journal.data_ref(data_offset) {
             Ok(data_guard) => {
+                let next = data_guard.header.next_field_offset;
+                if let Err(err) = self.chain.advance(data_offset, next, true) {
+                    self.current_data_offset = None;
+                    return Some(Err(err));
+                }
                 // Get the next data offset before we return the guard
-                self.current_data_offset = data_guard.header.next_field_offset;
+                self.current_data_offset = next;
                 Some(Ok(data_guard))
             }
             Err(e) => {
@@ -103,6 +118,7 @@ impl<'a, M: MemoryMap> Iterator for FieldDataIterator<'a, M> {
 pub struct FieldDataOffsetIterator<'a, M: MemoryMap> {
     pub(super) journal: &'a JournalFile<M>,
     pub(super) current_data_offset: Option<NonZeroU64>,
+    pub(super) chain: ChainGuard,
 }
 
 impl<'a, M: MemoryMap> Iterator for FieldDataOffsetIterator<'a, M> {
@@ -113,7 +129,12 @@ impl<'a, M: MemoryMap> Iterator for FieldDataOffsetIterator<'a, M> {
 
         match self.journal.data_ref(data_offset) {
             Ok(data_guard) => {
-                self.current_data_offset = data_guard.header.next_field_offset;
+                let next = data_guard.header.next_field_offset;
+                if let Err(err) = self.chain.advance(data_offset, next, true) {
+                    self.current_data_offset = None;
+                    return Some(Err(err));
+                }
+                self.current_data_offset = next;
                 Some(Ok((data_offset, data_guard)))
             }
             Err(e) => {

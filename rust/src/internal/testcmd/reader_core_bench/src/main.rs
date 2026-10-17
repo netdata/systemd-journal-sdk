@@ -14,6 +14,9 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod auxiliary;
+mod filter;
+
 const DEFAULT_WINDOW_SIZE: u64 = 32 * 1024 * 1024;
 
 #[derive(Parser, Debug)]
@@ -32,6 +35,10 @@ struct Args {
     bounds: String,
     #[arg(long, default_value = "windowed")]
     mmap_strategy: String,
+    #[arg(long, default_value = "HIGH_CARD_00")]
+    catalog_field: String,
+    #[arg(long, default_value_t = 1)]
+    catalog_repetitions: usize,
     #[arg(long = "explorer-facet")]
     explorer_facets: Vec<String>,
     #[arg(long = "explorer-filter")]
@@ -52,6 +59,18 @@ struct Args {
     explorer_after_usec: Option<u64>,
     #[arg(long)]
     explorer_before_usec: Option<u64>,
+    #[arg(long = "match")]
+    filter_matches: Vec<String>,
+    #[arg(long = "match-hex")]
+    filter_matches_hex: Vec<String>,
+    #[arg(long, default_value_t = 1)]
+    filter_repetitions: usize,
+    #[arg(long, default_value_t = 0)]
+    filter_limit: u64,
+    #[arg(long)]
+    filter_realtime: Option<u64>,
+    #[arg(long, default_value_t = false)]
+    filter_rebuild: bool,
 }
 
 #[derive(Default)]
@@ -70,6 +89,15 @@ impl Counts {
         self.checksum = checksum_payload(self.checksum, payload);
     }
 
+    fn add_full_payload(&mut self, payload: &[u8]) {
+        self.fields = self.fields.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(payload.len() as u64);
+        self.checksum = self.checksum.rotate_left(5) ^ payload.len() as u64;
+        for &byte in payload {
+            self.checksum = (self.checksum ^ u64::from(byte)).wrapping_mul(1099511628211);
+        }
+    }
+
     fn add_record_marker(&mut self, value: u64) {
         self.records = self.records.saturating_add(1);
         self.checksum = self.checksum.rotate_left(7) ^ value;
@@ -83,6 +111,8 @@ struct ReadConfig<'a> {
     bounds: &'a str,
     strategy: ExperimentalMmapStrategy,
     window_size: u64,
+    catalog_field: &'a str,
+    catalog_repetitions: usize,
     explorer_facets: &'a [String],
     explorer_filters: &'a [String],
     explorer_histogram: Option<&'a str>,
@@ -93,6 +123,11 @@ struct ReadConfig<'a> {
     explorer_strategy: ExplorerStrategy,
     explorer_after_usec: Option<u64>,
     explorer_before_usec: Option<u64>,
+    filter_matches: &'a [Vec<u8>],
+    filter_repetitions: usize,
+    filter_limit: u64,
+    filter_realtime: Option<u64>,
+    filter_rebuild: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -564,11 +599,38 @@ fn read_sdk_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
         Direction::Backward => reader.seek_tail(),
     }
     let mut counts = Counts::default();
+    if cfg.mode == "sdk-digest" {
+        counts.extra.insert(
+            "mmap_stats_before".into(),
+            mmap_stats_json(reader.mmap_stats()?),
+        );
+    }
     while step_file_reader(&mut reader, cfg.direction)? {
         record_file_reader_mode(cfg.mode, &mut reader, &mut counts)?;
     }
+    if cfg.mode == "sdk-digest" {
+        counts.extra.insert(
+            "mmap_stats_after".into(),
+            mmap_stats_json(reader.mmap_stats()?),
+        );
+    }
     black_box(counts.checksum);
     Ok(counts)
+}
+
+fn mmap_stats_json(stats: journal_core::file::WindowManagerStats) -> Value {
+    json!({
+        "file_size": stats.file_size,
+        "window_count": stats.window_count,
+        "row_pin_count": stats.row_pin_count,
+        "row_pin_limit": stats.row_pin_limit,
+        "row_overflow_object_count": stats.row_overflow_object_count,
+        "current_mapped_bytes": stats.current_mapped_bytes,
+        "max_mapped_bytes": stats.max_mapped_bytes,
+        "map_count": stats.map_count,
+        "remap_count": stats.remap_count,
+        "eviction_count": stats.eviction_count,
+    })
 }
 
 fn configure_reader_filters(reader: &mut FileReader, cfg: &ReadConfig<'_>) -> Result<()> {
@@ -740,6 +802,9 @@ fn record_file_reader_mode(mode: &str, reader: &mut FileReader, counts: &mut Cou
         "sdk-payloads" => record_payload_visitor(reader.get_realtime_usec()?, counts, |visitor| {
             reader.visit_entry_payloads(visitor)
         }),
+        "sdk-digest" => record_payload_digest(reader.get_realtime_usec()?, counts, |visitor| {
+            reader.visit_entry_payloads(visitor)
+        }),
         other => Err(anyhow!("invalid SDK file mode: {other}")),
     }
 }
@@ -792,6 +857,9 @@ fn record_directory_reader_mode(
         "sdk-payloads" => record_payload_visitor(reader.get_realtime_usec()?, counts, |visitor| {
             reader.visit_entry_payloads(visitor)
         }),
+        "sdk-digest" => record_payload_digest(reader.get_realtime_usec()?, counts, |visitor| {
+            reader.visit_entry_payloads(visitor)
+        }),
         other => Err(anyhow!("invalid SDK directory mode: {other}")),
     }
 }
@@ -803,6 +871,18 @@ where
     counts.add_record_marker(realtime);
     visit(&mut |payload| {
         counts.add_payload(black_box(payload));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn record_payload_digest<F>(realtime: u64, counts: &mut Counts, visit: F) -> Result<()>
+where
+    F: FnOnce(&mut dyn FnMut(&[u8]) -> journal::Result<()>) -> journal::Result<()>,
+{
+    counts.add_record_marker(realtime);
+    visit(&mut |payload| {
+        counts.add_full_payload(black_box(payload));
         Ok(())
     })?;
     Ok(())
@@ -889,11 +969,26 @@ fn record_facade_mode(
             }
             Ok(())
         }
+        "facade-digest" => {
+            counts.add_record_marker(journal.get_realtime_usec()?);
+            SdJournalRestartData(journal)?;
+            while let Some(payload) = SdJournalEnumerateAvailableData(journal)? {
+                counts.add_full_payload(black_box(payload));
+            }
+            Ok(())
+        }
         other => Err(anyhow!("invalid facade mode: {other}")),
     }
 }
 
 fn run(args: &Args) -> Result<(Counts, f64, Value, Value)> {
+    if args.catalog_repetitions == 0 {
+        return Err(anyhow!("catalog-repetitions must be positive"));
+    }
+    if args.filter_repetitions == 0 {
+        return Err(anyhow!("filter-repetitions must be positive"));
+    }
+    let matches = filter::decode_matches(&args.filter_matches, &args.filter_matches_hex)?;
     let cfg = ReadConfig {
         mode: &args.mode,
         surface: &args.surface,
@@ -901,6 +996,8 @@ fn run(args: &Args) -> Result<(Counts, f64, Value, Value)> {
         bounds: &args.bounds,
         strategy: parse_mmap_strategy(&args.mmap_strategy)?,
         window_size: args.window_size,
+        catalog_field: &args.catalog_field,
+        catalog_repetitions: args.catalog_repetitions,
         explorer_facets: &args.explorer_facets,
         explorer_filters: &args.explorer_filters,
         explorer_histogram: args.explorer_histogram.as_deref(),
@@ -911,6 +1008,11 @@ fn run(args: &Args) -> Result<(Counts, f64, Value, Value)> {
         explorer_strategy: parse_explorer_strategy(&args.explorer_strategy)?,
         explorer_after_usec: args.explorer_after_usec,
         explorer_before_usec: args.explorer_before_usec,
+        filter_matches: &matches,
+        filter_repetitions: args.filter_repetitions,
+        filter_limit: args.filter_limit,
+        filter_realtime: args.filter_realtime,
+        filter_rebuild: args.filter_rebuild,
     };
     let status_before = process_status_kb();
     let started = Instant::now();
@@ -922,6 +1024,25 @@ fn run(args: &Args) -> Result<(Counts, f64, Value, Value)> {
 
 fn dispatch_read(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
     match cfg.mode {
+        "indexed-open"
+        | "indexed-exact"
+        | "indexed-field"
+        | "indexed-all"
+        | "indexed-exact-digest"
+        | "indexed-field-digest"
+        | "indexed-all-digest"
+        | "verify-index"
+        | "verify-file" => auxiliary::read(inputs, cfg),
+        "sdk-filter" | "sdk-filter-digest" | "facade-filter" | "facade-filter-digest" => {
+            filter::read(inputs, cfg)
+        }
+        "sdk-fields" | "sdk-unique" | "sdk-unique-state" => {
+            if matches!(cfg.surface, "directory" | "open-files") {
+                return read_directory_catalog(inputs, cfg);
+            }
+            require_single_file_input(inputs, cfg.surface, "catalog modes")?;
+            read_catalog(&inputs[0], cfg)
+        }
         "core-next" | "core-offsets" | "core-payloads" => {
             require_single_file_input(inputs, cfg.surface, "core modes")?;
             read_core(&inputs[0], cfg)
@@ -938,10 +1059,78 @@ fn dispatch_read(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
             require_single_file_input(inputs, cfg.surface, "explorer query mode")?;
             read_explorer_query_file(&inputs[0], cfg)
         }
-        "sdk-entry" | "sdk-payloads" => dispatch_sdk_read(inputs, cfg),
-        "facade-next" | "facade-data" => read_facade(inputs, cfg),
+        "sdk-entry" | "sdk-payloads" | "sdk-digest" => dispatch_sdk_read(inputs, cfg),
+        "facade-next" | "facade-data" | "facade-digest" => read_facade(inputs, cfg),
         other => Err(anyhow!("invalid --mode: {other}")),
     }
+}
+
+fn read_catalog(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
+    let options = reader_options(cfg.bounds, cfg.strategy, cfg.window_size)?;
+    let mut reader = FileReader::open_with_options(path, options)?;
+    let mut counts = Counts::default();
+    if cfg.mode == "sdk-unique-state" {
+        reader.query_unique_state(cfg.catalog_field)?;
+    }
+    for _ in 0..cfg.catalog_repetitions {
+        counts.add_record_marker(0);
+        match cfg.mode {
+            "sdk-fields" => {
+                for field in reader.enumerate_fields()? {
+                    counts.add_payload(field.as_bytes());
+                }
+            }
+            "sdk-unique" => reader.visit_unique_values(cfg.catalog_field, |value| {
+                counts.add_payload(value);
+                Ok(())
+            })?,
+            "sdk-unique-state" => {
+                reader.restart_unique_state();
+                while let Some(value) = reader.enumerate_unique_payload(cfg.catalog_field)? {
+                    counts.add_payload(&value);
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(counts)
+}
+
+fn read_directory_catalog(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
+    let options = reader_options(cfg.bounds, cfg.strategy, cfg.window_size)?;
+    let mut reader = match cfg.surface {
+        "directory" if inputs.len() == 1 => {
+            DirectoryReader::open_with_options(&inputs[0], options)?
+        }
+        "open-files" => DirectoryReader::open_files_with_options(inputs, options)?,
+        _ => return Err(anyhow!("directory catalog requires one directory input")),
+    };
+    let mut counts = Counts::default();
+    if cfg.mode == "sdk-unique-state" {
+        reader.query_unique_state(cfg.catalog_field)?;
+    }
+    for _ in 0..cfg.catalog_repetitions {
+        counts.add_record_marker(0);
+        match cfg.mode {
+            "sdk-fields" => {
+                for field in reader.enumerate_fields()? {
+                    counts.add_payload(field.as_bytes());
+                }
+            }
+            "sdk-unique" => reader.visit_unique_values(cfg.catalog_field, |value| {
+                counts.add_payload(value);
+                Ok(())
+            })?,
+            "sdk-unique-state" => {
+                reader.restart_unique_state();
+                while let Some(value) = reader.enumerate_unique_payload()? {
+                    counts.add_payload(&value);
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(counts)
 }
 
 fn dispatch_sdk_read(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
@@ -976,6 +1165,11 @@ fn main() -> Result<()> {
             "fields": counts.fields,
             "bytes": counts.bytes,
             "checksum": counts.checksum,
+            "checksum_algorithm": if args.mode.ends_with("-digest") {
+                "full-payload-fnv64-v1"
+            } else {
+                "sampled-payload-v1"
+            },
             "extra": counts.extra,
             "read_seconds": read_seconds,
             "read_rows_per_second": if read_seconds > 0.0 { counts.records as f64 / read_seconds } else { 0.0 },
