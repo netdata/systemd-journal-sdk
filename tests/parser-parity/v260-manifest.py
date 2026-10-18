@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Shared v260.1 journalctl parser parity manifest.
+"""Shared v262 journalctl parser parity manifest (historical filename retained).
 
 Derived from the authoritative option/action list in
-`systemd/systemd @ c0a5a2516d28` (`v260.1`)
-`src/journal/journalctl.c:420` (long-option table),
+`systemd/systemd @ 8cc40e0c5e9234bf45084751ac53b1fbfe70b492` (`v262`)
+`src/journal/journalctl.c:383` (ordered option declarations),
+`src/shared/options.h` (referenced common option macros),
 `src/shared/output-mode.c:26` (output mode names),
 and `src/journal/journalctl.h:7` (JournalctlAction enum).
 
@@ -16,8 +17,8 @@ Output schema:
 
 ```json
 {
-  "baseline": "systemd v260.1",
-  "source_commit": "c0a5a2516d28",
+  "baseline": "systemd v262",
+  "source_commit": "8cc40e0c5e9234bf45084751ac53b1fbfe70b492",
   "long_options": [
     {
       "name": "verify",
@@ -56,7 +57,7 @@ SPEC = REPO_ROOT / ".agents" / "sow" / "specs" / "journalctl-v260-parity-matrix.
 
 
 def build_long_options():
-    """Every official v260.1 long option, with portable expectation."""
+    """Every official v262 long option, with portable expectation."""
     # Tuple format: (long_name, args, classification, expectation, optional_alias_short)
     rows = [
         # Source options
@@ -135,6 +136,7 @@ def build_long_options():
         ("list-catalog", "none", "recognized-unsupported", "recognized-unsupported", None),
         ("dump-catalog", "none", "recognized-unsupported", "recognized-unsupported", None),
         ("update-catalog", "none", "recognized-unsupported", "recognized-unsupported", None),
+        ("introspect-cli", "none", "portable-utility-required", "recognized-supported", None),
     ]
 
     out = []
@@ -148,11 +150,13 @@ def build_long_options():
                 "short_alias": short_alias,
             }
         )
+        if name == "introspect-cli":
+            out[-1]["hidden"] = True
     return out
 
 
 def build_short_options():
-    """Official short option letters from journalctl.c:520."""
+    """Official short option letters from the ordered v262 declarations."""
     return [
         {"letter": "h", "long": "help"},
         {"letter": "e", "long": "pager-end"},
@@ -186,7 +190,7 @@ def build_short_options():
 
 
 def build_output_modes():
-    """Every official v260.1 output mode string."""
+    """Every official v262 output mode string."""
     return [
         "short",
         "short-full",
@@ -208,7 +212,7 @@ def build_output_modes():
 
 
 def build_actions():
-    """Every official v260.1 JournalctlAction enum value."""
+    """Every official v262 JournalctlAction enum value."""
     return [
         "ACTION_SHOW",
         "ACTION_NEW_ID128",
@@ -226,6 +230,7 @@ def build_actions():
         "ACTION_LIST_NAMESPACES",
         "ACTION_FLUSH",
         "ACTION_RELINQUISH_VAR",
+        "ACTION_SMART_RELINQUISH_VAR",
         "ACTION_SYNC",
         "ACTION_ROTATE",
         "ACTION_VACUUM",
@@ -234,7 +239,7 @@ def build_actions():
 
 
 def build_parser_interactions():
-    """Parser interaction rules from journalctl.c:1085."""
+    """Parser interaction rules from the v262 post-option validation."""
     return [
         {
             "name": "source-exclusivity",
@@ -302,13 +307,17 @@ def build_parser_interactions():
             "name": "case-sensitive-bool-spellings",
             "description": "Accept official parse_boolean spellings t and f for --case-sensitive=.",
         },
+        {
+            "name": "unscoped-field-enumeration",
+            "description": "Reject final -F/-N actions with explicit filters/time/cursor/grep; accept cleared boot/invocation=all and implicit boot.",
+        },
     ]
 
 
 def main():
     out = {
-        "baseline": "systemd v260.1",
-        "source_commit": "c0a5a2516d28",
+        "baseline": "systemd v262",
+        "source_commit": "8cc40e0c5e9234bf45084751ac53b1fbfe70b492",
         "long_options": build_long_options(),
         "short_options": build_short_options(),
         "output_modes": build_output_modes(),

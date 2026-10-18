@@ -37,7 +37,7 @@ impl JournalFile<super::mmap::MmapMut> {
         let fd = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(file.path())?;
+            .open(file.as_path())?;
 
         let header_size = std::mem::size_of::<JournalHeader>() as u64;
         let file_size = fd.metadata()?.len();
@@ -220,7 +220,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = std::fs::metadata(self.file.path()) {
+            if let Ok(metadata) = std::fs::metadata(self.file.as_path()) {
                 return metadata.permissions().mode() & 0o777;
             }
         }
@@ -236,7 +236,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             .write(true);
         #[cfg(unix)]
         open_options.mode(mode);
-        Ok(open_options.open(file.path())?)
+        Ok(open_options.open(file.as_path())?)
     }
 
     fn create_layout(options: &JournalFileOptions) -> Result<CreateLayout> {

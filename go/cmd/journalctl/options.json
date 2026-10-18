@@ -1,0 +1,787 @@
+[
+  {
+    "names": [
+      "--system"
+    ],
+    "argument": "no_argument",
+    "help": "Show the system journal",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "--user"
+    ],
+    "argument": "no_argument",
+    "help": "Show the user journal for the current user",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "-M",
+      "--machine"
+    ],
+    "argument": "required_argument",
+    "metavar": "CONTAINER",
+    "help": "Operate on local container (unsupported in portable mode)",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "-m",
+      "--merge"
+    ],
+    "argument": "no_argument",
+    "help": "Show entries from all available journals",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "-D",
+      "--directory"
+    ],
+    "argument": "required_argument",
+    "metavar": "PATH",
+    "help": "Show journal files from directory",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "-i",
+      "--file"
+    ],
+    "argument": "required_argument",
+    "metavar": "PATH",
+    "help": "Show journal file",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "--root"
+    ],
+    "argument": "required_argument",
+    "metavar": "PATH",
+    "help": "Operate on an alternate filesystem root (unsupported in portable mode)",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "--image"
+    ],
+    "argument": "required_argument",
+    "metavar": "PATH",
+    "help": "Operate on disk image as filesystem root (unsupported in portable mode)",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "--image-policy"
+    ],
+    "argument": "required_argument",
+    "metavar": "POLICY",
+    "help": "Specify disk image dissection policy (unsupported in portable mode)",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "--namespace"
+    ],
+    "argument": "required_argument",
+    "metavar": "NAMESPACE",
+    "help": "Show journal data from specified journal namespace (unsupported in portable mode)",
+    "group": [
+      "Source Options"
+    ]
+  },
+  {
+    "names": [
+      "-S",
+      "--since"
+    ],
+    "argument": "required_argument",
+    "metavar": "DATE",
+    "help": "Show entries not older than the specified date",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-U",
+      "--until"
+    ],
+    "argument": "required_argument",
+    "metavar": "DATE",
+    "help": "Show entries not newer than the specified date",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-c",
+      "--cursor"
+    ],
+    "argument": "required_argument",
+    "metavar": "CURSOR",
+    "help": "Show entries starting at the specified cursor",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "--after-cursor"
+    ],
+    "argument": "required_argument",
+    "metavar": "CURSOR",
+    "help": "Show entries after the specified cursor",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "--cursor-file"
+    ],
+    "argument": "required_argument",
+    "metavar": "FILE",
+    "help": "Show entries after cursor in FILE and update FILE",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "--this-boot"
+    ],
+    "argument": "no_argument",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-b",
+      "--boot"
+    ],
+    "argument": "optional_argument",
+    "metavar": "ID",
+    "help": "Show current boot or the specified boot",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-u",
+      "--unit"
+    ],
+    "argument": "required_argument",
+    "metavar": "UNIT",
+    "help": "Show logs from the specified unit",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "--user-unit"
+    ],
+    "argument": "required_argument",
+    "metavar": "UNIT",
+    "help": "Show logs from the specified user unit",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "--invocation"
+    ],
+    "argument": "required_argument",
+    "metavar": "ID",
+    "help": "Show logs from the matching invocation ID",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-I"
+    ],
+    "argument": "no_argument",
+    "help": "Show logs from the latest invocation of unit",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-t",
+      "--identifier"
+    ],
+    "argument": "required_argument",
+    "metavar": "ID",
+    "help": "Show entries with the specified syslog identifier",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-T",
+      "--exclude-identifier"
+    ],
+    "argument": "required_argument",
+    "metavar": "ID",
+    "help": "Hide entries with the specified syslog identifier",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-p",
+      "--priority"
+    ],
+    "argument": "required_argument",
+    "metavar": "RANGE",
+    "help": "Show entries within the specified priority range",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "--facility"
+    ],
+    "argument": "required_argument",
+    "metavar": "FACILITY\u2026",
+    "help": "Show entries with the specified facilities",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-g",
+      "--grep"
+    ],
+    "argument": "required_argument",
+    "metavar": "PATTERN",
+    "help": "Show entries with MESSAGE matching PATTERN",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "--case-sensitive"
+    ],
+    "argument": "optional_argument",
+    "metavar": "BOOL",
+    "help": "Force case sensitive or insensitive matching",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-k",
+      "--dmesg"
+    ],
+    "argument": "no_argument",
+    "help": "Show kernel message log from the current boot",
+    "group": [
+      "Filtering Options"
+    ]
+  },
+  {
+    "names": [
+      "-o",
+      "--output"
+    ],
+    "argument": "required_argument",
+    "metavar": "STRING",
+    "help": "Change journal output mode (short, short-precise, short-iso, short-iso-precise, short-full, short-monotonic, short-unix, verbose, export, json, json-pretty, json-sse, json-seq, cat, with-unit)",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--output-fields"
+    ],
+    "argument": "required_argument",
+    "metavar": "LIST",
+    "help": "Select fields to print in verbose/export/json modes",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-n",
+      "--lines"
+    ],
+    "argument": "optional_argument",
+    "metavar": "[+]INTEGER",
+    "help": "Number of journal entries to show",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-r",
+      "--reverse"
+    ],
+    "argument": "no_argument",
+    "help": "Show the newest entries first",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--show-cursor"
+    ],
+    "argument": "no_argument",
+    "help": "Print the cursor after all the entries",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--utc"
+    ],
+    "argument": "no_argument",
+    "help": "Express time in Coordinated Universal Time (UTC)",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-x",
+      "--catalog"
+    ],
+    "argument": "no_argument",
+    "help": "Add message explanations where available",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-W",
+      "--no-hostname"
+    ],
+    "argument": "no_argument",
+    "help": "Suppress output of hostname field",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-l",
+      "--full"
+    ],
+    "argument": "no_argument",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--no-full"
+    ],
+    "argument": "no_argument",
+    "help": "Ellipsize fields",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-a",
+      "--all"
+    ],
+    "argument": "no_argument",
+    "help": "Show all fields, including long and unprintable",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-f",
+      "--follow"
+    ],
+    "argument": "no_argument",
+    "help": "Follow the journal",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--no-tail"
+    ],
+    "argument": "no_argument",
+    "help": "Show all lines, even in follow mode",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--truncate-newline"
+    ],
+    "argument": "no_argument",
+    "help": "Truncate entries by first newline character",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-q",
+      "--quiet"
+    ],
+    "argument": "no_argument",
+    "help": "Do not show info messages and privilege warning",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--synchronize-on-exit"
+    ],
+    "argument": "required_argument",
+    "metavar": "BOOL",
+    "help": "Wait for Journal synchronization before exiting (unsupported in portable mode)",
+    "group": [
+      "Output Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--no-pager"
+    ],
+    "argument": "no_argument",
+    "help": "Do not start a pager",
+    "group": [
+      "Pager Control Options"
+    ]
+  },
+  {
+    "names": [
+      "-e",
+      "--pager-end"
+    ],
+    "argument": "no_argument",
+    "help": "Immediately jump to the end in the pager",
+    "group": [
+      "Pager Control Options"
+    ]
+  },
+  {
+    "names": [
+      "--interval"
+    ],
+    "argument": "required_argument",
+    "metavar": "TIME",
+    "help": "Time interval for changing the FSS sealing key",
+    "group": [
+      "Forward Secure Sealing (FSS) Options"
+    ]
+  },
+  {
+    "names": [
+      "--verify-key"
+    ],
+    "argument": "required_argument",
+    "metavar": "KEY",
+    "help": "Specify FSS verification key",
+    "group": [
+      "Forward Secure Sealing (FSS) Options"
+    ]
+  },
+  {
+    "names": [
+      "--force"
+    ],
+    "argument": "no_argument",
+    "help": "Override of the FSS key pair with --setup-keys",
+    "group": [
+      "Forward Secure Sealing (FSS) Options"
+    ]
+  },
+  {
+    "names": [
+      "-h",
+      "--help"
+    ],
+    "argument": "no_argument",
+    "help": "Show this help",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--version"
+    ],
+    "argument": "no_argument",
+    "help": "Show package version",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "-N",
+      "--fields"
+    ],
+    "argument": "no_argument",
+    "help": "List all field names currently used",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "-F",
+      "--field"
+    ],
+    "argument": "required_argument",
+    "metavar": "FIELD",
+    "help": "List all values that a specified field takes",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--list-boots"
+    ],
+    "argument": "no_argument",
+    "help": "Show terse information about recorded boots",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--list-invocations"
+    ],
+    "argument": "no_argument",
+    "help": "Show invocation IDs of specified unit",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--list-namespaces"
+    ],
+    "argument": "no_argument",
+    "help": "Show list of journal namespaces (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--disk-usage"
+    ],
+    "argument": "no_argument",
+    "help": "Show total disk usage of all journal files",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--vacuum-size"
+    ],
+    "argument": "required_argument",
+    "metavar": "BYTES",
+    "help": "Reduce disk usage below specified size",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--vacuum-files"
+    ],
+    "argument": "required_argument",
+    "metavar": "INT",
+    "help": "Leave only the specified number of journal files",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--vacuum-time"
+    ],
+    "argument": "required_argument",
+    "metavar": "TIME",
+    "help": "Remove journal files older than specified time",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--verify"
+    ],
+    "argument": "no_argument",
+    "help": "Verify journal file consistency",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--sync"
+    ],
+    "argument": "no_argument",
+    "help": "Synchronize unwritten journal messages to disk (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--relinquish-var"
+    ],
+    "argument": "no_argument",
+    "help": "Stop logging to disk, log to temporary file system (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--smart-relinquish-var"
+    ],
+    "argument": "no_argument",
+    "help": "Similar, but NOP if log directory is on root mount (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--flush"
+    ],
+    "argument": "no_argument",
+    "help": "Flush all journal data from /run into /var (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--rotate"
+    ],
+    "argument": "no_argument",
+    "help": "Request immediate rotation of the journal files (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--header"
+    ],
+    "argument": "no_argument",
+    "help": "Show journal header information",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--list-catalog"
+    ],
+    "argument": "no_argument",
+    "help": "Show all message IDs in the catalog (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--dump-catalog"
+    ],
+    "argument": "no_argument",
+    "help": "Show entries in the message catalog (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--update-catalog"
+    ],
+    "argument": "no_argument",
+    "help": "Update the message catalog database (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--setup-keys"
+    ],
+    "argument": "no_argument",
+    "help": "Generate a new FSS key pair (unsupported in portable mode)",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--new-id128"
+    ],
+    "argument": "no_argument",
+    "group": [
+      "Commands"
+    ]
+  },
+  {
+    "names": [
+      "--introspect-cli"
+    ],
+    "argument": "no_argument",
+    "group": [
+      "Commands"
+    ]
+  }
+]

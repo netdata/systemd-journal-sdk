@@ -71,11 +71,15 @@ pub fn SdJournalRecoveryStatuses(journal: &SdJournal) -> Vec<crate::FileRecovery
 }
 
 pub fn SdJournalOpen(path: &str, flags: u32) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenPath(Path::new(path), flags)
+}
+
+/// Opens a native filesystem path without requiring UTF-8 encoding.
+pub fn SdJournalOpenPath(path: &Path, flags: u32) -> std::result::Result<SdJournal, Error> {
     if flags != 0 {
         return Err(Error::Unsupported);
     }
 
-    let path = Path::new(path);
     let reader = if path.is_dir() {
         ReaderKind::Directory(DirectoryReader::open(path).map_err(map_error)?)
     } else {
@@ -91,6 +95,20 @@ pub fn SdJournalOpenFile(path: &str, flags: u32) -> std::result::Result<SdJourna
 
 pub fn SdJournalOpenFileWithOptions(
     path: &str,
+    flags: u32,
+    options: ReaderOptions,
+) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenFilePathWithOptions(Path::new(path), flags, options)
+}
+
+/// Opens a native file path with the default reader options.
+pub fn SdJournalOpenFilePath(path: &Path, flags: u32) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenFilePathWithOptions(path, flags, ReaderOptions::default())
+}
+
+/// Opens a native file path with explicit reader options.
+pub fn SdJournalOpenFilePathWithOptions(
+    path: &Path,
     flags: u32,
     options: ReaderOptions,
 ) -> std::result::Result<SdJournal, Error> {
@@ -111,6 +129,23 @@ pub fn SdJournalOpenDirectoryWithOptions(
     flags: u32,
     options: ReaderOptions,
 ) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenDirectoryPathWithOptions(Path::new(path), flags, options)
+}
+
+/// Opens a native directory path with the default reader options.
+pub fn SdJournalOpenDirectoryPath(
+    path: &Path,
+    flags: u32,
+) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenDirectoryPathWithOptions(path, flags, ReaderOptions::default())
+}
+
+/// Opens a native directory path with explicit reader options.
+pub fn SdJournalOpenDirectoryPathWithOptions(
+    path: &Path,
+    flags: u32,
+    options: ReaderOptions,
+) -> std::result::Result<SdJournal, Error> {
     if flags != 0 {
         return Err(Error::Unsupported);
     }
@@ -128,25 +163,46 @@ pub fn SdJournalOpenFilesWithOptions(
     flags: u32,
     options: ReaderOptions,
 ) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenFilePathsWithOptions(paths, flags, options)
+}
+
+/// Opens explicit native paths, deduplicating canonical aliases.
+pub fn SdJournalOpenFilePaths<P: AsRef<Path>>(
+    paths: &[P],
+    flags: u32,
+) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenFilePathsWithOptions(paths, flags, ReaderOptions::default())
+}
+
+/// Opens explicit native paths with reader options and canonical deduplication.
+pub fn SdJournalOpenFilePathsWithOptions<P: AsRef<Path>>(
+    paths: &[P],
+    flags: u32,
+    options: ReaderOptions,
+) -> std::result::Result<SdJournal, Error> {
     if flags != 0 {
         return Err(Error::Unsupported);
     }
+    if paths.len() == 1 {
+        return SdJournalOpenFilePathWithOptions(paths[0].as_ref(), flags, options);
+    }
     let paths = dedupe_open_file_paths(paths);
     if paths.len() == 1 {
-        return SdJournalOpenFileWithOptions(&paths[0], flags, options);
+        return SdJournalOpenFilePathWithOptions(&paths[0], flags, options);
     }
     Ok(SdJournal::new(ReaderKind::Directory(
         DirectoryReader::open_files_with_options(&paths, options).map_err(map_error)?,
     )))
 }
 
-fn dedupe_open_file_paths(paths: &[&str]) -> Vec<String> {
+fn dedupe_open_file_paths<P: AsRef<Path>>(paths: &[P]) -> Vec<PathBuf> {
     let mut out = Vec::with_capacity(paths.len());
     let mut seen = HashSet::with_capacity(paths.len());
     for path in paths {
-        let key = canonical_open_file_key(Path::new(path));
+        let path = path.as_ref();
+        let key = canonical_open_file_key(path);
         if seen.insert(key) {
-            out.push((*path).to_string());
+            out.push(path.to_path_buf());
         }
     }
     out

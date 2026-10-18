@@ -2,7 +2,8 @@ use crate::repository::RepositoryError;
 use crate::repository::error::Result;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::path::Path;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -179,12 +180,79 @@ pub struct Origin {
     pub source: Source,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub(crate) struct FileInner {
     pub(crate) path: String,
     pub(crate) origin: Origin,
     pub(crate) status: Status,
+    #[serde(skip)]
+    pub(crate) native_path: Option<Box<PathBuf>>,
+}
+
+impl Hash for FileInner {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Preserve existing cache hashes; the native key already encodes all bytes.
+        self.path.hash(state);
+        self.origin.hash(state);
+        self.status.hash(state);
+    }
+}
+
+const NATIVE_PATH_KEY: &str = "\0journal-path-unix-v1:";
+
+#[cfg(unix)]
+fn native_path_key(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = path.as_os_str().as_bytes();
+    let mut key = String::with_capacity(NATIVE_PATH_KEY.len() + bytes.len() * 2);
+    key.push_str(NATIVE_PATH_KEY);
+    for byte in bytes {
+        key.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+        key.push(char::from(b"0123456789abcdef"[(byte & 15) as usize]));
+    }
+    key
+}
+
+fn decode_native_path_key(key: &str) -> std::result::Result<Option<PathBuf>, &'static str> {
+    let Some(encoded) = key.strip_prefix(NATIVE_PATH_KEY) else {
+        return Ok(None);
+    };
+    #[cfg(not(unix))]
+    {
+        let _ = encoded;
+        Err("native Unix path keys are unsupported on this platform")
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+
+        if encoded.len() % 2 != 0 {
+            return Err("invalid native path key length");
+        }
+        let mut bytes = Vec::with_capacity(encoded.len() / 2);
+        for pair in encoded.as_bytes().chunks_exact(2) {
+            let high = char::from(pair[0])
+                .to_digit(16)
+                .ok_or("invalid native path key")?;
+            let low = char::from(pair[1])
+                .to_digit(16)
+                .ok_or("invalid native path key")?;
+            bytes.push(((high << 4) | low) as u8);
+        }
+        if bytes.contains(&0) {
+            return Err("NUL in native filesystem path");
+        }
+        let path = PathBuf::from(std::ffi::OsString::from_vec(bytes));
+        if !path.is_absolute() {
+            return Err("native path key is not absolute");
+        }
+        if path.to_str().is_some() {
+            return Err("native path key must contain non-UTF8 bytes");
+        }
+        Ok(Some(path))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -207,7 +275,14 @@ impl<'de> serde::Deserialize<'de> for File {
     where
         D: serde::Deserializer<'de>,
     {
-        let inner = FileInner::deserialize(deserializer)?;
+        let mut inner = FileInner::deserialize(deserializer)?;
+        if let Some(path) = decode_native_path_key(&inner.path).map_err(serde::de::Error::custom)? {
+            #[cfg(unix)]
+            {
+                inner.path = native_path_key(&path);
+            }
+            inner.native_path = Some(Box::new(path));
+        }
         Ok(File {
             inner: Arc::new(inner),
         })
@@ -215,8 +290,18 @@ impl<'de> serde::Deserialize<'de> for File {
 }
 
 impl File {
+    /// Legacy text path/key. Native byte paths use an encoded, non-openable key.
+    /// Use `as_path` for filesystem operations.
     pub fn path(&self) -> &str {
         &self.inner.path
+    }
+
+    /// Returns the original native filesystem path without lossy conversion.
+    pub fn as_path(&self) -> &Path {
+        self.inner
+            .native_path
+            .as_deref()
+            .map_or_else(|| Path::new(&self.inner.path), |path| path.as_path())
     }
 
     pub fn origin(&self) -> &Origin {
@@ -255,20 +340,33 @@ impl File {
             path: path_str.to_string(),
             origin,
             status,
+            native_path: None,
         });
 
         Some(File { inner })
     }
 
     pub fn from_raw_path(path: &Path) -> Option<Self> {
-        let path = path.to_str()?;
-        let raw_path = Path::new(path);
+        let raw_path = path;
         if !raw_path.is_absolute() {
             return None;
         }
+        let (path, native_path) = match path.to_str() {
+            Some(text) => (text.to_string(), None),
+            None => {
+                #[cfg(unix)]
+                {
+                    (native_path_key(path), Some(Box::new(path.to_path_buf())))
+                }
+                #[cfg(not(unix))]
+                {
+                    return None;
+                }
+            }
+        };
 
         let inner = Arc::new(FileInner {
-            path: path.to_string(),
+            path,
             origin: Origin {
                 machine_id: None,
                 namespace: None,
@@ -281,6 +379,7 @@ impl File {
                 ),
             },
             status: Status::Active,
+            native_path,
         });
 
         Some(File { inner })
@@ -329,13 +428,14 @@ impl File {
             path: String::from(path),
             origin,
             status,
+            native_path: None,
         });
 
         Some(File { inner })
     }
 
     pub fn dir(&self) -> Result<&str> {
-        Path::new(&self.inner.path)
+        self.as_path()
             .parent()
             .and_then(|p| {
                 if self.inner.origin.machine_id.is_some() {
@@ -346,7 +446,7 @@ impl File {
             })
             .and_then(|p| p.to_str())
             .ok_or_else(|| RepositoryError::InvalidUtf8 {
-                path: Path::new(&self.inner.path).to_path_buf(),
+                path: self.as_path().to_path_buf(),
             })
     }
 

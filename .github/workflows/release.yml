@@ -112,11 +112,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 tests/release/release.py preflight --source "$RELEASE_SOURCE" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
+      - name: Install CLI build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libpcre2-dev
       - name: Test Rust
         run: cargo test --manifest-path "$RELEASE_SOURCE/rust/Cargo.toml" --workspace --locked
       - name: Test Go
         working-directory: .local/release/source/go
         run: go test -count=1 ./...
+      - name: Test Go CLI with PCRE2
+        working-directory: .local/release/source/go
+        env:
+          CGO_ENABLED: '1'
+        run: go test -count=1 ./cmd/journalctl
 
   publish:
     name: Publish and verify Rust crates

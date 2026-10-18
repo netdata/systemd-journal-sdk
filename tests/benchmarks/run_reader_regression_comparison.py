@@ -140,7 +140,7 @@ def sha256(path: Path) -> str:
 
 def compare(pairs: list[tuple[float, float]]) -> dict:
     ratios = [after / before for before, after in pairs]
-    rng = random.Random(159)
+    rng = random.Random(159)  # nosec B311 - reproducible bootstrap sampling.
     sampled = sorted(
         statistics.median(rng.choices(ratios, k=len(ratios))) for _ in range(10000)
     )

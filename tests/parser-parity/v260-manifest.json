@@ -1,6 +1,6 @@
 {
-  "baseline": "systemd v260.1",
-  "source_commit": "c0a5a2516d28",
+  "baseline": "systemd v262",
+  "source_commit": "8cc40e0c5e9234bf45084751ac53b1fbfe70b492",
   "long_options": [
     {
       "name": "system",
@@ -498,6 +498,14 @@
       "classification": "recognized-unsupported",
       "expectation": "recognized-unsupported",
       "short_alias": null
+    },
+    {
+      "name": "introspect-cli",
+      "args": "none",
+      "classification": "portable-utility-required",
+      "expectation": "recognized-supported",
+      "short_alias": null,
+      "hidden": true
     }
   ],
   "short_options": [
@@ -649,6 +657,7 @@
     "ACTION_LIST_NAMESPACES",
     "ACTION_FLUSH",
     "ACTION_RELINQUISH_VAR",
+    "ACTION_SMART_RELINQUISH_VAR",
     "ACTION_SYNC",
     "ACTION_ROTATE",
     "ACTION_VACUUM",
@@ -714,6 +723,10 @@
     {
       "name": "case-sensitive-bool-spellings",
       "description": "Accept official parse_boolean spellings t and f for --case-sensitive=."
+    },
+    {
+      "name": "unscoped-field-enumeration",
+      "description": "Reject final -F/-N actions with explicit filters/time/cursor/grep; accept cleared boot/invocation=all and implicit boot."
     }
   ]
 }

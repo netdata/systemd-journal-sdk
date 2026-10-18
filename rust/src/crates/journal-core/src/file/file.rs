@@ -637,7 +637,7 @@ impl<M: MemoryMap> JournalFile<M> {
         let fd = OpenOptions::new()
             .read(true)
             .write(false)
-            .open(file.path())?;
+            .open(file.as_path())?;
 
         // Create a memory map for the header
         let header_size = std::mem::size_of::<JournalHeader>() as u64;

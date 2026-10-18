@@ -252,8 +252,8 @@ pub(super) fn recoverable_entry_data_error(err: &JournalError) -> bool {
 
 pub(super) fn is_zst_file(path: &Path) -> bool {
     path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".zst"))
+        .map(|name| name.as_encoded_bytes())
+        .is_some_and(|name| name.ends_with(b".zst"))
 }
 
 pub(super) fn decompress_zst_to_temp(path: &Path, prefix: &str) -> Result<PathBuf> {

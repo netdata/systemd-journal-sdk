@@ -677,7 +677,7 @@ def main() -> None:
                     )
                 probe(path, "verify", error=True)
     report = {
-        "oracle": subprocess.run(
+        "oracle": subprocess.run(  # nosec B603 - explicit oracle and argument vector.
             [str(oracle), "--version"],
             capture_output=True,
             text=True,
@@ -686,7 +686,7 @@ def main() -> None:
         ).stdout,
         "observations": observations,
         "status": "PASS",
-    }  # nosec B603
+    }
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"status": "PASS", "observations": len(observations)}), flush=True)
 

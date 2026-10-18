@@ -20,6 +20,20 @@ consumer problem and carries a different cost.
 | stock-like CLI behavior | journalctl rewrite | journalctl rewrite | operator/script use; see [[Journalctl-CLI]] |
 | integrity validation | `verify_file` | `VerifyFile` | diagnostics and corpus gates |
 
+## Native File Paths
+
+Rust callers with native filesystem paths can use `SdJournalOpenPath`,
+`SdJournalOpenFilePath`, `SdJournalOpenDirectoryPath` and `SdJournalOpenFilePaths`.
+The file, directory and list forms also have `WithOptions` variants. These
+constructors preserve non-UTF-8 Unix filenames; the existing string constructors
+remain available. Go path strings already preserve Unix filename bytes.
+
+Low-level Rust registry consumers should use `File::as_path()` for filesystem
+operations. `File::path()` remains a text accessor for ordinary UTF-8 paths;
+newly supported non-UTF-8 paths return an encoded metadata key. That key is
+serializable and distinct from replacement-character filenames, and cannot be
+opened as a filesystem path. Windows readers use Unicode filenames.
+
 ## Data Ownership
 
 The reader has three ownership modes:

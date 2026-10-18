@@ -1,0 +1,141 @@
+name: Portable journalctl
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: CLI on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            shell: bash
+            python: python3
+            target: x86_64-unknown-linux-gnu
+            exe: ''
+          - os: macos-15
+            shell: bash
+            python: python3
+            target: aarch64-apple-darwin
+            exe: ''
+          - os: windows-2022
+            shell: 'msys2 {0}'
+            python: python
+            target: x86_64-pc-windows-gnullvm
+            exe: .exe
+            # Windows cannot represent the upstream colon-named fuzz inputs.
+            sparse: |
+              /*
+              !/fixtures/systemd/test-data/corrupted/id:*
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      CGO_ENABLED: '1'
+      GOTOOLCHAIN: local
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_HOME: ${{ github.workspace }}/.local/cargo-home
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.local/cargo-target
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER: clang
+      CC_x86_64_pc_windows_gnullvm: clang
+      AR_x86_64_pc_windows_gnullvm: llvm-ar
+      GOCACHE: ${{ github.workspace }}/.local/go-build
+      GOMODCACHE: ${{ github.workspace }}/.local/go-mod
+      GOPATH: ${{ github.workspace }}/.local/go-path
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        # Accept index paths on Windows; sparse rules keep them off disk.
+        env:
+          GIT_CONFIG_COUNT: ${{ runner.os == 'Windows' && '1' || '0' }}
+          GIT_CONFIG_KEY_0: core.protectNTFS
+          GIT_CONFIG_VALUE_0: 'false'
+        with:
+          persist-credentials: false
+          sparse-checkout: ${{ matrix.sparse }}
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go/go.mod
+          cache: false
+      - name: Setup Windows C tools
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: CLANG64
+          path-type: inherit
+          install: mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-pcre2
+      - name: Install Linux CLI prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libpcre2-dev
+      - name: Install macOS CLI prerequisites
+        if: runner.os == 'macOS'
+        run: brew install pcre2 pkgconf
+      - name: Configure native libraries
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo 'CC=clang' >> "$GITHUB_ENV"
+            echo 'PKG_CONFIG=pkg-config' >> "$GITHUB_ENV"
+            echo "PKG_CONFIG_PATH=$(cygpath -m "$MINGW_PREFIX/lib/pkgconfig")" >> "$GITHUB_ENV"
+          elif [ "$RUNNER_OS" = macOS ]; then
+            echo 'CC=clang' >> "$GITHUB_ENV"
+            echo "PKG_CONFIG_PATH=$(brew --prefix pcre2)/lib/pkgconfig" >> "$GITHUB_ENV"
+          fi
+          pkg-config --atleast-version=10.42 libpcre2-8
+          pkg-config --modversion libpcre2-8
+      - name: Read Rust compiler minimum
+        id: rust
+        run: ${{ matrix.python }} -c 'import tomllib; print("version=" + tomllib.load(open("rust/Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])' >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          targets: ${{ matrix.target }}
+      - name: Check pure Go SDK and native CLIs
+        run: |
+          go version
+          rustc --version
+          CGO_ENABLED=0 go -C go build ./journal
+          go -C go test -count=1 ./cmd/journalctl
+          cargo test --manifest-path rust/Cargo.toml --locked -p journalctl
+          go -C go build -o ../.local/go-journalctl${{ matrix.exe }} ./cmd/journalctl
+          cargo build --manifest-path rust/Cargo.toml --locked -p journalctl
+          ${{ matrix.python }} tests/interoperability/run_journalctl_portable_smoke.py --go .local/go-journalctl${{ matrix.exe }} --rust .local/cargo-target/${{ matrix.target }}/debug/journalctl${{ matrix.exe }}
+
+  freebsd:
+    name: CLI on FreeBSD
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Build and exercise native CLIs
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: '14.4'
+          prepare: pkg install -y go rust pcre2 pkgconf python3
+          run: |
+            set -eu
+            export CGO_ENABLED=1 GOTOOLCHAIN=local PYTHONDONTWRITEBYTECODE=1 CC=cc
+            export CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target"
+            export GOCACHE="$PWD/.local/go-build" GOMODCACHE="$PWD/.local/go-mod" GOPATH="$PWD/.local/go-path"
+            pkg-config --atleast-version=10.42 libpcre2-8
+            pkg-config --modversion libpcre2-8
+            go version
+            rustc --version
+            CGO_ENABLED=0 go -C go build ./journal
+            go -C go test -count=1 ./cmd/journalctl
+            cargo test --manifest-path rust/Cargo.toml --locked -p journalctl
+            go -C go build -o ../.local/go-journalctl ./cmd/journalctl
+            cargo build --manifest-path rust/Cargo.toml --locked -p journalctl
+            python3 tests/interoperability/run_journalctl_portable_smoke.py --go .local/go-journalctl --rust .local/cargo-target/debug/journalctl

@@ -1,13 +1,9 @@
 # SOW Status
 
-Last updated: 2026-10-17
+Last updated: 2026-10-21
 
 ## Current
 
-- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: paused for
-  SDK-first execution, then authorized implementation of complete v262 parity.
-  Native PCRE2 and the CLI-only Go CGO exception are approved, with the
-  performance gate retained. No concurrent CLI implementation.
 - SOW-0045 - Go Reader Alignment Optimization: regression reopened and paused.
   Unchanged HEAD reproduces skipped appends after healthy empty/EOF refresh,
   including unique-triggered refresh. Separate positioning work remains queued;
@@ -62,7 +58,7 @@ Last updated: 2026-10-17
   on 2026-06-21. Still valid as Rust quality debt, but live-path work is
   high-risk and not mandatory before integration/release work.
 - SOW-0122 - Journalctl Performance Followups: open. Tracks non-blocking
-  SOW-0121 performance follow-up for indexed `--list-invocations`, portable
+  SOW-0121 broader performance follow-up for large invocation inputs, portable
   `--follow` scalability, and large-fixture performance evidence before any
   large-archive performance claim. Mandatory no-regression proof for the new
   SDK/journalctl repairs belongs directly to SOW-0159/SOW-0121.
@@ -78,6 +74,15 @@ Last updated: 2026-10-17
 
 ## Recently Closed Or Completed
 
+- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
+  Rust and Go target v262 with unchanged SDK purity and compiler floors.
+  Local checks pass 1,372 v262, 1,052 timestamp and 106 portable observations;
+  native Linux/macOS/Windows/FreeBSD CI passes. Whole-SOW internal review
+  passes; the final equivalent mask and closure receive impact review.
+  Recorded narrow startup/vacuum costs remain accepted. Bandit has an explicit
+  execution coverage gap despite aggregate analysis success. Draft PR #12
+  delivers the work; merge/release and pending SOW-0122 are not activated.
+
 - SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: completed.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
   native filtering and approved position/time/error retry behavior. Go floor
@@ -89,8 +94,8 @@ Last updated: 2026-10-17
   accepted under representative evidence and careful review, with uncertain
   intervals and adverse history retained. The fresh whole-SOW review has one
   positive verdict, five coverage gaps and no verified unresolved blocker.
-  The closing audit and combined signed implementation/lifecycle commit accompany
-  completion; journalctl activation follows that commit.
+  The complete-and-clean closing audit passes; signed commit 25accee keeps
+  implementation and completed lifecycle together. Journalctl is completed under SOW-0121.
 - SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed
   again with the approved Go indexed aggregation lifetime/header/opener repair.
   Full/race/386/integrated/floor and cross-platform checks pass. The current
@@ -99,8 +104,8 @@ Last updated: 2026-10-17
   1,176 measured allocation pairs avoid increases. External review is
   adjudicated with no verified blocker; Mimo's P2 is disproven and Qwen/Kimi
   coverage gaps remain explicit. Independent findings are owned by paused
-  SOW-0045/SOW-0071 and pending SOW-0160. Preserve SDK/CLI work and resume
-  SOW-0159 after signed combined prerequisite commit `4c49205`.
+  SOW-0045/SOW-0071 and pending SOW-0160. Signed prerequisite commit `4c49205` precedes the now-completed SDK
+  SOW-0159 and CLI SOW-0121.
 
 - SOW-0158 - v0.10.0 Publication: completed. Release run 38123573886 passed
   both language suites and published/verified all eight Rust `0.10.0` crates.

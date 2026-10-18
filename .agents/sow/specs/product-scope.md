@@ -100,7 +100,27 @@ does not claim that a particular version has been published.
 ## Core Contracts
 
 - Implementations must not link to system journal libraries.
-- Go implementations must not use CGO.
+- Go SDK implementations must not use CGO. Native PCRE2-8 >=10.42 is permitted
+  only in the standalone journalctl command, which requires CGO and a C compiler.
+  Rust also confines native PCRE2 and its timezone provider to that command.
+- Both commands may use the platform C library for Unix file globbing,
+  temporary thread-local locales and terminal queries. Native Unix filename
+  bytes survive explicit files, directory discovery and facade opening.
+  File patterns use native BRACE/NOCHECK/NOSORT semantics in the environment
+  locale; literal paths bypass expansion. Windows filenames are Unicode,
+  with brace alternatives and Unicode wildcard matching.
+- Rust facade constructors have additive native-path forms: SdJournalOpenPath,
+  SdJournalOpenFilePath, SdJournalOpenDirectoryPath and SdJournalOpenFilePaths,
+  including file/directory/list WithOptions forms. Existing string functions
+  retain their signatures and delegate to the same readers. Journal and
+  whole-file Zstandard suffix checks preserve native filename bytes.
+  Registry File::as_path supplies the original filesystem path. File::path
+  retains ordinary UTF8 text; newly supported non-UTF8 paths return a reserved
+  NUL-prefixed hexadecimal Unix key, which must not be used for filesystem I/O.
+  Metadata deserialization reconstructs those native paths. CACHE_VERSION stays
+  at 4: ordinary serialization and Hash inputs are unchanged, and new raw-path
+  keys cannot alias ordinary paths. Per-file metadata adds one optional pointer;
+  no per-row storage or index interpretation changes.
 - Core journal readers and writers are file-format implementations only. They
   must not execute external programs, probe host identity, read host identity
   files or registries, or enforce writer locks by default.
@@ -949,7 +969,7 @@ Current Go reader feature slice:
 - systemd-compatible export output for binary fields using size-prefixed field
   values and blank-line entry separators;
 - systemd-compatible JSON output for duplicate fields and binary values;
-- file-backed journalctl output modes cover the stock v260.1 family:
+- file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
   `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
@@ -1090,7 +1110,7 @@ Current Rust reader feature slice:
 - export byte output preserves non-UTF8 RAW field names; JSON output, field
   enumeration, unique queries, and `get_data` facade helpers remain UTF-8
   field-name surfaces;
-- file-backed journalctl output modes cover the stock v260.1 family:
+- file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
   `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
@@ -1176,6 +1196,115 @@ Current Rust reader limitations:
 
 Implement journalctl rewrites in Rust and Go for file-backed/query behavior.
 
+The command contract targets `systemd/systemd` tag `v262`, commit
+8cc40e0c5e9234bf45084751ac53b1fbfe70b492. SDK journal-format compatibility
+continues to target v260.1. The complete command option/action classifications
+are in `journalctl-v260-parity-matrix.md` (historical filename retained).
+
+Both commands parse setters in encounter order, preserve required values and
+explicit-empty semantics, and stop at terminal help/version/introspection.
+Opaque Unix match, identifier, exclusion and projection arguments preserve
+raw bytes. Non-UTF8 projection names retain explicit projection presence and
+rendering-time cat validation; they do not expand to unrestricted output.
+The final action controls dispatch and conflicts. PCRE2 compiles the final raw
+pattern once after global parser checks; matching uses the first raw MESSAGE,
+native byte/case behavior and native errors. A show command with no grep-selected
+entries exits 1 without a diagnostic. Rendering exclusions do not erase a
+successful grep selection.
+
+The native CLI dependencies have an accepted small fixed startup cost, measured
+on the tiny Linux control as Go about 3.0ms to 3.8ms and Rust 1.5ms to 1.8ms.
+This allowance is confined to command startup; SDK and sustained query
+performance retain their no-regression requirement. Static native builds are
+not a separate supported packaging profile.
+
+With final `-F`/`-N`, entry/time/cursor/grep/explicit boot or invocation filters
+are errors under v262. Unrestricted enumeration still uses native FIELD/DATA
+indexes. `-F` honors value limits; field-name order is unspecified. Time bounds
+are parsed once per occurrence, including checked duration/epoch arithmetic,
+calendar rounding, local/UTC/offset/IANA zones, TZif leaps and cached DST
+selection. Cursor-relative limits begin at the cursor. Follow streams resolved
+cursor history regardless of numeric line caps; since-only follow, explicit all
+and no-tail include the complete existing matching backlog. Repeated projections
+form a union without trimming field-name bytes. Cat preserves raw first values;
+boot/invocation tables support all four JSON framings.
+Follow without a since bound defaults to ten existing rows, including with
+pager-end; follow with since and pager-end defaults to one thousand. Explicit
+line counts, all/no-tail and cursor positioning retain their precedence.
+
+System/user unit wildcard expansion uses indexed unique field values. If no
+exact selector or wildcard expansion adds a unit, return the native no-data
+error before row output, including with a zero line limit. Exact absent unit
+names and mixed exact/wildcard selectors remain valid. An ordinary journal
+field cannot turn an empty expansion into a match through a private sentinel.
+Unit arguments retain native glob/suffix rules, byte escaping, pure path-to-unit
+conversion and long-path hashing. Empty names are invalid. Unix wildcard
+matching uses fnmatch NOESCAPE in the environment locale. FreeBSD uses a
+shared CLI-private compatibility matcher for extended bracket syntax missing
+from its libc, including named character classes and single-character
+collating elements. Ordinary patterns keep native matching. The Windows fallback
+matches unit payload bytes using the C-locale grammar. Current-user conversion
+deduplicates moved system selectors. Follow retains the initial wildcard
+expansion and invocation selection.
+
+Invocation discovery uses the three base system/user unit fields, excluding
+show-only coredump and slice groups. It reads the first valid nonzero ID from
+the ordered invocation fields and walks indexed matches in native direction.
+ID bounds span every matching row in the selected boot, including rows without
+unit metadata. Explicit IDs without offsets may match secondary ID fields;
+relative offsets advance from the reference ID's boundary. Invocation selection
+replaces boot/unit show matches while retaining identifier, transport, priority
+and facility filters. Readers are reused and metadata getters avoid expanding
+unrelated payloads. Broader input envelopes remain separate performance work.
+
+Native integer options preserve base-prefix/octal syntax and signed 32-bit
+limits for line counts and boot/invocation offsets; vacuum file counts retain
+the unsigned 64-bit range. Descriptor IDs use 32 hexadecimal digits, with an
+explicit sign before an offset. Priority symbols are canonical and case
+sensitive; numeric facilities range through 127. Invalid unique-field names
+fail even with a zero limit. Empty requested cursor-file paths retain their
+requested update semantics.
+
+Bounded show output stops before reading or matching a further row. Boot
+transitions are observed before grep in both directions and follow polls;
+initial follow-tail selection counts native rows before grep and poll resume
+state includes nonmatching visits. Zero-limit boot/invocation tables exit one,
+with quiet/JSON suppressing informational diagnostics. Quiet verification
+retains errors while suppressing successful PASS messages.
+Show-cursor and cursor-file checkpoints retain the final native position,
+including grep misses, bound-crossing rows and zero-line positioning. Finite
+selected counts still stop immediately without another regex evaluation.
+
+Short output selects the last repeated MESSAGE; grep and cat retain their
+first-value rules. No-full output applies native per-line shortening,
+prefix/suffix retention, three-line/300-byte thresholds and the v262 fixed
+Unicode width table. COLUMNS is resolved once per shortened-output renderer;
+valid values from 1 through 65535 override stdout's terminal width, followed by
+an 80-column fallback. The default full-width path bypasses shortening.
+Displayed realtime uses the last source-realtime C-string value when native
+integer parsing yields a value strictly between zero and 2^55; otherwise it
+uses the ENTRY realtime. This does not replace exported ENTRY metadata.
+Before short rendering, native tab/ANSI/CR preparation strips completed color
+and OSC sequences, expands tabs to eight spaces and drops trailing/pre-newline
+CR. Show-all bypasses this step; cat/grep continue to use raw MESSAGE bytes.
+JSON aggregation keeps a single binary byte array distinct from an outer array
+of repeated values in all four framings. Vacuum-size parsing uses native
+ordered uppercase compound suffixes and checked decimal/fraction arithmetic.
+
+Color output follows SYSTEMD_COLORS fixed/automatic/boolean modes, NO_COLOR,
+stdout/stderr terminal state, TERM and COLORTERM. Enabled output includes native
+priority/audit colors, first-match grep highlighting, verbose timestamps,
+cursors and trusted fields, JSON primitive colors, boot separators and table
+headers. Underlining is disabled on the Linux console. Grep captures offsets
+from its existing PCRE2 match; only colored buffered output retains those
+offsets. Plain output avoids color formatting. Verbose multiline fields indent
+continuations; short-delta saturates negative differences to zero on reverse
+output, following native timestamp subtraction.
+Embedded DOCUMENTATION and CONFIG_FILE links follow SYSTEMD_URLIFY; optional
+file links discover the command's hostname lazily outside the SDK. Host catalog
+lookup, including implicit documentation-link lookup, remains outside portable
+mode. Header path output and vacuum filename tie ordering preserve native bytes.
+
 Matching semantics:
 
 - Different fields are ANDed.
@@ -1196,7 +1325,8 @@ File-backed query semantics:
   daemon-backed Linux journal wait APIs on very large inputs.
 - `--pager-end` does not spawn a pager in portable mode, but it preserves stock
   line-selection semantics by applying an implicit 1000-entry tail when no
-  explicit `--lines`, `--head`, or `--tail` option is present.
+  explicit `--lines`, `--head`, or `--tail` option is present. Follow without
+  since retains its implicit ten-entry tail instead.
 - Bare `--lines` and `-n` select the stock default 10-entry tail. Explicit
   empty `--lines=` is a parse error, matching stock `journalctl`.
 - Empty default/verbose show results print `-- No entries --`; `--quiet` and
@@ -1204,23 +1334,22 @@ File-backed query semantics:
 - `--cursor`, `--after-cursor`, `--cursor-file`, and `--show-cursor` use
   official systemd cursor strings for file-backed reads and cursor-file
   updates.
-- `--list-invocations` is correctness-compatible for covered file-backed unit
-  contexts, but the current implementation derives invocation ranges from
-  matching entries. SOW-0122 tracks the remaining performance work before any
-  large-archive performance claim.
+- `--list-invocations` uses native directional indexed discovery and global
+  boot-scoped ID bounds. SOW-0122 retains broader large-input envelope and
+  polling work, beyond the required correctness and performance repair.
 - Recognized options may appear before or after show-action match arguments,
   matching stock argument permutation. Short options accept stock attached
   values and clusters such as `-n2`, `-ball`, and `-rn2`, while stock-invalid
   forms such as `-n=2` and `-b=true` remain invalid.
 - `--identifier`, `--exclude-identifier`, `--priority`, `--facility`,
   `--grep`, `--case-sensitive`, `--dmesg`, `--unit`, and `--user-unit` are
-  file-backed filters. `--exclude-identifier` follows stock v260.1 output-mode
+  file-backed filters. `--exclude-identifier` follows stock v262 output-mode
   scope: short-family outputs filter matching `SYSLOG_IDENTIFIER=` entries,
   while JSON, export, verbose, and cat remain unchanged. `--grep` with
   tail-style `--lines=N` implies reverse traversal unless `--follow` is set.
-  Unit filters use the same systemd v260.1 unit-related fields, disjunction
+  Unit filters use the same systemd v262 unit-related fields, disjunction
   groups, unit suffix mangling, glob expansion over FIELD/DATA indexes, and
-  `--user --unit=` rewrite as stock file-backed `journalctl`.
+  `--user --unit=` rewrite (unless `--system` is also present) as stock file-backed `journalctl`.
 - `--disk-usage` reports allocated filesystem usage for explicit
   `--file`/`--directory` journal inputs. Without explicit input, it remains an
   unsupported host-journal discovery action.
@@ -1230,15 +1359,24 @@ File-backed query semantics:
   non-matching, unknown, and subdirectory files. `--vacuum-files` uses the
   stock count condition: protected active/current files plus remaining archived
   candidates must be at or below the requested count.
+  Age is the earliest available filename, modification, access, change or
+  creation timestamp. Linux includes a valid legacy `user.crtime_usec` xattr
+  and attempts header reads without updating atime, retrying ordinary reads
+  when that open mode is unavailable. Metadata checks are CLI maintenance
+  operations; SDK and query traversal do not perform them.
+  The user accepted the creation-metadata cost for explicit age-based vacuum
+  maintenance: the measured warm control adds about 7 ms in Go and 3.8 ms in
+  Rust for 1000 recent archive names. This is a maintenance-only exception;
+  SDK and sustained query performance requirements remain unchanged.
 - `--new-id128` is a portable standalone utility action and prints a new v4
   ID128 in the same string, UUID, `SD_ID128_MAKE()`, and Python constant forms
-  as stock systemd v260.1.
+  as stock systemd v262.
 - Positional `FIELD=value`, path, and `+` disjunction arguments belong to the
   show action. Non-show actions other than catalog listing/dumping reject
   extra positional arguments with the stock `Extraneous arguments starting with
   '<token>'` parser error before portable unsupported dispatch.
-- The long `--follow` option is supported. Existing short `-f` file aliases are
-  preserved in languages that already used `-f` for `--file`.
+- `--follow` and `-f` follow explicit inputs. `--file` and `-i` select files;
+  the old conflicting `-f` file alias is not part of the v262 contract.
 
 Daemon-only commands are not implemented in this project. They must return documented unsupported behavior rather than silently pretending to perform daemon operations.
 

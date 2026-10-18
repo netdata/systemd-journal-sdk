@@ -55,13 +55,15 @@ pub use facade::{
     SdJournalEnumerateField, SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor,
     SdJournalGetData, SdJournalGetEntry, SdJournalGetMonotonicUsec, SdJournalGetRealtimeUsec,
     SdJournalGetSeqnum, SdJournalListBoots, SdJournalNext, SdJournalNextSkip, SdJournalOpen,
-    SdJournalOpenDirectory, SdJournalOpenDirectoryWithOptions, SdJournalOpenFile,
+    SdJournalOpenDirectory, SdJournalOpenDirectoryPath, SdJournalOpenDirectoryPathWithOptions,
+    SdJournalOpenDirectoryWithOptions, SdJournalOpenFile, SdJournalOpenFilePath,
+    SdJournalOpenFilePathWithOptions, SdJournalOpenFilePaths, SdJournalOpenFilePathsWithOptions,
     SdJournalOpenFileWithOptions, SdJournalOpenFiles, SdJournalOpenFilesWithOptions,
-    SdJournalPrevious, SdJournalPreviousSkip, SdJournalProcessOutput, SdJournalQueryUnique,
-    SdJournalQueryUniqueState, SdJournalRecoveryStatuses, SdJournalRestartData,
-    SdJournalRestartFields, SdJournalRestartUnique, SdJournalSeekCursor, SdJournalSeekHead,
-    SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
-    SdJournalVisitUniqueValues,
+    SdJournalOpenPath, SdJournalPrevious, SdJournalPreviousSkip, SdJournalProcessOutput,
+    SdJournalQueryUnique, SdJournalQueryUniqueState, SdJournalRecoveryStatuses,
+    SdJournalRestartData, SdJournalRestartFields, SdJournalRestartUnique, SdJournalSeekCursor,
+    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
+    SdJournalTestCursor, SdJournalVisitUniqueValues,
 };
 pub use journal_core::error::JournalError;
 use journal_core::file::ExperimentalMmapStrategy;

@@ -954,12 +954,12 @@ impl DirectoryReader {
 
 pub(super) fn is_journal_file_name(path: &Path) -> bool {
     path.file_name()
-        .and_then(|name| name.to_str())
+        .map(|name| name.as_encoded_bytes())
         .is_some_and(|name| {
-            name.ends_with(".journal")
-                || name.ends_with(".journal~")
-                || name.ends_with(".journal.zst")
-                || name.ends_with(".journal~.zst")
+            name.ends_with(b".journal")
+                || name.ends_with(b".journal~")
+                || name.ends_with(b".journal.zst")
+                || name.ends_with(b".journal~.zst")
         })
 }
 

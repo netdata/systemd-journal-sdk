@@ -100,6 +100,68 @@ mod tests {
     }
 
     #[test]
+    fn native_path_support_preserves_ordinary_file_cache_identity() {
+        use std::hash::{Hash, Hasher};
+
+        #[derive(Hash, Serialize)]
+        struct LegacyFile<'a> {
+            path: &'a str,
+            origin: &'a journal_registry::Origin,
+            status: &'a journal_registry::Status,
+        }
+        let file = test_file();
+        let legacy = LegacyFile {
+            path: file.path(),
+            origin: file.origin(),
+            status: file.status(),
+        };
+        assert_eq!(
+            serde_json::to_vec(&file).unwrap(),
+            serde_json::to_vec(&legacy).unwrap()
+        );
+        let mut actual = std::collections::hash_map::DefaultHasher::new();
+        let mut previous = std::collections::hash_map::DefaultHasher::new();
+        file.hash(&mut actual);
+        legacy.hash(&mut previous);
+        assert_eq!(actual.finish(), previous.finish());
+        let decoded: File = serde_json::from_slice(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(decoded, file);
+        assert_eq!(decoded.as_path(), Path::new(legacy.path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_path_cache_keys_round_trip_without_replacement_aliases() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(
+            b"/example/raw-\xff.journal".to_vec(),
+        ));
+        let file = File::from_raw_path(&path).unwrap();
+        let decoy = File::from_raw_path(Path::new(path.to_string_lossy().as_ref())).unwrap();
+        let key = FileIndexKey::new(&file, &Facets::new(&[]), None);
+        let replacement = FileIndexKey::new(&decoy, &Facets::new(&[]), None);
+        assert_ne!(key, replacement);
+        let encoded = serde_json::to_vec(&key).unwrap();
+        let decoded: FileIndexKey = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, key);
+        assert_eq!(decoded.file.as_path(), path);
+        // An old text-only consumer must fail to open, rather than select the decoy.
+        assert!(decoded.file.path().as_bytes().contains(&0));
+        assert_eq!(
+            std::fs::File::open(decoded.file.path()).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let mut cache = HashMap::new();
+        cache.insert(key, "native");
+        assert_eq!(cache.get(&decoded), Some(&"native"));
+        assert_eq!(cache.get(&replacement), None);
+        let mut malformed = serde_json::to_value(&decoded).unwrap();
+        malformed["file"]["path"] = serde_json::json!("\0journal-path-unix-v1:2f00");
+        assert!(serde_json::from_value::<FileIndexKey>(malformed).is_err());
+    }
+
+    #[test]
     fn old_serialized_cache_key_without_namespace_decodes_as_old_key() {
         let file = test_file();
         let facets = Facets::new(&[]);

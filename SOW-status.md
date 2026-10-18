@@ -1,15 +1,12 @@
 # SOW Status
 
-Last updated: 2026-10-17
+Last updated: 2026-10-21
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0121-20260621-file-backed-journalctl-full-parity.md` - paused for SDK-first
-  execution, then complete v262 CLI parity. Native PCRE2 and the Go CLI CGO
-  exception are approved, retaining the performance gate.
 - `SOW-0045-20260528-go-reader-alignment-optimization.md` - reopened and paused
   for a separately reproduced healthy empty/EOF refresh positioning regression.
   Unique-triggered refresh shares the failure; related pre-existing directory
@@ -51,7 +48,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
   votes from glm, minimax, kimi, mimo, deepseek, and qwen; Rust/Go
   implementation remains pending.
 - `SOW-0122-20260621-journalctl-performance-followups.md` - open. Tracks
-  non-blocking SOW-0121 performance follow-up for indexed
+  non-blocking SOW-0121 broader performance follow-up for
   `--list-invocations`, portable `--follow` scalability, and large-fixture
   performance evidence. It does not replace the mandatory no-regression gates
   in the requested SDK and journalctl workstreams.
@@ -64,6 +61,15 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
+  Rust and Go target v262 with unchanged SDK purity and compiler floors.
+  Local checks pass 1,372 v262, 1,052 timestamp and 106 portable observations;
+  native Linux/macOS/Windows/FreeBSD CI passes. Whole-SOW internal review
+  passes; the final equivalent mask and closure receive impact review.
+  Recorded narrow startup/vacuum costs remain accepted. Bandit has an explicit
+  execution coverage gap despite aggregate analysis success. Draft PR #12
+  delivers the work; merge/release and pending SOW-0122 are not activated.
+
 - `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - completed.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
   native filtering and approved position/time/error retry behavior. Go floor
@@ -75,8 +81,8 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
   accepted under representative evidence and careful review, with uncertain
   intervals and adverse history retained. The fresh whole-SOW review has one
   positive verdict, five coverage gaps and no verified unresolved blocker.
-  The closing audit and combined signed implementation/lifecycle commit accompany
-  completion; journalctl activation follows that commit.
+  The complete-and-clean closing audit passes; signed commit 25accee keeps
+  implementation and completed lifecycle together. Journalctl is completed under SOW-0121.
 - `SOW-0108-20260614-cross-language-reader-window-accessor.md` - completed
   again: Go indexed value lifetimes, bounded hybrid headers, native opener and
   initial statistics are repaired. Full local checks and adjudicated review

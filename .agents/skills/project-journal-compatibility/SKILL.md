@@ -25,7 +25,51 @@ Do not use this skill for:
 
 ## Mandatory Knowledge
 
-- Baseline compatibility target is `systemd/systemd` tag `v260.1`.
+- SDK journal-format compatibility targets `systemd/systemd` tag `v260.1`.
+- The portable file-backed journalctl contract targets tag `v262`
+  (8cc40e0c5e9234bf45084751ac53b1fbfe70b492). Run the pinned full-feature
+  oracle; host versions and feature-limited builds cannot certify this target.
+- Native PCRE2-8 >=10.42 is CLI-private. Enable CGO only for Go CLI builds
+  and tests; retain CGO-disabled SDK checks. Declare the C compiler, pkg-config
+  and PCRE2 development prerequisites in command-inclusive coverage/CI.
+- File-backed CLIs preserve native Unix path bytes through selection, facade
+  opening and discovery. File patterns use platform globbing with a temporary
+  thread-local environment locale; literal paths bypass expansion. Windows
+  uses Unicode paths and brace/wildcard selection. Keep these native calls in
+  CLI modules and retain pure SDK checks. Test replacement-named decoys and
+  locale-sensitive patterns against the pinned oracle, with portable Unicode
+  controls in native OS CI.
+- Color parity includes policy/environment selection, priority and audit
+  styles, PCRE2 first-match offsets, multiline preparation, verbose fields,
+  JSON primitives, separators and table headers. Compare ANSI bytes as well
+  as visible content; normalize JSON key order without discarding its styles.
+  Retain buffered match offsets without a second regex evaluation and keep
+  color-only work off the plain-output path.
+- Parser recognition is insufficient. Compare encounter order and terminal
+  actions, raw required values, empty-versus-absent options, final-action scope,
+  timestamps/DST/TZif state, binary MESSAGE behavior, status and complete output.
+  Check calendar rendering independently from bound parsing: POSIX TZ, custom
+  TZDIR, leap records, transition-free footers and malformed-rule fallback must
+  agree in entry output, headers and tables. Omitted DST dates must exercise
+  the configured posixrules file, absent-file defaults and transition flags;
+  provider defaults alone do not establish native parity. Preserve raw epoch widths and
+  lazily resolve rendering zones once, without per-row file reads or zone allocation.
+  Do not let intentional follow termination hide a child failure or a blocked
+  stdout pipe. Retain native exit status and drain large backlogs to files.
+- Use native OS jobs for commands with native dependencies. A CGO-disabled
+  cross-build of the SDK does not establish native CLI portability.
+- Audit complete CLI selector components after a verified mismatch. Unit show
+  groups and invocation-discovery groups differ; test naming/glob boundaries,
+  raw field bytes, current-user conversion, ID precedence, global bounds,
+  directional limits, secondary-ID offsets and frozen follow selection.
+  Compare supplied oracle binaries explicitly, including live command builders.
+  Exercise platform fallback matchers on the primary test host. FreeBSD unit
+  brackets need the shared CLI compatibility matcher: native fnmatch lacks
+  named classes and collating elements. Validate malformed brackets as well
+  as positive matches, multibyte-to-byte retry, and native OS execution. Keep
+  ordinary patterns on native fnmatch without compatibility allocations.
+  Use indexed
+  eligibility and metadata getters; do not expand unrelated message payloads.
 - The test scope is SDK conformance plus file-backed journalctl behavior.
 - Do not implement daemon-only journalctl commands such as daemon sync, flush, rotate, or relinquish-var operations.
 - journalctl already treats repeated matches for the same field as OR alternatives and different fields as AND.
@@ -256,6 +300,24 @@ Do not use this skill for:
   optional-argument edge cases where bare and explicit-empty forms differ, such
   as `--boot` versus `--boot=`, bare `--lines` versus `--lines=`, and bare
   `--case-sensitive` versus `--case-sensitive=`.
+- CLI integer controls must exercise native base prefixes/octal, leading and
+  trailing whitespace, signed 32-bit descriptor limits and explicit ID-offset
+  signs. Preserve raw Unix match operands separately from raw grep patterns.
+- Short-output controls must include multiline and distinct-suffix messages,
+  width/line/byte thresholds and repeated MESSAGE values; grep/cat select the
+  first value while short output selects the last. Prove bounded reads stop
+  before further matching, boot observation precedes grep, and follow-tail
+  selection/resume state includes nonmatching native rows.
+- Check short MESSAGE preparation before printability/truncation: tabs,
+  completed and malformed CSI/OSC sequences, CR boundaries and show-all raw
+  controls. JSON duplicate controls must include a binary first occurrence;
+  a byte array must not become the repeated-values collection.
+- Cursor controls must compare final native position as well as selected
+  output: grep misses, bound crossings, zero counts and after-terminal seeks.
+  Verify follow cursor-file contents after a skipped suffix or no matches,
+  rather than accepting file existence alone. Size parsing needs compound
+  suffix, fraction, unit-order/case and overflow controls, including terminal
+  help encounter order. Preserve raw source-option presence on Unix.
 - For verifier changes, run `tests/interoperability/run_verify_matrix.py` and
   require stock `journalctl --verify --file` plus Rust and Go
   verification paths to agree on positive regular, zstd/xz/lz4 DATA-compressed,
