@@ -23,7 +23,7 @@ func VerifyIndex(ctx context.Context, path string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	r, err := openFileWithOptions(path, DefaultReaderOptions().WithSnapshot(true), false)
+	r, err := openFileWithPolicy(path, DefaultReaderOptions().WithSnapshot(true), false, false)
 	if err != nil {
 		return &VerificationError{Reason: fmt.Sprintf("journal index verification failed: %v", err)}
 	}

@@ -20,6 +20,7 @@ use std::process::Command;
 use std::time::Instant;
 
 mod helpers;
+mod reader_probe;
 use helpers::*;
 
 const ADAPTER_VERSION: &str = "0.1.0";
@@ -164,6 +165,7 @@ fn run() -> AnyResult<()> {
         Some("run") => cmd_run(),
         Some("list") => cmd_list(),
         Some("probe") => cmd_probe(),
+        Some("inspect-reader") => reader_probe::run(),
         Some("__corrupt_probe") => cmd_corrupt_probe(),
         Some(other) => Err(anyhow!("unknown subcommand {other}")),
         None => Err(anyhow!("usage: adapter [run|list|probe]")),

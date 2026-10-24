@@ -16,21 +16,25 @@ const directoryUniqueCacheCapacity = 8
 // DirectoryReader reads multiple journal files in journal order. A
 // DirectoryReader is not safe for concurrent use by multiple goroutines.
 type DirectoryReader struct {
-	files             []*Reader
-	index             int
-	filter            *filterBuilder
-	realtimeSeek      *uint64
-	realtimeSeekBound *directoryRealtimeSeekBound
-	candidates        []*directoryCandidate
-	currentKey        *directoryEntryKey
-	direction         Direction
-	hasDirection      bool
-	bootNewest        map[UUID]directoryBootNewest
-	nonOverlapping    bool
-	uniqueCache       map[directoryUniqueCacheKey][][]byte
-	uniqueCacheOrder  []directoryUniqueCacheKey
-	uniqueState       *directoryUniqueState
-	uniqueCacheBuilds int
+	files              []*Reader
+	index              int
+	filter             *filterBuilder
+	realtimeSeek       *uint64
+	realtimeSeekBound  *directoryRealtimeSeekBound
+	candidates         []*directoryCandidate
+	currentKey         *directoryEntryKey
+	direction          Direction
+	hasDirection       bool
+	filteredCandidates bool
+	merging            bool
+	retryCopies        bool
+	bootNewest         map[UUID]directoryBootNewest
+	nonOverlapping     bool
+	orderDirty         bool
+	uniqueCache        map[directoryUniqueCacheKey][][]byte
+	uniqueCacheOrder   []directoryUniqueCacheKey
+	uniqueState        *directoryUniqueState
+	uniqueCacheBuilds  int
 }
 
 func OpenDirectory(path string) (*DirectoryReader, error) {
@@ -111,14 +115,18 @@ func newDirectoryReader(readers []*Reader, allowEmpty bool) (*DirectoryReader, e
 		return readers[i].header.headEntrySeqnum < readers[j].header.headEntrySeqnum
 	})
 
-	return &DirectoryReader{
+	dr := &DirectoryReader{
 		files:          readers,
 		index:          -1,
 		candidates:     make([]*directoryCandidate, len(readers)),
 		bootNewest:     buildDirectoryBootNewest(readers),
 		nonOverlapping: directoryFilesNonOverlapping(readers),
 		uniqueCache:    make(map[directoryUniqueCacheKey][][]byte),
-	}, nil
+	}
+	for _, reader := range readers {
+		reader.directoryOrderDirty = &dr.orderDirty
+	}
+	return dr, nil
 }
 
 func directoryFilesNonOverlapping(readers []*Reader) bool {
@@ -265,16 +273,17 @@ func isASCIIHex(ch rune) bool {
 func buildDirectoryBootNewest(readers []*Reader) map[UUID]directoryBootNewest {
 	boots := make(map[UUID]directoryBootNewest)
 	for _, r := range readers {
-		bootID := r.header.tailEntryBootID
+		header := r.effectiveHeader()
+		bootID := header.tailEntryBootID
 		if uuidIsZero(bootID) {
 			continue
 		}
 		current, ok := boots[bootID]
-		if !ok || r.header.tailEntryMonotonic > current.monotonic {
+		if !ok || header.tailEntryMonotonic > current.monotonic {
 			boots[bootID] = directoryBootNewest{
-				machineID: r.header.machineID,
-				monotonic: r.header.tailEntryMonotonic,
-				realtime:  r.header.tailEntryRealtime,
+				machineID: header.machineID,
+				monotonic: header.tailEntryMonotonic,
+				realtime:  header.tailEntryRealtime,
 			}
 		}
 	}
@@ -406,35 +415,48 @@ func (dr *DirectoryReader) currentReader() (*Reader, error) {
 }
 
 func (dr *DirectoryReader) AddMatch(data []byte) {
-	if dr.filter == nil {
-		dr.filter = &filterBuilder{}
+	dr.invalidateFilterCandidates()
+	for _, reader := range dr.files {
+		reader.AddMatch(data)
+		dr.filter = reader.filter
 	}
-	dr.filter.addMatch(data)
-	dr.resetMergeState()
 }
 
-func (dr *DirectoryReader) AddDisjunction() {
-	if dr.filter == nil {
-		dr.filter = &filterBuilder{}
+func (dr *DirectoryReader) AddDisjunction() error {
+	dr.invalidateFilterCandidates()
+	for _, reader := range dr.files {
+		if err := reader.AddDisjunction(); err != nil {
+			return err
+		}
+		dr.filter = reader.filter
 	}
-	dr.filter.addDisjunction()
-	dr.resetMergeState()
+	return nil
 }
 
-func (dr *DirectoryReader) AddConjunction() {
-	if dr.filter == nil {
-		dr.filter = &filterBuilder{}
+func (dr *DirectoryReader) AddConjunction() error {
+	dr.invalidateFilterCandidates()
+	for _, reader := range dr.files {
+		if err := reader.AddConjunction(); err != nil {
+			return err
+		}
+		dr.filter = reader.filter
 	}
-	dr.filter.addConjunction()
-	dr.resetMergeState()
+	return nil
 }
 
 func (dr *DirectoryReader) FlushMatches() {
+	for _, reader := range dr.files {
+		reader.FlushMatches()
+	}
 	dr.filter = nil
+	dr.realtimeSeek = nil
 	dr.resetMergeState()
 }
 
 func (dr *DirectoryReader) GetRealtimeUsec() (uint64, error) {
+	if dr.index < 0 || dr.index >= len(dr.files) {
+		return 0, errEndOfEntries
+	}
 	if dr.currentKey != nil {
 		return dr.currentKey.realtime, nil
 	}
@@ -446,6 +468,9 @@ func (dr *DirectoryReader) GetRealtimeUsec() (uint64, error) {
 }
 
 func (dr *DirectoryReader) GetCursor() (string, error) {
+	if dr.index < 0 || dr.index >= len(dr.files) {
+		return "", errEndOfEntries
+	}
 	if dr.currentKey != nil {
 		return formatCursorFromDirectoryKey(*dr.currentKey), nil
 	}
@@ -460,7 +485,7 @@ func (dr *DirectoryReader) TestCursor(cursor string) (bool, error) {
 	current, err := dr.GetCursor()
 	if err != nil {
 		if errors.Is(err, errEndOfEntries) {
-			return false, ErrEndOfEntries
+			return false, nil
 		}
 		return false, err
 	}
@@ -656,6 +681,9 @@ func (dr *DirectoryReader) uniqueCacheKey(fieldName string) directoryUniqueCache
 			h.tailEntryMonotonic,
 			h.tailEntryBootID.String(),
 		)
+		if r.recovery.Incomplete() {
+			fmt.Fprintf(&b, ":recovery:%d:%d:%d:%d", r.recovery.Reason, r.recovery.FirstLostOffset, r.recovery.RecoveredEntries, r.fileSize)
+		}
 	}
 	return directoryUniqueCacheKey(b.String())
 }
@@ -677,6 +705,7 @@ func (dr *DirectoryReader) EnumerateFields() (map[string]struct{}, error) {
 }
 
 func (dr *DirectoryReader) SeekHead() error {
+	dr.merging = false
 	dr.index = -1
 	dr.realtimeSeek = nil
 	dr.realtimeSeekBound = nil
@@ -692,6 +721,7 @@ func (dr *DirectoryReader) SeekHead() error {
 }
 
 func (dr *DirectoryReader) SeekTail() error {
+	dr.merging = false
 	dr.index = -1
 	dr.realtimeSeek = nil
 	dr.realtimeSeekBound = nil
@@ -707,6 +737,7 @@ func (dr *DirectoryReader) SeekTail() error {
 }
 
 func (dr *DirectoryReader) SeekRealtimeUsec(usec uint64) error {
+	dr.merging = false
 	value := usec
 	dr.realtimeSeek = &value
 	dr.realtimeSeekBound = nil
@@ -716,10 +747,80 @@ func (dr *DirectoryReader) SeekRealtimeUsec(usec uint64) error {
 	return nil
 }
 
-func (dr *DirectoryReader) stepMerged(direction Direction, applyFilter bool) (bool, error) {
-	if dr.canStepSequential(direction, applyFilter) {
-		return dr.stepSequential(direction)
+type directoryReaderPosition struct {
+	index    int
+	realtime *uint64
+	override uint64
+}
+
+func (r *Reader) directoryPosition() directoryReaderPosition {
+	position := directoryReaderPosition{index: r.entryIndex, realtime: r.realtimeSeek}
+	if r.filter != nil {
+		position.override = r.filter.overrideOffset
 	}
+	return position
+}
+
+func (r *Reader) restoreDirectoryPosition(position directoryReaderPosition) {
+	r.clearCurrentEntryState()
+	r.entryIndex, r.realtimeSeek = position.index, position.realtime
+	if r.filter != nil {
+		r.filter.overrideOffset = position.override
+		r.filter.walkValid = false
+		r.filter.retry = true
+		invalidateFilterWalk(r.filter.expr)
+	}
+}
+
+func (dr *DirectoryReader) stepMerged(direction Direction, applyFilter bool) (bool, error) {
+	if dr.retryCopies {
+		// Getters may have cached damaged bytes again before the caller repaired them.
+		for _, reader := range dr.files {
+			reader.clearCurrentEntryState()
+			if reader.accessor != nil {
+				reader.accessor.invalidateCopiedWindows()
+			}
+		}
+		dr.retryCopies = false
+	}
+	index := dr.index
+	var selected *Reader
+	var before directoryReaderPosition
+	if dr.currentKey != nil && index >= 0 && index < len(dr.files) {
+		selected = dr.files[index]
+		before = selected.directoryPosition()
+	} else {
+		index = -1
+	}
+	ok, err := dr.stepMergedInner(direction, applyFilter)
+	if err != nil {
+		dr.retryCopies = true
+		dr.index = index
+		if selected != nil {
+			selected.restoreDirectoryPosition(before)
+			// Recompute only the candidate whose child was restored.
+			dr.candidates[index] = nil
+		} else if !dr.merging {
+			dr.hasDirection = false
+		}
+	}
+	return ok, err
+}
+
+func (dr *DirectoryReader) stepMergedInner(direction Direction, applyFilter bool) (bool, error) {
+	filtered := applyFilter && dr.filter != nil
+	if dr.filteredCandidates != filtered {
+		dr.filteredCandidates = filtered
+		if !dr.hasSequentialPosition() {
+			dr.hasDirection = false
+		}
+		dr.resetCandidates()
+	}
+	if dr.canStepSequential(direction, applyFilter) {
+		return dr.stepSequential(direction, applyFilter)
+	}
+	dr.merging = true
+retry:
 	if err := dr.prepareMergeDirection(direction); err != nil {
 		return false, err
 	}
@@ -728,6 +829,10 @@ func (dr *DirectoryReader) stepMerged(direction Direction, applyFilter bool) (bo
 	for i := range dr.files {
 		if err := dr.fillCandidate(i, direction, applyFilter); err != nil {
 			return false, err
+		}
+		if dr.orderDirty {
+			dr.restartRecoveryMerge()
+			goto retry
 		}
 		candidate := dr.candidates[i]
 		if candidate == nil {
@@ -757,8 +862,21 @@ func (dr *DirectoryReader) stepMerged(direction Direction, applyFilter bool) (bo
 	return true, nil
 }
 
+func (dr *DirectoryReader) restartRecoveryMerge() {
+	dr.orderDirty = false
+	dr.bootNewest = buildDirectoryBootNewest(dr.files)
+	// A recovery transition invalidates an existing sequential traversal proof.
+	dr.nonOverlapping = false
+	if dr.currentKey == nil && dr.realtimeSeekBound != nil {
+		usec := dr.realtimeSeekBound.usec
+		dr.realtimeSeek = &usec
+	}
+	dr.hasDirection = false
+	dr.resetCandidates()
+}
+
 func (dr *DirectoryReader) canStepSequential(direction Direction, applyFilter bool) bool {
-	if !dr.nonOverlapping || dr.realtimeSeek != nil || applyFilter && dr.filter != nil {
+	if !dr.nonOverlapping || dr.merging || dr.realtimeSeek != nil || !dr.hasDirection && dr.currentKey != nil {
 		return false
 	}
 	if dr.hasDirection && dr.direction != direction && dr.currentKey != nil {
@@ -767,7 +885,7 @@ func (dr *DirectoryReader) canStepSequential(direction Direction, applyFilter bo
 	return true
 }
 
-func (dr *DirectoryReader) stepSequential(direction Direction) (bool, error) {
+func (dr *DirectoryReader) stepSequential(direction Direction, applyFilter bool) (bool, error) {
 	if len(dr.files) == 0 {
 		dr.clearDirectoryPosition()
 		return false, nil
@@ -778,9 +896,9 @@ func (dr *DirectoryReader) stepSequential(direction Direction) (bool, error) {
 		}
 	}
 	if direction == DirectionForward {
-		return dr.stepSequentialForward()
+		return dr.stepSequentialForward(applyFilter)
 	}
-	return dr.stepSequentialBackward()
+	return dr.stepSequentialBackward(applyFilter)
 }
 
 func (dr *DirectoryReader) clearDirectoryPosition() {
@@ -814,43 +932,57 @@ func seekReaderBoundary(r *Reader, direction Direction) error {
 	return r.SeekTail()
 }
 
-func (dr *DirectoryReader) stepSequentialForward() (bool, error) {
+func (dr *DirectoryReader) stepSequentialForward(applyFilter bool) (bool, error) {
 	if dr.index < 0 {
 		dr.index = 0
 	}
 	for dr.index < len(dr.files) {
-		ok, err := dr.stepSequentialReader(DirectionForward)
+		ok, err := dr.stepSequentialReader(DirectionForward, applyFilter)
 		if err != nil || ok {
 			return ok, err
 		}
 		dr.index++
 	}
-	dr.clearDirectoryPosition()
+	dr.finishSequentialEnd(applyFilter)
 	return false, nil
 }
 
-func (dr *DirectoryReader) stepSequentialBackward() (bool, error) {
+func (dr *DirectoryReader) stepSequentialBackward(applyFilter bool) (bool, error) {
 	if dr.index >= len(dr.files) {
 		dr.index = len(dr.files) - 1
 	}
 	for dr.index >= 0 {
-		ok, err := dr.stepSequentialReader(DirectionBackward)
+		ok, err := dr.stepSequentialReader(DirectionBackward, applyFilter)
 		if err != nil || ok {
 			return ok, err
 		}
 		dr.index--
 	}
-	dr.clearDirectoryPosition()
+	dr.finishSequentialEnd(applyFilter)
 	return false, nil
 }
 
-func (dr *DirectoryReader) stepSequentialReader(direction Direction) (bool, error) {
-	ok, err := stepReaderRaw(dr.files[dr.index], direction)
+func (dr *DirectoryReader) finishSequentialEnd(applyFilter bool) {
+	dr.index = -1
+	if !applyFilter || dr.filter == nil {
+		dr.currentKey = nil
+	}
+}
+
+func (dr *DirectoryReader) stepSequentialReader(direction Direction, applyFilter bool) (bool, error) {
+	r := dr.files[dr.index]
+	before := r.directoryPosition()
+	ok, err := stepReader(r, direction, applyFilter)
+	if err == nil && dr.orderDirty {
+		dr.restartRecoveryMerge()
+		return dr.stepMergedInner(direction, applyFilter)
+	}
 	if err != nil || !ok {
 		return ok, err
 	}
-	key, err := dr.files[dr.index].currentDirectoryEntryKey()
+	key, err := r.currentDirectoryEntryKey()
 	if err != nil {
+		r.restoreDirectoryPosition(before)
 		return false, err
 	}
 	dr.currentKey = &key
@@ -918,24 +1050,21 @@ func (dr *DirectoryReader) fillCandidate(readerIndex int, direction Direction, a
 
 	r := dr.files[readerIndex]
 	for {
-		ok, err := stepReaderRaw(r, direction)
+		before := r.directoryPosition()
+		ok, err := stepReader(r, direction, applyFilter)
 		if err != nil {
 			return err
+		}
+		if dr.orderDirty {
+			return nil
 		}
 		if !ok {
 			return nil
 		}
 
-		matches, err := dr.readerEntryMatches(r, applyFilter)
-		if err != nil {
-			return err
-		}
-		if !matches {
-			continue
-		}
-
 		key, err := r.currentDirectoryEntryKey()
 		if err != nil {
+			r.restoreDirectoryPosition(before)
 			return err
 		}
 		if !dr.keyPassesRealtimeBound(key) {
@@ -951,17 +1080,6 @@ func (dr *DirectoryReader) fillCandidate(readerIndex int, direction Direction, a
 		}
 		return nil
 	}
-}
-
-func (dr *DirectoryReader) readerEntryMatches(r *Reader, applyFilter bool) (bool, error) {
-	if !applyFilter || dr.filter == nil {
-		return true, nil
-	}
-	entry, err := r.GetEntry()
-	if err != nil {
-		return false, err
-	}
-	return dr.filter.matches(entry), nil
 }
 
 func (dr *DirectoryReader) keyPassesRealtimeBound(key directoryEntryKey) bool {
@@ -984,6 +1102,16 @@ func (dr *DirectoryReader) keyPassesCurrentPosition(key directoryEntryKey, direc
 		return cmp > 0
 	}
 	return cmp < 0
+}
+
+func stepReader(r *Reader, direction Direction, applyFilter bool) (bool, error) {
+	if applyFilter {
+		if direction == DirectionForward {
+			return r.Step()
+		}
+		return r.StepBack()
+	}
+	return stepReaderRaw(r, direction)
 }
 
 func stepReaderRaw(r *Reader, direction Direction) (bool, error) {
@@ -1081,7 +1209,29 @@ func cmpUint64(a, b uint64) int {
 	return 0
 }
 
+func (dr *DirectoryReader) invalidateFilterCandidates() {
+	if dr.hasSequentialPosition() {
+		// Sequential children have no prefetched rows to reposition.
+		dr.resetCandidates()
+		return
+	}
+	if dr.currentKey == nil && dr.realtimeSeek == nil && dr.realtimeSeekBound != nil {
+		usec := dr.realtimeSeekBound.usec
+		dr.realtimeSeek = &usec
+	}
+	// Revalidate changed matches from the committed key, not prefetched rows.
+	dr.merging = dr.currentKey != nil
+	dr.hasDirection = false
+	dr.realtimeSeekBound = nil
+	dr.resetCandidates()
+}
+
+func (dr *DirectoryReader) hasSequentialPosition() bool {
+	return dr.nonOverlapping && !dr.merging && dr.hasDirection && dr.currentKey != nil && dr.index >= 0 && dr.index < len(dr.files)
+}
+
 func (dr *DirectoryReader) resetMergeState() {
+	dr.merging = false
 	dr.currentKey = nil
 	dr.hasDirection = false
 	dr.index = -1
@@ -1111,29 +1261,33 @@ func (dr *DirectoryReader) ListBoots() ([]BootInfo, error) {
 	bootMap := make(map[string]*bootEntry)
 
 	for _, r := range dr.files {
-		bootID := r.header.tailEntryBootID
+		header := r.effectiveHeader()
+		if r.recovery.Incomplete() && header.nEntries == 0 {
+			continue
+		}
+		bootID := header.tailEntryBootID
 		key := bootID.String()
 
 		if entry, ok := bootMap[key]; ok {
-			if r.header.headEntrySeqnum < entry.firstSeq {
-				entry.firstSeq = r.header.headEntrySeqnum
+			if header.headEntrySeqnum < entry.firstSeq {
+				entry.firstSeq = header.headEntrySeqnum
 			}
-			if r.header.headEntryRealtime < entry.firstTime {
-				entry.firstTime = r.header.headEntryRealtime
+			if header.headEntryRealtime < entry.firstTime {
+				entry.firstTime = header.headEntryRealtime
 			}
-			if r.header.tailEntrySeqnum > entry.lastSeq {
-				entry.lastSeq = r.header.tailEntrySeqnum
+			if header.tailEntrySeqnum > entry.lastSeq {
+				entry.lastSeq = header.tailEntrySeqnum
 			}
-			if r.header.tailEntryRealtime > entry.lastTime {
-				entry.lastTime = r.header.tailEntryRealtime
+			if header.tailEntryRealtime > entry.lastTime {
+				entry.lastTime = header.tailEntryRealtime
 			}
 		} else {
 			bootMap[key] = &bootEntry{
 				bootID:    bootID,
-				firstSeq:  r.header.headEntrySeqnum,
-				lastSeq:   r.header.tailEntrySeqnum,
-				firstTime: r.header.headEntryRealtime,
-				lastTime:  r.header.tailEntryRealtime,
+				firstSeq:  header.headEntrySeqnum,
+				lastSeq:   header.tailEntrySeqnum,
+				firstTime: header.headEntryRealtime,
+				lastTime:  header.tailEntryRealtime,
 			}
 		}
 	}

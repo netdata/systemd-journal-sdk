@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Cross-check the committed manifest against the systemd v260.1 source.
+"""Cross-check the committed manifest against the systemd v262 source.
 
 Reads `.agents/sow/specs/journalctl-v260-parity-matrix.md` and
 `tests/parser-parity/v260-manifest.json` and verifies that every official
-v260.1 long option, short option, output mode, and JournalctlAction enum
+v262 long option, short option, output mode, and JournalctlAction enum
 value is represented in both.
 
 The systemd source reference is read-only. The script is part of the
@@ -22,12 +22,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = REPO_ROOT / "tests" / "parser-parity" / "v260-manifest.json"
 SPEC = REPO_ROOT / ".agents" / "sow" / "specs" / "journalctl-v260-parity-matrix.md"
-SOURCE_COMMIT = "c0a5a2516d28"
+SOURCE_COMMIT = "8cc40e0c5e9234bf45084751ac53b1fbfe70b492"
 SYSTEMD_ROOT = Path(os.environ.get("SYSTEMD_SOURCE", "~/src/systemd.git")).expanduser()
 
 
 def git_show(path: str) -> str:
-    """Read a file from the systemd v260.1 tag in the read-only mirror."""
+    """Read a file from the systemd v262 tag in the read-only mirror."""
     result = subprocess.run(  # nosec B603 B607
         ["git", "show", f"{SOURCE_COMMIT}:{path}"],
         cwd=str(SYSTEMD_ROOT),
@@ -38,38 +38,35 @@ def git_show(path: str) -> str:
     return result.stdout
 
 
-def official_long_options() -> set[str]:
-    """Extract `{ "name", ... }` entries from journalctl.c:420."""
+def official_options_source() -> str:
+    """Read the regular namespace and expand only its referenced common macros."""
     source = git_show("src/journal/journalctl.c")
-    in_table = False
-    names: set[str] = set()
-    for line in source.splitlines():
-        stripped = line.strip()
-        if not in_table:
-            if stripped.startswith("static const struct option options[]"):
-                in_table = True
-            continue
-        if stripped.startswith("{}"):
-            break
-        match = re.match(r'\{\s*"([^"]+)"', stripped)
-        if match:
-            names.add(match.group(1))
-    return names
+    start = source.index('OptionParser opts = { argc, argv, .namespace = "journalctl" };')
+    source = source[start:source.index("char **args =", start)]
+    common = git_show("src/shared/options.h")
+    for macro in set(re.findall(r"\bOPTION_COMMON_[A-Z_]+\b", source)):
+        match = re.search(r"^#define " + macro + r"\s+(.*?)(?=^#define|\Z)", common,
+                          re.MULTILINE | re.DOTALL)
+        if not match:
+            raise RuntimeError("missing common option macro: " + macro)
+        source = source.replace(macro, match.group(1).replace("\\\n", " "))
+    return re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+
+
+def official_long_options() -> set[str]:
+    source = official_options_source()
+    patterns = [r'\bOPTION\(\s*\'[^\']\'\s*,\s*"([^"]+)"',
+                r'\bOPTION_FULL\([^,]+,\s*\'[^\']\'\s*,\s*"([^"]+)"',
+                r'\bOPTION_LONG\(\s*"([^"]+)"',
+                r'\bOPTION_LONG_FLAGS\([^,]+,\s*"([^"]+)"']
+    return {name for pattern in patterns for name in re.findall(pattern, source)}
 
 
 def official_short_options() -> set[str]:
-    """Extract the short-option string from journalctl.c:520."""
-    source = git_show("src/journal/journalctl.c")
-    match = re.search(r'getopt_long\(argc,\s*argv,\s*"([^"]+)"', source)
-    if not match:
-        raise RuntimeError("failed to locate short-option string in journalctl.c")
-    chars = match.group(1)
-    out: set[str] = set()
-    for ch in chars:
-        if ch == ":":
-            continue
-        out.add(ch)
-    return out
+    source = official_options_source()
+    patterns = [r"\bOPTION(?:_SHORT)?\(\s*'([^'])'",
+                r"\bOPTION_FULL\([^,]+,\s*'([^'])'"]
+    return {letter for pattern in patterns for letter in re.findall(pattern, source)}
 
 
 def official_output_modes() -> set[str]:
@@ -160,7 +157,7 @@ def main():
         for line in failures:
             print(f"  - {line}")
         sys.exit(1)
-    print("OK: manifest matches systemd v260.1 official surface")
+    print("OK: manifest matches systemd v262 official surface")
 
 
 if __name__ == "__main__":

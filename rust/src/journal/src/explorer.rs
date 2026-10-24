@@ -1478,9 +1478,7 @@ impl FileReader {
             && query.after_realtime_usec.is_none()
             && query.before_realtime_usec.is_none()
         {
-            let count = self
-                .inner
-                .with_file(|file| file.journal_header_ref().n_entries);
+            let count = self.inner.with_file(|file| file.reader_entry_count());
             return Ok(IndexedCandidateSet::All { count });
         }
 
@@ -2295,7 +2293,7 @@ fn indexed_count_facet_group(
         for item in file.field_data_objects_with_offsets(field)? {
             let (_, data) = item?;
             let Some((value, cursor)) =
-                indexed_value_and_cursor(&data, field, &mut decompressed, &mut result.stats)?
+                indexed_value_and_cursor(file, &data, field, &mut decompressed, &mut result.stats)?
             else {
                 continue;
             };
@@ -2344,7 +2342,7 @@ fn indexed_count_histogram(
     for item in file.field_data_objects_with_offsets(&field)? {
         let (_, data) = item?;
         let Some((value, cursor)) =
-            indexed_value_and_cursor(&data, &field, &mut decompressed, &mut result.stats)?
+            indexed_value_and_cursor(file, &data, &field, &mut decompressed, &mut result.stats)?
         else {
             continue;
         };
@@ -2375,6 +2373,7 @@ fn indexed_count_histogram(
 }
 
 fn indexed_value_and_cursor(
+    file: &JournalFile<Mmap>,
     data: &DataObject<&[u8]>,
     field: &[u8],
     decompressed: &mut Vec<u8>,
@@ -2397,7 +2396,10 @@ fn indexed_value_and_cursor(
     if payload_field != field {
         return Ok(None);
     }
-    Ok(Some((value.to_vec(), data.inlined_cursor())))
+    Ok(Some((
+        value.to_vec(),
+        file.reader_inlined_cursor(&data.header)?,
+    )))
 }
 
 fn indexed_count_facet_entries(
@@ -2550,6 +2552,10 @@ fn indexed_visit_entries<F>(
 where
     F: FnMut(NonZeroU64) -> Result<()>,
 {
+    let cursor = cursor
+        .map(|cursor| cursor.for_reader(file))
+        .transpose()?
+        .flatten();
     let Some(mut cursor) = cursor.map(|cursor| cursor.head()) else {
         return Ok(());
     };

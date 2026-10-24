@@ -25,7 +25,51 @@ Do not use this skill for:
 
 ## Mandatory Knowledge
 
-- Baseline compatibility target is `systemd/systemd` tag `v260.1`.
+- SDK journal-format compatibility targets `systemd/systemd` tag `v260.1`.
+- The portable file-backed journalctl contract targets tag `v262`
+  (8cc40e0c5e9234bf45084751ac53b1fbfe70b492). Run the pinned full-feature
+  oracle; host versions and feature-limited builds cannot certify this target.
+- Native PCRE2-8 >=10.42 is CLI-private. Enable CGO only for Go CLI builds
+  and tests; retain CGO-disabled SDK checks. Declare the C compiler, pkg-config
+  and PCRE2 development prerequisites in command-inclusive coverage/CI.
+- File-backed CLIs preserve native Unix path bytes through selection, facade
+  opening and discovery. File patterns use platform globbing with a temporary
+  thread-local environment locale; literal paths bypass expansion. Windows
+  uses Unicode paths and brace/wildcard selection. Keep these native calls in
+  CLI modules and retain pure SDK checks. Test replacement-named decoys and
+  locale-sensitive patterns against the pinned oracle, with portable Unicode
+  controls in native OS CI.
+- Color parity includes policy/environment selection, priority and audit
+  styles, PCRE2 first-match offsets, multiline preparation, verbose fields,
+  JSON primitives, separators and table headers. Compare ANSI bytes as well
+  as visible content; normalize JSON key order without discarding its styles.
+  Retain buffered match offsets without a second regex evaluation and keep
+  color-only work off the plain-output path.
+- Parser recognition is insufficient. Compare encounter order and terminal
+  actions, raw required values, empty-versus-absent options, final-action scope,
+  timestamps/DST/TZif state, binary MESSAGE behavior, status and complete output.
+  Check calendar rendering independently from bound parsing: POSIX TZ, custom
+  TZDIR, leap records, transition-free footers and malformed-rule fallback must
+  agree in entry output, headers and tables. Omitted DST dates must exercise
+  the configured posixrules file, absent-file defaults and transition flags;
+  provider defaults alone do not establish native parity. Preserve raw epoch widths and
+  lazily resolve rendering zones once, without per-row file reads or zone allocation.
+  Do not let intentional follow termination hide a child failure or a blocked
+  stdout pipe. Retain native exit status and drain large backlogs to files.
+- Use native OS jobs for commands with native dependencies. A CGO-disabled
+  cross-build of the SDK does not establish native CLI portability.
+- Audit complete CLI selector components after a verified mismatch. Unit show
+  groups and invocation-discovery groups differ; test naming/glob boundaries,
+  raw field bytes, current-user conversion, ID precedence, global bounds,
+  directional limits, secondary-ID offsets and frozen follow selection.
+  Compare supplied oracle binaries explicitly, including live command builders.
+  Exercise platform fallback matchers on the primary test host. FreeBSD unit
+  brackets need the shared CLI compatibility matcher: native fnmatch lacks
+  named classes and collating elements. Validate malformed brackets as well
+  as positive matches, multibyte-to-byte retry, and native OS execution. Keep
+  ordinary patterns on native fnmatch without compatibility allocations.
+  Use indexed
+  eligibility and metadata getters; do not expand unrelated message payloads.
 - The test scope is SDK conformance plus file-backed journalctl behavior.
 - Do not implement daemon-only journalctl commands such as daemon sync, flush, rotate, or relinquish-var operations.
 - journalctl already treats repeated matches for the same field as OR alternatives and different fields as AND.
@@ -126,11 +170,70 @@ Do not use this skill for:
   reindex/invalidation impact in the active SOW, product scope, and release
   notes. If not bumped, record why old cache entries remain semantically safe.
 - Avoid unnecessary DATA decompression, repeated `FIELD=value` parsing, allocation, sorting, hashing, or syscalls in reader/writer hot paths. Treat these as regressions unless tests and benchmark evidence prove they are required.
+- Relocated baseline/candidate source copies must include the tests' referenced
+  fixture and helper files at their original relative paths. Check those
+  dependencies before running the suite and verify copied bytes. Select Cargo
+  packages from their manifest names, not directory names or dependency aliases.
 - Explorer column catalogs must be built from FIELD indexes. The Rust
   `ExplorerQuery::debug_collect_column_fields_by_row_traversal` switch is a
   debug-only discrepancy tool; production reports, benchmarks, or compatibility
   claims with that switch enabled are invalid and must be treated as an
   explorer defect.
+- Indexed aggregation changes must force temporary DATA reuse during nested
+  posting and ENTRY reads. From `go/`, run
+  `go test -count=1 ./journal -run '^TestExplorerIndexedWindow'` for both layouts,
+  all DATA compression modes,
+  mmap/auto eviction and ReadAt scratch reuse. Keep possible mmap faults in child
+  processes. Compare full results and indexed counters, including empty/binary
+  values, singleton DATA, unset/repeated values, time filters, bucket integer
+  boundaries and partial read-error counters. A small fixture or
+  a successful zero-row query does not establish the default-window lifetime.
+  Benchmark matching and unmatched low/high-cardinality queries with
+  `BenchmarkExplorerIndexedValueOwnership`; record allocations separately from
+  elapsed time. Use `BenchmarkExplorerIndexedCompressedValueOwnership` with an
+  explicit `JOURNAL_SDK_EXPLORER_COMPRESSED_CORPUS` for prebuilt codec controls;
+  check indexed/traversal outputs, actual decompression and update totals before
+  timing. Freeze the same complete test helper for baseline and candidate, and
+  exclude fixture construction and reader teardown from timing. An incorrect or
+  crashing baseline cannot certify a speedup.
+- Inspect CLI-helper timer boundaries before interpreting profiles or batching.
+  The Go reader helper opens/closes a fresh reader and checksums/sorts results
+  on every `--loops` iteration; its final ExplorerStats describe the last loop.
+  Pilot one iteration before selecting a batch count for each workload. Keep
+  CPU-profile post-timer activity and heap-profile forced GC separate from
+  query-cost claims; sampled cumulative allocation is not peak live memory.
+- For Go ENTRY-slot header acquisition, run `TestEntrySlotHeader` controls on
+  both backends, default/tiny/non-power-of-two windows, boundary headers,
+  partial errors, closed readers, row pins, eviction and live array growth.
+  Measure `BenchmarkReaderOpen`, `BenchmarkReaderEntryHeader` and
+  `BenchmarkReaderAllocation` with the same complete header benchmark helper
+  in both builds. Record actual allocation classes with
+  `TestReaderAllocationShape`; raw sizeof does not establish heap cost, and
+  64-bit layout preservation does not establish 32-bit layout preservation.
+  Exclude candidate-only direct-helper correctness tests from both timing
+  binaries, document that exclusion and run those tests separately. Preserve
+  the baseline validator's policy when isolating acquisition changes from
+  other paused work, and verify matching pure-build flags and source hashes.
+  For uncertain small-open timings, compare the same immutable five-entry
+  corpus using `JOURNAL_SDK_READER_OPEN_SMALL_CORPUS` and retain a generated-file
+  control with those same binaries. Preserve earlier results: a changed helper
+  can alter test linking even when production source is byte-identical.
+- For Go native-file opener changes, run `TestNativeReaderFile` uncached on
+  amd64 and 386. Verify read-only/blocking/close-on-exec flags, typed path
+  errors, symlink identity, descriptor closure and sparse reads above 2 GiB.
+  Preserve interrupted-open retry, native malformed-file cleanup and existing
+  `.zst` source/staging behavior; build non-Linux delegation targets. The direct
+  Linux opener bypasses Go's internal test-cache input hook, so use `-count=1`
+  for fixture-dependent tests and retain explicit immutable fixture hashes.
+  Exclude candidate-only opener contract tests from both timing builds, as for
+  direct header tests. Primitive syscall savings do not establish full-reader
+  performance; repeat small, large and higher-level reader/query controls.
+- For cached constructor statistics, run `TestReaderAccessorInitial` for
+  empty/nonempty files and initial mmap failure. Verify explicit counters,
+  selected/requested modes and fallback reason against a fresh statistics
+  query. Windows zero-byte raw files fail explicit mmap construction and Auto
+  falls back to ReadAt; preserve that platform behavior in test expectations.
+  Exclude candidate-only statistics tests from both timing builds.
 - Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
 - Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints.
 - Every external-agent prompt must include the canonical repository-boundary block verbatim from `AGENTS.md` or `.agents/skills/project-agent-orchestration/SKILL.md`.
@@ -197,12 +300,106 @@ Do not use this skill for:
   optional-argument edge cases where bare and explicit-empty forms differ, such
   as `--boot` versus `--boot=`, bare `--lines` versus `--lines=`, and bare
   `--case-sensitive` versus `--case-sensitive=`.
+- CLI integer controls must exercise native base prefixes/octal, leading and
+  trailing whitespace, signed 32-bit descriptor limits and explicit ID-offset
+  signs. Preserve raw Unix match operands separately from raw grep patterns.
+- Short-output controls must include multiline and distinct-suffix messages,
+  width/line/byte thresholds and repeated MESSAGE values; grep/cat select the
+  first value while short output selects the last. Prove bounded reads stop
+  before further matching, boot observation precedes grep, and follow-tail
+  selection/resume state includes nonmatching native rows.
+- Check short MESSAGE preparation before printability/truncation: tabs,
+  completed and malformed CSI/OSC sequences, CR boundaries and show-all raw
+  controls. JSON duplicate controls must include a binary first occurrence;
+  a byte array must not become the repeated-values collection.
+- Cursor controls must compare final native position as well as selected
+  output: grep misses, bound crossings, zero counts and after-terminal seeks.
+  Verify follow cursor-file contents after a skipped suffix or no matches,
+  rather than accepting file existence alone. Size parsing needs compound
+  suffix, fraction, unit-order/case and overflow controls, including terminal
+  help encounter order. Preserve raw source-option presence on Unix.
 - For verifier changes, run `tests/interoperability/run_verify_matrix.py` and
   require stock `journalctl --verify --file` plus Rust and Go
   verification paths to agree on positive regular, zstd/xz/lz4 DATA-compressed,
   compact, compact plus DATA-compressed, and sealed files, and on negative
   object type, object size, payload hash, hash-chain, entry-array,
   header-counter, seqnum, monotonic, and TAG/FSS corruption classes.
+- For ordinary traversal or compressed-reader changes, build both conformance
+  adapters and run `tests/interoperability/run_reader_hardening.py` against an
+  explicitly selected file-backed stock oracle. Use a new `.local/` output
+  directory. The paired corpus covers cycles, missing required posting links,
+  acyclic compatibility controls, facade/directory callers, complete Zstandard
+  streams and whole-file staging. `--only chains --only streams` does not
+  validate public crash recovery. Strict verification is a separate gate;
+  ordinary stock corruption handling can differ from the SDK's completeness
+  errors, so record the actual expected contract for each fixture.
+- For recovery changes, test fresh exact queries as well as queries after a
+  full unfiltered drain. Earlier traversal can hide a missing-pointer bug by
+  activating recovery first. Include sparse postings, same-size unpublished
+  tails, partial arrays, forward/reverse/time positioning, directory refresh,
+  and strict capture/append rejection. Release DATA guards before cold recovery
+  reads. Do not replay controlled Explorer callbacks or sampling state to retry
+  a failed indexed operation.
+- Count-bounded ENTRY-array traversal must reject the first required revisit;
+  a lazy unbounded-cycle guard alone can miss it before the count completes.
+  Cover short cycles, descending-prefix/ascending revisits, public Rust Node
+  iteration and writer tail selection before mutation. Preserve acyclic
+  backward links and ignore reader links beyond the declared population.
+  Prefix checks may inspect only already visited arrays, not future headers.
+- Requalification must use one stable observed recovery view across every
+  Boolean branch. Test a failure after an earlier branch was clipped, then
+  ENTRY repair that clears recovery while a later DATA branch still fails,
+  followed by DATA repair/retry. Pending builders and installed expressions
+  must retain retry state and known DATA identities, including empty lists.
+  A failed backward preparation must retain captured populations rather than
+  reread DATA counts after a later append. Check public expression composition
+  where exposed. Clearing matches must rewind file/directory/facade readers
+  without an explicit seek; test this after multiple sparse matches.
+- Filter position controls must cover installing at a resolved row, reversal
+  after EOF and early AND/OR exhaustion, duplicate realtime bounds, and failed
+  selected ENTRY loads followed by getters, repair and retry. Test both SDK and
+  facade APIs, regular/compact layouts and Go access backends. Directory
+  controls must include sequential file transitions, partial merge prefetch,
+  initial unset errors and pending realtime seeks; preserve candidate order
+  through complete retry/EOF traversal. Explicit filtered realtime search checks
+  visited posting slots; separately prove ordinary traversal still encounters
+  damaged skipped slots. Use probe counts plus isolated release comparisons to
+  establish search work and elapsed cost respectively.
+  Test recovery first discovered while sequential traversal crosses files,
+  followed by a later merge-probe error and repair. Internal merge restarts
+  must reuse the inner routine; one public movement owns rollback of its
+  selected child without discarding other prefetched candidates.
+  Install and replace filters at a committed directory row, including group
+  operators. Preserve pending seeks after an initial failed load. Prove native
+  sequential discovery with an unvisited later-file error: nearer rows must
+  remain readable before that file is reached. Raw/filtered mode changes must
+  reuse proven sequential positions as well as filter replacements.
+  Audit strict index consumers for suppressed new traversal errors and cached
+  partial results. Exercise requested facet/source posting chains, positive
+  counts with missing pointers and actual cache omission with a healthy sibling;
+  retain documented value tolerance and propagate required traversal failures.
+- Exercise recovery through public default constructors, not only a private
+  enablement switch. Cover file/directory/facade and whole-file compressed input,
+  normal EOF plus observed status, unchanged declared counters, complete repair
+  and strict verification/capture/append rejection. A zero status is not a
+  full-index integrity result. Preserve errors for unknown secondary posting
+  tails and malformed compressed streams.
+  Run `TestRecoveryEqualCountFacetWithoutPostings` and measure
+  `BenchmarkRecoveryUnmatchedFacet` when changing Go facet shortcuts: incomplete
+  unused array capacity can leave visible and declared counts equal while
+  suppressing postings. Keep the large orphan value out of unmatched key copies;
+  record allocation evidence rather than inferring it from correct results.
+- Before reader performance acceptance, freeze matching helper sources against
+  baseline and candidate SDKs. Keep immutable fixtures and complete semantic
+  counters. `tests/benchmarks/run_reader_regression_comparison.py` alternates
+  order and retains per-process output, measured runs and comparisons even when
+  a later case fails. An unsuccessful baseline is not a valid timing reference.
+- Select representative performance controls from the actual changed work.
+  Careful code review and high-level tests can suffice for unchanged hot work
+  or cold-only checks. Use targeted timing/profiling for credible added costs
+  and observed regressions; do not mechanically expand every API, layout and
+  backend combination or build a large framework for small changes. Retain
+  adverse evidence, and distinguish uncertainty from established equality.
 - Separate reader support for existing historical files from writer feature milestones.
 - Record excluded upstream tests with a reason and extract file-level behavior where practical.
 
@@ -225,6 +422,16 @@ Do not use this skill for:
 6. Run interoperability tests across every writer/reader pair affected by the SOW.
 7. Run live one-writer/multiple-reader tests for every affected writer and reader.
 8. Record benchmark or profiling evidence when the SOW includes performance claims.
+
+## Vacuum Ordering Validation
+
+- Exercise valid cross-history clock rollback, reversed creation order, ties
+  and unsequenced archives. Native sorting can have contradictory comparisons;
+  the approved deterministic history-head merge is an explicit parity exception.
+  Compare ordinary compatible histories with the pinned oracle and ambiguous
+  histories with the documented policy, including actual retained files.
+- Retain count, size and age controls and single/many-history cost evidence.
+  Do not catch Rust sort panics or blindly substitute another sorting algorithm.
 
 ## Validation Checklist
 

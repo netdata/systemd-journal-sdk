@@ -75,7 +75,7 @@ func OpenIndexedSnapshot(ctx context.Context, path string, opts IndexedSnapshotO
 	if ro == (ReaderOptions{}) {
 		ro = DefaultReaderOptions()
 	}
-	r, err := openFileWithOptions(path, ro.WithSnapshot(true), false)
+	r, err := openFileWithPolicy(path, ro.WithSnapshot(true), false, false)
 	if err != nil {
 		return nil, err
 	}

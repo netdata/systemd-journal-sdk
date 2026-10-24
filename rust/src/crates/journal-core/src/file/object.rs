@@ -17,6 +17,8 @@ pub use super::object_hash::{
 };
 
 pub trait JournalObject<B: SplitByteSlice>: Sized {
+    /// Expected wire type for typed file reads; custom parsers may omit the hint.
+    const EXPECTED_TYPE: Option<ObjectType> = None;
     /// Create a new journal object from a byte slice
     fn from_data(data: B, is_compact: bool) -> Option<Self>;
 }
@@ -421,6 +423,7 @@ pub struct FieldObject<B: ByteSlice> {
 }
 
 impl<B: SplitByteSlice> JournalObject<B> for FieldObject<B> {
+    const EXPECTED_TYPE: Option<ObjectType> = Some(ObjectType::Field);
     fn from_data(data: B, _is_compact: bool) -> Option<Self> {
         let (header, payload) = zerocopy::Ref::from_prefix(data).ok()?;
         Some(FieldObject { header, payload })
@@ -475,6 +478,7 @@ pub struct OffsetArrayObject<B: ByteSlice> {
 }
 
 impl<B: ByteSlice> OffsetArrayObject<B> {
+    #[inline(always)]
     pub fn capacity(&self) -> usize {
         match &self.items {
             OffsetsType::Regular(offsets) => offsets.len(),
@@ -512,14 +516,14 @@ impl<B: ByteSlice> OffsetArrayObject<B> {
 
         match &self.items {
             OffsetsType::Regular(s) => {
-                offsets.extend(s[start_index..len].iter().filter_map(|&opt| opt));
+                for &offset in &s[start_index..len] {
+                    offsets.push(offset.ok_or(JournalError::InvalidOffset)?);
+                }
             }
             OffsetsType::Compact(s) => {
-                offsets.extend(
-                    s[start_index..len]
-                        .iter()
-                        .filter_map(|&opt| opt.map(NonZeroU64::from)),
-                );
+                for &offset in &s[start_index..len] {
+                    offsets.push(NonZeroU64::from(offset.ok_or(JournalError::InvalidOffset)?));
+                }
             }
         }
 
@@ -547,6 +551,8 @@ impl<B: ByteSlice> std::fmt::Debug for OffsetArrayObject<B> {
 }
 
 impl<B: SplitByteSlice> JournalObject<B> for OffsetArrayObject<B> {
+    const EXPECTED_TYPE: Option<ObjectType> = Some(ObjectType::EntryArray);
+    #[inline(always)]
     fn from_data(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data
             .split_at(std::mem::size_of::<OffsetArrayObjectHeader>())
@@ -713,6 +719,8 @@ impl<B: ByteSlice> std::fmt::Debug for EntryObject<B> {
 }
 
 impl<B: SplitByteSlice> JournalObject<B> for EntryObject<B> {
+    const EXPECTED_TYPE: Option<ObjectType> = Some(ObjectType::Entry);
+    #[inline(always)]
     fn from_data(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data
             .split_at(std::mem::size_of::<EntryObjectHeader>())
@@ -852,6 +860,8 @@ impl<B: ByteSlice> std::fmt::Debug for DataObject<B> {
 }
 
 impl<B: SplitByteSlice> JournalObject<B> for DataObject<B> {
+    const EXPECTED_TYPE: Option<ObjectType> = Some(ObjectType::Data);
+    #[inline(always)]
     fn from_data(data: B, is_compact: bool) -> Option<Self> {
         let (header_data, remaining_data) = data
             .split_at(std::mem::size_of::<DataObjectHeader>())
@@ -1098,6 +1108,7 @@ impl<B: ByteSlice> std::fmt::Debug for TagObject<B> {
 }
 
 impl<B: SplitByteSlice> JournalObject<B> for TagObject<B> {
+    const EXPECTED_TYPE: Option<ObjectType> = Some(ObjectType::Tag);
     fn from_data(data: B, _is_compact: bool) -> Option<Self> {
         let header = zerocopy::Ref::from_bytes(data).ok()?;
         Some(TagObject { header })

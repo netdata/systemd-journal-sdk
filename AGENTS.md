@@ -77,10 +77,15 @@ Mandatory rules:
   be treated as an explorer bug.
 - Treat repeated parsing of reusable DATA objects as a performance bug unless a
   SOW records evidence that the alternative is slower or unsafe.
-- Benchmark and profile hot paths before accepting performance-sensitive code.
-  Compare benchmarks against systemd when practical and against the fastest
-  sibling implementation in this repository; record why if a comparison cannot
-  run.
+- Choose performance evidence by tracing the actual changed work. Careful code
+  review and representative high-level tests can establish that a change does
+  not negatively affect performance. Use existing benchmarks and targeted
+  profiles for credible added costs or observed regressions; do not build or
+  expand a large measurement framework to prove every small detail. An
+  inconclusive timing interval alone is neither proof of equality nor evidence
+  of a regression. Preserve adverse observations and investigate them.
+  Compare equivalent benchmarks against systemd when practical and against the
+  fastest sibling implementation; explain unavailable comparisons.
 - Record any intentionally slower path in the SOW, docs, and tests, with the
   reason, measured cost, and the conditions where it is acceptable.
 
@@ -461,6 +466,16 @@ Output/reference skills:
 ### Project-specific overrides
 
 - The baseline systemd compatibility target is `systemd/systemd` tag `v260.1`.
+- The file-backed Rust and Go `journalctl` commands target `systemd/systemd`
+  tag `v262` (8cc40e0c5e9234bf45084751ac53b1fbfe70b492). This CLI target
+  does not advance the SDK journal-format target or compiler minimums.
+- Native PCRE2-8 >=10.42 is allowed only in the two journalctl commands.
+  The Go command requires CGO and a C compiler; the Go SDK remains CGO-free.
+  The commands may also use the platform C library for Unix file globbing,
+  thread-local locale selection, and terminal queries. Windows filenames use
+  the Unicode path contract. These CLI exceptions do not extend to SDKs.
+  Keep CLI build/test steps explicitly CGO-enabled and preserve independent
+  pure SDK checks. System journal library linkage remains prohibited.
 - Netdata's consuming-module declarations are the authority for SDK compiler
   minimums. The SDK's Go and Rust minimums may match or remain below Netdata's
   corresponding declared minimums, but must never exceed them. Requiring a
@@ -485,7 +500,7 @@ Output/reference skills:
 - The `+` separator is a systemd journalctl disjunction feature to replicate for file-backed journalctl behavior; it is not a new extension.
 - Implement journalctl rewrites for file-backed/query behavior in Rust and Go.
 - Do not implement daemon-only journalctl commands, including daemon sync, flush, rotate, and relinquish-var operations.
-- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints.
+- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal. CGO remains disallowed in SDKs; the journalctl-only PCRE2 exception above does not permit linking system journal libraries.
 - Before Netdata integration or stable release work advances, GitHub code scanning and Codacy analysis findings must be fixed or explicitly dispositioned under the active SOW policy. Raw SARIF, Codacy exports, and scanner logs must stay under `.local/`; durable artifacts may contain only sanitized aggregate summaries and evidence.
 - Rust and Go sources are frozen for the 2026-06-11 docs-and-parity program (SOW-0103 through SOW-0106). Problems found in Rust or Go become pending SOWs; they are not fixed inside the program SOWs.
 - Current review cadence: finish the complete active SOW locally first, including local validation and SOW evidence.

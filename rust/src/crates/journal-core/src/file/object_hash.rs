@@ -111,6 +111,7 @@ impl<B: ByteSliceMut> HashTableMut for FieldHashTable<B> {
 
 // Implement JournalObject for DataHashTable
 impl<B: SplitByteSlice> JournalObject<B> for DataHashTable<B> {
+    const EXPECTED_TYPE: Option<ObjectType> = Some(ObjectType::DataHashTable);
     fn from_data(data: B, _is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
 
@@ -135,6 +136,7 @@ impl<B: SplitByteSliceMut> JournalObjectMut<B> for DataHashTable<B> {
 
 // Implement JournalObject for FieldHashTable
 impl<B: SplitByteSlice> JournalObject<B> for FieldHashTable<B> {
+    const EXPECTED_TYPE: Option<ObjectType> = Some(ObjectType::FieldHashTable);
     fn from_data(data: B, _is_compact: bool) -> Option<Self> {
         let (header_data, items_data) = data.split_at(std::mem::size_of::<ObjectHeader>()).ok()?;
 

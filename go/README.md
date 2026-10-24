@@ -91,7 +91,7 @@ Current reader scope:
   realtime/monotonic/seqnum/cursor metadata, and boot listing;
 - cursor metadata is emitted in the official systemd cursor shape; cursor seek
   and test also accept the older SDK cursor shape for compatibility;
-- file-backed `journalctl` output covers the stock v260.1 short family,
+- file-backed `journalctl` output covers the stock v262 short family,
   `verbose`, `with-unit`, `cat`, `export`, `json`, `json-pretty`,
   `json-sse`, and `json-seq` modes; `--output-fields` projects requested
   fields while JSON/export retain stock metadata fields;
@@ -473,7 +473,18 @@ inputs.
 `--vacuum-size`, `--vacuum-files`, and `--vacuum-time` operate on explicit
 `--directory` inputs, deleting only stock-recognized archived `.journal` and
 `.journal~` files while protecting active/current and unknown files.
-The CLI implements the stock v260.1 output-mode family, `--output-fields`
+The CLI targets systemd v262. Building it requires PCRE2-8 development files
+(version 10.42 or later), `pkg-config`, and a native C toolchain. Build/run the Go command with `CGO_ENABLED=1`; the SDK remains CGO-free.
+The command links PCRE2 only; it never links system journal libraries. Native
+library deployment must accompany dynamically linked command binaries.
+
+`-F`/`-N` with time, entry, cursor or grep restrictions now fail under v262;
+remove the restriction for whole-file enumeration, or read filtered rows with
+the SDK. Grep supports PCRE2 byte syntax and returns exit 1 without a diagnostic
+when no entry matches. See [Journalctl CLI](../docs/Journalctl-CLI.md) for migration
+and platform prerequisites.
+
+The CLI implements the stock v262 output-mode family, `--output-fields`
 projection for `verbose`, `export`, JSON modes, and `cat`, and stock output
 controls such as `--all`, `--full`, `--no-full`, empty-result messages, and
 `--pager-end` implicit 1000-line tail behavior. `--output=help` prints the

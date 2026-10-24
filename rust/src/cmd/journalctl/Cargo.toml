@@ -4,7 +4,7 @@ publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Pure-Rust systemd journalctl rewrite"
+description = "File-backed journalctl rewrite with native PCRE2"
 license.workspace = true
 
 [[bin]]
@@ -13,6 +13,7 @@ path = "main.rs"
 
 [dependencies]
 journal = { package = "systemd-journal-sdk", path = "../../journal" }
+journal-core = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -21,7 +22,11 @@ regex = { workspace = true }
 libc = { workspace = true }
 uuid = { workspace = true }
 serde_json = { workspace = true }
+jiff = { version = "=0.2.38", features = ["tzdb-bundle-always"] }
 
 [dev-dependencies]
-journal-core = { workspace = true }
 tempfile = { workspace = true }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"

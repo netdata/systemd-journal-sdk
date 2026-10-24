@@ -2,12 +2,21 @@
 
 ## Status
 
-Status: completed
+Status: paused
 
 Sub-state: completed on 2026-05-29. Go reader now has Rust-aligned payload
 APIs where practical, mmap-backed Unix access, live/snapshot bounds,
 byte-preserving RAW field access, facade DATA fast paths, Go reader benchmark
 coverage, and recorded benchmark evidence.
+
+Regression reopened 2026-10-15: healthy Go refresh can skip the first newly
+appended entry when the reader was empty or at forward EOF. This SOW owns the
+original refresh implementation and live-reader claim. It is queued/paused
+under the one-active-SOW rule; prerequisite SOW-0108 and SDK SOW-0159 are
+completed, with journalctl SOW-0121 next after the signed SDK commit.
+Do not insert this separate positioning repair into the approved
+SOW-0108 -> SOW-0159 -> SOW-0121 execution chain without a dependency finding
+or a user scheduling decision. Original completion evidence remains below.
 
 ## Requirements
 
@@ -426,3 +435,107 @@ implementation.
 ## Regression Log
 
 None yet.
+
+## Regression - 2026-10-15
+
+### What Broke And Evidence
+
+Healthy Go iteration can skip the first append after an explicit Refresh or a
+unique-field query that refreshes the entry list. Two states reproduce it:
+open an empty valid journal, append one row, refresh and Step; or consume a
+one-row journal through EOF, append one row, refresh and Step. Both Step calls
+return false/nil despite the newly loaded row. QueryUnique triggers the same
+transition. A private diagnostic against unchanged HEAD `dafcdac4b971` reproduces
+all four combinations; retain `sow-0045-refresh-position-probe.log` and its
+synthetic test source under ignored task scratch.
+
+At HEAD, `go/journal/reader.go:606-609` leaves the empty constructor index at
+zero, successful refresh restores the old numeric index at `:561-562`, and
+Next increments it before selecting a row. At populated forward EOF the old
+index equals the old row count; refresh then makes that index refer to the
+first append, which the next increment skips. Automatic Step-driven tail
+refresh has a separate adjustment and does not establish that explicit refresh
+works. `go/journal/reader_unique.go` and directory unique-cache refresh call
+the same refresh path. Commit `6a48ccc5` introduced that preservation behavior
+in this SOW; the original execution/validation above claimed live refresh and
+live/snapshot parity.
+
+### Why Earlier Validation Missed It
+
+Existing live tests begin with a populated reader and use automatic tail
+refresh. Explicit-refresh retained-row tests refresh while positioned on a row
+and do not subsequently step from EOF. The new SOW-0108 header test initially
+assumed empty-open positioning; its intended header/array-growth coverage now
+explicitly SeekHead before appending. That adjustment does not repair or claim
+acceptance of this separate positioning defect.
+
+### Repair Plan And Validation
+
+Keep this queued until scheduled. Before code, specify position preservation
+for empty/head/unset, a current row, forward EOF, explicit tail, reverse
+movement, repeated/no-op refresh and unique-triggered refresh. A blanket
+old-length-minus-one adjustment is not an established complete repair: it can
+change reverse movement or expose a current row before a successful Step.
+Cover public Reader, facade and directory callers, regular/compact files,
+mmap/ReadAt, tiny/default windows, retained payloads, failed-refresh rollback
+and snapshot exclusion. Require appended rows exactly once and preserve native
+index paths and measured performance.
+
+Rust is not a confirmed passing oracle for this transition. Source analysis
+suggests a possible healthy-tail cached-population issue; this is an unexecuted
+working theory requiring a separate paired runtime check before any Rust
+finding or scope decision. SOW-0159 already handles its distinct empty-file and
+recovery contracts; do not silently broaden that SOW to this healthy-position
+state machine.
+
+### Artifact Impact And Follow-Up Mapping
+
+The originating SOW is reopened here rather than replaced by a new SOW.
+Canonical/root status indexes record its paused state, and SOW-0159 and
+SOW-0108 cross-reference this finding. No positioning runtime code is changed.
+Synthetic fixtures contain no real journal data. During repair, update the
+product live-reader contract, caller guidance and compatibility skill if the
+resolved behavior requires it; preserve existing compiler/purity constraints.
+Validation, review disposition and a complete-and-clean audit remain required
+before this regression can close. This is tracked work outside the active
+header/lifetime repair; no completion is claimed.
+
+### Related Queued Directory Seek-State Finding - 2026-10-16
+
+Read-only SOW-0159 impact analysis finds an independent pre-existing getter-state
+gap: `go/journal/directory_reader.go:739` clears realtime/candidate state during
+SeekRealtimeUsec but retains the selected file index. After a successful Step,
+SeekRealtimeUsec followed by GetEntry/GetCursor can therefore expose the old
+row before movement. Rust's `rust/src/journal/src/directory.rs:201-208` clears
+its index and its getters report NoEntry until movement succeeds. The Go
+omission exists in commit `fcca32fe56f4`; SOW-0027 claimed broad facade and seek
+support but did not specify getter state between seek and movement.
+
+Track this alongside the queued healthy-position analysis here; it is not a
+consequence of native filtering and adds no SDK-first prerequisite. Before any
+runtime change, reproduce both public APIs and facades, determine the affected
+seek/refresh state combinations and obtain any unresolved behavior decision.
+
+### Additional Unfiltered Time-Search Evidence - 2026-10-17
+
+SOW-0159's directory error-position controls find another inherited unfiltered
+Go seek gap. `reader.go:firstRealtimeIndexAtOrAfter` and
+`lastRealtimeIndexAtOrBefore` use a `sort.Search` predicate that treats an ENTRY
+read error as a comparison result and then returns a nil error. A backward
+merged-directory direction change can consequently skip the damaged candidate
+without reporting its ENTRY-read failure. The same source pattern exists in
+the frozen SOW-0159 baseline. This is separate from retaining the previous row
+after an error that is actually returned.
+
+Track propagation and retry of errors from unfiltered time probes here with
+the existing seek/refresh scope. The approved SOW-0159 binary-search change is
+for explicit filtered realtime positioning, and its ordinary unfiltered time
+policy remains unchanged. Its Go directory position regression matrix excludes
+the unfiltered backward merged case for that specific reason; filtered cases
+and sequential unfiltered file transitions remain covered. Before implementing
+this item, add a direct file and directory SDK/facade reproducer, compare Rust
+and the frozen baseline, resolve any remaining behavior choice, and measure
+the existing/new binary-search paths. This SOW remains paused while SOW-0159
+is the sole implementation SOW.
+No new position contract or implementation is approved by this tracking note.
+SOW-0159 retains its distinct reverse-filter and selected-entry error decisions.

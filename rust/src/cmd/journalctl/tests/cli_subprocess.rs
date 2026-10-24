@@ -155,7 +155,7 @@ fn version_prints_baseline_metadata() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains("v260.1") && stdout.contains("baseline"),
+        stdout.contains("v262") && stdout.contains("CLI compatibility"),
         "expected version banner, got: {stdout}"
     );
 }

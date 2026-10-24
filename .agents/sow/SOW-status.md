@@ -1,13 +1,31 @@
 # SOW Status
 
-Last updated: 2026-10-11
+Last updated: 2026-10-24
 
 ## Current
 
-- None.
+- SOW-0045 - Go Reader Alignment Optimization: regression reopened and paused.
+  Unchanged HEAD reproduces skipped appends after healthy empty/EOF refresh,
+  including unique-triggered refresh. Separate positioning work remains queued;
+  a pre-existing directory realtime-seek/getter gap and unfiltered time-probe
+  error suppression are also recorded for that analysis. SOW-0108 is complete;
+  SDK-then-CLI execution remains unchanged.
+
+- SOW-0071 - Runtime Purity And Optional Platform Services: regression
+  reopened and paused. The static guard misses standard Go process-launch
+  spellings despite its original acceptance promise. No SDK runtime launch
+  is demonstrated; scanner design and implementation remain unapproved.
+  Tracking adds no prerequisite or change to the 0108 -> 0159 -> 0121 order.
 
 ## Pending
 
+- SOW-0161 - File Indexer Source Posting Membership: open source-analysis
+  lead, not activated. Investigate inherited source-map target membership and
+  captured-tail handling before selecting any behavior/performance change.
+- SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Tracks
+  unchanged cumulative dictionary allocation measured during SOW-0108, separate
+  from required regression prevention. No decoder redesign is authorized and
+  the approved current execution order is unchanged.
 - SOW-0156 - Fixed-Header Consistency Audit: separate follow-up agreed in
   PR #9. Define invariants, audit both SDKs, then implement/test missing rules.
   Not activated by the current array-count repair.
@@ -40,9 +58,10 @@ Last updated: 2026-10-11
   on 2026-06-21. Still valid as Rust quality debt, but live-path work is
   high-risk and not mandatory before integration/release work.
 - SOW-0122 - Journalctl Performance Followups: open. Tracks non-blocking
-  SOW-0121 performance follow-up for indexed `--list-invocations`, portable
+  SOW-0121 broader performance follow-up for large invocation inputs, portable
   `--follow` scalability, and large-fixture performance evidence before any
-  large-archive performance claim.
+  large-archive performance claim. Mandatory no-regression proof for the new
+  SDK/journalctl repairs belongs directly to SOW-0159/SOW-0121.
 - SOW-0123 - Event-Time Lane Fresh-Journal Realtime Clock Seed: open. Records
   the Rust fresh-lazy realtime floor gap and Go parity/documentation gap for
   event-time-ordered journals. Project-manager diagnosis and implementation
@@ -54,6 +73,40 @@ Last updated: 2026-10-11
   decisions. Not executable until the user explicitly resumes it.
 
 ## Recently Closed Or Completed
+
+- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
+  The vacuum regression is repaired under approved deterministic history-head
+  ordering. Both languages pass independent 10,000-set models; native CI passes
+  Linux/macOS/Windows/FreeBSD with 130 portable controls. Existing 78 utility
+  oracle observations pass. Final internal review passes the repair; lifecycle
+  impact review and normal final-commit CI complete publication. Upstream
+  Codacy configuration retry and coverage upload fail remotely; native tests,
+  coverage generation and CodeQL pass. These CI limitations stay explicit.
+  Broader scalability remains SOW-0122; PR #12 is draft, not merged/released.
+
+- SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: completed.
+  Both SDKs provide default intact-prefix recovery/status, complete streams,
+  native filtering and approved position/time/error retry behavior. Go floor
+  amd64/386/race checks pass 1,995/1,996/1,995 events, excluding only the unchanged
+  live-stock stress test with a retained isolated pass and earlier deadline
+  failure. Rust floor workspace/allocative checks pass, including 200 SDK tests.
+  Final tools pass 552 shared observations and 63/34/42 v262 verifier/directory/
+  mixed checks; 35 documentation examples and 16 pages pass. Performance is
+  accepted under representative evidence and careful review, with uncertain
+  intervals and adverse history retained. The fresh whole-SOW review has one
+  positive verdict, five coverage gaps and no verified unresolved blocker.
+  The complete-and-clean closing audit passes; signed commit 25accee keeps
+  implementation and completed lifecycle together. Journalctl SOW-0121 is completed, including the vacuum repair.
+- SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed
+  again with the approved Go indexed aggregation lifetime/header/opener repair.
+  Full/race/386/integrated/floor and cross-platform checks pass. The current
+  118-case timing matrix records 79 improvements, 39 inconclusive results and
+  no regression flag; inconclusive results do not establish equivalence. All
+  1,176 measured allocation pairs avoid increases. External review is
+  adjudicated with no verified blocker; Mimo's P2 is disproven and Qwen/Kimi
+  coverage gaps remain explicit. Independent findings are owned by paused
+  SOW-0045/SOW-0071 and pending SOW-0160. Signed prerequisite commit `4c49205` precedes the now-completed SDK
+  SOW-0159 and CLI SOW-0121.
 
 - SOW-0158 - v0.10.0 Publication: completed. Release run 38123573886 passed
   both language suites and published/verified all eight Rust `0.10.0` crates.
@@ -131,11 +184,6 @@ Last updated: 2026-10-11
   `4619776b74311338b1689b2ab1fb0936b7746e49`; both release tags resolve to that
   commit, all eight Rust crates are published and non-yanked, and clean Go
   `1.26.2` and Rust `1.91.0` registry-consumer verification passes.
-- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed
-  again after repairing its mixed-directory boot-row oracle. The harness now
-  strips only the stock table header, requires a complete stock oracle, and
-  compares every normalized boot row; the full-feature mixed matrix passed
-  42/42 and tagged-v260.1 directory/query validation passed.
 - SOW-0136 - Rust Directory Harness Explicit Identity: closed without
   implementation. Its evidence is merged into the user-approved regression
   reopening of originating SOW-0115.
@@ -406,14 +454,6 @@ Last updated: 2026-10-11
   O(1) indexed row collection. Local validation, four-peer high-row comparator
   evidence, `git diff --check`, and six production-grade reviewer votes passed.
   Remaining reviewer-discovered edge parity items are tracked by SOW-0109.
-- SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed
-  after regression repair. Rust and Go public file-path verification APIs now
-  use bounded reader-backed byte sources instead of materializing whole journal
-  files; Go verifier source slices return owned buffers to avoid mmap/window
-  aliasing hazards. Focused Rust/Go tiny-window sealed verifier tests,
-  `go test ./...`, affected Rust package tests, the shared verify matrix,
-  wiki docs validation, `git diff --check`, and SOW audit passed. All six
-  reviewers ultimately voted `PRODUCTION GRADE` after the reopened repair.
 - SOW-0104 - Python Explorer And Netdata Parity To Rust: completed. The
   Python SDK now carries the full Rust feature surface: Explorer
   (filters, facets, histogram, FTS, Traversal/Index/Compare strategies,
@@ -647,14 +687,9 @@ Last updated: 2026-10-11
   and repo-local QEMU FreeBSD validation passed for Rust, Go, Python, and
   Node.js; FreeBSD no-stock single-file and directory matrices passed; files
   generated on macOS, Windows, and FreeBSD passed Linux stock
-  `journalctl --verify --file`; SOW-0071 and SOW-0072 blockers are completed.
-- SOW-0071 - Runtime Purity And Optional Platform Services: completed. Core
-  reader/writer paths in Rust, Go, Node.js, and Python no longer host-probe,
-  execute subprocesses, or acquire writer locks implicitly; identity discovery
-  and writer locks are optional helpers; legacy Rust `jf` host identity helpers
-  were removed; runtime-purity scans cover core, facade, Python I/O helper, and
-  legacy `jf` runtime files; Linux/macOS/Windows validation and three
-  whole-SOW reviewer rounds passed.
+  `journalctl --verify --file`; SOW-0071/SOW-0072 runtime dependencies were
+  resolved for that validation. SOW-0071 now separately tracks a paused
+  guard-coverage regression, with no demonstrated SDK runtime launch.
 - SOW-0067 - Go Cross Platform Portability: completed. Go SDK portability
   implementation, whole-SOW reviews, Linux/Windows tests, FreeBSD/macOS compile
   checks, and parent native macOS/Windows generated-file validation passed.
@@ -704,16 +739,6 @@ Last updated: 2026-10-11
   rows/s single-file and 628k rows/s open-files. Go tests, mixed-directory,
   cross-language, live regular/compact matrices, read-only reviewers, and audit
   passed.
-- SOW-0045 - Go Reader Alignment Optimization: completed. Go reader now has
-  mmap-backed Unix access by default, live/snapshot bounds, byte-preserving RAW
-  field APIs, current-entry payload visitor/enumerator APIs, libsystemd facade
-  DATA fast paths, non-overlapping directory fast-path coverage, and shared
-  reader benchmark integration. Compact 100k-row benchmark medians measured Go
-  single-file `sdk-payloads` live/mmap at 1.07M rows/s and `facade-data` at
-  1.09M rows/s versus stock systemd DATA enumeration at 565k rows/s; Go
-  open-files `sdk-payloads` measured 697k rows/s versus stock systemd open-files
-  DATA at 532k rows/s. Rust remains faster; the cursor-seek systemd divergence
-  discovered during review was closed by SOW-0055.
 - SOW-0054 - Node.js Reader And Writer Rust Port: completed. Node.js now carries
   the finalized reader/writer compatibility slice where practical under the
   no-native-runtime policy: byte-preserving RAW field access, active-file

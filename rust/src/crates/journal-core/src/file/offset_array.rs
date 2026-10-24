@@ -1,3 +1,5 @@
+use super::array_chain::reject_array_revisit;
+use super::file::validate_offset_alignment;
 use super::mmap::MemoryMap;
 use crate::error::{JournalError, Result};
 use crate::file::JournalFile;
@@ -5,6 +7,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub enum Direction {
     Forward,
     Backward,
@@ -15,7 +18,8 @@ pub enum Direction {
 #[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub struct Node {
     offset: NonZeroU64,
-    next_offset: Option<NonZeroU64>,
+    // Array offsets are aligned; bit zero retains exceptional link ordering.
+    head_and_order: NonZeroU64,
     capacity: NonZeroUsize,
     // Number of items remaining in this array and subsequent arrays
     remaining_items: NonZeroUsize,
@@ -27,14 +31,17 @@ impl Node {
         journal_file: &JournalFile<M>,
         offset: NonZeroU64,
         remaining_items: NonZeroUsize,
+        head: NonZeroU64,
+        unordered: bool,
     ) -> Result<Self> {
-        let array = journal_file.offset_array_ref(offset)?;
+        validate_offset_alignment(head)?;
+        let array = journal_file.reader_offset_array_ref(offset)?;
         let capacity =
             NonZeroUsize::new(array.capacity()).ok_or(JournalError::EmptyOffsetArrayNode)?;
 
         Ok(Self {
             offset,
-            next_offset: array.header.next_offset_array,
+            head_and_order: NonZeroU64::new(head.get() | u64::from(unordered)).unwrap(),
             capacity,
             remaining_items,
         })
@@ -55,25 +62,37 @@ impl Node {
         self.capacity.min(self.remaining_items)
     }
 
-    /// Check if this array has a next array in the chain
+    /// Check whether the declared population requires another array.
     pub fn has_next(&self) -> bool {
-        self.next_offset.is_some() && self.remaining_items > self.len()
+        self.remaining_items > self.len()
     }
 
     /// Get the next array in the chain, if any
     pub fn next<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<Self>> {
-        if !self.has_next() {
+        if self.remaining_items <= self.len() {
             return Ok(None);
         }
 
-        let next_offset = self.next_offset.unwrap();
+        let next_offset = journal_file
+            .reader_offset_array_ref(self.offset)?
+            .header
+            .next_offset_array
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
         let remaining_items = {
             let n = self.remaining_items.get().saturating_sub(self.len().get());
             NonZeroUsize::new(n).ok_or(JournalError::EmptyOffsetArrayNode)?
         };
-        let node = Self::new(journal_file, next_offset, remaining_items);
-
-        Some(node).transpose()
+        let head = NonZeroU64::new(self.head_and_order.get() & !1).unwrap();
+        let unordered = self.head_and_order.get() & 1 != 0 || next_offset <= self.offset;
+        if unordered {
+            reject_array_revisit(head, self.offset, next_offset, |at| {
+                Ok(journal_file
+                    .reader_offset_array_ref(at)?
+                    .header
+                    .next_offset_array)
+            })?;
+        }
+        Self::new(journal_file, next_offset, remaining_items, head, unordered).map(Some)
     }
 
     /// Get an item at the specified index
@@ -82,12 +101,22 @@ impl Node {
         journal_file: &JournalFile<M>,
         index: usize,
     ) -> Result<Option<NonZeroU64>> {
+        self.required_offset(journal_file, index).map(Some)
+    }
+
+    fn required_offset<M: MemoryMap>(
+        &self,
+        journal_file: &JournalFile<M>,
+        index: usize,
+    ) -> Result<NonZeroU64> {
         if index >= self.len().get() {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
 
-        let array = journal_file.offset_array_ref(self.offset)?;
-        array.get(index, self.remaining_items.get())
+        let array = journal_file.reader_offset_array_ref(self.offset)?;
+        array
+            .get(index, self.remaining_items.get())?
+            .ok_or(JournalError::InvalidOffset)
     }
 
     /// Returns the first index where the predicate returns false, or array length if
@@ -161,11 +190,13 @@ impl Node {
 
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let next_offset = self.next_offset.map(|x| x.get()).unwrap_or(0);
-
         f.debug_struct("Node")
             .field("offset", &format!("0x{:x}", self.offset))
-            .field("next_offset", &format!("0x{:x}", next_offset))
+            .field(
+                "head_offset",
+                &format!("0x{:x}", self.head_and_order.get() & !1),
+            )
+            .field("unordered", &(self.head_and_order.get() & 1 != 0))
             .field("capacity", &self.capacity)
             .field("len", &self.len())
             .field("remaining_items", &self.remaining_items)
@@ -201,7 +232,13 @@ impl List {
 
     /// Get the head array of this chain
     pub fn head<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Node> {
-        Node::new(journal_file, self.head_offset, self.total_items)
+        Node::new(
+            journal_file,
+            self.head_offset,
+            self.total_items,
+            self.head_offset,
+            false,
+        )
     }
 
     /// Get the tail array of this list by traversing from head to tail
@@ -335,7 +372,7 @@ impl List {
 
         loop {
             {
-                let array = journal_file.offset_array_ref(node.offset())?;
+                let array = journal_file.reader_offset_array_ref(node.offset())?;
                 let remaining_items = node.remaining_items.get();
                 array.collect_offsets(0, remaining_items, offsets)?;
             }
@@ -429,7 +466,13 @@ impl Cursor {
         debug_assert!(offset_array_list.total_items >= remaining_items);
 
         // Verify the array exists
-        let array = Node::new(journal_file, array_offset, remaining_items)?;
+        let array = Node::new(
+            journal_file,
+            array_offset,
+            remaining_items,
+            offset_array_list.head_offset,
+            array_offset != offset_array_list.head_offset,
+        )?;
 
         // Verify the index is valid
         if array_index >= array.len().get() {
@@ -469,7 +512,13 @@ impl Cursor {
         if let Some(node) = self.node {
             return Ok(node);
         }
-        Node::new(journal_file, self.array_offset, self.remaining_items)
+        Node::new(
+            journal_file,
+            self.array_offset,
+            self.remaining_items,
+            self.list.head_offset,
+            self.array_offset != self.list.head_offset,
+        )
     }
 
     pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<NonZeroU64>> {
@@ -488,9 +537,7 @@ impl Cursor {
         }
 
         let node = self.node(journal_file)?;
-        let Some(value) = node.get(journal_file, self.array_index)? else {
-            return Ok(None);
-        };
+        let value = node.required_offset(journal_file, self.array_index)?;
         self.node = Some(node);
         self.cached_value = Some(value);
         Ok(Some((self, value)))
@@ -534,6 +581,16 @@ impl Cursor {
             }));
         }
 
+        self.next_array(journal_file, &array_node)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn next_array<M: MemoryMap>(
+        &self,
+        journal_file: &JournalFile<M>,
+        array_node: &Node,
+    ) -> Result<Option<Self>> {
         if !array_node.has_next() {
             return Ok(None);
         }
@@ -612,14 +669,14 @@ impl Cursor {
 
         // Copy from position in the current array
         {
-            let array = journal_file.offset_array_ref(node.offset())?;
+            let array = journal_file.reader_offset_array_ref(node.offset())?;
             let remaining_items = node.remaining_items.get();
             array.collect_offsets(self.array_index, remaining_items, offsets)?;
         }
 
         // Copy from subsequent arrays
         while let Some(next_node) = node.next(journal_file)? {
-            let array = journal_file.offset_array_ref(next_node.offset())?;
+            let array = journal_file.reader_offset_array_ref(next_node.offset())?;
             let remaining_items = next_node.remaining_items.get();
             array.collect_offsets(0, remaining_items, offsets)?;
             node = next_node;
@@ -645,22 +702,98 @@ pub struct InlinedCursor {
     inlined_offset: NonZeroU64,
     cursor: Option<Cursor>,
     at_inlined_offset: bool,
+    pub(super) recovery_pending: bool,
+    pub(super) recovered_population: bool,
+    pub(super) position_pending: bool,
+    pub(super) filter_direction: Option<Direction>,
 }
 
 impl InlinedCursor {
+    pub(super) fn prepare_filter_direction<M: MemoryMap>(
+        &mut self,
+        file: &JournalFile<M>,
+        direction: Direction,
+    ) -> Result<()> {
+        if self.filter_direction != Some(direction) {
+            *self = match direction {
+                Direction::Forward => self.head(),
+                Direction::Backward => self.tail(file)?,
+            };
+        }
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn for_reader(
+        mut self,
+        journal_file: &JournalFile<impl MemoryMap>,
+    ) -> Result<Option<Self>> {
+        let Some(last) = journal_file.recovered_last_entry() else {
+            return Ok(Some(self));
+        };
+        journal_file.filter_recovery_seen.set(true);
+        self.recovered_population = true;
+        let Some(last) = last else {
+            return Ok(Some(self.empty()));
+        };
+        if self.inlined_offset > last {
+            return Ok(Some(self.empty()));
+        }
+        let cursor = if let Some(cursor) = self.cursor {
+            let list = cursor.list;
+            let count = journal_file.recovered_posting_count(
+                list.head_offset,
+                list.total_items.get(),
+                self.inlined_offset,
+            )?;
+            std::num::NonZeroUsize::new(count)
+                .map(|count| List::new(list.head_offset, count).cursor_head())
+        } else {
+            None
+        };
+        let mut result = Self::new(self.inlined_offset, cursor);
+        result.recovery_pending = self.recovery_pending;
+        result.recovered_population = true;
+        result.position_pending = self.position_pending;
+        Ok(Some(result))
+    }
+
     pub fn new(inlined_offset: NonZeroU64, cursor: Option<Cursor>) -> Self {
         Self {
             inlined_offset,
             cursor,
             at_inlined_offset: true,
+            recovery_pending: false,
+            recovered_population: false,
+            position_pending: false,
+            filter_direction: Some(Direction::Forward),
         }
     }
 
+    pub(super) fn empty(mut self) -> Self {
+        self.cursor = None;
+        self.at_inlined_offset = false;
+        self
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.at_inlined_offset && self.cursor.is_none()
+    }
+
     pub fn head(&self) -> Self {
+        if self.is_empty() {
+            let mut result = self.clone();
+            result.filter_direction = Some(Direction::Forward);
+            return result;
+        }
         Self {
             inlined_offset: self.inlined_offset,
             cursor: self.cursor.as_ref().map(Cursor::head),
             at_inlined_offset: true,
+            recovery_pending: self.recovery_pending,
+            recovered_population: self.recovered_population,
+            position_pending: self.position_pending,
+            filter_direction: Some(Direction::Forward),
         }
     }
 
@@ -674,6 +807,7 @@ impl InlinedCursor {
             result.at_inlined_offset = false;
         }
 
+        result.filter_direction = Some(Direction::Backward);
         Ok(result)
     }
 
@@ -685,6 +819,10 @@ impl InlinedCursor {
                     inlined_offset: self.inlined_offset,
                     cursor: self.cursor.clone(),
                     at_inlined_offset: false,
+                    recovery_pending: self.recovery_pending,
+                    recovered_population: self.recovered_population,
+                    position_pending: self.position_pending,
+                    filter_direction: self.filter_direction,
                 }));
             } else {
                 return Ok(None);
@@ -700,6 +838,10 @@ impl InlinedCursor {
                     inlined_offset: self.inlined_offset,
                     cursor: next_cursor,
                     at_inlined_offset: false,
+                    recovery_pending: self.recovery_pending,
+                    recovered_population: self.recovered_population,
+                    position_pending: self.position_pending,
+                    filter_direction: self.filter_direction,
                 }));
             } else {
                 return Ok(None);
@@ -730,7 +872,7 @@ impl InlinedCursor {
             }
         }
 
-        unreachable!();
+        Ok(None)
     }
 
     pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<NonZeroU64>> {
@@ -744,7 +886,58 @@ impl InlinedCursor {
             return cursor.value(journal_file);
         }
 
-        unreachable!();
+        Ok(None)
+    }
+
+    pub(super) fn seek_realtime<M: MemoryMap>(
+        &mut self,
+        file: &JournalFile<M>,
+        needle: NonZeroU64,
+        direction: Direction,
+    ) -> Result<Option<NonZeroU64>> {
+        *self = self.head();
+        self.filter_direction = Some(direction);
+        if self.is_empty() {
+            return Ok(None);
+        }
+        if direction == Direction::Forward && self.inlined_offset >= needle {
+            return Ok(Some(self.inlined_offset));
+        }
+        if direction == Direction::Backward && self.inlined_offset > needle {
+            return Ok(None);
+        }
+        let Some(cursor) = self.cursor.as_ref() else {
+            return Ok((direction == Direction::Backward).then_some(self.inlined_offset));
+        };
+        let list = cursor.list;
+        let mut node = list.head(file)?;
+        loop {
+            let length = node.len().get();
+            let index = node.partition_point(file, 0, length, |offset| {
+                Ok(offset < needle || direction == Direction::Backward && offset == needle)
+            })?;
+            if direction == Direction::Backward && index == 0 {
+                return self.value(file);
+            }
+            let slot = if direction == Direction::Backward || index == length {
+                index - 1
+            } else {
+                index
+            };
+            let selected = Cursor::at_cached_position(list, node, slot, None, None);
+            let (selected, value) = selected
+                .materialize_value(file)?
+                .ok_or(JournalError::InvalidOffset)?;
+            self.cursor = Some(selected);
+            self.at_inlined_offset = false;
+            if index < length {
+                return Ok(Some(value));
+            }
+            let Some(next) = node.next(file)? else {
+                return Ok((direction == Direction::Backward).then_some(value));
+            };
+            node = next;
+        }
     }
 
     pub fn next_until<M: MemoryMap>(
@@ -813,17 +1006,24 @@ impl InlinedCursor {
         M: MemoryMap,
         F: Fn(NonZeroU64) -> Result<bool>,
     {
+        if self.is_empty() {
+            return Ok(None);
+        }
         let inlined_match = self.inlined_partition_candidate(&predicate, direction)?;
         let array_match = self.array_partition_candidate(journal_file, predicate, direction)?;
 
-        match (inlined_match, array_match) {
+        let mut result = match (inlined_match, array_match) {
             (Some(best), Some(array)) => {
                 Self::best_directed_match(journal_file, best, array, direction).map(Some)
             }
             (Some(best), None) => Ok(Some(best)),
             (None, Some(array)) => Ok(Some(array)),
             (None, None) => Ok(None),
+        }?;
+        if let Some(cursor) = &mut result {
+            cursor.filter_direction = Some(direction);
         }
+        Ok(result)
     }
 
     fn inlined_partition_candidate<F>(
@@ -867,6 +1067,10 @@ impl InlinedCursor {
             inlined_offset: self.inlined_offset,
             cursor: Some(cursor),
             at_inlined_offset: false,
+            recovery_pending: self.recovery_pending,
+            recovered_population: self.recovered_population,
+            position_pending: self.position_pending,
+            filter_direction: self.filter_direction,
         }))
     }
 

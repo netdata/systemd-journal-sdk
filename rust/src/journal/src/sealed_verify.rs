@@ -56,7 +56,7 @@ pub(crate) fn verify_file_with_options(
     options: ReaderOptions,
 ) -> Result<()> {
     let path = path.as_ref();
-    let reader = FileReader::open_with_options(path, verify_reader_options(options))
+    let reader = FileReader::open_with_recovery(path, verify_reader_options(options), false)
         .map_err(|err| SdkError::VerificationError(format!("open/decompression failed: {err}")))?;
     verify_reader_object_graph(&reader)?;
     reader.inner.with_file(verify_journal_file_strict)
@@ -76,7 +76,7 @@ pub(crate) fn verify_file_with_key_options(
     options: ReaderOptions,
 ) -> Result<()> {
     let path = path.as_ref();
-    let reader = FileReader::open_with_options(path, verify_reader_options(options))
+    let reader = FileReader::open_with_recovery(path, verify_reader_options(options), false)
         .map_err(|err| SdkError::VerificationError(format!("open/decompression failed: {err}")))?;
 
     reader.inner.with_file(|file| {
@@ -925,7 +925,7 @@ fn update_hmac_range(
 /// Whole-file `.journal.zst` inputs incur full-file staging cost.
 pub fn verify_index(path: impl AsRef<Path>, control: &SnapshotControl<'_>) -> Result<()> {
     control.check()?;
-    let reader = FileReader::open_with_options(path, ReaderOptions::snapshot())?;
+    let reader = FileReader::open_with_recovery(path, ReaderOptions::snapshot(), false)?;
     reader.inner.with_file(|file| {
         struct ControlledSource<'a, 'b> {
             source: JournalFileVerifySource<'a>,

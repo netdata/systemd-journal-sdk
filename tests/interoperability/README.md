@@ -1,5 +1,14 @@
 # Interoperability Matrix
 
+CLI-inclusive matrices require PCRE2-8 development files (>=10.42),
+`pkg-config` and a native C compiler. Their Go command builds explicitly enable
+CGO; SDK writers/adapters remain pure. Query tests use the pinned full-feature
+systemd v262 oracle, including ordered parsing, binary PCRE2, timestamp/TZif
+bounds, no-match status and complete cursor/follow history. Follow capture uses
+files so large backlogs cannot block on an unread pipe; actual child exit status
+is retained alongside intentional harness termination. Native portability smoke
+checks are maintained by `.github/workflows/journalctl.yml`.
+
 This directory contains repo-local matrix runners for writer, reader,
 live-concurrency, compression, lock, file-backed query, and byte-identity
 validation.

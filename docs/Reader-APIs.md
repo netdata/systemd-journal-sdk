@@ -20,6 +20,20 @@ consumer problem and carries a different cost.
 | stock-like CLI behavior | journalctl rewrite | journalctl rewrite | operator/script use; see [[Journalctl-CLI]] |
 | integrity validation | `verify_file` | `VerifyFile` | diagnostics and corpus gates |
 
+## Native File Paths
+
+Rust callers with native filesystem paths can use `SdJournalOpenPath`,
+`SdJournalOpenFilePath`, `SdJournalOpenDirectoryPath` and `SdJournalOpenFilePaths`.
+The file, directory and list forms also have `WithOptions` variants. These
+constructors preserve non-UTF-8 Unix filenames; the existing string constructors
+remain available. Go path strings already preserve Unix filename bytes.
+
+Low-level Rust registry consumers should use `File::as_path()` for filesystem
+operations. `File::path()` remains a text accessor for ordinary UTF-8 paths;
+newly supported non-UTF-8 paths return an encoded metadata key. That key is
+serializable and distinct from replacement-character filenames, and cannot be
+opened as a filesystem path. Windows readers use Unicode filenames.
+
 ## Data Ownership
 
 The reader has three ownership modes:
@@ -68,6 +82,78 @@ Performance rules:
 - use verifier APIs only for integrity checks; file-path verification is
   separate from query opening. Strict index certification has graph-sized
   time and memory costs; sealed TAG/HMAC authentication is a separate check.
+
+## Observed Tail Recovery
+
+Unreleased source builds recover the intact entry prefix by default when an
+interrupted append leaves a final ENTRY or ENTRY array unavailable. This applies
+to ordinary file readers, directory readers and facades, including ordinary
+readers with snapshot bounds. Iteration ends normally after that prefix: Go
+`Step` returns `false, nil`, and Rust `next` returns `Ok(false)`.
+
+Inspect diagnostics after reading:
+
+| Surface | Rust | Go |
+|---|---|---|
+| One file | `recovery_status()` | `RecoveryStatus()` |
+| File or directory collection | `recovery_statuses()` | `RecoveryStatuses()` |
+| Facade | `SdJournal::recovery_statuses()` | `SdJournalRecoveryStatuses()` |
+
+The per-file status reports the reason, offset associated with the observed
+loss, declared entry count and recovered entry count. Collection records include
+the file ID. A status value is a copy; collections allocate only when explicitly
+requested. Header counters retain their declared values.
+
+Detection is lazy where the native access path permits it. A zero/`None` status
+means no loss has been observed; it does not certify integrity. A catalog query
+does not validate unrelated entry arrays. Live refresh can clear the status
+after observing a complete repair.
+
+Tail recovery does not reclassify interior holes followed by readable entries,
+wrong object types, cycles, malformed indexes, decompression failures or general
+I/O failures as an interrupted append. Existing catalog compatibility fallbacks
+remain available. A damaged secondary posting tail remains an error when its
+unknown targets could include surviving entries. Discard incomplete aggregates
+after such a failure.
+
+Exact matches use DATA hash lookup and posting arrays in both languages. They
+do not expand every row to find matching values. The same-field alternatives
+are OR groups; different field groups are combined with AND. Check errors from
+group operators and iteration: a missing required posting tail can fail even
+when an unfiltered read can return an intact prefix.
+
+Filtered movement selects the nearest match before or after the last successful
+row, including after installing or replacing a filter on a directory reader.
+Proven sequential directory traversal remains sequential after a filter change;
+errors in a later file are discovered when traversal reaches that file.
+Reversing after EOF also selects the nearest match. If loading a selected ENTRY fails,
+the failed movement keeps the previous successful position. After repairing the
+input, retry the movement to read that candidate.
+
+Explicit filtered realtime seeks search native posting arrays: forward selects
+the first matching entry at or after the timestamp, and backward selects the
+last at or before it. These searches validate the slots and ENTRY headers they
+visit. They do not inspect every skipped posting; use strict verification when
+the whole index must be checked. Ordinary sequential filtering continues to
+report malformed postings as it encounters them.
+
+Group/build failures retain the pending matches for retry. After repairing the
+input, retry the failed operation; flush matches to discard the pending builder.
+Flushing also rewinds the reader to the head in both languages, including
+directory and facade readers. Explicitly reposition afterward when continuing
+from a saved location.
+
+A built healthy filter retains the posting population it resolved. To include
+newly published matches, flush and rebuild the filter. Recovery refresh can
+requalify an existing DATA posting list after repair; a value absent when the
+filter was built remains absent until rebuilding. Ordinary snapshot bounds cap
+the byte extent; they do not create an immutable logical view. A new filter can
+observe publications inside the preallocated original extent. Use an
+`IndexedSnapshot` captured with writers excluded for a stable logical artifact.
+
+Strict verification, excluded-writer `IndexedSnapshot` capture and append-open
+retain their rejection rules. Use [[Indexed-Snapshots|Indexed Snapshots]] when
+deciding whether an uncertain file is suitable for writable reuse.
 
 ## Directory Reader
 
@@ -129,6 +215,12 @@ Field-name enumeration and unique-value queries must use journal indexes.
 Use list-return APIs only when the caller needs the full owned result set. Use
 visitor APIs when streaming is enough.
 
+Unreleased source builds return an error for detected cycles in traversed hash,
+FIELD DATA or ENTRY-array chains. This check uses the native indexes; opening a
+file does not certify the
+whole graph. Handle errors from query setup and from individual enumeration
+steps, and discard incomplete aggregates after a failure.
+
 ## Facade API
 
 The facade is for ports from libsystemd or Netdata `jf`-style code.
@@ -174,3 +266,15 @@ Formatting APIs are output boundaries:
 
 Verification reads the object graph to prove integrity. It is not a query hot
 path.
+
+## Compressed Input
+
+With the unreleased reader hardening changes, both SDKs decode complete supported
+Zstandard streams, including unknown-size,
+concatenated and skippable frames. A bad checksum, truncated later frame or
+trailing garbage returns an error. The DATA output limit is 768 MiB across all
+frames belonging to that DATA object.
+
+Whole-file `.journal.zst` and `.journal~.zst` inputs are SDK extensions. They are
+streamed into staging storage before reading, so opening incurs full-file
+decompression. The per-DATA limit does not cap the size of a whole journal.

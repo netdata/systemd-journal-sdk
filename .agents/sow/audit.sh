@@ -145,6 +145,8 @@ scan_sensitive_file() {
     # The canonical public Git SSH remote is not a personal email address.
     my $email_line = $line;
     $email_line =~ s{(?<!\S)git\@github\.com:netdata/systemd-journal-sdk\.git(?=\s|$)}{}g;
+    # This quoted all-zero archive fixture is a filename, not an address.
+    $email_line =~ s{"user\@0{16}-0{16}\.journal~"}{}g;
     if ($email_line =~ /\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b/i) {
       push @hits, "email-address" unless $line =~ /\b(example\.com|example\.org|example\.net|localhost)\b/i;
     }

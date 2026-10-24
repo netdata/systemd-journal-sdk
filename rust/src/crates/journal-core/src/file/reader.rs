@@ -119,6 +119,37 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
 }
 
 impl<'a, M: MemoryMap> JournalReader<'a, M> {
+    #[doc(hidden)]
+    pub fn has_filter(&self) -> bool {
+        self.filter.is_some() || self.cursor.filter_expr.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn location(&self) -> Location {
+        self.cursor.location
+    }
+
+    #[doc(hidden)]
+    #[cold]
+    #[inline(never)]
+    pub fn recover_after_error(
+        &mut self,
+        file: &'a JournalFile<M>,
+        before: Location,
+        err: &crate::error::JournalError,
+    ) -> Result<bool> {
+        self.drop_guards();
+        match file.recover_reader_tail(err) {
+            Ok(true) => {
+                self.cursor.reset_after_recovery(file, before)?;
+                Ok(true)
+            }
+            result => {
+                self.cursor.set_location(before);
+                result
+            }
+        }
+    }
     pub fn dump(&self, _journal_file: &'a JournalFile<M>) -> Result<String> {
         if let Some(_filter_expr) = self.cursor.filter_expr.as_ref() {
             Ok(String::from("filter expr active"))

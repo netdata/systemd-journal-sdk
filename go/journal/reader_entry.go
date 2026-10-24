@@ -7,12 +7,12 @@ import (
 )
 
 func (r *Reader) GetEntry() (*Entry, error) {
-	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
-		return nil, errEndOfEntries
+	offset, err := r.currentEntryOffset()
+	if err != nil {
+		return nil, err
 	}
 
 	r.entryDataActive = false
-	offset := r.entryOffsets[r.entryIndex]
 	return r.readEntryAt(offset)
 }
 
@@ -342,6 +342,7 @@ func (r *Reader) findFieldHeadDataOffset(field []byte) (uint64, bool, error) {
 		return 0, false, err
 	}
 	item := parseHashItem(itemBuf)
+	var chain chainGuard
 	for offset := item.head; offset != 0; {
 		header, payload, err := r.readFieldObjectAt(offset)
 		if err != nil {
@@ -349,6 +350,9 @@ func (r *Reader) findFieldHeadDataOffset(field []byte) (uint64, bool, error) {
 		}
 		if header.hash == hash && bytes.Equal(payload, field) {
 			return header.headDataOffset, true, nil
+		}
+		if !chain.advance(offset, header.nextHashOffset, false) {
+			return 0, false, errCorruptObject
 		}
 		offset = header.nextHashOffset
 	}

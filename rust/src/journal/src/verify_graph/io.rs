@@ -11,9 +11,10 @@ pub(crate) trait VerifyByteSource {
 
 pub(super) fn decompress_payload(flags: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
     if flags & OBJECT_COMPRESSED_ZSTD != 0 {
-        let mut decoder =
-            ruzstd::decoding::StreamingDecoder::new(payload).map_err(|err| err.to_string())?;
-        return read_limited_to_end(&mut decoder);
+        let mut out = Vec::new();
+        journal_core::file::decompress_zstd_data(payload, &mut out)
+            .map_err(|err| err.to_string())?;
+        return Ok(out);
     }
     if flags & OBJECT_COMPRESSED_XZ != 0 {
         let mut decoder = lzma_rust2::XzReader::new(payload, false);

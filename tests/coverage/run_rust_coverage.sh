@@ -19,8 +19,22 @@ if ! cargo llvm-cov --version >/dev/null 2>&1; then
 fi
 
 cd "${ROOT}/rust"
+# Keep show-env and the workspace test run on the same profile/object directory.
+PROFILE_DIR="${CARGO_LLVM_COV_TARGET_DIR:-${CARGO_TARGET_DIR:-${ROOT}/rust/target}/llvm-cov-target}"
+export CARGO_LLVM_COV_TARGET_DIR="${PROFILE_DIR}"
 run cargo llvm-cov clean --workspace
-run cargo llvm-cov --workspace --lcov --output-path "${RAW_REPORT}"
+run cargo llvm-cov --workspace --no-report
+run cargo llvm-cov show-env --sh > "${OUT_DIR}/cli-env.sh"
+(
+  # This environment is emitted by the installed coverage tool, not user input.
+  # shellcheck disable=SC1091
+  source "${OUT_DIR}/cli-env.sh"
+  # Cargo integration tests already build this instrumented command.
+  run test -x "${PROFILE_DIR}/debug/journalctl"
+  run "${PYTHON:-python3}" "${ROOT}/tests/interoperability/run_journalctl_portable_smoke.py" \
+    --rust "${PROFILE_DIR}/debug/journalctl"
+)
+run cargo llvm-cov report --lcov --output-path "${RAW_REPORT}"
 run normalize_lcov_sf_prefix "${RAW_REPORT}" "${NORMALIZED_REPORT}" "${ROOT}/rust/" "rust/"
 validate_lcov_records "${NORMALIZED_REPORT}"
 run filter_lcov_sf_paths "${NORMALIZED_REPORT}" "${REPORT}"

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -50,6 +51,8 @@ type benchConfig struct {
 	cpuProfile                string
 	memProfile                string
 	loops                     int
+	catalogField              string
+	catalogRepetitions        int
 	options                   journal.ReaderOptions
 	explorerFacets            []string
 	explorerFilters           []string
@@ -63,6 +66,12 @@ type benchConfig struct {
 	explorerBeforeUsec        uint64
 	explorerAfterSet          bool
 	explorerBeforeSet         bool
+	filterMatches             [][]byte
+	filterRepetitions         int
+	filterLimit               uint64
+	filterRealtime            uint64
+	filterRealtimeSet         bool
+	filterRebuild             bool
 }
 
 func (c *counts) addRun(other counts) {
@@ -93,6 +102,20 @@ func checksumPayload(checksum uint64, payload []byte) uint64 {
 		checksum ^= uint64(payload[len(payload)-1])
 	}
 	return checksum
+}
+
+func checksumFullPayload(checksum uint64, payload []byte) uint64 {
+	checksum = bits.RotateLeft64(checksum, 5) ^ uint64(len(payload))
+	for _, value := range payload {
+		checksum = (checksum ^ uint64(value)) * 1099511628211
+	}
+	return checksum
+}
+
+func (c *counts) addFullPayload(payload []byte) {
+	c.fields++
+	c.bytes += uint64(len(payload))
+	c.checksum = checksumFullPayload(c.checksum, payload)
 }
 
 func checksumBytes(checksum uint64, payload []byte) uint64 {
@@ -303,6 +326,9 @@ type sdkReader interface {
 	Close() error
 	SeekHead() error
 	SeekTail() error
+	SeekRealtimeUsec(uint64) error
+	AddMatch([]byte)
+	FlushMatches()
 	Step() (bool, error)
 	StepBack() (bool, error)
 	GetEntry() (*journal.Entry, error)
@@ -367,6 +393,18 @@ func addSDKPayloads(result *counts, reader sdkReader) error {
 	})
 }
 
+func addSDKDigest(result *counts, reader sdkReader) error {
+	realtime, err := reader.GetRealtimeUsec()
+	if err != nil {
+		return err
+	}
+	result.addRecordMarker(realtime)
+	return reader.VisitEntryPayloads(func(payload []byte) error {
+		result.addFullPayload(payload)
+		return nil
+	})
+}
+
 func readSDK(surface, mode, direction string, inputs []string, opts journal.ReaderOptions) (counts, error) {
 	reader, err := openSDKReader(surface, inputs, opts)
 	if err != nil {
@@ -396,6 +434,8 @@ func readSDK(surface, mode, direction string, inputs []string, opts journal.Read
 			err = addSDKEntry(&result, reader)
 		case "sdk-payloads":
 			err = addSDKPayloads(&result, reader)
+		case "sdk-digest":
+			err = addSDKDigest(&result, reader)
 		default:
 			return counts{}, fmt.Errorf("invalid SDK mode: %s", mode)
 		}
@@ -403,13 +443,81 @@ func readSDK(surface, mode, direction string, inputs []string, opts journal.Read
 			return counts{}, err
 		}
 	}
+	if mode == "sdk-digest" {
+		if statsReader, ok := reader.(interface {
+			AccessStats() journal.ReaderAccessStats
+		}); ok {
+			result.extra["reader_access_stats_after"] = statsReader.AccessStats()
+		}
+	}
 	return result, nil
+}
+
+func readCatalog(cfg benchConfig) (counts, error) {
+	reader, err := openSDKReader(cfg.surface, cfg.inputs, cfg.options)
+	if err != nil {
+		return counts{}, err
+	}
+	defer reader.Close()
+	catalog := reader.(interface {
+		EnumerateFields() (map[string]struct{}, error)
+		VisitUnique(string, func([]byte) error) error
+		QueryUniqueState(string) error
+		RestartUniqueState() error
+		EnumerateUniquePayload() ([]byte, bool, error)
+	})
+	var out counts
+	if cfg.mode == "sdk-unique-state" {
+		if err := catalog.QueryUniqueState(cfg.catalogField); err != nil {
+			return counts{}, err
+		}
+	}
+	for range cfg.catalogRepetitions {
+		out.addRecordMarker(0)
+		switch cfg.mode {
+		case "sdk-fields":
+			fields, err := catalog.EnumerateFields()
+			if err != nil {
+				return counts{}, err
+			}
+			names := make([]string, 0, len(fields))
+			for name := range fields {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				out.addPayload([]byte(name))
+			}
+		case "sdk-unique":
+			if err := catalog.VisitUnique(cfg.catalogField, func(value []byte) error { out.addPayload(value); return nil }); err != nil {
+				return counts{}, err
+			}
+		case "sdk-unique-state":
+			if err := catalog.RestartUniqueState(); err != nil {
+				return counts{}, err
+			}
+			for {
+				payload, ok, err := catalog.EnumerateUniquePayload()
+				if err != nil {
+					return counts{}, err
+				}
+				if !ok {
+					break
+				}
+				out.addPayload(payload)
+			}
+		}
+	}
+	return out, nil
 }
 
 type facadeHandle interface {
 	Close() error
 	SeekHead() error
 	SeekTail() error
+	SeekRealtimeUsec(uint64) error
+	AddMatch([]byte)
+	FlushMatches()
 	Next() (int, error)
 	Previous() (int, error)
 	GetRealtimeUsec() (uint64, error)
@@ -475,6 +583,22 @@ func addFacadeData(result *counts, j facadeHandle) error {
 	}
 }
 
+func addFacadeDigest(result *counts, j facadeHandle) error {
+	if err := addFacadeNext(result, j); err != nil {
+		return err
+	}
+	if err := j.RestartData(); err != nil {
+		return err
+	}
+	for {
+		payload, ok, err := j.EnumerateAvailableData()
+		if err != nil || !ok {
+			return err
+		}
+		result.addFullPayload(payload)
+	}
+}
+
 func readFacade(surface, mode, direction string, inputs []string, opts journal.ReaderOptions) (counts, error) {
 	j, err := openFacade(surface, inputs, opts)
 	if err != nil {
@@ -499,6 +623,8 @@ func readFacade(surface, mode, direction string, inputs []string, opts journal.R
 			err = addFacadeNext(&result, j)
 		case "facade-data":
 			err = addFacadeData(&result, j)
+		case "facade-digest":
+			err = addFacadeDigest(&result, j)
 		default:
 			return counts{}, fmt.Errorf("invalid facade mode: %s", mode)
 		}
@@ -591,6 +717,8 @@ func parseBenchConfig() (benchConfig, error) {
 	var explorerFacets inputsFlag
 	var explorerFilters inputsFlag
 	var explorerFTSPatterns inputsFlag
+	var filterMatches inputsFlag
+	var filterMatchesHex inputsFlag
 	mode := flag.String("mode", "sdk-payloads", "")
 	surface := flag.String("surface", "file", "")
 	direction := flag.String("direction", "forward", "")
@@ -600,6 +728,12 @@ func parseBenchConfig() (benchConfig, error) {
 	cpuProfile := flag.String("cpuprofile", "", "")
 	memProfile := flag.String("memprofile", "", "")
 	loops := flag.Int("loops", 1, "")
+	filterRepetitions := flag.Int("filter-repetitions", 1, "")
+	filterLimit := flag.Uint64("filter-limit", 0, "")
+	filterRealtime := flag.Uint64("filter-realtime", 0, "")
+	filterRebuild := flag.Bool("filter-rebuild", false, "")
+	catalogField := flag.String("catalog-field", "HIGH_CARD_00", "")
+	catalogRepetitions := flag.Int("catalog-repetitions", 1, "")
 	explorerHistogram := flag.String("explorer-histogram", "", "")
 	explorerLimit := flag.Int("explorer-limit", 0, "")
 	explorerFieldMode := flag.String("explorer-field-mode", "first-value", "")
@@ -608,6 +742,8 @@ func parseBenchConfig() (benchConfig, error) {
 	explorerAfterUsec := flag.Uint64("explorer-after-usec", 0, "")
 	explorerBeforeUsec := flag.Uint64("explorer-before-usec", 0, "")
 	flag.Var(&inputs, "input", "")
+	flag.Var(&filterMatches, "match", "")
+	flag.Var(&filterMatchesHex, "match-hex", "")
 	flag.Var(&explorerFacets, "explorer-facet", "")
 	flag.Var(&explorerFilters, "explorer-filter", "")
 	flag.Var(&explorerFTSPatterns, "explorer-fts", "")
@@ -621,12 +757,35 @@ func parseBenchConfig() (benchConfig, error) {
 	if *loops < 1 {
 		return benchConfig{}, fmt.Errorf("invalid --loops: %d", *loops)
 	}
+	if *filterRepetitions < 1 {
+		return benchConfig{}, errors.New("filter-repetitions must be positive")
+	}
+	var decodedMatches [][]byte
+	for _, match := range filterMatches {
+		decodedMatches = append(decodedMatches, []byte(match))
+	}
+	for _, match := range filterMatchesHex {
+		decoded, err := hex.DecodeString(match)
+		if err != nil {
+			return benchConfig{}, fmt.Errorf("invalid --match-hex: %w", err)
+		}
+		decodedMatches = append(decodedMatches, decoded)
+	}
+	if *catalogRepetitions < 1 {
+		return benchConfig{}, errors.New("catalog-repetitions must be positive")
+	}
 	opts, err := parseOptions(*bounds, *mmapStrategy, *windowSize)
 	if err != nil {
 		return benchConfig{}, err
 	}
 	return benchConfig{
 		inputs:                    inputs,
+		filterMatches:             decodedMatches,
+		filterRepetitions:         *filterRepetitions,
+		filterLimit:               *filterLimit,
+		filterRealtime:            *filterRealtime,
+		filterRealtimeSet:         isFlagSet("filter-realtime"),
+		filterRebuild:             *filterRebuild,
 		mode:                      *mode,
 		surface:                   *surface,
 		direction:                 *direction,
@@ -636,6 +795,8 @@ func parseBenchConfig() (benchConfig, error) {
 		cpuProfile:                *cpuProfile,
 		memProfile:                *memProfile,
 		loops:                     *loops,
+		catalogField:              *catalogField,
+		catalogRepetitions:        *catalogRepetitions,
 		options:                   opts,
 		explorerFacets:            explorerFacets,
 		explorerFilters:           explorerFilters,
@@ -717,12 +878,20 @@ func runBenchLoops(cfg benchConfig) (counts, error) {
 
 func readBenchOnce(cfg benchConfig) (counts, error) {
 	switch cfg.mode {
-	case "sdk-entry", "sdk-payloads":
+	case "sdk-fields", "sdk-unique", "sdk-unique-state":
+		return readCatalog(cfg)
+	case "sdk-entry", "sdk-payloads", "sdk-digest":
 		return readSDK(cfg.surface, cfg.mode, cfg.direction, cfg.inputs, cfg.options)
-	case "facade-next", "facade-data":
+	case "sdk-filter", "sdk-filter-digest":
+		return readSDKFilter(cfg)
+	case "facade-filter", "facade-filter-digest":
+		return readFacadeFilter(cfg)
+	case "facade-next", "facade-data", "facade-digest":
 		return readFacade(cfg.surface, cfg.mode, cfg.direction, cfg.inputs, cfg.options)
 	case "explorer-query":
 		return readExplorerQuery(cfg)
+	case "indexed-open", "indexed-exact", "indexed-field", "indexed-all", "indexed-exact-digest", "indexed-field-digest", "indexed-all-digest", "verify-index", "verify-file":
+		return readAuxiliary(cfg)
 	default:
 		return counts{}, fmt.Errorf("invalid --mode: %s", cfg.mode)
 	}
@@ -788,6 +957,10 @@ func benchOutput(
 			"after_usec":          optionalUint64(cfg.explorerAfterUsec, cfg.explorerAfterSet),
 			"before_usec":         optionalUint64(cfg.explorerBeforeUsec, cfg.explorerBeforeSet),
 		},
+	}
+	output["checksum_algorithm"] = "sampled-payload-v1"
+	if strings.HasSuffix(cfg.mode, "-digest") {
+		output["checksum_algorithm"] = "full-payload-fnv64-v1"
 	}
 	if result.extra == nil {
 		output["extra"] = map[string]interface{}{}

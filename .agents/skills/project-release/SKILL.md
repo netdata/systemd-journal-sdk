@@ -65,7 +65,9 @@ actions already authorized. Loading this skill does not start a release.
    The source can precede the workflow's merge commit. Ordinary PRs/pushes do
    not publish, and later master changes do not change the selected source.
 3. Require successful source checks and both full language suites at the
-   source-declared compiler minimums, with CGO disabled for Go.
+   source-declared compiler minimums, with CGO disabled for the Go SDK and
+   a separate CGO-enabled Go CLI test. Command-inclusive suites require PCRE2-8
+   development files and pkg-config; SDK publication does not depend on PCRE2.
 4. Require all eight Rust crates to pass in dependency order: **common →
    registry → core → host → log-writer → index → engine → public SDK**. For
    each new version, CI dry-runs before obtaining temporary publishing

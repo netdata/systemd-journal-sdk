@@ -77,6 +77,7 @@ mod tests {
                 head_seqnum: 1000 + head_realtime,
                 head_realtime,
             },
+            native_path: None,
         };
 
         File {
@@ -89,6 +90,7 @@ mod tests {
             path: "/var/log/journal/system.journal".to_string(),
             origin: origin.clone(),
             status: Status::Active,
+            native_path: None,
         };
 
         File {
@@ -101,6 +103,7 @@ mod tests {
             path: format!("/var/log/journal/system@{}-{}.journal~", timestamp, number),
             origin: origin.clone(),
             status: Status::Disposed { timestamp, number },
+            native_path: None,
         };
 
         File {

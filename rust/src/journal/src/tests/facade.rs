@@ -3,6 +3,96 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[cfg(unix)]
+#[test]
+fn facade_native_paths_preserve_unix_names_and_options() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let source = dir.path().join("source/system.journal");
+    write_facade_test_journal(&source);
+    let native_dir = dir
+        .path()
+        .join(std::ffi::OsString::from_vec(b"parent-\xff".to_vec()));
+    std::fs::create_dir(&native_dir).expect("create native parent");
+    let path = native_dir.join(std::ffi::OsString::from_vec(b"name-\xfe.journal".to_vec()));
+    std::fs::copy(&source, &path).expect("copy native journal");
+    let decoy = PathBuf::from(path.to_string_lossy().as_ref());
+    write_facade_single_message_journal(&decoy, b"decoy", 9000);
+    let extra = dir.path().join("extra/system.journal");
+    write_single_entry_journal(&extra, 3, 5000, 21, b"MESSAGE=extra");
+    let options = ReaderOptions::snapshot();
+    let mut readers = vec![
+        (SdJournalOpenPath(&path, 0).expect("open native path"), 2),
+        (
+            SdJournalOpenFilePath(&path, 0).expect("open native file"),
+            2,
+        ),
+        (
+            SdJournalOpenFilePathWithOptions(&path, 0, options).expect("open native file options"),
+            2,
+        ),
+        (
+            SdJournalOpenDirectoryPath(&native_dir, 0).expect("open native directory"),
+            2,
+        ),
+        (
+            SdJournalOpenDirectoryPathWithOptions(&native_dir, 0, options)
+                .expect("open native directory options"),
+            2,
+        ),
+        (
+            SdJournalOpenFilePaths(&[path.clone(), path.clone()], 0)
+                .expect("deduplicate native paths"),
+            2,
+        ),
+        (
+            SdJournalOpenFilePathsWithOptions(&[path.clone(), extra], 0, options)
+                .expect("merge native paths"),
+            3,
+        ),
+    ];
+    for (reader, expected) in &mut readers {
+        let mut messages = Vec::new();
+        while reader.next().expect("advance native reader") != 0 {
+            messages.push(reader.get_entry().expect("read native entry").fields["MESSAGE"].clone());
+        }
+        assert_eq!(messages.len(), *expected);
+        assert_eq!(messages[0], b"first");
+        assert_eq!(messages[1], b"second");
+    }
+    for error in [
+        SdJournalOpenPath(&path, 1).err(),
+        SdJournalOpenFilePathWithOptions(&path, 1, options).err(),
+        SdJournalOpenDirectoryPathWithOptions(&native_dir, 1, options).err(),
+        SdJournalOpenFilePathsWithOptions(&[&path], 1, options).err(),
+    ] {
+        assert!(matches!(error, Some(FacadeError::Unsupported)));
+    }
+
+    let compressed_dir = native_dir.join("compressed");
+    std::fs::create_dir(&compressed_dir).expect("create compressed directory");
+    let compressed = compressed_dir.join(std::ffi::OsString::from_vec(
+        b"name-\xff.journal.zst".to_vec(),
+    ));
+    let source = std::fs::read(&source).expect("read source");
+    std::fs::write(
+        &compressed,
+        ruzstd::encoding::compress_to_vec(
+            source.as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        ),
+    )
+    .expect("write native compressed journal");
+    let mut reader = SdJournalOpenDirectoryPathWithOptions(&compressed_dir, 0, options)
+        .expect("discover native compressed journal");
+    assert_eq!(reader.next().expect("advance compressed reader"), 1);
+    assert_eq!(
+        reader.get_entry().expect("read compressed row").fields["MESSAGE"],
+        b"first"
+    );
+}
+
 #[test]
 fn facade_uncompressed_data_uses_mmap_payload_for_whole_file_reader() {
     let dir = tempfile::tempdir().expect("create temp dir");
