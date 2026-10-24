@@ -4,7 +4,7 @@
 
 Status: open
 
-Sub-state: pending activation; prerequisite SOW-0121 is completed. This separate
+Sub-state: pending activation; prerequisite SOW-0121 is completed, including vacuum ordering. This separate
 scalability opportunity does not replace mandatory performance preservation in
 the user-requested SDK/journalctl workstreams prepared on 2026-10-14.
 

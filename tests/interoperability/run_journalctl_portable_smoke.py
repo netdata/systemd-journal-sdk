@@ -16,6 +16,7 @@ from journalctl_v262_cases import write_v262_fixture
 from journalctl_unit_cases import unit_invocation_cases
 from journalctl_timestamp_cases import write_timestamp_zone
 from go_fixture_writer import write_journal_file
+from journalctl_vacuum_cases import run_vacuum_cases
 
 
 def main() -> int:
@@ -184,7 +185,11 @@ def main() -> int:
             if not ok:
                 print(f"  expected: status={code} stdout={expected!r} diagnostic={diagnostic}")
                 print(f"  observed: status={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}")
-    total = (26 + len(unit_expected) + len(time_cases)) * len(commands)
+    for language, binary in commands:
+        vacuum_workspace = workspace / (language + "-vacuum")
+        vacuum_workspace.mkdir()
+        failures += sum(not passed for passed in run_vacuum_cases(binary, vacuum_workspace))
+    total = (38 + len(unit_expected) + len(time_cases)) * len(commands)
     print(f"portable CLI smoke: {total-failures}/{total} passed")
     return int(failures != 0)
 

@@ -12,6 +12,7 @@ mod timestamp_zone;
 mod unit_name;
 mod unit_pattern;
 mod vacuum_metadata;
+mod vacuum_order;
 
 use anyhow::{Result, anyhow};
 use clap::builder::TypedValueParser;
@@ -1641,10 +1642,11 @@ fn vacuum_directory(dir: &Path, opts: VacuumOptions, quiet: bool) -> Result<()> 
         0
     };
     patch_vacuum_creation_times(&mut candidates, &opts, retention_limit, sum, active_files);
-    candidates.sort_by(vacuum_candidate_cmp);
+    let candidate_count = candidates.len();
+    let order = vacuum_order::VacuumOrder::new(&mut candidates);
 
-    for (idx, candidate) in candidates.iter().enumerate() {
-        let left = active_files.saturating_add((candidates.len() - idx) as u64);
+    for (idx, candidate) in order.enumerate() {
+        let left = active_files.saturating_add((candidate_count - idx) as u64);
         if (opts.max_retention_usec == 0 || candidate.realtime >= retention_limit)
             && (opts.max_use == 0 || sum <= opts.max_use)
             && (opts.max_files == 0 || left <= opts.max_files)
@@ -1748,23 +1750,6 @@ fn parse_id128_hex(value: &str) -> Result<[u8; 16]> {
     decoded
         .try_into()
         .map_err(|_| anyhow!("failed to parse id128"))
-}
-
-fn vacuum_candidate_cmp(a: &VacuumCandidate, b: &VacuumCandidate) -> std::cmp::Ordering {
-    if a.have_seqno && b.have_seqno && a.seqnum_id == b.seqnum_id {
-        return a.seqnum.cmp(&b.seqnum);
-    }
-    match a.realtime.cmp(&b.realtime) {
-        std::cmp::Ordering::Equal => {}
-        order => return order,
-    }
-    if a.have_seqno && b.have_seqno {
-        match a.seqnum_id.cmp(&b.seqnum_id) {
-            std::cmp::Ordering::Equal => {}
-            order => return order,
-        }
-    }
-    a.name.cmp(&b.name)
 }
 
 fn vacuum_journal_file_empty(path: &Path, metadata: &fs::Metadata) -> Result<bool> {

@@ -3378,11 +3378,10 @@ func vacuumDirectory(dir string, opts vacuumOptions, quiet bool, stderr io.Write
 		}
 	}
 	patchVacuumCreationTimes(candidates, opts, retentionLimit, sum, activeFiles)
-	sort.Slice(candidates, func(i, j int) bool {
-		return vacuumCandidateLess(candidates[i], candidates[j])
-	})
+	order := newVacuumOrder(candidates)
 
-	for i, candidate := range candidates {
+	for i := 0; i < len(candidates); i++ {
+		candidate := order.next()
 		left := activeFiles + uint64(len(candidates)-i)
 		if (opts.maxRetentionUsec == 0 || candidate.realtime >= retentionLimit) &&
 			(opts.maxUse == 0 || sum <= opts.maxUse) &&
@@ -3449,19 +3448,6 @@ func parseVacuumCandidate(path, name string, usage uint64) (*vacuumCandidate, bo
 		}, false
 	}
 	return nil, false
-}
-
-func vacuumCandidateLess(a, b vacuumCandidate) bool {
-	if a.haveSeqno && b.haveSeqno && a.seqnumID == b.seqnumID {
-		return a.seqnum < b.seqnum
-	}
-	if a.realtime != b.realtime {
-		return a.realtime < b.realtime
-	}
-	if a.haveSeqno && b.haveSeqno && a.seqnumID != b.seqnumID {
-		return a.seqnumID < b.seqnumID
-	}
-	return a.name < b.name
 }
 
 func vacuumJournalFileEmpty(path string, info os.FileInfo) (bool, error) {

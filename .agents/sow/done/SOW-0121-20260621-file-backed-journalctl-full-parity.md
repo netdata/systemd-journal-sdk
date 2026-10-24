@@ -6,20 +6,13 @@ Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: implementation and local validation complete. Whole-SOW internal
-review passes bed8c1152fb6; native CLI run 39667258392 passes Linux, macOS,
-Windows and FreeBSD. The final equivalent integer-mask clarification passes
-all 1,052 timestamp observations. Closure impact review and normal PR checks
-apply to the combined final commit. Bandit still reports an execution error,
-so aggregate SARIF success does not establish complete Bandit coverage.
-External reviewer models are not authorized. Draft PR #12 is not merged or
-released by this completion.
-
-SDK SOW-0159 completed at signed commit 25accee and prerequisite SOW-0108
-at 4c49205. Both requested SOW implementations are delivered. The approved
-contract is portable file-backed v262 behavior with CLI-only native PCRE2/CGO
-and the recorded startup/vacuum exceptions. Historical outcomes and gates
-remain below; the appended October decisions govern the completed work.
+Sub-state: the reopened vacuum-ordering regression is repaired under approved
+1A. Both CLIs use deterministic sequence-preserving history-head ordering, with
+an explicit exception for contradictory stock comparisons. Internal final review
+passes repair commit fcd918bcaab0; native CLI run 40076505728 passes all four
+platforms. SDK SOW-0159 and prerequisite SOW-0108 remain completed. The appended
+2026-10-24 closure records validation and analysis limitations. External reviewer
+models remain disabled; PR #12 stays draft, with no merge/release authorized.
 
 ## Requirements
 
@@ -5157,3 +5150,178 @@ of the approved native rule behavior, not a new parsing policy.
   compatibility skill and the evidence above.
 
 The final lifecycle audit reports complete and clean (closure-audit.log).
+
+## Regression - 2026-10-23
+
+### What Broke And Evidence
+
+The user approved reopening after internal final-review risk analysis of
+45e0de2832f3bb886551896287b6ddc1e3f5edb4. Twenty-one valid, nonempty archived
+journals span three sequence IDs and backward realtime ordering. Every filename
+agrees with its header/ENTRY identity and timestamps; pinned v262 verifies all
+21. With --vacuum-files=2, stock retains two and exits zero; Go retains a
+different pair and exits zero; Rust exits 101 with a non-total-order sort panic
+and retains all 21. Earlier empty-file cleanup may already mutate a mixed
+archive directory. Synthetic reproducers/results remain under ignored
+.local/risk-cli-review/ (write_valid.go, valid-names.json, valid_check.py,
+valid-result.json). No live host journal was accessed.
+
+Rust main.rs:1644,1753 and Go main.go:3381,3454 use sequence order within one
+ID and realtime across IDs. These comparisons can cycle. The comparator and
+Rust sort already exist in the PR base: this is an inherited defect missed by
+the requalification, not a new SDK regression. Earlier vacuum controls lacked
+valid cross-ID clock-rollback ordering. The independent SDK and upgrade reviews
+pass their scopes; their verdicts do not override this maintenance blocker.
+
+### Repair Gate And Plan
+
+The user approved investigating native ordering and a shared Rust/Go repair.
+No archive-deletion policy has yet been selected. Inspect pinned upstream
+comparison/sort/enumeration and library guarantees; determine whether matching
+one oracle's accidental order is a portable contract. Go also pre-sorts directory
+names through os.ReadDir, unlike native enumeration, so changing only its sort
+algorithm does not establish parity. Present any irreducible deletion-policy
+choice with concrete tradeoffs before implementation. Do not catch the panic
+and continue, or silently choose a different retention order.
+
+Validate the selected policy with the retained valid 21-file fixture, ordinary
+monotonic archives, multiple sequence IDs, corrupt-style names, and applicable
+count/size/age combinations. Trace added sorting/allocation work and use a
+focused existing-style timing control if needed; do not expand a benchmark
+framework. Preserve the user-approved narrow startup/vacuum costs. Update the
+parity spec, consumer maintenance documentation, compatibility skill and both
+status indexes; rerun the local audit and internal full-scope review before
+closure. All fixtures are synthetic and raw evidence stays ignored. No SDK
+source or unrelated SOW is activated by this repair.
+
+### Native Ordering Investigation And Open Decision - 2026-10-23
+
+Pinned reference: systemd/systemd @ 8cc40e0c5e9234bf45084751ac53b1fbfe70b492,
+src/libsystemd/sd-journal/journal-vacuum.c:35-49,153-160,293 and
+src/basic/sort-util.h:31-36. Native enumeration feeds qsort through its wrapper;
+Go os.ReadDir sorts names first. POSIX qsort requires total ordering (Open Group
+qsort specification, https://pubs.opengroup.org/onlinepubs/009695399/functions/qsort.html).
+The native comparator violates that prerequisite for a cycle such as A=(ID1,
+seq1,time300), B=(ID1,seq2,time100), C=(ID2,seq1,time200): A precedes B, B precedes
+C and C precedes A. A read-only in-memory libc experiment over all six input
+permutations produces three different output orders: ABC, BCA and CAB. This
+experiment performs no journal operations or deletions. Emulating one libc's
+sorting algorithm alone cannot establish portable stock parity.
+
+Open policy decision, before code: recommend a deterministic shared order that
+preserves increasing sequence within each history and chooses the oldest-time
+available history head across histories (with explicit deterministic tie
+breaks). This defines behavior where native comparisons are contradictory,
+rather than promising the oracle's incidental survivor pair. It requires a
+narrow documented parity exception and targeted cost validation; the plan must
+cover missing sequence IDs, ties, empty-file handling and count/size/age stop
+conditions before implementation. Alternatives are conservative refusal on
+clock-rollback histories before deletion, or freezing a selected libc/order
+emulation with its portability and maintenance limitations. None is approved
+by the earlier approval to investigate. The local lifecycle audit reports
+complete and clean after reopening; no production source has changed.
+
+### Approved Decision 1A And Implementation Gate - 2026-10-24
+
+The user selected 1A: deterministic sequence-preserving ordering in both CLIs.
+Sort each sequenced history by sequence number, breaking equal sequence numbers
+by filename; treat each candidate without sequence metadata as an independent
+history. Merge available history heads by adjusted realtime, then sequence ID
+when both heads have one, then filename. To make ties a total order, sequenced
+heads precede unsequenced heads at equal realtime; names compare native Unix
+bytes / Unicode Windows names in both commands. This explicit tie convention
+extends the approved deterministic policy. Filename is unique within a directory.
+
+Implementation uses a contiguous history sort and a min-heap of history ranges,
+consuming only candidates needed by the existing retention loop. No journal
+payload decoding or new metadata syscall is added. Time is O(n log n + k log h)
+for n candidates, h histories and k consumed candidates; auxiliary state is
+O(h). A single history needs no heap comparisons. Empty cleanup, protected files,
+metadata adjustment and count/size/age stop conditions retain their existing
+contracts; an age stop does not skip an earlier-sequence file to delete its
+later successor. Contradictory cross-history comparisons are the approved
+parity exception. Test ties, unsequenced archives, reversed insertion order,
+clock rollback, ordinary stock-compatible order and real command survivors.
+Add portable controls and targeted sorting/command cost evidence. Update docs,
+spec and compatibility skill. No dependencies or SDK changes are required.
+
+### Decision 1A Implementation And Local Validation - 2026-10-24
+
+Both commands now use a valid contiguous history sort and a lazy min-heap of
+available heads. The old pairwise cyclic comparators are removed. Missing
+sequence metadata is represented by singleton histories. Tests enumerate all
+120 permutations of a cyclic/tied/mixed candidate set in each language. Shared
+portable controls generate the original 21 valid archives using caller-provided
+head sequence numbers; reversed creation order, count two/ten, size, age and
+combined limits pass. A recent earlier sequence protects its old successor
+under age-only limits, while an eligible old sibling history is removed.
+
+Local validation passes 130/130 portable observations, 78/78 existing utility
+oracle observations, Go CLI race tests, Rust 26 unit/11 subprocess tests,
+35 executable documentation examples and 16 wiki pages. Synthetic fixtures
+and raw results are under .local/risk-cli-review/; no SDK source changed.
+
+Performance evidence uses seven alternating measured runs over 1,000 nonempty
+archive names, with one, 50 and 1,000 histories, against retained binaries and
+stock. The first Rust many-history median increased (14.67 to16.26ms); retained
+as adverse evidence in vacuum-cost-initial.json, not accepted as equality.
+An isolated repeat yields Go before/after20.43/20.53,20.41/20.44,20.76/20.41ms;
+Rust16.85/16.83,16.46/16.55,16.56/16.81ms; stock75.91-79.49ms. The original large
+increase did not reproduce. These small mixed/reduced differences do not prove
+equality; work tracing shows unchanged file/header/syscall work, one in-place
+sort, O(h) heap metadata and lazy O(log h) selection. No per-row payload work or
+new metadata syscall is introduced. Go baseline is retained final45e0de2;
+Rust retained unit-repair-6 precedes unrelated timestamp changes, so its
+comparison is representative, not an exact whole-binary before/after claim.
+No additional performance waiver is requested. Final internal review assesses
+this evidence and the complete changed behavior before publication.
+
+Consumer maintenance docs, parity spec and compatibility skill record the
+approved exception and future tests. AGENTS.md needs no change: this is a
+CLI behavior decision within its existing dependency boundary. No distributed
+operator skills exist. Pending0122 remains unactivated and owns only broader
+scalability work. Internal review/native qualification and lifecycle close
+remain outstanding; previous completion/PASS is superseded for vacuum ordering.
+
+### Regression Closure - 2026-10-24
+
+Decision 1A is implemented in Rust and Go. Internal final-review passes exact
+repair fcd918bcaab05b29e2bd18cf297ce2273b2059d8, with matching reviewed hashes.
+Independent checks add 10,000 randomized candidate sets per language against
+an eligibility model and 12 real-command controls using the original 21 verified
+journals (two languages, two creation orders, limits 2/10/21). No remaining
+P0-P2 failure or reproducible blocking slowdown was established. The whole
+relevant scope includes maintenance, platform/native dependency boundaries,
+shared fixture generation, documentation and previous CLI findings. Review
+findings are fixed, not waived; final lifecycle changes receive impact review.
+
+Native run 40076505728 passes Linux, macOS, Windows and FreeBSD with 130 portable
+observations across both commands. Both coverage jobs in 40076505657 pass;
+documentation examples and wiki validation pass. The Codacy SARIF job initially
+failed fetching remote configuration with an upstream Internal Server Error,
+before source analysis; a retry failed identically. Coverage generation passes
+but its Codacy upload reports Request URL not found / no data sent. Neither
+failure establishes an implementation finding; the external configuration/API
+path remains unverified and no CI configuration is changed under this repair.
+Go/Rust CodeQL run 40076505661 passes. The earlier Bandit execution-coverage limitation
+remains explicit; aggregate success alone does not remove it. Normal PR CI
+revalidates the final lifecycle amendment.
+
+Acceptance evidence also includes 78 existing stock-oracle utility observations,
+Go CLI race tests, Rust 26 unit/11 subprocess tests, 120 insertion permutations
+per language, 35 documentation examples and 16 wiki pages. The local SOW audit
+reports complete and clean. Cost results and their uncertainty remain above.
+Same-failure review covers mixed/unsequenced histories, ties, backward clocks,
+heap successor replacement, age stopping and reversed enumeration; the old
+cyclic comparators no longer serve either command.
+
+Artifact maintenance: consumer maintenance docs, parity spec and compatibility
+skill are updated; AGENTS.md and output/operator skills need no changes for the
+reasons recorded above. Both status indexes and SOW-0122's prerequisite
+reference are reconciled. Synthetic identities and ignored raw evidence satisfy
+the sensitive-data gate. The lesson is to test valid cross-history clock rollback
+and require a total ordering rather than treating one libc output as a portable
+contract. Historical pending decisions are resolved by 1A; broader scalability
+remains SOW-0122, with unrelated SDK issues still explicitly tracked by their
+own SOWs. No new deferred repair remains. Implementation and completed SOW
+lifecycle are amended into the same signed repair commit.

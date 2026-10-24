@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-10-21
+Last updated: 2026-10-24
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
@@ -62,13 +62,14 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Done
 
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
-  Rust and Go target v262 with unchanged SDK purity and compiler floors.
-  Local checks pass 1,372 v262, 1,052 timestamp and 106 portable observations;
-  native Linux/macOS/Windows/FreeBSD CI passes. Whole-SOW internal review
-  passes; the final equivalent mask and closure receive impact review.
-  Recorded narrow startup/vacuum costs remain accepted. Bandit has an explicit
-  execution coverage gap despite aggregate analysis success. Draft PR #12
-  delivers the work; merge/release and pending SOW-0122 are not activated.
+  The vacuum regression is repaired under approved deterministic history-head
+  ordering. Both languages pass independent 10,000-set models; native CI passes
+  Linux/macOS/Windows/FreeBSD with 130 portable controls. Existing 78 utility
+  oracle observations pass. Final internal review passes the repair; lifecycle
+  impact review and normal final-commit CI complete publication. Upstream
+  Codacy configuration retry and coverage upload fail remotely; native tests,
+  coverage generation and CodeQL pass. These CI limitations stay explicit.
+  Broader scalability remains SOW-0122; PR #12 is draft, not merged/released.
 
 - `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - completed.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
@@ -82,7 +83,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
   intervals and adverse history retained. The fresh whole-SOW review has one
   positive verdict, five coverage gaps and no verified unresolved blocker.
   The complete-and-clean closing audit passes; signed commit 25accee keeps
-  implementation and completed lifecycle together. Journalctl is completed under SOW-0121.
+  implementation and completed lifecycle together. Journalctl SOW-0121 is completed, including the vacuum repair.
 - `SOW-0108-20260614-cross-language-reader-window-accessor.md` - completed
   again: Go indexed value lifetimes, bounded hybrid headers, native opener and
   initial statistics are repaired. Full local checks and adjudicated review

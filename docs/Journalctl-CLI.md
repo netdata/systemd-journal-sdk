@@ -148,6 +148,24 @@ v260.1; this command update does not change journal bytes or compiler minimums.
   As in stock journalctl, `--utc` changes entry timestamps; header and
   boot/invocation tables retain local time.
 
+## Archive Retention Ordering
+
+Vacuum preserves sequence-number order within each archived writer history.
+Across histories it selects the oldest adjusted timestamp among the next
+available files. Equal sequence numbers use filename order; equal head times
+use sequenced files first, then sequence ID and filename. Archives without
+sequence metadata are independent candidates. This makes Rust and Go agree
+regardless of directory enumeration order.
+
+This is an intentional exception to stock behavior when clock corrections make
+its sequence/time comparisons contradictory. Stock's survivor selection then
+depends on its sorting implementation and enumeration order. These commands
+use the deterministic rule above instead of reproducing that incidental order.
+Age retention still stops when the next eligible file meets the age limit and
+size/count limits are satisfied; it does not skip a file to remove a later
+sequence from the same history. Empty-archive cleanup and protected active
+files retain their existing behavior.
+
 ## Build Prerequisites
 
 Both commands require PCRE2-8 development files (10.42 or later), `pkg-config`

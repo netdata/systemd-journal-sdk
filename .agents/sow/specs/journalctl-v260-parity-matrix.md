@@ -252,3 +252,15 @@ table underlining. TERM=linux disables underlining. Embedded DOCUMENTATION and
 CONFIG_FILE links follow SYSTEMD_URLIFY. Host catalog lookup, including implicit
 documentation-link lookup, remains outside portable mode. Preserve plain
 rendering paths and avoid a second regex evaluation for highlighting.
+
+## Approved Vacuum Ordering Exception (2026-10-24)
+
+Both CLIs order each sequenced archive history by sequence number and filename,
+then merge available history heads by adjusted realtime, sequenced-before-
+unsequenced, sequence ID and filename. Each archive without sequence metadata
+is an independent history. This replaces the nontransitive stock comparison
+when clock rollback causes conflicting sequence/time order; incidental libc
+survivor sets are not the contract for that case. Count/size/age stop conditions,
+empty cleanup and protected files otherwise retain their existing semantics.
+The history sort and lazy heap merge cost O(n log n + k log h), with O(h)
+auxiliary ranges and no added journal payload reads or metadata syscalls.

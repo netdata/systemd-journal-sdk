@@ -96,6 +96,7 @@ type sealSpec struct {
 }
 
 type spec struct {
+	HeadSeqnum                uint64      `json:"head_seqnum"`
 	Path                      string      `json:"path"`
 	MachineID                 string      `json:"machine_id"`
 	BootID                    string      `json:"boot_id"`
@@ -167,6 +168,7 @@ func buildOptions(s spec) (journal.Options, error) {
 		MachineID:              machineID,
 		BootID:                 bootID,
 		SeqnumID:               seqnumID,
+		HeadSeqnum:             s.HeadSeqnum,
 		FileID:                 fileID,
 		Compact:                s.Compact,
 		Compression:            compression,
@@ -502,6 +504,7 @@ def write_journal_file(
     boot_id: str,
     seqnum_id: str,
     entries: list[dict[str, Any]],
+    head_seqnum: int = 0,
     file_id: str = "",
     compact: bool = False,
     compression: str = "none",
@@ -535,6 +538,7 @@ def write_journal_file(
         "machine_id": machine_id,
         "boot_id": boot_id,
         "seqnum_id": seqnum_id,
+        "head_seqnum": head_seqnum,
         "file_id": file_id,
         "compact": compact,
         "compression": compression,

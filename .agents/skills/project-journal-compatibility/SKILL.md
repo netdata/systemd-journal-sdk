@@ -423,6 +423,16 @@ Do not use this skill for:
 7. Run live one-writer/multiple-reader tests for every affected writer and reader.
 8. Record benchmark or profiling evidence when the SOW includes performance claims.
 
+## Vacuum Ordering Validation
+
+- Exercise valid cross-history clock rollback, reversed creation order, ties
+  and unsequenced archives. Native sorting can have contradictory comparisons;
+  the approved deterministic history-head merge is an explicit parity exception.
+  Compare ordinary compatible histories with the pinned oracle and ambiguous
+  histories with the documented policy, including actual retained files.
+- Retain count, size and age controls and single/many-history cost evidence.
+  Do not catch Rust sort panics or blindly substitute another sorting algorithm.
+
 ## Validation Checklist
 
 Before claiming production-grade compatibility:
