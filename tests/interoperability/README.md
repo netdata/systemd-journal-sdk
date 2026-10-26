@@ -371,7 +371,7 @@ realtime ranges, then compares stock journalctl with the Rust and Go
 file-backed rewrites.
 
 ```bash
-python3 tests/interoperability/run_journalctl_query_matrix.py
+python3 tests/interoperability/run_journalctl_query_matrix.py --journalctl /path/to/systemd-v262/journalctl
 ```
 
 The matrix validates:

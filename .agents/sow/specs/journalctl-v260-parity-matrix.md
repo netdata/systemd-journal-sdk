@@ -125,7 +125,7 @@ disk-image/rootfs-only, or unsafe without an explicit file/directory target.
 | `-q`, `--quiet` | none | file-backed-required | Suppress informational messages, boot separator output, and the stock empty-result `-- No entries --` line where applicable. |
 | `--synchronize-on-exit=` | bool | recognized-unsupported | Requires journald Varlink synchronization on signal exit. Parse and reject when true; false may be accepted as no-op. |
 | `--no-pager` | none | recognized-no-op | Portable commands do not spawn a pager. |
-| `-e`, `--pager-end` | none | file-backed-required | Do not spawn a pager, but preserve official default-line side effects for file-backed output: when no explicit line limit exists, show the last 1000 matching entries. |
+| `-e`, `--pager-end` | none | file-backed-required | Do not spawn a pager, but preserve official default-line side effects for file-backed output: when no explicit line limit exists, show the last 1000 matching entries, or 10 with follow. |
 
 ## Output Modes
 
@@ -249,7 +249,9 @@ stderr terminal state. Fixed modes and explicit true override NO_COLOR;
 automatic modes respect it. Include priority/audit colors, first-match grep
 offsets, verbose fields/cursors, JSON primitive styles, boot separators and
 table underlining. TERM=linux disables underlining. Embedded DOCUMENTATION and
-CONFIG_FILE links follow SYSTEMD_URLIFY. Host catalog lookup, including implicit
+CONFIG_FILE links follow SYSTEMD_URLIFY. Windows drive and UNC file links use
+slash-separated, percent-encoded file URIs; unsupported device paths remain
+plain text. Unix link formatting is unchanged. Host catalog lookup, including implicit
 documentation-link lookup, remains outside portable mode. Preserve plain
 rendering paths and avoid a second regex evaluation for highlighting.
 

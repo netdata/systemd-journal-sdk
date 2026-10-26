@@ -514,7 +514,8 @@ The CLI targets systemd v262. Building it requires PCRE2-8 development files
 The command links PCRE2 only; it never links system journal libraries. Native
 library deployment must accompany dynamically linked command binaries.
 
-`-F`/`-N` with time, entry, cursor or grep restrictions now fail under v262;
+`-F`/`-N` with time, entry, cursor, grep, or explicit boot/invocation restrictions
+now fail under v262 (bare `all` remains unscoped);
 remove the restriction for whole-file enumeration, or read filtered rows with
 the SDK. Grep supports PCRE2 byte syntax and returns exit 1 without a diagnostic
 when no entry matches. See [Journalctl CLI](../docs/Journalctl-CLI.md) for migration

@@ -250,9 +250,9 @@ func (j *trackingCLIJournal) SeekTail() error {
 	j.seekTailCalls++
 	return nil
 }
-func (j *trackingCLIJournal) SeekRealtimeUsec(uint64) error   { return nil }
-func (j *trackingCLIJournal) SeekCursor(string) error         { return nil }
-func (j *trackingCLIJournal) TestCursor(string) (bool, error) { return false, nil }
+func (j *trackingCLIJournal) SeekRealtimeUsec(uint64) error                       { return nil }
+func (j *trackingCLIJournal) SeekCursorDirection(string, journal.Direction) error { return nil }
+func (j *trackingCLIJournal) TestCursor(string) (bool, error)                     { return false, nil }
 func (j *trackingCLIJournal) Next() (int, error) {
 	j.nextCalls++
 	return 0, nil

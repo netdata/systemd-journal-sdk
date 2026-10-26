@@ -114,6 +114,8 @@ v260.1; this command update does not change journal bytes or compiler minimums.
   explicit true override `NO_COLOR`; automatic modes respect it. Plain output
   avoids color formatting and additional regex matching.
   Embedded documentation and configuration-file links follow `SYSTEMD_URLIFY`.
+  Windows file links encode drive and UNC paths as file URIs, including spaces
+  and Unicode; unsupported device paths remain plain text.
   Portable commands do not consult host catalog databases for implicit links.
 - Short output uses the last repeated MESSAGE and header values. `--no-full` shortens
   each line independently, retains the native prefix/suffix split and respects
@@ -215,9 +217,9 @@ cargo run --manifest-path rust/Cargo.toml --bin journalctl -- \
     --file ./fixtures/system.journal --output json PRIORITY=3
 
 # Go
-CGO_ENABLED=1 go -C go run ./cmd/journalctl --directory ./journal-dir --list-boots
-CGO_ENABLED=1 go -C go run ./cmd/journalctl --file ./fixtures/system.journal --disk-usage
-CGO_ENABLED=1 go -C go run ./cmd/journalctl --directory ./journal-dir --vacuum-time=30d
+CGO_ENABLED=1 go -C go run ./cmd/journalctl --directory ../journal-dir --list-boots
+CGO_ENABLED=1 go -C go run ./cmd/journalctl --file ../fixtures/system.journal --disk-usage
+CGO_ENABLED=1 go -C go run ./cmd/journalctl --directory ../journal-dir --vacuum-time=30d
 CGO_ENABLED=1 go -C go run ./cmd/journalctl --new-id128
 
 ```

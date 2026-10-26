@@ -426,7 +426,7 @@ def exercise_interaction(cmd: Command, interaction: dict) -> CaseResult:
     """
     name = interaction["name"]
     if name == "unscoped-field-enumeration":
-        result = run_command(cmd, ["--fields", "--since=@0"])
+        result = run_command(cmd, ["--file=placeholder.journal", "--fields", "--since=@0"])
         ok = result.returncode != 0 and "cannot be combined with options that limit the journal" in result.stderr
         return CaseResult(name, "parser-required", "ok" if ok else "fail", result.stderr.strip()[:300])
     if name == "time-bounds-order":

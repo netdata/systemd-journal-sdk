@@ -62,7 +62,7 @@ def run_timestamp_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> lis
                                        ("_SYSTEMD_UNIT","clock.service"),
                                        ("_SYSTEMD_INVOCATION_ID","34343434343434343434343434343434")]}
                            for i,value in enumerate(sorted(value for value in points if 0 < value < (1 << 55)))])
-    commands = {"stock": tools.get("stock_journalctl", "journalctl"),
+    commands = {"stock": tools["stock_journalctl"],
                 "go": tools["go_journalctl"], "rust": tools["rust_journalctl"]}
     check = subprocess.run(  # nosec B603 - fixture validation with the selected oracle.
         [commands["stock"], "--file", str(path), "--verify"], capture_output=True, timeout=30, check=False)

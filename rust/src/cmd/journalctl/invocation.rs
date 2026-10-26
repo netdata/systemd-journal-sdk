@@ -259,14 +259,20 @@ impl Walker {
 
     fn step(&mut self) -> Result<bool> {
         if let Some(anchor) = self.anchor.take() {
-            SdJournalSeekCursor(&mut self.scan, &anchor)?;
-            if !self.older {
-                match SdJournalTestCursor(&self.scan, &anchor) {
-                    Ok(false) => return Ok(true),
-                    Ok(true) => {}
-                    Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => return Ok(false),
-                    Err(err) => return Err(err.into()),
-                }
+            SdJournalSeekCursorDirection(
+                &mut self.scan,
+                &anchor,
+                if self.older {
+                    journal::Direction::Backward
+                } else {
+                    journal::Direction::Forward
+                },
+            )?;
+            match SdJournalTestCursor(&self.scan, &anchor) {
+                Ok(false) => return Ok(true),
+                Ok(true) => {}
+                Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => return Ok(false),
+                Err(err) => return Err(err.into()),
             }
         }
         Ok(if self.older {

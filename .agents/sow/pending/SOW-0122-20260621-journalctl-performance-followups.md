@@ -28,11 +28,12 @@ Facts:
 
 - SOW-0121 passed its shared stock-oracle parser, directory, and query matrices
   at its earlier close. New combinations failed the 2026-10-14 audit; the
-  originating SOW was reopened, repaired those failures and is now completed.
+  originating SOW repaired those failures, then reopened for the 2026-10-26
+  CLI review findings, now corrected and independently reviewed.
 - SOW-0121's 2026-10-19 unit/invocation audit supersedes the old row-scan
   description. Its provisional implementation enumerated indexed unique IDs
   and reopened readers for unit-restricted bounds. That approximation had
-  confirmed correctness gaps. Completed SOW-0121 delivers native directional
+  confirmed correctness gaps. Its completed invocation repair delivers native directional
   discovery, global ID bounds, reader reuse and performance evidence.
 - `--follow` uses portable polling over explicit file/directory inputs. That
   preserves non-Linux correctness and purity, but may be more expensive than a
@@ -74,8 +75,9 @@ Sources checked:
 
 Current state:
 
-- Confirmed correctness gaps and mandatory performance evidence are resolved
-  in completed SOW-0121; SDK primitive repairs completed in SOW-0159.
+- Earlier invocation correctness and performance repairs remain accepted.
+  SOW-0121 is completed after CLI review fixes, including reverse cursor seeking;
+  completed SOW-0159 owns the approved directional SDK primitives.
 - Performance work remains for invocation listing and follow scalability.
 - This SOW remains pending and is not a third active workstream in the new
   two-SOW request. Broader optimizations here are not prerequisites for measuring

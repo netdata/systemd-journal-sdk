@@ -1345,28 +1345,35 @@ fn write_systemd_pretty_json_at(out: &mut Vec<u8>, value: &Value, depth: usize) 
             }
             out.push(b'}');
         }
-        Value::Array(values) => {
-            out.push(b'[');
-            if !values.is_empty() {
-                out.push(b'\n');
-            }
-            for (idx, value) in values.iter().enumerate() {
-                write_json_tabs(out, depth + 1);
-                write_systemd_pretty_json_at(out, value, depth + 1)?;
-                if idx + 1 != values.len() {
-                    out.push(b',');
-                }
-                out.push(b'\n');
-            }
-            if !values.is_empty() {
-                write_json_tabs(out, depth);
-            }
-            out.push(b']');
-        }
+        Value::Array(values) => write_systemd_pretty_json_array_at(out, values, depth)?,
         _ => {
             serde_json::to_writer(&mut *out, value).map_err(|err| anyhow!("json output: {err}"))?;
         }
     }
+    Ok(())
+}
+
+pub(super) fn write_systemd_pretty_json_array_at(
+    out: &mut Vec<u8>,
+    values: &[Value],
+    depth: usize,
+) -> Result<()> {
+    out.push(b'[');
+    if !values.is_empty() {
+        out.push(b'\n');
+    }
+    for (idx, value) in values.iter().enumerate() {
+        write_json_tabs(out, depth + 1);
+        write_systemd_pretty_json_at(out, value, depth + 1)?;
+        if idx + 1 != values.len() {
+            out.push(b',');
+        }
+        out.push(b'\n');
+    }
+    if !values.is_empty() {
+        write_json_tabs(out, depth);
+    }
+    out.push(b']');
     Ok(())
 }
 

@@ -29,6 +29,8 @@ Do not use this skill for:
 - The portable file-backed journalctl contract targets tag `v262`
   (8cc40e0c5e9234bf45084751ac53b1fbfe70b492). Run the pinned full-feature
   oracle; host versions and feature-limited builds cannot certify this target.
+  Query-matrix qualification requires `--journalctl PATH`; every helper must use
+  that selected oracle, including version reporting and empty-result cases.
 - Native PCRE2-8 >=10.42 is CLI-private. Enable CGO only for Go CLI builds
   and tests; retain CGO-disabled SDK checks. Declare the C compiler, pkg-config
   and PCRE2 development prerequisites in command-inclusive coverage/CI.

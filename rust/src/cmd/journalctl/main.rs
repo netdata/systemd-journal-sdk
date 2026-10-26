@@ -21,7 +21,7 @@ use journal::{
     Entry, FacadeError, FileHeader, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalFlushMatches,
     SdJournalGetCursor, SdJournalGetEntry, SdJournalNext, SdJournalOpenDirectoryPath,
-    SdJournalOpenFilePaths, SdJournalPrevious, SdJournalSeekCursor, SdJournalSeekHead,
+    SdJournalOpenFilePaths, SdJournalPrevious, SdJournalSeekCursorDirection, SdJournalSeekHead,
     SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
     SdJournalVisitUniqueValues, parse_match_bytes, parse_match_string, verify_file,
     verify_file_with_key,
@@ -3352,7 +3352,7 @@ fn show_tail_with_reverse(
         && selected.len() < limit
     {
         if !last_cursor.is_empty() {
-            SdJournalSeekCursor(journal, &last_cursor)
+            SdJournalSeekCursorDirection(journal, &last_cursor, journal::Direction::Forward)
                 .map_err(|err| anyhow!("seek cursor: {err}"))?;
         } else {
             SdJournalSeekRealtimeUsec(journal, until_usec.unwrap())
@@ -3700,8 +3700,16 @@ fn seek_cursor_start_tracked(
     reverse: bool,
     checkpoint: Option<&mut String>,
 ) -> Result<Option<Entry>> {
-    SdJournalSeekCursor(journal, &cursor_seek.cursor)
-        .map_err(|err| anyhow!("seek cursor: {err}"))?;
+    SdJournalSeekCursorDirection(
+        journal,
+        &cursor_seek.cursor,
+        if reverse {
+            journal::Direction::Backward
+        } else {
+            journal::Direction::Forward
+        },
+    )
+    .map_err(|err| anyhow!("seek cursor: {err}"))?;
     if let Some(checkpoint) = checkpoint {
         match SdJournalGetCursor(journal) {
             Ok(cursor) => *checkpoint = cursor,
@@ -4904,7 +4912,9 @@ fn table_timestamp(value: u64) -> Option<u64> {
 
 fn print_json_table(mode: OutputModeArg, rows: &[serde_json::Value]) -> Result<()> {
     let mut text = if matches!(mode, OutputModeArg::JsonPretty) {
-        serde_json::to_string_pretty(rows)?
+        let mut bytes = Vec::new();
+        output::write_systemd_pretty_json_array_at(&mut bytes, rows, 0)?;
+        String::from_utf8(bytes)?
     } else {
         serde_json::to_string(rows)?
     };

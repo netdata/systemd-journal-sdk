@@ -338,25 +338,27 @@ func (w *invocationWalker) step() (bool, error) {
 	if w.anchor != "" {
 		cursor := w.anchor
 		w.anchor = ""
-		if err := w.scan.SeekCursor(cursor); err != nil {
+		direction := journal.DirectionForward
+		if w.older {
+			direction = journal.DirectionBackward
+		}
+		if err := w.scan.SeekCursorDirection(cursor, direction); err != nil {
 			return false, err
 		}
-		if !w.older {
-			exact, err := w.scan.TestCursor(cursor)
+		exact, err := w.scan.TestCursor(cursor)
+		if errors.Is(err, journal.ErrEndOfEntries) || errors.Is(err, journal.ErrNoEntry) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !exact {
+			// A cursor mismatch also represents EOF in the native facade.
+			_, err := w.scan.cursor()
 			if errors.Is(err, journal.ErrEndOfEntries) || errors.Is(err, journal.ErrNoEntry) {
 				return false, nil
 			}
-			if err != nil {
-				return false, err
-			}
-			if !exact {
-				// A cursor mismatch also represents EOF in the native facade.
-				_, err := w.scan.cursor()
-				if errors.Is(err, journal.ErrEndOfEntries) || errors.Is(err, journal.ErrNoEntry) {
-					return false, nil
-				}
-				return err == nil, err
-			}
+			return err == nil, err
 		}
 	}
 	var n int

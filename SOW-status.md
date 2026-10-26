@@ -7,11 +7,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- SOW-0121 - active: integrate approved directional cursor APIs in both CLIs,
-  finish preserved PR12 corrections and qualify against pinned v262. SDK
-  SOW-0159 is completed with three internal review scopes passing. Only
-  internal reviews are authorized; PR12 remains draft.
-
 - `SOW-0045-20260528-go-reader-alignment-optimization.md` - reopened and paused
   for a separately reproduced healthy empty/EOF refresh positioning regression.
   Unique-triggered refresh shares the failure; related pre-existing directory
@@ -66,8 +61,10 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
-- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: reopened;
-  historical validation follows; current review fixes are listed above.
+- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
+  Directional cursor integration and PR12 fixes pass three internal reviews,
+  3,514 native comparisons and146 portable controls. Pushed-head native CI is
+  pending; historical qualification follows.
   The vacuum regression is repaired under approved deterministic history-head
   ordering. Both languages pass independent 10,000-set models; native CI passes
   Linux/macOS/Windows/FreeBSD with 130 portable controls. Existing 78 utility
@@ -77,7 +74,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
   coverage generation and CodeQL pass. These CI limitations stay explicit.
   Broader scalability remains SOW-0122; PR #12 is draft, not merged/released.
 
-- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - completed; directional cursor APIs validated and reviewed in both SDKs; CLI integration remains in SOW-0121.
+- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - completed; directional cursor APIs validated and reviewed in both SDKs; CLI integration is completed in SOW-0121.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
   native filtering and approved position/time/error retry behavior. Go floor
   amd64/386/race checks pass 1,995/1,996/1,995 events, excluding only the unchanged

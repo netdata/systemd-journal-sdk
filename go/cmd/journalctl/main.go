@@ -117,7 +117,7 @@ type cliJournal interface {
 	SeekHead() error
 	SeekTail() error
 	SeekRealtimeUsec(uint64) error
-	SeekCursor(string) error
+	SeekCursorDirection(string, journal.Direction) error
 	TestCursor(string) (bool, error)
 	Next() (int, error)
 	Previous() (int, error)
@@ -2502,7 +2502,7 @@ func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.W
 	}
 	if cursorControl.seek == nil && untilUsec != nil && len(entries) < limit && (showCursor || cursorControl.updateFile != nil) {
 		if len(entries) > 0 {
-			if err := j.SeekCursor(lastCursor); err != nil {
+			if err := j.SeekCursorDirection(lastCursor, journal.DirectionForward); err != nil {
 				return err
 			}
 		} else if err := j.SeekRealtimeUsec(*untilUsec); err != nil {
@@ -2773,7 +2773,11 @@ func seekCursorStart(j cliJournal, seek *cursorSeek, reverse bool) (*journal.Ent
 }
 
 func seekCursorStartTracked(j cliJournal, seek *cursorSeek, reverse bool, checkpoint *string) (*journal.Entry, bool, error) {
-	if err := j.SeekCursor(seek.cursor); err != nil {
+	direction := journal.DirectionForward
+	if reverse {
+		direction = journal.DirectionBackward
+	}
+	if err := j.SeekCursorDirection(seek.cursor, direction); err != nil {
 		return nil, false, fmt.Errorf("seek cursor: %w", err)
 	}
 	if seek.after {

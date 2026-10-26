@@ -141,6 +141,15 @@ def main() -> int:
             ok = cursor is not None and result.returncode == 0 and result.stdout == expected and not result.stderr
             failures += not ok
             print(language, "PASS" if ok else "FAIL", option)
+        if cursor is not None:
+            parts = dict(part.split("=", 1) for part in cursor.split(";"))
+            for anchor in (cursor, "t=" + parts["t"], "s=" + parts["s"] + ";i=" + parts["i"]):
+                for option, expected in [("--cursor", b"first\nsecond\n"),
+                                         ("--after-cursor", b"alpha alpha\n")]:
+                    result = execute([option, anchor, "-r", "-n1", "-ocat"])
+                    ok = result.returncode == 0 and result.stdout == expected and not result.stderr
+                    failures += not ok
+                    print(language, "PASS" if ok else "FAIL", "reverse", option, anchor)
         for path, expected in [(unicode_file, b"unicode-file\n"),
                                (paths / "file-{é,missing}.journal", b"unicode-file\n"),
                                (paths / "file-*.journal", b"unicode-file\n"),
@@ -191,7 +200,7 @@ def main() -> int:
         vacuum_workspace = workspace / (language + "-vacuum")
         vacuum_workspace.mkdir()
         failures += sum(not passed for passed in run_vacuum_cases(binary, vacuum_workspace))
-    total = (40 + len(unit_expected) + len(time_cases)) * len(commands)
+    total = (46 + len(unit_expected) + len(time_cases)) * len(commands)
     print(f"portable CLI smoke: {total-failures}/{total} passed")
     return int(failures != 0)
 

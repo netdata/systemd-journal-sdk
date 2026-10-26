@@ -248,11 +248,17 @@ def build_tools() -> dict[str, str]:
     }
 
 
-def systemd_version() -> str:
-    result = run(["journalctl", "--version"], timeout=10)
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.splitlines()[0]
-    return "unavailable"
+def systemd_version(journalctl: str) -> str:
+    result = run([journalctl, "--version"], timeout=10)
+    require_ok(result, "selected journalctl --version")
+    lines = result.stdout.splitlines()
+    if not lines or not re.match(r"^systemd 262(?:\s|$)", lines[0]):
+        raise RuntimeError("query matrix requires the pinned systemd v262 oracle")
+    features = set(" ".join(lines[1:]).split())
+    missing = {"+PCRE2", "+ZSTD", "+XZ", "+LZ4"} - features
+    if missing:
+        raise RuntimeError("selected v262 oracle lacks required features: " + ", ".join(sorted(missing)))
+    return lines[0]
 
 
 def make_fixtures() -> dict[str, Path]:
@@ -541,7 +547,7 @@ def row_entry(message: str, realtime: int, monotonic: int, test_id: str, boot_id
 
 def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, args: list[str]) -> list[str]:
     if reader == "stock":
-        base = [tools.get("stock_journalctl", "journalctl"), f"--{mode}", str(path), "--output=json", "--no-pager", "--quiet"]
+        base = [tools["stock_journalctl"], f"--{mode}", str(path), "--output=json", "--no-pager", "--quiet"]
     elif reader == "go":
         base = [tools["go_journalctl"], f"--{mode}", str(path), "--output=json"]
     elif reader == "rust":
@@ -553,7 +559,7 @@ def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, ar
 
 def raw_reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, args: list[str]) -> list[str]:
     if reader == "stock":
-        base = [tools.get("stock_journalctl", "journalctl"), f"--{mode}", str(path), "--no-pager"]
+        base = [tools["stock_journalctl"], f"--{mode}", str(path), "--no-pager"]
     elif reader == "go":
         base = [tools["go_journalctl"], f"--{mode}", str(path)]
     elif reader == "rust":
@@ -565,7 +571,7 @@ def raw_reader_command(reader: str, tools: dict[str, str], mode: str, path: Path
 
 def action_command(reader: str, tools: dict[str, str], args: list[str]) -> list[str]:
     if reader == "stock":
-        return [tools.get("stock_journalctl", "journalctl"), "--no-pager", "--quiet", *args]
+        return [tools["stock_journalctl"], "--no-pager", "--quiet", *args]
     if reader == "go":
         return [tools["go_journalctl"], "--quiet", *args]
     if reader == "rust":
@@ -2109,7 +2115,7 @@ def run_empty_result_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> 
     path = fixtures["file"]
     for case_name, extra_args, _expected_hint in cases:
         args = [*extra_args, "--boot=all", "TEST_ID=journalctl-empty-result"]
-        stock_cmd = ["journalctl", "--file", str(path), "--no-pager", *args]
+        stock_cmd = [tools["stock_journalctl"], "--file", str(path), "--no-pager", *args]
         stock = run(stock_cmd, timeout=30)
         require_ok(stock, f"stock {case_name}")
         expected = stock.stdout
@@ -2391,7 +2397,7 @@ def run_follow_reader(
             cursor_file.write_text("")
     if case.get("cursor_mode"):
         probe = subprocess.run(  # nosec B603 - private writer fixture and selected oracle.
-            [tools.get("stock_journalctl","journalctl"),"--file",str(write_path),"--output=json","--boot=all"],
+            [tools["stock_journalctl"],"--file",str(write_path),"--output=json","--boot=all"],
             capture_output=True, timeout=30, check=False)
         if probe.returncode != 0:
             raise AssertionError("follow cursor probe failed: " + probe.stderr.decode(errors="replace"))
@@ -2443,7 +2449,7 @@ def run_follow_reader(
     cursor_written = cursor_file.exists() and bool(cursor_file.read_text(encoding="utf-8").strip())
     if case.get("checkpoint_final"):
         probe = subprocess.run(  # nosec B603 - private fixture and explicitly selected oracle.
-            [tools.get("stock_journalctl", "journalctl"), "--file", str(write_path), "-n1", "-ojson"],
+            [tools["stock_journalctl"], "--file", str(write_path), "-n1", "-ojson"],
             capture_output=True, timeout=30, check=False,
         )
         require_ok(probe, "follow final cursor probe")
@@ -2499,9 +2505,14 @@ def stop_process_if_running(proc: subprocess.Popen[str] | None) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-follow", action="store_true", help="skip live follow checks")
+    parser.add_argument("--journalctl", type=Path, required=True,
+                        help="path to the full-feature systemd v262 journalctl oracle")
     args = parser.parse_args()
+    oracle = str(args.journalctl.resolve(strict=True))
+    version = systemd_version(oracle)
 
     tools = build_tools()
+    tools["stock_journalctl"] = oracle
     fixtures = make_fixtures()
     results = run_static_cases(tools, fixtures)
     results.extend(run_cursor_file_cases(tools, fixtures))
@@ -2517,7 +2528,8 @@ def main() -> int:
     failures = [r for r in results if r["status"] != "PASS"]
     report = {
         "status": "PASS" if not failures else "FAIL",
-        "systemd": systemd_version(),
+        "systemd": version,
+        "stock_journalctl": oracle,
         "fixture_dir": str(FIXTURE_DIR),
         "results": results,
         "failures": failures,

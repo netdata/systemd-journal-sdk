@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess  # nosec B404
 from pathlib import Path
 
@@ -36,7 +37,7 @@ def write_v262_fixture(binary: Path, values: list[bytes | None] | None = None) -
 def run_v262_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
     """Compare status, complete bytes/JSON, and error classes with a pinned oracle."""
     env = {**os.environ, "LC_ALL": "C", "TZ": "UTC", "SYSTEMD_COLORS": "0", "COLUMNS": "80"}
-    commands = {"stock": tools.get("stock_journalctl", "journalctl"),
+    commands = {"stock": tools["stock_journalctl"],
                 "go": tools["go_journalctl"], "rust": tools["rust_journalctl"]}
 
     def execute(reader: str, path: Path, args: list[str]):
@@ -329,6 +330,35 @@ def run_v262_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dic
             extra = ["--reverse"] if reverse else []
             cases.append((f"{cursor_option}-one-{reverse}", path,
                           [cursor_option, rows[1]["__CURSOR"], "-n1", "-ojson", *extra], "json"))
+    directional = fixtures["file"].parent / "v262-directional.journal"
+    write_journal_file(directional, machine_id="00112233445566778899aabbccddeeff",
+                       boot_id="a" * 32, seqnum_id="12" * 16,
+                       entries=[{"realtime_usec": 1700005000000000 + i // 2,
+                                 "monotonic_usec": i % 2 + 1, "boot_id": "abc"[i // 2] * 32,
+                                 "fields": [("MESSAGE", "keep" if i % 2 else "other"),
+                                            ("ROW", str(i)), ("_BOOT_ID", "abc"[i // 2] * 32)]}
+                                for i in range(6)])
+    directional_probe = execute("stock", directional, ["-ojson"])
+    if directional_probe.returncode:
+        raise AssertionError("directional cursor oracle fixture failed")
+    cursor_rows = [json.loads(line) for line in directional_probe.stdout.splitlines()]
+    anchors = []
+    for row in cursor_rows:
+        parts = dict(part.split("=", 1) for part in row["__CURSOR"].split(";"))
+        anchors.extend([row["__CURSOR"], "t=" + parts["t"],
+                        "s=" + parts["s"] + ";i=" + parts["i"],
+                        "b=" + parts["b"] + ";m=" + parts["m"]])
+    anchors.extend(["s=" + "f" * 32 + ";i=3;m=0", "b=" + "f" * 32 + ";m=0",
+                    "s=" + "12" * 16 + ";i=ffffffff", "b=" + "b" * 32 + ";m=0",
+                    "b=" + "b" * 32 + ";m=ffffffff",
+                    "s=" + "12" * 16 + ";i=1;t=ffffffff"])
+    for index, anchor in enumerate(anchors):
+        for reverse in (False, True):
+            for option in ("--cursor", "--after-cursor"):
+                for filtered in (False, True):
+                    cases.append((f"directional-{index}-{reverse}-{option}-{filtered}", directional,
+                                  [option + "=" + anchor, "-ojson", *(["-r"] if reverse else []),
+                                   *(["MESSAGE=keep"] if filtered else [])], "json"))
     results = []
     for name, fixture, args, mode in cases:
         expected = execute("stock", fixture, args)
@@ -372,6 +402,9 @@ def run_v262_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dic
                 same = actual.stdout == expected.stdout and actual.checkpoint == expected.checkpoint
             elif mode.startswith("json"):
                 same = parse_json(mode, actual.stdout) == parse_json(mode, expected.stdout)
+                if mode == "json-pretty":
+                    separators = rb'"(?:\\.|[^"\\])*"([ \t]*:[ \t]*)'
+                    same = same and re.findall(separators, actual.stdout) == re.findall(separators, expected.stdout)
             else:
                 same = actual.stdout == expected.stdout
             # A nonzero grep result must preserve empty stderr; actual match errors

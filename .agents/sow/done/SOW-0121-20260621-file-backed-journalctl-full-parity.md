@@ -2,14 +2,14 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: reopened 2026-10-26 for confirmed PR12 review findings. SDK
-SOW-0159 directional cursor prerequisite is completed; CLI implementation resumes. The appended
-regression gate records the approved fixes. The prior vacuum correction remains
-accepted. PR12 stays draft; no merge or release is authorized.
+Sub-state: PR12 review regressions completed locally 2026-10-26. Both CLIs
+use the approved directional SDK APIs. Three internal final scopes pass after
+3,514 native comparisons and146 portable controls. Final-commit native CI is
+pending publication; PR12 remains draft and no merge/release is authorized.
 
 ## Requirements
 
@@ -5495,3 +5495,95 @@ and portable reverse controls. Rebuild both commands, run the explicit pinned
 v262 query matrix, CLI suites and portable controls; then obtain three internal
 whole-SOW final scopes and check CI before publication. No new product decision
 or Netdata caller change is required.
+
+Directional integration initially reproduced six invocation-boundary failures
+in the existing oracle controls. Eager backward seeking had already selected
+a neighboring eligible row, but the older-invocation walker stepped again.
+Apply the existing forward exactness/absence check in both directions: advance
+only from an exact anchor; return an already selected neighbor immediately.
+Pinned systemd logs-show.c discover_next_id retains its boundary before one
+directional step. This is the caller adaptation required by approved1A, not a
+new SDK behavior or scope change. Retain the first failing matrix and rerun.
+
+### Final Directional CLI Validation - 2026-10-26
+
+Both commands now consume explicit directional seeking for cursor starts,
+invocation anchors and forward checkpoint repositioning. The invocation
+exactness correction resolves all six initial failures. Fresh pinned-v262
+matrix: 3,514/3,514 observations pass; the failed first run is retained.
+Permanent shared controls add full/partial cursor keys, repeated realtime ties,
+boot bounds, absent/incomplete IDs, contradictory components, sparse filtering
+and both at/after directions. Native-independent portable controls now pass
+146/146, including six reverse cursor forms per command. Parser controls pass
+134/134 per language. Go CLI tests and Rust's 28 unit plus 11 subprocess tests
+pass. The four oracle-selection tests pass. Prior wiki validation remains valid
+for unchanged prose: 16 pages and35 executable examples pass.
+
+No follow-loop implementation changed; prior live-follow qualification remains
+applicable. Source search finds no remaining old eager-forward cursor calls in
+either CLI. New calls use native indexes; normal output/Netdata paths gain no
+persistent state or per-row work. Windows hyperlink generation stays confined
+to hyperlink output, and unmatched glob fallback exits before cwd-relative
+resurrection. Explicit oracle selection prevents a host version from silently
+qualifying v262. Full internal final review now covers the complete0121 surface
+and its SDK prerequisites; publication awaits those verdicts and CI capture.
+
+### Review Regression Closure - 2026-10-26
+
+Three internal final-review scopes pass the complete reviewed surface: CLI
+native behavior/cursor consumers; SDK and CLI runtime costs/purity/portability;
+and evidence/docs/oracle/CI qualification. Independent checks include both CLI
+suites and144 additional native comparisons of cursor/after-cursor/cursor-file,
+directions, line bounds, filters and clock-skew directories, including final
+cursor-file bytes. No blocking finding remains. The invocation double-step
+finding is corrected and covered by the retained failing-then-passing matrix.
+
+Performance reasoning follows changed work: directional initialization uses
+native metadata/indexes; existing SDK methods, reader layouts and Netdata paths
+are unchanged. URI allocation is confined to requested Windows hyperlinks;
+empty glob results now stop earlier. No new benchmark framework, dependency,
+synchronization, source repair or host identity probing is introduced.
+
+Artifact gate: CLI docs/README, parity spec, oracle-selection runtime guidance,
+shared/portable tests and both lifecycle indexes are updated. AGENTS.md and
+operator skills require no changes because platform/purity/review rules remain
+unchanged and no operator skill is exported. SOW0122 links to the completed
+prerequisite and retains only its approved broader performance scope. SDK0159
+is completed in signed3ee6203. No implementation item is silently deferred.
+Lesson: eager directional seek callers must distinguish an exact anchor from
+an already-selected neighbor before taking another step. Qualify checkpoint
+bytes as well as output and ensure every oracle helper uses the pinned binary.
+
+Sensitive evidence uses synthetic fixtures, upstream pins and ignored logs;
+no operational identifiers or credentials enter durable records. Final audit
+must report complete and clean before this coherent implementation/lifecycle
+commit. Native Windows/macOS/FreeBSD/Linux jobs will qualify the pushed head;
+local portability controls do not substitute for those jobs. Existing Bandit
+execution failure remains an explicit analysis coverage limitation, not a
+runtime defect or a reason for unrelated CI configuration changes. PR12 remains
+draft, and no merge or release is performed.
+
+### Final Table Formatting Correction - 2026-10-26
+
+Individual PR-thread adjudication confirms Go table json-pretty used the
+standard colon spacing while native uses spaces on both sides. Parsed-JSON
+matrix comparison did not establish spacing parity. Reuse the existing native
+value formatter for table rows without allocating an intermediate interface
+slice. Keep compact JSON unchanged. Add a focused table-format regression and
+check pretty structural spacing in native comparisons; rerun affected tests
+and review this correction before final closure. This is an in-scope CLI
+formatting correction, not an SDK or Netdata change.
+
+The stronger separator check also exposes the same Rust table path: serde's
+pretty printer used standard spacing. Reuse Rust's existing native array/value
+formatter through a slice helper, without cloning the table Value array. The
+new matrix assertion covers both languages and preserves key-order neutrality.
+
+The table formatting correction is complete in both languages. The final
+strengthened oracle report passes3,514/3,514 observations; Go CLI and Rust28+11
+tests pass again. Rust reuses the existing array formatter with a borrowed
+slice, avoiding a cloned Value array. Compact output is unchanged. Both earlier
+failed spacing runs remain recorded. Final impact review covers this correction
+and lifecycle records before publication. Optional PR-thread suggestions for
+harness aggregation, historical ineligible release sources and test-only
+cleanup are rejected with concrete scope/evidence, not silently deferred.

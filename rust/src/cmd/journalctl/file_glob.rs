@@ -219,6 +219,9 @@ fn expand_unicode(pattern: &Path) -> Result<Vec<PathBuf>> {
                             }
                         }
                     }
+                    if next.is_empty() {
+                        return Ok(Vec::new());
+                    }
                     prefixes = next;
                 } else {
                     for prefix in &mut prefixes {
@@ -251,6 +254,18 @@ mod tests {
             brace_alternatives("{a,}?.journal"),
             ["a?.journal", "?.journal"]
         );
+    }
+
+    #[test]
+    fn exhausted_unicode_wildcard_stays_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        for suffix in ["missing*/system.journal", "missing*/../system.journal"] {
+            assert!(
+                expand_unicode(&directory.path().join(suffix))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

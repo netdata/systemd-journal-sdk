@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"strings"
@@ -12,7 +13,27 @@ func writeTableJSON(out io.Writer, mode string, rows []map[string]any) error {
 	var data []byte
 	var err error
 	if mode == "json-pretty" {
-		data, err = json.MarshalIndent(rows, "", "\t")
+		var buf bytes.Buffer
+		if rows == nil {
+			buf.WriteString("null")
+		} else {
+			buf.WriteByte('[')
+			if len(rows) > 0 {
+				buf.WriteByte('\n')
+			}
+			for i, row := range rows {
+				buf.WriteByte('\t')
+				if err := writeSystemdPrettyJSONValue(&buf, row, 1); err != nil {
+					return err
+				}
+				if i+1 < len(rows) {
+					buf.WriteByte(',')
+				}
+				buf.WriteByte('\n')
+			}
+			buf.WriteByte(']')
+		}
+		data = buf.Bytes()
 	} else {
 		data, err = json.Marshal(rows)
 	}
