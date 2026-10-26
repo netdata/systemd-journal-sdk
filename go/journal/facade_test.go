@@ -652,6 +652,9 @@ func TestSdJournalSeekCursorPastEnd(t *testing.T) {
 					if ok, err := j.reader.TestCursor("t=ffffffffffffff"); ok || !errors.Is(err, ErrEndOfEntries) {
 						t.Fatalf("direct EOF cursor=%v/%v", ok, err)
 					}
+					if cursor, err := SdJournalGetCursor(j); cursor != "" || !errors.Is(err, ErrNoEntry) {
+						t.Fatalf("facade EOF get cursor=%q/%v", cursor, err)
+					}
 					if ok, err := SdJournalTestCursor(j, "t=ffffffffffffff"); ok || err != nil {
 						t.Fatalf("facade EOF cursor=%v/%v", ok, err)
 					}
@@ -668,5 +671,21 @@ func TestSdJournalSeekCursorPastEnd(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Keep unrelated reader failures distinct from absence of a current position.
+type cursorErrorReader struct {
+	sdReader
+	err error
+}
+
+func (r cursorErrorReader) GetCursor() (string, error) { return "", r.err }
+
+func TestSdJournalGetCursorPreservesReadError(t *testing.T) {
+	want := errors.New("cursor read failed")
+	j := &sdJournal{reader: cursorErrorReader{err: want}}
+	if _, err := SdJournalGetCursor(j); !errors.Is(err, want) {
+		t.Fatalf("get cursor error=%v, want %v", err, want)
 	}
 }

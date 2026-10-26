@@ -1865,7 +1865,7 @@ func (f *cliFlags) effectiveQuiet() bool {
 }
 
 func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outputMode string, bootOverride optionalStringFlag) (cliJournal, error) {
-	j, err := input.openJournalWithCursor(*flags.showCursorFlag || *flags.cursorFileFlag != "" || flags.seen["cursor-file"])
+	j, err := input.openJournalWithCursor(*flags.showCursorFlag || *flags.cursorFileFlag != "" || flags.seen["cursor-file"] || *flags.cursorFlag != "" || *flags.afterCursorFlag != "" || flags.seen["cursor"] || flags.seen["after-cursor"])
 	if err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)
 	}
@@ -2815,7 +2815,7 @@ func seekCursorStartTracked(j cliJournal, seek *cursorSeek, reverse bool, checkp
 		if errors.Is(err, journal.ErrNoEntry) || errors.Is(err, journal.ErrEndOfEntries) {
 			return nil, false, nil
 		}
-		if _, positionErr := j.TestCursor(seek.cursor); errors.Is(positionErr, journal.ErrNoEntry) || errors.Is(positionErr, journal.ErrEndOfEntries) {
+		if _, positionErr := currentJournalCursor(j); errors.Is(positionErr, journal.ErrNoEntry) || errors.Is(positionErr, journal.ErrEndOfEntries) {
 			return nil, false, nil
 		}
 		return nil, false, err

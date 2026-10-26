@@ -3682,3 +3682,66 @@ Final lifecycle audit reports complete and clean. Current Codacy Markdown
 findings in this record were corrected before the handoff commit. The unchanged
 Bandit execution error predates this repair and remains an explicit coverage
 limitation in SOW-0121; no speculative CI configuration change is made.
+
+## Regression - 2026-10-26 - Facade Cursor EOF Classification
+
+### Pre-Implementation Gate
+
+The approved public TestCursor EOF correction exposed a missed consumer contract:
+Go SdJournalGetCursor forwards private errEndOfEntries (facade.go:287), while
+TestCursor now correctly reports false,nil. Invocation listing and ordinary
+cursor output cannot identify EOF using public errors. The user approved fixing
+confirmed review findings; normalize facade GetCursor EOF to existing ErrNoEntry
+and use that metadata-only result in both CLI consumers. Preserve all other
+errors. Direct getters and Rust behavior remain unchanged. This is a prerequisite
+to the paused CLI regression; preserve its uncommitted Windows edits untouched.
+
+Reuse existing errors.Is and cursor regression fixtures. Test initial/beyond-tail
+facade getters for file/directory inputs, positioned cursors and real errors;
+run CLI invocation and cursor controls. No payload expansion, synchronization,
+new allocation or file mutation is added. Raw evidence stays ignored under
+.local; tests use synthetic journals. Update facade contract spec and status
+indexes; no operator action or dependency changes are needed. Review the narrow
+SDK correction before closing this prerequisite and resuming CLI work. No open
+design choice is needed to expose the existing public no-entry error.
+
+The shared beyond-tail control also reproduces Rust CLI `--cursor` reporting
+`unset cursor` from its entry getter. Its cursor getter already exposes NoEntry.
+Apply the same metadata-only error fallback to the Rust CLI, preserving the
+original error unless cursor metadata confirms absence. This is the same
+consumer failure class, with no Rust SDK change. Portable smoke now includes
+both cursor options and updates its observation count.
+
+Runtime verification disproved the initial assumption that every Rust facade
+cursor getter already normalized absence: directory seek-tail can leave its
+selected file at UnsetCursor, mapped to generic Other. Normalize UnsetCursor
+only in facade get_cursor to NoEntry, matching Go, and add file/directory
+regression controls. Do not broaden the global error mapper or suppress I/O.
+The earlier focused reviewer PASS is superseded pending this runtime correction.
+
+### Facade Cursor Regression Closure - 2026-10-26
+
+Both facade cursor getters now expose typed absence; unrelated errors remain
+unchanged. Both CLI cursor consumers and Go invocation listing use metadata
+checks on mismatch/error paths. Go focused pure-SDK cursor tests and full CLI
+unit tests pass; Rust all 19 facade tests and CLI 27 unit/11 subprocess tests
+pass. Shared portable smoke passes 134/134 across both commands, including new
+future cursor and after-cursor controls. Pinned v262 independently returns empty
+success for both options. Internal final review passes the corrected scope after
+the earlier Rust assumption was disproved by execution. No payload expansion,
+locking, file writes or successful SDK path reads were added; no benchmark
+framework or throughput claim is warranted for this error-only correction.
+
+Same-failure search covered both production Go TestCursor consumers and Rust
+cursor getter delegation through directories. Specs document the public getter
+classification. Existing consumer docs promise native-style cursor behavior;
+this repairs that promise without a new workflow or example, so no docs or
+operator-skill update is required. Runtime project skills already require EOF,
+facade, directory and cross-language controls; no new workflow rule is needed.
+AGENTS.md remains applicable. Both lifecycle indexes are reconciled. Synthetic
+fixtures and ignored logs satisfy the sensitive-data gate. The lesson is to
+execute error-mapping tests through delegated file readers, not infer directory
+behavior from its outer bounds check. Remaining Windows/oracle/docs findings
+stay in the real reopened SOW-0121. No untracked deferred SDK repair remains.
+The local audit reports complete and clean; implementation and completed
+lifecycle are committed together before resuming CLI work.

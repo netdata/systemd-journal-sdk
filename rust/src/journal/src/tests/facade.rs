@@ -1276,3 +1276,20 @@ fn assert_json_omits_lossy_raw_name(entry: &Entry, lossy_name: &str) {
         "JSON output must not invent lossy RAW field names"
     );
 }
+
+#[test]
+fn facade_cursor_getter_after_future_seek_reports_no_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("system.journal");
+    write_facade_test_journal(&path);
+    let readers = [
+        SdJournalOpenFilePath(&path, 0).unwrap(),
+        SdJournalOpenDirectoryPath(dir.path(), 0).unwrap(),
+    ];
+    for mut reader in readers {
+        assert_eq!(SdJournalNext(&mut reader).unwrap(), 1);
+        assert!(SdJournalGetCursor(&reader).is_ok());
+        SdJournalSeekCursor(&mut reader, "t=ffffffffffffff").unwrap();
+        assert!(matches!(SdJournalGetCursor(&reader), Err(crate::facade::Error::NoEntry)));
+    }
+}

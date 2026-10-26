@@ -99,6 +99,8 @@ def main() -> int:
                 [str(binary.resolve()), "--file", str(path), "--no-pager", *options],
                 capture_output=True, env={**env, **(changes or {})}, timeout=30, check=False)
         cases = [
+            (["--cursor=t=ffffffffffffff", "--boot=all", "-ojson"], 0, b"", False),
+            (["--after-cursor=t=ffffffffffffff", "--boot=all", "-ojson"], 0, b"", False),
             (["--grep=(?=alpha)alpha", "-ocat"], 0, b"alpha alpha\n", False),
             ([r"--grep=(alpha) \1", "-ocat"], 0, b"alpha alpha\n", False),
             ([r"--grep=nul\x00tail", "-ocat"], 0, b"nul\x00tail\n", False),
@@ -189,7 +191,7 @@ def main() -> int:
         vacuum_workspace = workspace / (language + "-vacuum")
         vacuum_workspace.mkdir()
         failures += sum(not passed for passed in run_vacuum_cases(binary, vacuum_workspace))
-    total = (38 + len(unit_expected) + len(time_cases)) * len(commands)
+    total = (40 + len(unit_expected) + len(time_cases)) * len(commands)
     print(f"portable CLI smoke: {total-failures}/{total} passed")
     return int(failures != 0)
 

@@ -3730,7 +3730,10 @@ fn seek_cursor_start_tracked(
     match SdJournalGetEntry(journal) {
         Ok(entry) => Ok(Some(entry)),
         Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => Ok(None),
-        Err(err) => Err(anyhow!("get entry: {err}")),
+        Err(err) => match SdJournalGetCursor(journal) {
+            Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => Ok(None),
+            _ => Err(anyhow!("get entry: {err}")),
+        },
     }
 }
 

@@ -285,7 +285,11 @@ func SdJournalGetMonotonicUsec(j *sdJournal) (uint64, UUID, error) {
 }
 
 func SdJournalGetCursor(j *sdJournal) (string, error) {
-	return j.reader.GetCursor()
+	cursor, err := j.reader.GetCursor()
+	if errors.Is(err, errEndOfEntries) {
+		return "", ErrNoEntry
+	}
+	return cursor, err
 }
 
 func SdJournalTestCursor(j *sdJournal, cursor string) (bool, error) {

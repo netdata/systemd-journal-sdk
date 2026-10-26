@@ -884,7 +884,9 @@ Accepted reader API layers:
   remains the exact-current-position check.
 - Go direct `Reader.TestCursor` and `DirectoryReader.TestCursor` return
   `false, ErrEndOfEntries` at EOF. The libsystemd-compatible facade returns
-  `false, nil` instead; other errors remain errors.
+  `false, nil` instead; other errors remain errors. The Go facade cursor getter
+  returns public `ErrNoEntry` when no current entry exists, matching Rust
+  facade `Error::NoEntry`; other getter failures retain their original errors.
 - `get_cursor()`, JSON output, export output, and file-backed `journalctl`
   cursor files emit official systemd cursor strings with `s=`, `i=`, `b=`,
   `m=`, `t=`, and `x=` fields. `seek_cursor()` and `test_cursor()` accept both

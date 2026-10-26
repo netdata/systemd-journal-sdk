@@ -350,7 +350,12 @@ func (w *invocationWalker) step() (bool, error) {
 				return false, err
 			}
 			if !exact {
-				return true, nil
+				// A cursor mismatch also represents EOF in the native facade.
+				_, err := w.scan.cursor()
+				if errors.Is(err, journal.ErrEndOfEntries) || errors.Is(err, journal.ErrNoEntry) {
+					return false, nil
+				}
+				return err == nil, err
 			}
 		}
 	}

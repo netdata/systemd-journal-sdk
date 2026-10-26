@@ -357,7 +357,10 @@ impl SdJournal {
             ReaderKind::File(reader) => reader.get_cursor(),
             ReaderKind::Directory(reader) => reader.get_cursor(),
         }
-        .map_err(map_error)
+        .map_err(|err| match err {
+            SdkError::Journal(journal_core::error::JournalError::UnsetCursor) => Error::NoEntry,
+            err => map_error(err),
+        })
     }
 
     pub fn get_seqnum(&self) -> std::result::Result<(u64, [u8; 16]), Error> {

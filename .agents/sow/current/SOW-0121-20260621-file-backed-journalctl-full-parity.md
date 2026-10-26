@@ -7,7 +7,7 @@ Status: in-progress
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: reopened 2026-10-26 for confirmed PR12 review findings. SDK
-SOW-0159 is completed; CLI implementation resumes sequentially. The appended
+SOW-0159 facade cursor EOF prerequisite is completed; CLI work resumes. The appended
 regression gate records the approved fixes. The prior vacuum correction remains
 accepted. PR12 stays draft; no merge or release is authorized.
 

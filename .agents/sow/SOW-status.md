@@ -4,9 +4,9 @@ Last updated: 2026-10-26
 
 ## Current
 
-- SOW-0121 - reopened, in-progress for PR12 invocation EOF, Windows glob/file
+- SOW-0121 - reopened, in-progress for remaining PR12 invocation EOF, Windows glob/file
   links, explicit oracle qualification and documentation corrections. SDK
-  SOW-0159 is completed. Only internal reviews are authorized.
+  SOW-0159 cursor EOF correction is completed and reviewed. Only internal reviews are authorized.
 
 - SOW-0045 - Go Reader Alignment Optimization: regression reopened and paused.
   Unchanged HEAD reproduces skipped appends after healthy empty/EOF refresh,
