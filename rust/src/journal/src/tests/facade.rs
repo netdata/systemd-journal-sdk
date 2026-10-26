@@ -1290,6 +1290,9 @@ fn facade_cursor_getter_after_future_seek_reports_no_entry() {
         assert_eq!(SdJournalNext(&mut reader).unwrap(), 1);
         assert!(SdJournalGetCursor(&reader).is_ok());
         SdJournalSeekCursor(&mut reader, "t=ffffffffffffff").unwrap();
-        assert!(matches!(SdJournalGetCursor(&reader), Err(crate::facade::Error::NoEntry)));
+        assert!(matches!(
+            SdJournalGetCursor(&reader),
+            Err(crate::facade::Error::NoEntry)
+        ));
     }
 }

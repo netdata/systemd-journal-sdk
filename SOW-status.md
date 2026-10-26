@@ -9,7 +9,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 - SOW-0121 - reopened, in-progress for remaining PR12 invocation EOF, Windows glob/file
   links, explicit oracle qualification and documentation corrections. SDK
-  SOW-0159 cursor EOF correction is completed and reviewed. Only internal reviews are authorized.
+  SOW-0159 cursor EOF and sequence exhaustion corrections are completed and reviewed. Only internal reviews are authorized.
 
 - `SOW-0045-20260528-go-reader-alignment-optimization.md` - reopened and paused
   for a separately reproduced healthy empty/EOF refresh positioning regression.

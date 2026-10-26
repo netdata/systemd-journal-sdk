@@ -3745,3 +3745,56 @@ behavior from its outer bounds check. Remaining Windows/oracle/docs findings
 stay in the real reopened SOW-0121. No untracked deferred SDK repair remains.
 The local audit reports complete and clean; implementation and completed
 lifecycle are committed together before resuming CLI work.
+
+## Regression - 2026-10-26 - Filtered Sequence Cursor Exhaustion
+
+### Pre-Implementation Gate
+
+The explicit-v262 query matrix passes 3033/3034 observations; Go's filtered
+single-file partial sequence cursor beyond the tail returns the last row.
+SdJournalOpenFiles selects a direct Reader for one path. Filtered Step preserves
+its committed row at EOF, and the duplicated facade cursor-seek loop returns
+without invalidating that row. Direct Reader.SeekCursor already clears position
+with SeekTail at exhaustion. Reuse that existing seeker for the single-reader
+facade; retain the directory loop and its exhausted-direction guarantee. This
+preserves normal traversal EOF semantics and adds no synchronization or payload
+work. The user authorized confirmed fixes; no new product choice is needed.
+
+Pause CLI work and preserve its edits. Add file/directory filtered future-sequence
+controls, reproduce before the fix, verify forward EOF and backward last row,
+then rerun existing cursor tests and the failed oracle case. Review the narrow
+SDK change before closing; rerun the full CLI matrix after resuming0121. Existing
+specs already require native seek behavior; no contract change is intended.
+Keep synthetic fixtures and ignored raw evidence, update both lifecycle indexes,
+and record unchanged docs/skills rationale at close.
+
+The pre-fix regression also proves directory reversal skips the last match:
+its retained currentKey anchors reverse movement even though seek found no row.
+On directory cursor-seek exhaustion only, reuse clearDirectoryPosition to clear
+that anchor while retaining the exhausted forward direction and child state.
+Repeated Next must stay exhausted; Previous now resets from the tail. Ordinary
+filtered iteration EOF retention is intentionally unchanged.
+
+### Filtered Sequence Cursor Closure - 2026-10-26
+
+The regression test failed before the fix for both stale file position and
+skipped directory reversal. It now passes for a file, one-file directory and
+overlapping two-file directory. Focused pure-Go facade/cursor and related
+filter/directory tests pass. The original matrix command now returns empty
+success. Independent internal final review passes 12 combinations: single-file,
+deduplicated directory and overlapping merge, filtered/unfiltered, future time
+and sequence cursors; each checks absent cursor, three repeated forward EOF
+calls and reversal to the last row. No extra child seeks are necessary: existing
+direction-change handling supplies the tail boundary after clearing the anchor.
+
+Same-pattern analysis covers direct versus facade seekers and both directory
+traversal strategies. Ordinary filtered EOF behavior remains unchanged. Reusing
+the direct seeker removes duplicated work; the directory correction changes two
+fields only after an unsuccessful seek. No benchmark or performance waiver is
+needed. Existing specs, consumer docs, AGENTS.md and runtime skills already
+require these contracts and controls, so this correction needs no further
+artifact change beyond tests, evidence and lifecycle indexes. No operator skills
+exist. Synthetic evidence is retained ignored; no personal or operational data
+is added. The lesson is to distinguish failed seek boundaries from ordinary
+iteration EOF. Remaining CLI validation is owned by reopened0121; no SDK item
+is deferred. Audit must remain complete and clean before this coherent commit.

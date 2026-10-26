@@ -689,3 +689,61 @@ func TestSdJournalGetCursorPreservesReadError(t *testing.T) {
 		t.Fatalf("get cursor error=%v, want %v", err, want)
 	}
 }
+
+func TestSdJournalFilteredSequenceCursorPastEnd(t *testing.T) {
+	for _, fileCount := range []int{0, 1, 2} {
+		directory := fileCount > 0
+		t.Run(fmt.Sprintf("directory=%v/files=%d", directory, fileCount), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "a.journal")
+			createMessageJournal(t, path, []messageRow{{"keep", 1000}, {"keep", 1001}})
+			wantLast := uint64(1001)
+			if fileCount == 2 {
+				createMessageJournal(t, filepath.Join(dir, "b.journal"), []messageRow{{"keep", 900}, {"keep", 1100}})
+				wantLast = 1100
+			}
+			var j *sdJournal
+			var err error
+			if directory {
+				j, err = SdJournalOpenDirectory(dir, 0)
+			} else {
+				j, err = SdJournalOpenFiles([]string{path}, 0)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			if err := SdJournalAddMatch(j, []byte("MESSAGE=keep")); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := SdJournalNext(j); n != 1 || err != nil {
+				t.Fatalf("first=%d/%v", n, err)
+			}
+			cursor, err := SdJournalGetCursor(j)
+			if err != nil {
+				t.Fatal(err)
+			}
+			location, err := parseCursorLocation(cursor, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := SdJournalSeekCursor(j, fmt.Sprintf("s=%s;i=ffffffff", location.seqnumID)); err != nil {
+				t.Fatal(err)
+			}
+			if cursor, err := SdJournalGetCursor(j); cursor != "" || !errors.Is(err, ErrNoEntry) {
+				t.Fatalf("past-tail cursor=%q/%v", cursor, err)
+			}
+			for i := 0; i < 2; i++ {
+				if n, err := SdJournalNext(j); n != 0 || err != nil {
+					t.Fatalf("EOF=%d/%v", n, err)
+				}
+			}
+			if n, err := SdJournalPrevious(j); n != 1 || err != nil {
+				t.Fatalf("previous=%d/%v", n, err)
+			}
+			if time, err := SdJournalGetRealtimeUsec(j); time != wantLast || err != nil {
+				t.Fatalf("last=%d/%v", time, err)
+			}
+		})
+	}
+}

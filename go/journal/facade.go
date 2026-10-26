@@ -546,6 +546,9 @@ func SdJournalGetCursorWithRealtime(j *sdJournal, realtime uint64) (string, erro
 
 func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 	j.resetIterators()
+	if reader, ok := j.reader.(*Reader); ok {
+		return reader.SeekCursor(cursor)
+	}
 	want, err := parseCursorLocation(cursor, true)
 	if err != nil {
 		return ErrInvalidCursor
@@ -568,7 +571,10 @@ func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 			return err
 		}
 		if !ok {
-			// Preserve the exhausted direction so the next step cannot rewind.
+			// An unsuccessful seek has no committed row; keep forward exhaustion.
+			if directory, ok := j.reader.(*DirectoryReader); ok {
+				directory.clearDirectoryPosition()
+			}
 			return nil
 		}
 
