@@ -1,5 +1,5 @@
 """Oracle selection checks without building tools or accessing host journals."""
-import subprocess
+import subprocess  # nosec B404 - CompletedProcess test values only; execution is mocked.
 import unittest
 from pathlib import Path
 from unittest.mock import patch

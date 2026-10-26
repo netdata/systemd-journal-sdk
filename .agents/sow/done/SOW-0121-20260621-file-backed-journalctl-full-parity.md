@@ -5587,3 +5587,14 @@ failed spacing runs remain recorded. Final impact review covers this correction
 and lifecycle records before publication. Optional PR-thread suggestions for
 harness aggregation, historical ineligible release sources and test-only
 cleanup are rejected with concrete scope/evidence, not silently deferred.
+
+### Publication Analysis Disposition - 2026-10-26
+
+Pushed7432b0c native Linux CLI and documentation checks pass. Codacy reports
+zero Markdown findings and one B404 import finding in the new oracle unit test,
+plus the previously recorded tool execution error. The import creates only
+CompletedProcess mock values; every execution path is patched. Add a narrow
+inline rationale consistent with existing test tooling, rerun all four tests,
+and preserve the separate execution-error limitation. This comment-only
+clarification changes no runtime or test behavior. Remaining native jobs were
+captured before pushing the clarification; no CI configuration is changed.
