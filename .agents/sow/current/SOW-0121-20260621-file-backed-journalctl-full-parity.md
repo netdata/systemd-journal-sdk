@@ -2,17 +2,14 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: the reopened vacuum-ordering regression is repaired under approved
-1A. Both CLIs use deterministic sequence-preserving history-head ordering, with
-an explicit exception for contradictory stock comparisons. Internal final review
-passes repair commit fcd918bcaab0; native CLI run 40076505728 passes all four
-platforms. SDK SOW-0159 and prerequisite SOW-0108 remain completed. The appended
-2026-10-24 closure records validation and analysis limitations. External reviewer
-models remain disabled; PR #12 stays draft, with no merge/release authorized.
+Sub-state: reopened 2026-10-26 for confirmed PR12 review findings. SDK
+SOW-0159 is completed; CLI implementation resumes sequentially. The appended
+regression gate records the approved fixes. The prior vacuum correction remains
+accepted. PR12 stays draft; no merge or release is authorized.
 
 ## Requirements
 
@@ -5325,3 +5322,47 @@ contract. Historical pending decisions are resolved by 1A; broader scalability
 remains SOW-0122, with unrelated SDK issues still explicitly tracked by their
 own SOWs. No new deferred repair remains. Implementation and completed SOW
 lifecycle are amended into the same signed repair commit.
+
+## Regression - 2026-10-26
+
+### Pre-Implementation Gate
+
+The user approved handling the confirmed reviews and CI findings without another
+design decision. At a1144dcbf537, Go invocation listing treats facade TestCursor
+false,nil at EOF as a positioned mismatch (invocation.go:345-353), then reads
+missing data. Existing invocation-bounds portable smoke fails all four OS jobs.
+Check position using cursor metadata before returning a candidate, retaining the
+approved facade false,nil EOF contract and avoiding row expansion.
+
+Rust file_glob.rs:190-222 resurrects an exhausted wildcard candidate list.
+Stop expansion when a wildcard yields no candidates; test literal and parent
+suffixes. Go already preserves empty candidates. Both CLIs concatenate Windows
+paths into invalid file URIs. Normalize drive/UNC paths using standard file URI
+forms, percent-encode Windows path bytes, retain Unix output behavior, and render
+unsupported device-path forms as plain text. This is CLI-only formatting; no SDK
+or dependency change. Test drive, UNC, relative resolution and escaped characters.
+
+Query-matrix helpers silently mix PATH journalctl with injected stock commands.
+Require one explicit version/feature-validated v262 binary, propagate it to every
+case and version report, and update documented invocation. Fix relative Go CLI
+example paths. Parser rejection tests must name a fixture instead of host defaults.
+These harness corrections preserve existing cases rather than creating a new
+framework. Prior explicitly injected oracle results are not relabelled invalid.
+
+Validation: Go/Rust CLI unit tests, existing portable smoke including invocation
+bounds, focused v262 oracle cases, query harness unit/plumbing controls, wiki/docs,
+compile checks and native OS CI. Review same patterns (TestCursor callers, empty
+glob branches, all Windows link surfaces, every stock command builder). No live
+host journals. Keep source/fixture/cache outputs under .local and raw analysis
+exports ignored. Preserve plain-output hot paths; URI encoding runs only when
+links are enabled. No new synchronization or per-entry SDK work.
+
+Artifact impact: update relevant parity/product specs, compatibility skill and
+consumer docs only where behavior or test invocation changes; both SOW indexes
+track this lifecycle. Runtime purity/CGO boundary unchanged. Three internal final
+reviewers will assess SDK blast radius, CLI and validation after local fixes;
+external models remain disabled by user instruction. Codacy now reports13 minor
+Markdown findings and one Bandit execution error, not the old configuration
+failure. Investigate actual causes before editing CI; unrelated baseline problems
+must be explicitly dispositioned, not swept into this PR. No open product choice
+blocks the confirmed minimal-complete fixes.

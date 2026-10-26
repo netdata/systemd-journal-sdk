@@ -4,10 +4,9 @@ Last updated: 2026-10-26
 
 ## Current
 
-- SOW-0159 - reopened, in-progress for PR12 cursor EOF and compressed-file
-  I/O classification regressions. Approved direct TestCursor EOF behavior and
-  native unchanged-EOF polling are implemented and locally validated.
-  CLI review repairs follow sequentially; no external reviewers are authorized.
+- SOW-0121 - reopened, in-progress for PR12 invocation EOF, Windows glob/file
+  links, explicit oracle qualification and documentation corrections. SDK
+  SOW-0159 is completed. Only internal reviews are authorized.
 
 - SOW-0045 - Go Reader Alignment Optimization: regression reopened and paused.
   Unchanged HEAD reproduces skipped appends after healthy empty/EOF refresh,
@@ -79,7 +78,8 @@ Last updated: 2026-10-26
 
 ## Recently Closed Or Completed
 
-- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
+- SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: reopened;
+  historical validation follows; current review fixes are listed above.
   The vacuum regression is repaired under approved deterministic history-head
   ordering. Both languages pass independent 10,000-set models; native CI passes
   Linux/macOS/Windows/FreeBSD with 130 portable controls. Existing 78 utility
@@ -89,8 +89,9 @@ Last updated: 2026-10-26
   coverage generation and CodeQL pass. These CI limitations stay explicit.
   Broader scalability remains SOW-0122; PR #12 is draft, not merged/released.
 
-- SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: reopened;
-  historical completion evidence below, active repair listed under Current.
+- SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: completed.
+  SDK regression checkpoint a1144dc passes independent review; CLI fallout is
+  tracked in reopened SOW-0121. Latest SDK validation is in its closure record.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
   native filtering and approved position/time/error retry behavior. Go floor
   amd64/386/race checks pass 1,995/1,996/1,995 events, excluding only the unchanged

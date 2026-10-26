@@ -2,24 +2,14 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reopened 2026-10-25 for reviewed cursor EOF and compressed-file I/O
-classification regressions. Historical completion evidence follows; the appended
-regression gate governs current implementation. Previously complete after
-signed prerequisite commit `4c49205393c719adc19a52a3575facef2c18042e`. Both SDKs
-implement default intact-prefix recovery/status, complete stream decoding,
-native filtering and the approved position/time/error-retry contracts. Internal
-final review reproduced and repaired boundary/cache/shrink, resolved-filter
-work, short counted cycles and nested directory rollback gaps. The user chose
-Rust's four-word Node representation (decision 12). Final supported-floor suites,
-shared v262 fixtures and file-backed integration checks pass. The required
-engine cache migration is validated and documented. Performance is accepted
-under the user's representative-evidence rule, including final counted-array/writer
-controls. The fresh whole-SOW review has one positive verdict and five recorded
-coverage gaps; all findings are adjudicated with no verified blocker remaining.
-The closing audit and combined signed implementation/lifecycle commit accompany
-this completed record. SOW-0121 remains paused until that commit succeeds.
+Sub-state: SDK regression work completed 2026-10-26. Signed checkpoint
+`a1144dcbf537` contains the approved EOF contract, read-only recovery scope and
+I/O classification corrections. Independent SDK final review passes that head.
+The Go invocation consumer regression and other confirmed CLI/qualification
+findings are owned by reopened SOW-0121. Historical completion evidence remains
+below; appended 2026-10-25/26 records govern this regression close.
 
 ## Requirements
 
@@ -2049,7 +2039,7 @@ shrinks from fifty to twenty-six instructions with its sixteen-byte frame
 unchanged. Stateful unique enumeration drops from 201 to 158 instructions and
 288 to 272 frame bytes; guard arithmetic and payload work remain unchanged.
 Rust direct-step retains one outlined resolver call and unchanged posting
-helpers, but removes the intermediate successful Result<bool> transport;
+helpers, but removes the intermediate successful `Result<bool>` transport;
 resolver frames shrink while the outer frame grows sixteen bytes. Rust's
 constructor candidate removes two healthy call layers, while its two 128-byte
 cursor copies remain. Do not describe those copies as eliminated or claim
@@ -2940,7 +2930,6 @@ stop predicate and cached-tail fast path. This is the already-approved
 counted-cycle repair, independent of the Node representation decision, with
 no new healthy reads or allocations in these writer/recovery loops.
 
-
 A final same-failure audit identifies nested rollback ownership in both directory
 implementations. After sequential traversal advances to another child, a newly
 observed recovery restarts merging through the public rollback wrapper while
@@ -2960,7 +2949,6 @@ entry points retain their wrapper, other prefetched candidates remain intact,
 and no new per-row checkpoint or state is introduced. This is a consequence of
 the approved selected-row/error-retry contract, not a new positioning policy.
 The same-failure caller search finds only those three nested wrapper sites.
-
 
 The paired nested-rollback control reproduces the same row-2 skip in Rust.
 Both implementations pass after changing only their internal recovery restart
@@ -2996,7 +2984,6 @@ recovery transitions and add no healthy check, allocation or I/O. Earlier
 writer-ascending results refer to their earlier source; the counted-array
 replacement requires its own two targeted controls and does not inherit those
 binary hashes or code-generation counts.
-
 
 Final counted-array performance confirmation passes semantic counters, immutable
 fixture/binary checks and stock writer verification. Rust's eight cases retain
@@ -3058,7 +3045,6 @@ validate it and the existing cache-key/engine tests on Rust 1.91. No reader or
 writer timing repeat is required for an unchanged cache algorithm and a key
 generation constant.
 
-
 The original-source archived FileIndexer control reproduces successful indexing
 of only four of 13 rows for the regular missing-link case. It stops at that
 first assertion; the baseline did not execute the other variants. Current
@@ -3077,12 +3063,10 @@ changed by this migration. Internal artifact recheck finds this consequence
 covered. The complete candidate is locally ready for its authorized whole-SOW
 static external review, subject to the final audit result below.
 
-
 The final pre-external audit reports `SOW initialization complete and clean`
 with changed-file sensitive-data scanning enabled. `git diff --check` passes;
 source, tests and durable artifacts use synthetic data and contain no user's
 personal name. Runtime implementation is frozen for the whole-SOW review.
-
 
 ### Whole-SOW External Review - 2026-10-17
 
@@ -3094,7 +3078,6 @@ indirect consumers, performance evidence and strict/pure SDK contracts. Review
 is read-only with no tests, builds or delegation. Runtime source is frozen.
 This SDK round is distinct from prerequisite SOW-0108's historical round.
 Reviewer results and independent dispositions will be recorded before close.
-
 
 Qwen's initial invocation failed before returning a review with HTTP 429
 Too Many Requests. Its sole permitted retry uses the identical displayed
@@ -3263,7 +3246,6 @@ lookups, allocation and traversal costs. Qualify migration prose to encountered
 required native-chain/posting failures; documented value tolerance is retained,
 so it must not promise universal malformed-file verification.
 
-
 The absent-map facet control reproduces the inherited panic before repair and
 passes after returning MissingOffset on the existing branch. A separate source
 map can admit an unknown target without a native traversal error. That inherited
@@ -3271,7 +3253,6 @@ cross-index membership/captured-tail lead is tracked in pending SOW-0161, with
 its unexecuted prediction explicitly distinguished from measured failures.
 Strict bidirectional membership remains a verification responsibility; no new
 source-map certification pass or live-index behavior is introduced here.
-
 
 ### Post-Repair Primary Audit And Validation - 2026-10-17
 
@@ -3366,7 +3347,6 @@ No verified blocker or additional required change follows from this report.
 The four other reviewers subsequently reach their execution limits without
 verdicts, as recorded in the terminal disposition below.
 
-
 ### Final Review Disposition And Closure - 2026-10-17
 
 Fresh session 076f2256bda9495486f72a229e32851a is terminal. Minimax returns
@@ -3460,6 +3440,7 @@ EOF, strict verification and caller-excluded indexed snapshot capture, and the
 adapter help lists inspect-reader.
 
 Validation on the current repair source:
+
 - Pure Go journal and adapter suites pass (137.480 s and 0.005 s).
 - Rust core, registry and SDK suites, including doctests, pass.
 - Shared reader-hardening suite passes 552 observations against pinned v262.
@@ -3620,6 +3601,7 @@ and its initial-error recovery remains. No mutex, atomic, per-filter revision,
 new heap allocation or source-file writes were introduced.
 
 Validation:
+
 - Full Go journal/adapter suite passes (118.935 s); after early-gate refinement,
   focused recovery/filter suite passes (7.114 s).
 - Rust SDK 202 tests and core 99 tests pass, with doctest results preserved.
@@ -3665,3 +3647,38 @@ FreeBSD checks and Go/Rust coverage generation passed. Codacy SARIF generation
 and coverage upload retain the previously diagnosed remote-service failures;
 no unrelated CI configuration change is included. Local validation and internal
 review evidence for this checkpoint are recorded above.
+
+### Regression Closure - 2026-10-26
+
+The user authorized fixing the remaining review findings. Independent SDK review
+of a1144dcbf537 passes after Go focused suites, Rust core99 and SDK202 tests.
+Prior shared552/docs35/wiki16 checks and bounded-work/allocation evidence remain
+recorded above. No SDK-specific blocker remains. The latest publication did expose
+a CLI consumer of the changed facade EOF result; do not claim whole-PR readiness.
+That fix, Windows glob/URL defects, explicit oracle qualification and CLI example
+paths are tracked by reopened SOW-0121 before proceeding sequentially.
+
+SDK review items: cursor EOF, compressed-stream I/O classification, NUL-path
+construction, array-shaped probe diagnostics and public help/docs are implemented.
+Shared advanced-cursor synthetic restoration is rejected as a production repair
+requirement; native EOF semantics supersede it. Unknown posting completeness,
+strict cache traversal and required facet errors remain intentional. Optional
+cleanup/extra test cross-products, redundant assertions and test-only dependency
+relocation are rejected as unnecessary to the approved outcome; generic DATA
+decoder diagnostics remain an existing limitation, not silently accepted data.
+
+Artifact gate: specs, runtime compatibility skill, consumer docs and SOW indexes
+are updated. AGENTS.md needs no change: existing systemd/purity/performance rules
+already cover this outcome. No exported operator skill exists. The lesson is to
+validate a realistic upstream trigger before treating synthetic restoration as a
+required lifecycle. Scratch/raw reports remain ignored; durable evidence is
+sanitized. No source repair or new host probing was introduced. Existing broader
+follow-ups remain SOW-0045/0071/0122/0160/0161; new CLI findings map to real reopened
+SOW-0121. The user-requested interim checkpoint explicitly split implementation
+publication from this lifecycle handoff. Run the local audit before committing
+this transition; SDK and CLI implementation are not executed in parallel.
+
+Final lifecycle audit reports complete and clean. Current Codacy Markdown
+findings in this record were corrected before the handoff commit. The unchanged
+Bandit execution error predates this repair and remains an explicit coverage
+limitation in SOW-0121; no speculative CI configuration change is made.
