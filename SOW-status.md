@@ -7,9 +7,10 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- SOW-0121 - reopened, in-progress for remaining PR12 invocation EOF, Windows glob/file
-  links, explicit oracle qualification and documentation corrections. SDK
-  SOW-0159 cursor EOF and sequence exhaustion corrections are completed and reviewed. Only internal reviews are authorized.
+- SOW-0121 - active: integrate approved directional cursor APIs in both CLIs,
+  finish preserved PR12 corrections and qualify against pinned v262. SDK
+  SOW-0159 is completed with three internal review scopes passing. Only
+  internal reviews are authorized; PR12 remains draft.
 
 - `SOW-0045-20260528-go-reader-alignment-optimization.md` - reopened and paused
   for a separately reproduced healthy empty/EOF refresh positioning regression.
@@ -76,7 +77,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
   coverage generation and CodeQL pass. These CI limitations stay explicit.
   Broader scalability remains SOW-0122; PR #12 is draft, not merged/released.
 
-- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - completed; typed facade cursor absence and CLI consumers validated; remaining CLI work in SOW-0121.
+- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - completed; directional cursor APIs validated and reviewed in both SDKs; CLI integration remains in SOW-0121.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
   native filtering and approved position/time/error retry behavior. Go floor
   amd64/386/race checks pass 1,995/1,996/1,995 events, excluding only the unchanged
@@ -88,7 +89,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
   intervals and adverse history retained. The fresh whole-SOW review has one
   positive verdict, five coverage gaps and no verified unresolved blocker.
   The complete-and-clean closing audit passes; signed commit 25accee keeps
-  implementation and completed lifecycle together. Journalctl SOW-0121 is completed, including the vacuum repair.
+  implementation and completed lifecycle together. Journalctl SOW-0121 later reopened for CLI review findings; its vacuum repair remains accepted.
 - `SOW-0108-20260614-cross-language-reader-window-accessor.md` - completed
   again: Go indexed value lifetimes, bounded hybrid headers, native opener and
   initial statistics are repaired. Full local checks and adjudicated review

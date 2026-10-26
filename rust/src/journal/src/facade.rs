@@ -327,6 +327,20 @@ impl SdJournal {
         }
     }
 
+    /// Eager directional extension; the existing facade seek contract is unchanged.
+    pub fn seek_cursor_direction(
+        &mut self,
+        cursor: &str,
+        direction: crate::Direction,
+    ) -> std::result::Result<(), Error> {
+        self.reset_iterators();
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.seek_cursor_direction(cursor, direction),
+            ReaderKind::Directory(reader) => reader.seek_cursor_direction(cursor, direction),
+        }
+        .map_err(map_error)
+    }
+
     pub fn seek_cursor(&mut self, cursor: &str) -> std::result::Result<(), Error> {
         self.reset_iterators();
         match &mut self.reader {
@@ -719,4 +733,13 @@ fn map_error(err: SdkError) -> Error {
             Error::Other(format!("journal verification failed: corrupt file: {msg}"))
         }
     }
+}
+
+/// Eager directional extension to the libsystemd-compatible facade.
+pub fn SdJournalSeekCursorDirection(
+    j: &mut SdJournal,
+    cursor: &str,
+    direction: crate::Direction,
+) -> std::result::Result<(), Error> {
+    j.seek_cursor_direction(cursor, direction)
 }

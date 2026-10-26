@@ -86,6 +86,13 @@ current entry exactly matches a cursor. Cursor metadata is emitted in the
 official systemd cursor shape; seek and test also accept the older SDK cursor
 shape for compatibility.
 
+`Reader.SeekCursorDirection`, `DirectoryReader.SeekCursorDirection` and the
+`SdJournalSeekCursorDirection` facade extension select an inclusive forward or
+backward cursor boundary immediately, using native indexes and installed
+filters. Read the current entry before stepping. A missing boundary succeeds
+with no current entry; use `TestCursor` to distinguish an exact match from a
+nearby row. Existing `SeekCursor` APIs are unchanged.
+
 Stateful data and unique enumeration return full `FIELD=value` payloads and are
 binary-safe. `SdJournalGetData` returns the first value for a repeated field;
 callers that need all repeated values must use the restart/enumerate data API.

@@ -62,8 +62,8 @@ pub use facade::{
     SdJournalOpenPath, SdJournalPrevious, SdJournalPreviousSkip, SdJournalProcessOutput,
     SdJournalQueryUnique, SdJournalQueryUniqueState, SdJournalRecoveryStatuses,
     SdJournalRestartData, SdJournalRestartFields, SdJournalRestartUnique, SdJournalSeekCursor,
-    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
-    SdJournalTestCursor, SdJournalVisitUniqueValues,
+    SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
+    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
 };
 pub use journal_core::error::JournalError;
 use journal_core::file::ExperimentalMmapStrategy;
@@ -591,6 +591,50 @@ impl FileReader {
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Realtime(usec));
         });
+    }
+
+    /// Position inclusively using native cursor indexes in the requested direction.
+    /// The existing `seek_cursor` method retains its original behavior.
+    pub fn seek_cursor_direction(&mut self, cursor: &str, direction: Direction) -> Result<()> {
+        let anchor = parse::directional_cursor_anchor(cursor)
+            .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        self.seek_cursor_anchor(&anchor, direction)
+    }
+
+    fn seek_cursor_anchor(
+        &mut self,
+        anchor: &journal_core::file::CursorAnchor,
+        direction: Direction,
+    ) -> Result<()> {
+        self.inner.with_file(|file| self.row.clear_current(file))?;
+        loop {
+            let row = &mut self.row;
+            let retry = self.inner.with_mut(|fields| {
+                if !fields
+                    .reader
+                    .seek_cursor_direction(fields.file, anchor, direction)?
+                {
+                    return Ok(false);
+                }
+                let offset = fields.reader.get_entry_offset()?;
+                match row.load_entry(fields.file, offset) {
+                    Ok(_) => Ok(false),
+                    Err(err)
+                        if fields.reader.recover_after_error(
+                            fields.file,
+                            Location::Head,
+                            &err,
+                        )? =>
+                    {
+                        Ok(true)
+                    }
+                    Err(err) => Err(err),
+                }
+            })?;
+            if !retry {
+                return Ok(());
+            }
+        }
     }
 
     pub fn seek_cursor(&mut self, cursor: &str) -> Result<()> {

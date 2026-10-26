@@ -2,6 +2,9 @@
 mod array_chain;
 mod chain_guard;
 pub mod cursor;
+mod cursor_direction;
+#[doc(hidden)]
+pub use cursor_direction::CursorAnchor;
 pub mod file;
 mod file_iterators;
 mod file_mut;

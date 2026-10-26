@@ -548,6 +548,105 @@ impl DirectoryReader {
         self.files[self.index].test_cursor(cursor)
     }
 
+    /// Position each file by its native cursor indexes and select the merged boundary.
+    pub fn seek_cursor_direction(&mut self, cursor: &str, direction: Direction) -> Result<()> {
+        let anchor = parse::directional_cursor_anchor(cursor)
+            .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        loop {
+            self.index = self.files.len();
+            self.current_key = None;
+            self.pending_realtime_seek = None;
+            self.realtime_seek_bound = None;
+            self.reset_candidates();
+            self.direction = Some(direction);
+            self.merging = true;
+            self.recovery_changed = false;
+            let mut best: Option<usize> = None;
+            let mut exact = None;
+            for i in 0..self.files.len() {
+                let result = self.files[i].seek_cursor_anchor(&anchor, direction);
+                self.recovery_changed |= self.files[i].take_recovery_change();
+                result?;
+                let key = match self.files[i].current_directory_entry_key() {
+                    Err(SdkError::NoEntry | SdkError::Journal(JournalError::UnsetCursor)) => {
+                        continue;
+                    }
+                    result => result?,
+                };
+                self.candidates[i] = Some(DirectoryCandidate {
+                    reader_index: i,
+                    key,
+                });
+                if anchor.sequence == Some((key.seqnum_id, key.seqnum)) {
+                    exact = Some(i);
+                }
+                if let Some(old) = best {
+                    let cmp = self.compare_entry_keys(key, self.candidates[old].unwrap().key);
+                    if direction == Direction::Forward && cmp < 0
+                        || direction == Direction::Backward && cmp > 0
+                    {
+                        best = Some(i);
+                    }
+                } else {
+                    best = Some(i);
+                }
+            }
+            if self.recovery_changed {
+                self.boot_newest = build_directory_boot_newest(&self.files);
+                continue;
+            }
+            let Some(best) = exact.or(best) else {
+                return Ok(());
+            };
+            let key = self.candidates[best].unwrap().key;
+            let next_anchor = journal_core::file::CursorAnchor {
+                sequence: Some((key.seqnum_id, key.seqnum)),
+                monotonic: Some((key.boot_id, key.monotonic)),
+                realtime: Some(key.realtime),
+            };
+            for i in 0..self.files.len() {
+                if i == best {
+                    continue;
+                }
+                if let Some(candidate) = self.candidates[i] {
+                    let cmp = self.compare_entry_keys(candidate.key, key);
+                    if direction == Direction::Forward && cmp > 0
+                        || direction == Direction::Backward && cmp < 0
+                    {
+                        continue;
+                    }
+                    self.candidates[i] = None;
+                }
+                let result = self.files[i].seek_cursor_anchor(&next_anchor, direction);
+                self.recovery_changed |= self.files[i].take_recovery_change();
+                result?;
+                let candidate = match self.files[i].current_directory_entry_key() {
+                    Err(SdkError::NoEntry | SdkError::Journal(JournalError::UnsetCursor)) => {
+                        continue;
+                    }
+                    result => result?,
+                };
+                let cmp = self.compare_entry_keys(candidate, key);
+                if direction == Direction::Forward && cmp > 0
+                    || direction == Direction::Backward && cmp < 0
+                {
+                    self.candidates[i] = Some(DirectoryCandidate {
+                        reader_index: i,
+                        key: candidate,
+                    });
+                }
+            }
+            if self.recovery_changed {
+                self.boot_newest = build_directory_boot_newest(&self.files);
+                continue;
+            }
+            self.index = best;
+            self.current_key = Some(key);
+            self.candidates[best] = None;
+            return Ok(());
+        }
+    }
+
     pub fn seek_cursor(&mut self, cursor: &str) -> Result<()> {
         let want = parse::parse_cursor_location(cursor, true)
             .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;

@@ -1,13 +1,13 @@
 use super::mmap::MemoryMap;
 use crate::error::Result;
 use crate::file::{
+    EntryItemsType,
     cursor::{JournalCursor, Location},
     file::{EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile},
     filter::{FilterExpr, JournalFilter, LogicalOp},
     object::{DataObject, FieldObject},
     offset_array::Direction,
     value_guard::ValueGuard,
-    EntryItemsType,
 };
 use std::num::NonZeroU64;
 
@@ -72,10 +72,12 @@ mod tests {
 
         assert!(!matches!(expr, FilterExpr::None));
         assert!(reader.filter.is_none(), "pending filter should be consumed");
-        assert!(reader
-            .build_filter(&journal_file)
-            .expect("second build")
-            .is_none());
+        assert!(
+            reader
+                .build_filter(&journal_file)
+                .expect("second build")
+                .is_none()
+        );
     }
 
     #[test]
@@ -162,6 +164,23 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     pub fn set_location(&mut self, location: Location) {
         self.recovery_eof = None;
         self.cursor.set_location(location)
+    }
+
+    #[doc(hidden)]
+    pub fn seek_cursor_direction(
+        &mut self,
+        file: &'a JournalFile<M>,
+        anchor: &crate::file::CursorAnchor,
+        direction: Direction,
+    ) -> Result<bool> {
+        self.drop_guards();
+        self.recovery_eof = None;
+        if let Some(filter) = self.filter.as_mut() {
+            let expr = filter.build(file)?;
+            self.cursor.set_filter(expr);
+            self.filter = None;
+        }
+        self.cursor.seek_anchor(file, anchor, direction)
     }
 
     pub fn step(&mut self, journal_file: &'a JournalFile<M>, direction: Direction) -> Result<bool> {

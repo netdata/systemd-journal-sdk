@@ -4,12 +4,10 @@
 
 Status: completed
 
-Sub-state: SDK regression work completed 2026-10-26. Signed checkpoint
-`a1144dcbf537` contains the approved EOF contract, read-only recovery scope and
-I/O classification corrections. Independent SDK final review passes that head.
-The Go invocation consumer regression and other confirmed CLI/qualification
-findings are owned by reopened SOW-0121. Historical completion evidence remains
-below; appended 2026-10-25/26 records govern this regression close.
+Sub-state: directional cursor prerequisite completed 2026-10-26 after local
+validation and three independent internal final review scopes passed. The Go
+closed-reader finding was reproduced, corrected and independently retested.
+CLI integration resumes in SOW-0121. Historical records remain below.
 
 ## Requirements
 
@@ -3798,3 +3796,126 @@ exist. Synthetic evidence is retained ignored; no personal or operational data
 is added. The lesson is to distinguish failed seek boundaries from ordinary
 iteration EOF. Remaining CLI validation is owned by reopened0121; no SDK item
 is deferred. Audit must remain complete and clean before this coherent commit.
+
+## Regression - 2026-10-26 - Directional Cursor Seeking
+
+### User Decision
+
+The user approved1A: add explicit direction-aware indexed cursor seeking in
+both SDKs and consume it in both journalctl commands. Preserve existing seek
+APIs and their immediate forward-positioning behavior. Netdata retains its
+existing Explorer pagination and exact-row payload expansion paths. No shared
+synchronization, persistent reader state or per-row allocation is authorized
+for this correction. Use existing index machinery, with focused cost evidence
+where new work warrants it; do not build a broad benchmark framework.
+
+### Pre-Implementation Gate
+
+Problem: eager forward cursor positioning cannot select reverse query starts,
+including timestamp ties, missing or filtered-out cursor rows and partial
+sequence/boot cursors. Evidence: PR12 independent final CLI review and pinned
+v262 adversarial probes, recorded in0121. Existing SDK seekers also prioritize
+a realtime start before sequence comparison; a new directional API must use
+native per-file key precedence instead. No source journal mutation is involved.
+
+Affected surfaces: idiomatic file/directory readers and optional facade
+extensions in Go/Rust, then CLI integration under0121. Existing APIs and Netdata
+call graphs remain unchanged. Reuse ENTRY-array partitioning, DATA posting
+indexes, boot metadata and directory merge candidates. Investigate exact
+sequence/boot fallback and corruption behavior before implementing each path.
+Risk: wrong tie side, inconsistent cross-file candidates, filter-state rewind,
+suppressed metadata errors, or scans where indexes suffice. Retain successful
+reader layouts and avoid adding state to existing reader structs.
+
+Plan: implement explicit SeekCursorDirection/seek_cursor_direction with existing
+Direction types; eager positioning at the requested inclusive boundary. Reuse
+per-file native indexed search and existing match expressions. Compose directory
+candidates with existing ordering. Add facade extension without changing native
+named APIs. Confirm both languages before resuming0121 integration.
+Validation: shared v262 cursor cases forward/reverse, full/partial keys, ties,
+filters and directories; error/recovery controls and absence/reversal tests;
+existing SDK/Netdata tests and layout/work comparisons. Raw evidence and scratch
+stay ignored under.local; fixtures use synthetic identities. Update API docs,
+specs and relevant compatibility guidance, status indexes and closure evidence.
+Three internal review scopes remain required; no external models or release.
+Open decisions: none;1A resolves the API design fork. CLI0121 is paused while
+this prerequisite is implemented and reviewed; preserve its current edits.
+
+### Directional Cursor Validation - 2026-10-26
+
+Implemented explicit file/directory/facade extensions in both languages without
+changing existing seekers or reader struct fields. Native per-leaf sequence,
+boot/monotonic and realtime bounds reuse ENTRY/DATA indexes; directory initial
+selection honors exact sequence identity before cross-history ordering and
+repositions obsolete sibling candidates. No source writes, locks, dependency
+changes or Netdata call-path changes are introduced.
+
+Pinned upstream evidence: systemd/systemd @
+8cc40e0c5e9234bf45084751ac53b1fbfe70b492,
+src/libsystemd/sd-journal/sd-journal.c:767-975, 1032-1047, 1169-1186,
+1310-1405 and src/libsystemd/sd-journal/journal-file.c:3732-3803.
+The current workstation mirror is newer; only the pinned source and built
+v262 oracle qualify this evidence. Incomplete sequence/monotonic pairs are
+ignored when another valid location component exists, matching native parsing.
+
+Validation: 1,384 synthetic native comparisons per language match, covering
+forward/reverse and at/after cursors, partial keys, ties, sparse Boolean filters,
+multiple boots, rotated histories and cross-file clock skew. These development
+probes are supplementary to committed regression tests, not a final review
+verdict. Committed tests cover file/directory boundaries, exact sequence versus
+boot ordering, both layouts, Go mmap/ReadAt, transient I/O retry, unrelated DATA
+avoidance, and read-only recovery. The Go indexed 1,005-entry control uses 72
+accessor reads; it does not expand unrelated payloads. Existing iteration and
+Netdata work are unchanged, so no broad timing harness is needed.
+
+Full pure-Go journal suite passes (113.7 seconds). Rust SDK/core suites pass
+206 and 99 tests respectively, with three pre-existing ignored core doc tests.
+Consumer wiki validation passes all 16 pages and all 35 executable examples.
+SOW audit reports complete and clean. Focused tests are rerun after adding the
+incomplete-key control. Three independent internal final reviews are pending;
+this section does not claim completion or publication.
+
+Artifact maintenance: product-scope spec, Go API reference and Reader APIs wiki
+now document the directional extension and eager selected-row contract.
+Existing compatibility skill already requires cursor direction, error/recovery,
+index usage and performance checks, so this SDK change needs no new workflow
+rule. AGENTS.md and operator skills are unaffected. Lifecycle indexes identify
+0159 as active and0121 as paused. Evidence uses synthetic IDs and ignored local
+logs. CLI consumption and permanent oracle integration remain in reopened0121,
+which must resume only after this SDK gate closes.
+
+Internal Go final review reproduced a closed filtered reader panic in the new
+seek operation: pending filter construction dereferences the closed accessor.
+Reuse the existing stepFiltered nil-accessor guard before any new seek work.
+Test raw, pending and compiled filters through file/directory facades with
+repeated forward/backward calls after Close. This is an error-path completion
+within the approved API scope; no ordinary iteration or reader layout changes.
+
+The closed-reader test reproduced the panic before the guard and passes after
+it, including all six raw/pending/compiled file/directory combinations and
+repeated opposite-direction calls. Directional plus Netdata focused tests pass
+again (1.025 seconds). Native review rebuilt both probes and expanded to 1,432
+cases per language, all matching v262. Rust final review passes, including the
+additional failed-seek/getter/retry audit; native contract review passes.
+Go final review is checking the guard and remaining state cases before closure.
+
+### Directional SDK Closure - 2026-10-26
+
+All three independent internal scopes pass the final implementation: Go SDK,
+Rust SDK and native contract/evidence. The Go reviewer independently confirms
+closed-reader tests and a positioned transient-I/O probe for raw and filtered
+readers: error propagation, retained committed row, ordinary movement and
+explicit seek retry remain consistent. No unresolved SDK finding remains.
+Rust edition-2024 formatting and final evidence/status edits do not change
+behavior. Same-pattern inspection covers file/directory/facade entry points and
+pending/compiled filters. Source changes remain additive to explicit seeking;
+ordinary hot paths and Netdata retain their previous execution and layouts.
+
+The lesson is to qualify cursor initialization per native index and direction,
+then test continuation and failure boundaries rather than only the first row.
+Existing compatibility guidance already captures those requirements. Sensitive
+data and artifact checks are clean; all external evidence uses pinned upstream
+identity. SDK completion and code are committed together. CLI integration,
+shared CLI oracle cases and native CI qualification belong to reopened0121;
+no SDK task is deferred without an owner. The lifecycle audit is rerun before
+commit and must retain its complete-and-clean verdict.

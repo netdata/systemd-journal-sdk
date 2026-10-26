@@ -149,7 +149,7 @@ impl FilterExpr {
         Ok(())
     }
 
-    fn prepare_recovery<M: MemoryMap>(
+    pub(super) fn prepare_recovery<M: MemoryMap>(
         &mut self,
         file: &JournalFile<M>,
         backward: bool,

@@ -882,6 +882,15 @@ Accepted reader API layers:
   syntactically valid cursor is accepted as a seek location even when no current
   entry has that exact cursor. Invalid cursor syntax fails. `test_cursor()`
   remains the exact-current-position check.
+- File and directory readers expose explicit eager directional cursor seeking:
+  Go `SeekCursorDirection`, Rust `seek_cursor_direction`, and facade extension
+  `SdJournalSeekCursorDirection`. Existing cursor seek methods remain unchanged.
+  Forward/backward selects the inclusive first/last eligible boundary using
+  native per-file sequence, boot/monotonic and realtime key precedence, with
+  DATA-index filtering and directory merge ordering. Getters access the selected
+  row immediately; no eligible row succeeds with no current entry. Exactness
+  remains a separate cursor test. IDs normalize to 32 hexadecimal digits.
+  This extension adds no persistent reader fields or changes to Netdata paths.
 - Go direct `Reader.TestCursor` and `DirectoryReader.TestCursor` return
   `false, ErrEndOfEntries` at EOF. The libsystemd-compatible facade returns
   `false, nil` instead; other errors remain errors. The Go facade cursor getter

@@ -249,6 +249,23 @@ Cursor metadata is emitted in the official systemd cursor shape. Cursor seek
 and test also accept the older SDK cursor shape for compatibility with existing
 callers.
 
+For directional cursor positioning, use `SeekCursorDirection` in Go or
+`seek_cursor_direction` in Rust on file or directory readers. The facade
+extension is `SdJournalSeekCursorDirection`. These methods immediately select
+an inclusive boundary: forward selects the first eligible row at or after the
+cursor, backward the last eligible row at or before it. Read the selected row
+before advancing; calling next/previous first would skip it. Existing cursor
+seek APIs retain their previous behavior.
+
+Selection follows the native indexes and installed filters. A matching sequence
+ID takes precedence over the cursor's time; otherwise boot/monotonic and realtime
+components provide fallback locations. A cursor can therefore select a nearby
+row rather than an exact match; use `TestCursor`/`test_cursor` when exactness
+matters. No eligible row is a successful seek with no current entry; use the
+normal getter/EOF contract. Supplied IDs must normalize to 32 hexadecimal digits.
+The new operation adds no persistent reader state and does not change Explorer
+or Netdata pagination.
+
 At EOF, Go's direct `Reader.TestCursor` and `DirectoryReader.TestCursor`
 return `false, ErrEndOfEntries`. The libsystemd-compatible facade returns
 `false, nil` for the same condition.

@@ -7,7 +7,7 @@ Status: in-progress
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: reopened 2026-10-26 for confirmed PR12 review findings. SDK
-SOW-0159 facade cursor EOF prerequisite is completed; CLI work resumes. The appended
+SOW-0159 directional cursor prerequisite is completed; CLI implementation resumes. The appended
 regression gate records the approved fixes. The prior vacuum correction remains
 accepted. PR12 stays draft; no merge or release is authorized.
 
@@ -5366,3 +5366,132 @@ Markdown findings and one Bandit execution error, not the old configuration
 failure. Investigate actual causes before editing CI; unrelated baseline problems
 must be explicitly dispositioned, not swept into this PR. No open product choice
 blocks the confirmed minimal-complete fixes.
+
+### Local Correction Evidence - 2026-10-26
+
+SDK prerequisites are committed as f50676f and5224c25 under completed0159:
+typed facade cursor absence, both CLI EOF consumers, and filtered cursor-seek
+exhaustion/reversal. The full explicit-v262 static matrix initially found one
+remaining Go sequence-cursor mismatch (3033/3034); after the proven fix it passes
+3034/3034. The fresh scratch run selects one full-feature v262 oracle and records
+its path/version. No host journal is used; follow was not rerun because this
+batch changes no follow loop. Existing native CI will replay portable behavior.
+
+Rust wildcard expansion stops immediately on an empty candidate set. Both
+Windows file-link implementations normalize drive/UNC paths and percent-encode
+path bytes only when links are enabled; device forms remain plain text. Unit
+controls cover Unicode, spaces, URI delimiters, drive and UNC paths, unsupported
+forms and native Windows relative resolution. Linux executes pure URI helpers;
+native Windows integration remains explicitly pending CI. Go CLI unit tests and
+Rust 28 unit/11 subprocess tests pass. Oracle-plumbing unit tests pass4/4;
+parser parity passes; wiki validation and all35 verified docs examples pass.
+The paired portable suite includes permanent cursor EOF controls (134 checks).
+
+Same-pattern searches cover both file-link builders, exhausted wildcard paths,
+all query-matrix stock command constructors and imported timestamp/v262 helpers.
+No PATH fallback remains; version and feature validation precedes tool builds.
+The parser conflict probe explicitly supplies a synthetic filename. Consumer Go
+examples account for go -C changing the working directory; README enumeration
+restrictions and pager-end/follow specification are reconciled with existing
+behavior. Compatibility skill documents explicit oracle propagation.
+
+Performance review: plain-output and Unix formatting paths are unchanged apart
+from a compile-time platform choice. Windows URI work occurs only for requested
+links. Glob early exit removes unnecessary work; the oracle/docs/test corrections
+have no SDK runtime cost. No benchmark framework or new slowdown waiver is needed.
+Codacy's13 Markdown findings were formatting-only in0159 and corrected in057a746.
+Bandit execution failure is pre-existing (retained earlier runs and prior SOW
+evidence); no detailed scanner diagnostic establishes a new source issue. It
+remains an analysis-coverage limitation, not a passing scanner claim. No CI
+configuration changes or software installation are required.
+
+Whole-workspace cargo fmt check reports pre-existing formatting differences in
+reader.rs, repository/file.rs and reader_hardening.rs; changed CLI modules are
+formatted. These are not runtime findings, and unrelated formatting churn is
+excluded. Three internal final reviews will assess the SDK blast radius, CLI
+behavior and qualification/artifacts before this SOW closes. No external models
+are authorized. No merge or release is authorized.
+
+### Reverse Cursor Initial Position - 2026-10-26
+
+Independent CLI final review found24 differences in54 reverse-cursor controls.
+Both CLIs retain the SDK's eager forward seek candidate for reverse output;
+native v262 selects the initial candidate in the requested direction
+(systemd/systemd @8cc40e0c5e9234bf45084751ac53b1fbfe70b492,
+src/journal/journalctl-show.c:76-80). A cursor before filtered rows returns a
+later row; one after all matching rows loses earlier results.
+
+Pre-implementation analysis: retain the SDK's existing forward seek contract.
+For reverse CLI positioning, inspect cursor metadata and step backward once when
+forward seek exhausts or selects a strictly later location. Compare only the
+same sequence/boot/time ordering components as the SDK; x remains exact-match
+only. Then apply existing after-cursor exclusion. Reuse public cursor parsers;
+CLI-local presence/monotonic extraction adds no SDK API or row scan. Metadata
+work occurs once per reverse cursor seek, not per emitted row. Test both cursor
+modes and cursor-file through shared v262 controls before/between/after filtered
+rows, including partial sequence/time and mismatched x. Preserve genuine errors,
+checkpoint semantics and forward behavior. Internal final review remains FAIL
+until this behavior is corrected and the full shared matrix is rerun.
+
+### Directional Seek Design Decision Pending - 2026-10-26
+
+The provisional one-predecessor plan above is disproved, not implemented. The
+reviewer proved repeated realtime ties require selecting the last equal entry;
+unknown sequence identity with no time starts reverse from the tail, unknown
+boot/monotonic behaves differently, and contradictory full cursor fields expose
+sequence precedence over the eager forward seek's time starting point. The
+experimental CLI adjustment is retained only as ignored scratch; production
+sources remain at the previously validated revision, which still has this known
+reverse-cursor gap. Full matrix PASS does not cover those newly found cases.
+
+The user was asked decision1: A (recommended long-term-best) add explicit
+direction-aware indexed cursor seek APIs in both SDKs, preserving current APIs,
+and use them in CLIs; B change existing facades to deferred native seek semantics,
+which affects callers expecting immediate positioning. This is an SDK API design
+fork requiring user choice under AGENTS.md. Do not implement either until the
+answer is recorded. If A is approved, reopen0159 as the SDK prerequisite and
+pause0121, then validate both languages and complete the CLI integration. No
+row-scan workaround or performance waiver is proposed. PR12 remains draft;
+final CLI review is FAIL and native CI qualification is still outstanding.
+
+### Read-Only Directional Feasibility Check - 2026-10-26
+
+While decision1 remains pending, source inspection confirms reusable indexed
+primitives. Rust cursor.rs:179-195 already applies directed_partition_point
+with strict/inclusive timestamp bounds for forward/reverse ties; filtered
+positioning resolves the resulting entry offset through native postings
+(cursor.rs:303-327). Go stores entry offsets and has lower/upper realtime
+searches (reader.go:963-978), but those generic helpers suppress metadata read
+errors, so a new directional path must use the existing error-propagating
+filtered-search pattern rather than copy that error suppression.
+
+Pinned upstream evidence is systemd/systemd
+@8cc40e0c5e9234bf45084751ac53b1fbfe70b492,
+src/libsystemd/sd-journal/sd-journal.c:844-863 and945 onward: matching sequence
+identity takes precedence; boot/monotonic positioning can fall back to realtime
+or adjacent boot; otherwise seek uses the direction's boundary. Filtered queries
+use DATA postings directly, not a global-row walk. The external reference
+checkout HEAD has advanced, so evidence was read with git show at the pinned
+commit, not assumed from its working tree. No API or runtime implementation was
+changed while awaiting the user's choice. This supports feasibility of optionA,
+not a completed design or permission to implement it.
+
+### Decision1A Approved - 2026-10-26
+
+The user approved explicit directional seek APIs in both SDKs, preserving
+existing API behavior and Netdata execution/memory. SOW0159 is reopened as the
+SDK prerequisite. This SOW pauses implementation until that prerequisite is
+validated and reviewed; existing CLI/oracle/docs corrections remain preserved.
+
+### Directional CLI Integration Gate - 2026-10-26
+
+The approved1A SDK prerequisite passes full local suites and three internal
+final reviews. Resume this SOW after its coherent SDK commit. Both commands
+must use explicit directional seek for initial cursor/after-cursor positioning,
+invocation anchors and forward checkpoint repositioning. Preserve exactness
+checks and no-extra-step eager positioning. Update the Go CLI interface/test
+double, add shared native controls for partial/full cursors, ties and filters,
+and portable reverse controls. Rebuild both commands, run the explicit pinned
+v262 query matrix, CLI suites and portable controls; then obtain three internal
+whole-SOW final scopes and check CI before publication. No new product decision
+or Netdata caller change is required.

@@ -4,9 +4,10 @@ Last updated: 2026-10-26
 
 ## Current
 
-- SOW-0121 - reopened, in-progress for remaining PR12 invocation EOF, Windows glob/file
-  links, explicit oracle qualification and documentation corrections. SDK
-  SOW-0159 cursor EOF and sequence exhaustion corrections are completed and reviewed. Only internal reviews are authorized.
+- SOW-0121 - active: integrate approved directional cursor APIs in both CLIs,
+  finish preserved PR12 corrections and qualify against pinned v262. SDK
+  SOW-0159 is completed with three internal review scopes passing. Only
+  internal reviews are authorized; PR12 remains draft.
 
 - SOW-0045 - Go Reader Alignment Optimization: regression reopened and paused.
   Unchanged HEAD reproduces skipped appends after healthy empty/EOF refresh,
@@ -90,7 +91,7 @@ Last updated: 2026-10-26
   Broader scalability remains SOW-0122; PR #12 is draft, not merged/released.
 
 - SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: completed.
-  SDK regression checkpoint a1144dc passes independent review; CLI fallout is
+  SDK directional cursor APIs pass three independent reviews; CLI integration is
   tracked in reopened SOW-0121. Latest SDK validation is in its closure record.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
   native filtering and approved position/time/error retry behavior. Go floor
@@ -103,7 +104,7 @@ Last updated: 2026-10-26
   intervals and adverse history retained. The fresh whole-SOW review has one
   positive verdict, five coverage gaps and no verified unresolved blocker.
   The complete-and-clean closing audit passes; signed commit 25accee keeps
-  implementation and completed lifecycle together. Journalctl SOW-0121 is completed, including the vacuum repair.
+  implementation and completed lifecycle together. Journalctl SOW-0121 later reopened for CLI review findings; its vacuum repair remains accepted.
 - SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed
   again with the approved Go indexed aggregation lifetime/header/opener repair.
   Full/race/386/integrated/floor and cross-platform checks pass. The current
@@ -112,8 +113,8 @@ Last updated: 2026-10-26
   1,176 measured allocation pairs avoid increases. External review is
   adjudicated with no verified blocker; Mimo's P2 is disproven and Qwen/Kimi
   coverage gaps remain explicit. Independent findings are owned by paused
-  SOW-0045/SOW-0071 and pending SOW-0160. Signed prerequisite commit `4c49205` precedes the now-completed SDK
-  SOW-0159 and CLI SOW-0121.
+  SOW-0045/SOW-0071 and pending SOW-0160. Signed prerequisite commit `4c49205` precedes completed SDK
+  SOW-0159 and reopened CLI SOW-0121.
 
 - SOW-0158 - v0.10.0 Publication: completed. Release run 38123573886 passed
   both language suites and published/verified all eight Rust `0.10.0` crates.

@@ -304,11 +304,13 @@ fn recovered_prefix_keeps_reverse_time_and_exact_filter_reads() {
                 IndexedSnapshot::open(&path, IndexedSnapshotOptions::default(), &control).is_err()
             );
             let before = std::fs::read(&path).unwrap();
-            assert!(JournalFile::<MmapMut>::open_for_append(
-                &RepoFile::from_path(&path).unwrap(),
-                8 * 1024 * 1024
-            )
-            .is_err());
+            assert!(
+                JournalFile::<MmapMut>::open_for_append(
+                    &RepoFile::from_path(&path).unwrap(),
+                    8 * 1024 * 1024
+                )
+                .is_err()
+            );
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }
@@ -491,19 +493,23 @@ fn first_exact_filter_recovers_after_its_data_guard_drops() {
                 if backward {
                     reader.seek_tail();
                 }
-                assert!(if backward {
-                    reader.previous()
-                } else {
-                    reader.next()
-                }
-                .unwrap());
+                assert!(
+                    if backward {
+                        reader.previous()
+                    } else {
+                        reader.next()
+                    }
+                    .unwrap()
+                );
                 assert_eq!(reader.get_realtime_usec().unwrap(), 2003);
-                assert!(!if backward {
-                    reader.previous()
-                } else {
-                    reader.next()
-                }
-                .unwrap());
+                assert!(
+                    !if backward {
+                        reader.previous()
+                    } else {
+                        reader.next()
+                    }
+                    .unwrap()
+                );
                 assert_eq!(reader.recovery_status().recovered_entries, 1004);
             }
         }
@@ -1170,11 +1176,7 @@ fn directory_filter_mutation_keeps_emitted_anchor() {
                         }
                         assert_eq!(reader.time(), 3000, "mutation changed selected row");
                         let times: &[u64] = if mutation != "install" {
-                            if backward {
-                                &[1000]
-                            } else {
-                                &[5000]
-                            }
+                            if backward { &[1000] } else { &[5000] }
                         } else if backward {
                             &[2000, 1000]
                         } else {
@@ -1929,5 +1931,32 @@ fn native_filter_realtime_duplicate_bounds_choose_exact_entry() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn directional_cursor_uses_recovered_prefix_without_mutation() {
+    for compact in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source.journal");
+        let source = hardening_fixture(&source_path, compact);
+        let arrays = array_graph(&source, compact);
+        let cut = *arrays.last().unwrap().1.last().unwrap() as usize;
+        let path = directory.path().join("cut.journal");
+        std::fs::write(&path, &source[..cut]).unwrap();
+        let mut reader = FileReader::open(&path).unwrap();
+        reader.add_match(b"COMMON=all");
+        reader
+            .seek_cursor_direction("t=ffffffffffffffff", Direction::Backward)
+            .unwrap();
+        assert_eq!(reader.get_realtime_usec().unwrap(), 2003);
+        assert!(reader.recovery_status().incomplete());
+        assert_eq!(std::fs::read(&path).unwrap(), source[..cut]);
+        let current = reader.get_cursor().unwrap();
+        reader
+            .seek_cursor_direction(&current, Direction::Forward)
+            .unwrap();
+        assert_eq!(reader.get_realtime_usec().unwrap(), 2003);
+        assert!(!reader.next().unwrap());
     }
 }
