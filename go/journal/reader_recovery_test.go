@@ -133,8 +133,14 @@ func TestRecoverySnapshotSecondaryPostingShrink(t *testing.T) {
 				if err := os.WriteFile(path, source, 0o600); err != nil {
 					t.Fatal(err)
 				}
+				if ok, err := r.Step(); err != nil || ok {
+					t.Fatalf("unchanged EOF: %v/%v", ok, err)
+				}
+				if err := r.SeekRealtimeUsec(1002); err != nil {
+					t.Fatal(err)
+				}
 				if ok, err := r.Step(); err != nil || !ok {
-					t.Fatalf("repair: %v/%v", ok, err)
+					t.Fatalf("reposition: %v/%v", ok, err)
 				}
 				if got, err := r.GetRealtimeUsec(); err != nil || got != 1002 {
 					t.Fatalf("repair time=%d/%v", got, err)
@@ -456,6 +462,12 @@ func TestRecoveryRefreshReturnsRepairedTailOnce(t *testing.T) {
 				}
 			}
 			tail := recoveryTestTimes(t, r, false)
+			if !explicit {
+				if len(tail) != 0 || !r.RecoveryStatus().Incomplete() {
+					t.Fatalf("unchanged EOF=%v status=%+v", tail, r.RecoveryStatus())
+				}
+				return
+			}
 			if !slices.Equal(tail, []uint64{2004}) {
 				t.Fatalf("repaired tail=%v", tail)
 			}
@@ -509,7 +521,9 @@ func TestRecoveryRejectsInteriorHolesAndArenaPointers(t *testing.T) {
 	}
 }
 
-func TestRecoverySameSizePublicationKeepsIndexedQueriesAndRefresh(t *testing.T) {
+// External byte restoration is fault injection, not journald publication or a
+// supported repair lifecycle. Initial damaged-prefix assertions remain required.
+func TestRecoverySyntheticRestorationKeepsIndexedQueriesAndRefresh(t *testing.T) {
 	for _, compact := range []bool{false, true} {
 		data, arrays := recoveryTestFixture(t, compact)
 		last := arrays[len(arrays)-1]

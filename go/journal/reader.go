@@ -555,6 +555,7 @@ func (r *Reader) readCurrentHeader() (journalHeader, uint64, error) {
 }
 
 func (r *Reader) Refresh() (bool, error) {
+	r.clearRecoveryEOF()
 	return r.refreshEntryOffsets()
 }
 
@@ -841,6 +842,7 @@ func (r *Reader) Next() error {
 	if r.entryIndex >= len(r.entryOffsets) {
 		return r.nextAfterTailRefresh()
 	}
+	r.clearRecoveryEOF()
 	return nil
 }
 
@@ -875,6 +877,14 @@ func (r *Reader) refreshRealtimeSeekIndex(usec uint64, idx int) (int, error) {
 }
 
 func (r *Reader) nextAfterTailRefresh() error {
+	unchanged, err := r.unchangedRecoveryEOF(DirectionForward)
+	if err != nil {
+		return err
+	}
+	if unchanged {
+		r.entryIndex = len(r.entryOffsets)
+		return errEndOfEntries
+	}
 	oldLen := len(r.entryOffsets)
 	changed, err := r.refreshEntryOffsets()
 	if err != nil {
@@ -883,14 +893,17 @@ func (r *Reader) nextAfterTailRefresh() error {
 	if changed && oldLen < len(r.entryOffsets) {
 		r.entryIndex = oldLen
 		if r.entryIndex < len(r.entryOffsets) {
+			r.clearRecoveryEOF()
 			return nil
 		}
 	}
 	r.entryIndex = len(r.entryOffsets)
+	r.rememberRecoveryEOF(DirectionForward)
 	return errEndOfEntries
 }
 
 func (r *Reader) Previous() error {
+	r.clearRecoveryEOF()
 	if r.entryIndex == -2 {
 		if err := r.normalizeFilteredPosition(DirectionBackward); err != nil {
 			return err
@@ -923,6 +936,7 @@ func (r *Reader) Previous() error {
 }
 
 func (r *Reader) SeekHead() error {
+	r.clearRecoveryEOF()
 	r.clearCurrentEntryState()
 	r.entryIndex = -1
 	r.realtimeSeek = nil
@@ -930,6 +944,7 @@ func (r *Reader) SeekHead() error {
 }
 
 func (r *Reader) SeekTail() error {
+	r.clearRecoveryEOF()
 	r.clearCurrentEntryState()
 	r.entryIndex = len(r.entryOffsets)
 	r.realtimeSeek = nil
@@ -937,6 +952,7 @@ func (r *Reader) SeekTail() error {
 }
 
 func (r *Reader) SeekRealtimeUsec(usec uint64) error {
+	r.clearRecoveryEOF()
 	r.clearCurrentEntryState()
 	r.entryIndex = -1
 	value := usec
@@ -1095,6 +1111,7 @@ func parseEntryHeader(src []byte) (entryHeader, error) {
 }
 
 func (r *Reader) AddMatch(data []byte) {
+	r.clearRecoveryEOF()
 	if r.filter == nil {
 		r.filter = &filterBuilder{}
 	}
@@ -1102,6 +1119,7 @@ func (r *Reader) AddMatch(data []byte) {
 }
 
 func (r *Reader) AddDisjunction() error {
+	r.clearRecoveryEOF()
 	if r.filter == nil {
 		r.filter = &filterBuilder{}
 	}
@@ -1110,6 +1128,7 @@ func (r *Reader) AddDisjunction() error {
 }
 
 func (r *Reader) AddConjunction() error {
+	r.clearRecoveryEOF()
 	if r.filter == nil {
 		r.filter = &filterBuilder{}
 	}

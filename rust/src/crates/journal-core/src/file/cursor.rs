@@ -87,10 +87,6 @@ impl JournalCursor {
                 self.reset_after_recovery(journal_file, before)?;
                 self.step_inner(journal_file, direction)
             }
-            Ok(false) if journal_file.refresh_reader_recovery()? => {
-                self.reset_after_recovery(journal_file, before)?;
-                self.step_inner(journal_file, direction)
-            }
             other => other,
         }
     }

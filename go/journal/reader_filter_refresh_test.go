@@ -1,5 +1,9 @@
 package journal
 
+// Tests that rewrite damaged source bytes exercise synthetic fault recovery,
+// not a supported in-place journal repair lifecycle. Actual publication tests
+// use Writer.Append; accessor I/O injection separately checks retry behavior.
+
 import (
 	"bytes"
 	"encoding/binary"
@@ -123,6 +127,12 @@ func TestNativeFilterKnownEmptyDataKeepsRecoveryIdentity(t *testing.T) {
 					t.Fatalf("empty retained DATA=%v/%v", ok, err)
 				}
 				if _, err := file.WriteAt(source, 0); err != nil {
+					t.Fatal(err)
+				}
+				if ok, err := r.Step(); err != nil || ok {
+					t.Fatalf("unchanged EOF=%v/%v", ok, err)
+				}
+				if err := r.SeekHead(); err != nil {
 					t.Fatal(err)
 				}
 				if ok, err := r.Step(); err != nil || !ok {

@@ -27,9 +27,14 @@ func (r *Reader) stepFiltered(direction Direction) (bool, error) {
 	if r.accessor == nil {
 		return false, errInvalidJournal
 	}
+	if r.recovery != nil && r.recovery.eofValid {
+		if unchanged, err := r.unchangedRecoveryEOF(direction); err != nil || unchanged {
+			return false, err
+		}
+	}
 	f := r.filter
 	if f.retry {
-		// A getter may have cached damaged bytes again before the caller repaired them.
+		// Retry with fresh bytes, including any cached by getters after failure.
 		r.accessor.invalidateCopiedWindows()
 		f.retry = false
 	}
@@ -66,6 +71,7 @@ func (r *Reader) stepFiltered(direction Direction) (bool, error) {
 				err = r.validateFilteredEntryHeader(value, header)
 			}
 			if err == nil {
+				r.clearRecoveryEOF()
 				r.entryIndex = index
 				f.overrideOffset = value
 				r.currentHeader, r.currentHeaderOffset, r.currentHeaderValid = header, value, true
@@ -85,6 +91,9 @@ func (r *Reader) stepFiltered(direction Direction) (bool, error) {
 			}
 		}
 		if attempt != 0 || err == nil && !r.recovery.Incomplete() {
+			if err == nil {
+				r.rememberRecoveryEOF(direction)
+			}
 			return false, err
 		}
 		changed, refreshErr := r.refreshFilterRecovery()
@@ -92,6 +101,9 @@ func (r *Reader) stepFiltered(direction Direction) (bool, error) {
 			return false, refreshErr
 		}
 		if !changed {
+			if err == nil {
+				r.rememberRecoveryEOF(direction)
+			}
 			return false, err
 		}
 	}

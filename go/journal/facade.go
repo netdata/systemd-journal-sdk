@@ -289,7 +289,11 @@ func SdJournalGetCursor(j *sdJournal) (string, error) {
 }
 
 func SdJournalTestCursor(j *sdJournal, cursor string) (bool, error) {
-	return j.reader.TestCursor(cursor)
+	ok, err := j.reader.TestCursor(cursor)
+	if errors.Is(err, ErrEndOfEntries) {
+		return false, nil
+	}
+	return ok, err
 }
 
 func SdJournalSetOutputMode(j *sdJournal, mode string) {
@@ -560,7 +564,8 @@ func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 			return err
 		}
 		if !ok {
-			return j.reader.SeekTail()
+			// Preserve the exhausted direction so the next step cannot rewind.
+			return nil
 		}
 
 		current, err := j.reader.GetCursor()

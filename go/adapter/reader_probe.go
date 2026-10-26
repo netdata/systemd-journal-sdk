@@ -240,7 +240,11 @@ func inspectReaderFacade(request readerProbeRequest, result *readerProbeResult) 
 	operation := strings.TrimPrefix(request.Operation, "facade-")
 	switch operation {
 	case "fields":
-		result.Fields, err = journal.SdJournalEnumerateFields(reader)
+		fields, err := journal.SdJournalEnumerateFields(reader)
+		if err != nil {
+			return err
+		}
+		result.Fields = append(result.Fields, fields...)
 		sort.Strings(result.Fields)
 		return err
 	case "unique":

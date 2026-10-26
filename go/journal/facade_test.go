@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -615,4 +616,57 @@ func containsPayload(payloads [][]byte, want []byte) bool {
 		}
 	}
 	return false
+}
+
+func TestSdJournalSeekCursorPastEnd(t *testing.T) {
+	for _, directory := range []bool{false, true} {
+		for _, filtered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("directory=%v/filtered=%v", directory, filtered), func(t *testing.T) {
+				dir := t.TempDir()
+				first := filepath.Join(dir, "a.journal")
+				createMessageJournal(t, first, []messageRow{{"keep", 1000}, {"keep", 1001}})
+				var j *sdJournal
+				var err error
+				if directory {
+					createMessageJournal(t, filepath.Join(dir, "b.journal"), []messageRow{{"keep", 2000}, {"keep", 2001}})
+					j, err = SdJournalOpenDirectory(dir, 0)
+				} else {
+					j, err = SdJournalOpen(first, 0)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { j.Close() })
+				if filtered {
+					if err := SdJournalAddMatch(j, []byte("MESSAGE=keep")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := SdJournalSeekCursor(j, "t=ffffffffffffff"); err != nil {
+					t.Fatal(err)
+				}
+				for i := 0; i < 2; i++ {
+					if n, err := SdJournalNext(j); n != 0 || err != nil {
+						t.Fatalf("next=%d/%v", n, err)
+					}
+					if ok, err := j.reader.TestCursor("t=ffffffffffffff"); ok || !errors.Is(err, ErrEndOfEntries) {
+						t.Fatalf("direct EOF cursor=%v/%v", ok, err)
+					}
+					if ok, err := SdJournalTestCursor(j, "t=ffffffffffffff"); ok || err != nil {
+						t.Fatalf("facade EOF cursor=%v/%v", ok, err)
+					}
+				}
+				if n, err := SdJournalPrevious(j); n != 1 || err != nil {
+					t.Fatalf("previous=%d/%v", n, err)
+				}
+				want := uint64(1001)
+				if directory {
+					want = 2001
+				}
+				if got, err := SdJournalGetRealtimeUsec(j); got != want || err != nil {
+					t.Fatalf("time=%d/%v want%d", got, err, want)
+				}
+			})
+		}
+	}
 }

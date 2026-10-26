@@ -106,8 +106,18 @@ requested. Header counters retain their declared values.
 
 Detection is lazy where the native access path permits it. A zero/`None` status
 means no loss has been observed; it does not certify integrity. A catalog query
-does not validate unrelated entry arrays. Live refresh can clear the status
-after observing a complete repair.
+does not validate unrelated entry arrays.
+
+Recovery is read-only: the SDK does not reconstruct or overwrite damaged source
+journals. Journald abandons a corrupt file and writes to a new one. Normal live
+publication can make temporarily unavailable data readable; this is distinct
+from repairing corruption. Automatic refresh after arbitrary external rewriting
+of damaged entries is not a supported recovery contract.
+
+After a recovered reader reaches EOF, repeated polling in the same direction
+does not rediscover the prefix while the declared entry count is unchanged.
+Repositioning, changing direction, or a changed count permits another check.
+Go's explicit `Refresh` remains separate from automatic EOF polling.
 
 Tail recovery does not reclassify interior holes followed by readable entries,
 wrong object types, cycles, malformed indexes, decompression failures or general
@@ -127,8 +137,8 @@ row, including after installing or replacing a filter on a directory reader.
 Proven sequential directory traversal remains sequential after a filter change;
 errors in a later file are discovered when traversal reaches that file.
 Reversing after EOF also selects the nearest match. If loading a selected ENTRY fails,
-the failed movement keeps the previous successful position. After repairing the
-input, retry the movement to read that candidate.
+the failed movement keeps the previous successful position. This preserves
+reader state on failure; it does not promise to follow external file repair.
 
 Explicit filtered realtime seeks search native posting arrays: forward selects
 the first matching entry at or after the timestamp, and backward selects the
@@ -137,16 +147,16 @@ visit. They do not inspect every skipped posting; use strict verification when
 the whole index must be checked. Ordinary sequential filtering continues to
 report malformed postings as it encounters them.
 
-Group/build failures retain the pending matches for retry. After repairing the
-input, retry the failed operation; flush matches to discard the pending builder.
+Group/build failures retain the pending matches rather than installing a partial
+filter; flush matches to discard the pending builder.
 Flushing also rewinds the reader to the head in both languages, including
 directory and facade readers. Explicitly reposition afterward when continuing
 from a saved location.
 
 A built healthy filter retains the posting population it resolved. To include
-newly published matches, flush and rebuild the filter. Recovery refresh can
-requalify an existing DATA posting list after repair; a value absent when the
-filter was built remains absent until rebuilding. Ordinary snapshot bounds cap
+newly published matches, flush and rebuild the filter. Read-only recovery can
+restrict existing DATA posting lists to the observed intact prefix; a value
+absent when the filter was built remains absent until rebuilding. Ordinary snapshot bounds cap
 the byte extent; they do not create an immutable logical view. A new filter can
 observe publications inside the preallocated original extent. Use an
 `IndexedSnapshot` captured with writers excluded for a stable logical artifact.
@@ -238,6 +248,10 @@ It supports:
 Cursor metadata is emitted in the official systemd cursor shape. Cursor seek
 and test also accept the older SDK cursor shape for compatibility with existing
 callers.
+
+At EOF, Go's direct `Reader.TestCursor` and `DirectoryReader.TestCursor`
+return `false, ErrEndOfEntries`. The libsystemd-compatible facade returns
+`false, nil` for the same condition.
 
 The facade should reuse the row-level borrowed-data contract. It should not
 copy every payload just because the call shape is libsystemd-like.

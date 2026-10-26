@@ -1,11 +1,16 @@
 # SOW Status
 
-Last updated: 2026-10-24
+Last updated: 2026-10-26
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
+
+- SOW-0159 - reopened, in-progress for PR12 cursor EOF and compressed-file
+  I/O classification regressions. Approved direct TestCursor EOF behavior and
+  native unchanged-EOF polling are implemented and locally validated.
+  CLI review repairs follow sequentially; no external reviewers are authorized.
 
 - `SOW-0045-20260528-go-reader-alignment-optimization.md` - reopened and paused
   for a separately reproduced healthy empty/EOF refresh positioning regression.
@@ -71,7 +76,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
   coverage generation and CodeQL pass. These CI limitations stay explicit.
   Broader scalability remains SOW-0122; PR #12 is draft, not merged/released.
 
-- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - completed.
+- `SOW-0159-20261014-rust-go-sdk-hardening-and-reader-compatibility.md` - reopened; historical completion evidence follows.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
   native filtering and approved position/time/error retry behavior. Go floor
   amd64/386/race checks pass 1,995/1,996/1,995 events, excluding only the unchanged

@@ -118,6 +118,8 @@ fn recovered_tail_cursor_requalification_tracks_its_new_position() {
     }
 }
 
+// Synthetic reconstruction exercises consistency after injected failures. It
+// does not establish an upstream publication sequence or a repair contract.
 fn filter_repair_retry(
     compact: bool,
     installed: bool,

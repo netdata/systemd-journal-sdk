@@ -1,3 +1,7 @@
+// Source-byte restoration in this module is synthetic fault injection, not
+// evidence of journald publication or a supported in-place repair lifecycle.
+// Damaged-prefix, failed-position and bounds checks remain recovery invariants.
+
 use super::*;
 
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
@@ -300,13 +304,11 @@ fn recovered_prefix_keeps_reverse_time_and_exact_filter_reads() {
                 IndexedSnapshot::open(&path, IndexedSnapshotOptions::default(), &control).is_err()
             );
             let before = std::fs::read(&path).unwrap();
-            assert!(
-                JournalFile::<MmapMut>::open_for_append(
-                    &RepoFile::from_path(&path).unwrap(),
-                    8 * 1024 * 1024
-                )
-                .is_err()
-            );
+            assert!(JournalFile::<MmapMut>::open_for_append(
+                &RepoFile::from_path(&path).unwrap(),
+                8 * 1024 * 1024
+            )
+            .is_err());
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }
@@ -489,23 +491,19 @@ fn first_exact_filter_recovers_after_its_data_guard_drops() {
                 if backward {
                     reader.seek_tail();
                 }
-                assert!(
-                    if backward {
-                        reader.previous()
-                    } else {
-                        reader.next()
-                    }
-                    .unwrap()
-                );
+                assert!(if backward {
+                    reader.previous()
+                } else {
+                    reader.next()
+                }
+                .unwrap());
                 assert_eq!(reader.get_realtime_usec().unwrap(), 2003);
-                assert!(
-                    !if backward {
-                        reader.previous()
-                    } else {
-                        reader.next()
-                    }
-                    .unwrap()
-                );
+                assert!(!if backward {
+                    reader.previous()
+                } else {
+                    reader.next()
+                }
+                .unwrap());
                 assert_eq!(reader.recovery_status().recovered_entries, 1004);
             }
         }
@@ -545,6 +543,8 @@ fn recovered_sparse_eof_preserves_matching_position_and_repair() {
         let mut repair = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         repair.seek(SeekFrom::Start(last as u64)).unwrap();
         repair.write_all(&original[last..last + 16]).unwrap();
+        assert!(!reader.next().unwrap());
+        reader.seek_realtime(1501);
         assert!(reader.next().unwrap());
         assert_eq!(reader.get_realtime_usec().unwrap(), 2004);
         assert!(!reader.next().unwrap());
@@ -563,6 +563,60 @@ fn wrong_entry_type_is_an_error_without_recovery() {
     let mut reader = FileReader::open_with_options(&path, ReaderOptions::snapshot()).unwrap();
     assert!(reader.next().is_err());
     assert!(!reader.recovery_status().incomplete());
+}
+
+#[test]
+fn recovered_eof_rechecks_changed_count_and_direction() {
+    for filtered in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("system.journal");
+        let source = hardening_fixture(&path, false);
+        let last = *array_graph(&source, false)
+            .last()
+            .unwrap()
+            .1
+            .last()
+            .unwrap() as usize;
+        let mut damaged = source.clone();
+        damaged[last..last + 16].fill(0);
+        std::fs::write(&path, &damaged).unwrap();
+        let mut reader = FileReader::open(&path).unwrap();
+        if filtered {
+            reader.add_match(b"COMMON=all");
+        }
+        let mut count = 0;
+        while reader.next().unwrap() {
+            count += 1;
+        }
+        assert_eq!(count, 1004);
+        for _ in 0..10 {
+            assert!(!reader.next().unwrap());
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+        assert!(reader.previous().unwrap());
+        assert_eq!(reader.get_realtime_usec().unwrap(), 2002);
+        assert!(reader.next().unwrap());
+        assert_eq!(reader.get_realtime_usec().unwrap(), 2003);
+        assert!(!reader.next().unwrap());
+
+        // Synthetic restoration alone must not restart unchanged EOF polling.
+        // The actual append below publishes a new declared count.
+        std::fs::write(&path, &source).unwrap();
+        assert!(!reader.next().unwrap());
+        let repo = RepoFile::from_path(&path).unwrap();
+        let mut file = JournalFile::<MmapMut>::open_for_append(&repo, 8 * 1024 * 1024).unwrap();
+        let mut writer = JournalWriter::new(&mut file, 1006, test_uuid(4)).unwrap();
+        writer
+            .add_entry(&mut file, &[b"COMMON=all"], 3000, 3000)
+            .unwrap();
+        file.sync().unwrap();
+        for expected in [2004, 3000] {
+            assert!(reader.next().unwrap());
+            assert_eq!(reader.get_realtime_usec().unwrap(), expected);
+        }
+        assert!(!reader.next().unwrap());
+        assert!(!reader.recovery_status().incomplete());
+    }
 }
 
 #[test]
@@ -635,7 +689,12 @@ fn same_size_repair_restores_empty_exact_match_and_tail_once() {
             assert!(reader.recovery_status().incomplete());
             assert!(!reader.next().unwrap());
             std::fs::write(&path, &bytes).unwrap();
-            assert!(reader.next().unwrap(), "{compact}/{zero_slot}: repair");
+            assert!(!reader.next().unwrap(), "unchanged terminal count");
+            reader.seek_head();
+            assert!(
+                reader.next().unwrap(),
+                "{compact}/{zero_slot}: explicit seek"
+            );
             assert_eq!(reader.get_realtime_usec().unwrap(), 2004);
             assert!(!reader.recovery_status().incomplete());
             assert!(!reader.next().unwrap());
@@ -1111,7 +1170,11 @@ fn directory_filter_mutation_keeps_emitted_anchor() {
                         }
                         assert_eq!(reader.time(), 3000, "mutation changed selected row");
                         let times: &[u64] = if mutation != "install" {
-                            if backward { &[1000] } else { &[5000] }
+                            if backward {
+                                &[1000]
+                            } else {
+                                &[5000]
+                            }
                         } else if backward {
                             &[2000, 1000]
                         } else {
@@ -1300,6 +1363,8 @@ fn snapshot_secondary_posting_shrink_returns_prefix_eof() {
         assert_eq!(reader.recovery_status().recovered_entries, 2);
         file.seek(SeekFrom::Start(0)).unwrap();
         file.write_all(&source).unwrap();
+        assert!(!reader.next().unwrap());
+        reader.seek_realtime(1002);
         assert!(reader.next().unwrap());
         assert_eq!(reader.get_realtime_usec().unwrap(), 1002);
         assert!(!reader.recovery_status().incomplete());

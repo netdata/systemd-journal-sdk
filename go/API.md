@@ -109,12 +109,15 @@ either bounds mode. Flush and rebuild to include new matches; flushing rewinds
 to the head, so explicitly restore any saved location afterward. Group/build
 errors preserve the pending builder for retry. File/directory/facade handle
 `AddDisjunction` and `AddConjunction` methods now return errors; interfaces and
-callers must handle that result. Use writer-excluded indexed snapshot capture
-when a stable logical artifact is required.
+callers must handle that result. Use `OpenIndexedSnapshot` when a stable logical
+artifact is required. The caller must exclude writers during capture; this API
+does not acquire a writer lock.
 
 Filtered `Step`/`StepBack` select the nearest matching row in the requested
 direction, including direction reversal after EOF. Selected ENTRY load errors
-retain the last successful file/directory/facade selection for repair/retry.
+retain the last successful file/directory/facade selection on failure.
+Recovery never rewrites the source journal. Following arbitrary external repair
+of damaged entries is not a supported contract.
 Explicit filtered realtime seeks binary-search native posting slots and report
 errors from slots/headers they visit; skipped postings are not certified.
 Ordinary sequential filtering still checks postings as it encounters them.

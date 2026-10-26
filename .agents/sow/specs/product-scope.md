@@ -730,8 +730,19 @@ ends with normal EOF; per-file copyable recovery status records the reason,
 associated loss offset, declared count and surviving count. Explicit collection
 diagnostics identify files and allocate on request. Raw header counters remain
 declared. A zero status reports no observed loss, not an integrity certificate;
-native catalog access does not preflight unrelated arrays. Live refresh can
-replace a degraded view after publication or repair.
+native catalog access does not preflight unrelated arrays. Recovery changes
+in-memory reader state only; it never reconstructs source journal bytes.
+Ordinary writer publication may make temporarily unavailable data readable.
+Arbitrary external restoration of damaged entries is not a supported automatic
+refresh contract and must not justify added runtime overhead. Synthetic
+damage/restore tests establish fault-injection behavior, not journald parity.
+Recovered reader EOF polling memoizes direction and declared entry count, so
+unchanged terminal polls do not rediscover the prefix. Successful movement,
+explicit positioning/filter changes and changed declared counts invalidate that
+terminal observation. Go explicit Refresh remains an independent refresh request.
+Rust applies this policy in JournalReader without changing the public
+JournalCursor layout; the low-level cursor handles positioning and initial
+error recovery, not automatic EOF refresh.
 
 Recovery retains native index/header access and does not expand DATA rows to
 establish the prefix. Interior holes followed by readable entries, wrong types,
@@ -871,6 +882,9 @@ Accepted reader API layers:
   syntactically valid cursor is accepted as a seek location even when no current
   entry has that exact cursor. Invalid cursor syntax fails. `test_cursor()`
   remains the exact-current-position check.
+- Go direct `Reader.TestCursor` and `DirectoryReader.TestCursor` return
+  `false, ErrEndOfEntries` at EOF. The libsystemd-compatible facade returns
+  `false, nil` instead; other errors remain errors.
 - `get_cursor()`, JSON output, export output, and file-backed `journalctl`
   cursor files emit official systemd cursor strings with `s=`, `i=`, `b=`,
   `m=`, `t=`, and `x=` fields. `seek_cursor()` and `test_cursor()` accept both
@@ -1090,7 +1104,7 @@ Current Rust reader feature slice:
   would exceed the cached end of file, while `Snapshot` mode caps reads at the
   original open extent for polling/query use cases that do not need to observe
   appends during the current scan. Cold recovery can observe physical shrink
-  and later repair up to that original cap;
+  without increasing that original cap;
 - `ReaderOptions` exposes live/snapshot bounds and window size for public
   consumers. Default Rust live readers remain windowed with a 32 MiB window so
   indexed DATA-chain traversal does not remap per small object. Whole-file mmap
@@ -1136,8 +1150,8 @@ Current Rust reader feature slice:
   `Next`/`Previous` movement helpers do not. File/directory/facade group operators return
   errors, and an empty pending Go filter builder returns `ErrMalformedFilter`.
   Required unknown secondary posting tails remain errors. Healthy installed
-  posting populations stay fixed until rebuilding; recovery can requalify
-  existing DATA identities within the reader's bounds, while absent DATA stays
+  posting populations stay fixed until rebuilding; read-only recovery can clip
+  existing DATA identities to the intact prefix, while absent DATA stays
   absent until rebuilding. Failed group/build operations retain pending matches
   for retry. Recovery requalification preserves known DATA identities and retries
   the whole Boolean view after partial failure. Clearing matches rewinds file,
@@ -1149,7 +1163,7 @@ Current Rust reader feature slice:
   candidates. Proven sequential positions retain sequential traversal rather
   than probing every file; reversals and merged/recovered states use key-based
   positioning. Failed selected ENTRY loading retains
-  the previous successful position and permits repair/retry. Explicit filtered
+  the previous successful position on failure. Explicit filtered
   realtime seeks search native posting nodes and binary-search their captured
   slots, selecting the first match at/after the requested time forward and the
   last at/before it backward. Errors from visited slots/headers propagate;

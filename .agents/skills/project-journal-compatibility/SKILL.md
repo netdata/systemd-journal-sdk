@@ -340,6 +340,15 @@ Do not use this skill for:
   and strict capture/append rejection. Release DATA guards before cold recovery
   reads. Do not replay controlled Explorer callbacks or sampling state to retry
   a failed indexed operation.
+- Reader recovery must not mutate source journals. Separate static damaged-file
+  extraction, actual writer publication, and synthetic fault injection in test
+  evidence. Restoring previously committed bytes is not evidence of journald
+  publication or a required repair lifecycle. Before adding state or repeated
+  scans for a restore/retry scenario, establish its supported upstream trigger.
+- Recovery EOF controls must separate repeated same-direction/count polls from
+  reversal, explicit seeks and actual append count changes. Check bounded read
+  work on an unchanged damaged file and verify source bytes remain unchanged.
+  Cover raw as well as filtered readers; Go explicit Refresh is a separate path.
 - Count-bounded ENTRY-array traversal must reject the first required revisit;
   a lazy unbounded-cycle guard alone can miss it before the count completes.
   Cover short cycles, descending-prefix/ascending revisits, public Rust Node
@@ -347,9 +356,10 @@ Do not use this skill for:
   backward links and ignore reader links beyond the declared population.
   Prefix checks may inspect only already visited arrays, not future headers.
 - Requalification must use one stable observed recovery view across every
-  Boolean branch. Test a failure after an earlier branch was clipped, then
-  ENTRY repair that clears recovery while a later DATA branch still fails,
-  followed by DATA repair/retry. Pending builders and installed expressions
+  Boolean branch. Test a failure after an earlier branch was clipped; do not
+  install a partially qualified expression. Synthetic ENTRY/DATA restoration
+  can exercise rollback but does not establish a production repair contract.
+  Pending builders and installed expressions
   must retain retry state and known DATA identities, including empty lists.
   A failed backward preparation must retain captured populations rather than
   reread DATA counts after a later append. Check public expression composition
@@ -357,7 +367,7 @@ Do not use this skill for:
   without an explicit seek; test this after multiple sparse matches.
 - Filter position controls must cover installing at a resolved row, reversal
   after EOF and early AND/OR exhaustion, duplicate realtime bounds, and failed
-  selected ENTRY loads followed by getters, repair and retry. Test both SDK and
+  selected ENTRY loads followed by getters and transient I/O retry. Test both SDK and
   facade APIs, regular/compact layouts and Go access backends. Directory
   controls must include sequential file transitions, partial merge prefetch,
   initial unset errors and pending realtime seeks; preserve candidate order
@@ -366,7 +376,7 @@ Do not use this skill for:
   damaged skipped slots. Use probe counts plus isolated release comparisons to
   establish search work and elapsed cost respectively.
   Test recovery first discovered while sequential traversal crosses files,
-  followed by a later merge-probe error and repair. Internal merge restarts
+  followed by a later merge-probe error. Internal merge restarts
   must reuse the inner routine; one public movement owns rollback of its
   selected child without discarding other prefetched candidates.
   Install and replace filters at a committed directory row, including group
@@ -380,8 +390,9 @@ Do not use this skill for:
   retain documented value tolerance and propagate required traversal failures.
 - Exercise recovery through public default constructors, not only a private
   enablement switch. Cover file/directory/facade and whole-file compressed input,
-  normal EOF plus observed status, unchanged declared counters, complete repair
-  and strict verification/capture/append rejection. A zero status is not a
+  normal EOF plus observed status, unchanged source bytes and declared counters,
+  and strict verification/capture/append rejection. Test live publication with
+  actual writers separately from synthetic restoration. A zero status is not a
   full-index integrity result. Preserve errors for unknown secondary posting
   tails and malformed compressed streams.
   Run `TestRecoveryEqualCountFacetWithoutPostings` and measure

@@ -485,7 +485,7 @@ func (dr *DirectoryReader) TestCursor(cursor string) (bool, error) {
 	current, err := dr.GetCursor()
 	if err != nil {
 		if errors.Is(err, errEndOfEntries) {
-			return false, nil
+			return false, ErrEndOfEntries
 		}
 		return false, err
 	}

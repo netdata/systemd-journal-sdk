@@ -255,6 +255,12 @@ func TestNativeFilterRecoveredSparsePositionAndRepair(t *testing.T) {
 				if err != nil || closeErr != nil {
 					t.Fatalf("repair=%v/%v", err, closeErr)
 				}
+				if ok, err := r.Step(); err != nil || ok {
+					t.Fatalf("unchanged EOF=%v/%v", ok, err)
+				}
+				if err := r.SeekRealtimeUsec(1501); err != nil {
+					t.Fatal(err)
+				}
 				if ok, err := r.Step(); err != nil || !ok {
 					t.Fatalf("repair step=%v/%v", ok, err)
 				}
@@ -324,7 +330,7 @@ func TestNativeFilterDirectoryCandidateModesAndMutation(t *testing.T) {
 	if _, err := dr.GetRealtimeUsec(); err == nil {
 		t.Fatal("directory EOF retained a current row")
 	}
-	if ok, err := dr.TestCursor(cursor); err != nil || ok {
+	if ok, err := dr.TestCursor(cursor); !errors.Is(err, ErrEndOfEntries) || ok {
 		t.Fatalf("EOF cursor=%v/%v", ok, err)
 	}
 }
@@ -350,6 +356,12 @@ func TestNativeFilterSnapshotRepairAndAfterOpenLoss(t *testing.T) {
 				closeErr := file.Close()
 				if err != nil || closeErr != nil {
 					t.Fatalf("repair=%v/%v", err, closeErr)
+				}
+				if ok, err := r.Step(); err != nil || ok {
+					t.Fatalf("unchanged EOF=%v/%v", ok, err)
+				}
+				if err := r.SeekRealtimeUsec(2004); err != nil {
+					t.Fatal(err)
 				}
 				if ok, err := r.Step(); err != nil || !ok {
 					t.Fatalf("snapshot repaired row=%v/%v", ok, err)

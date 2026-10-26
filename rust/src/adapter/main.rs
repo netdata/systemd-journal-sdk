@@ -168,7 +168,7 @@ fn run() -> AnyResult<()> {
         Some("inspect-reader") => reader_probe::run(),
         Some("__corrupt_probe") => cmd_corrupt_probe(),
         Some(other) => Err(anyhow!("unknown subcommand {other}")),
-        None => Err(anyhow!("usage: adapter [run|list|probe]")),
+        None => Err(anyhow!("usage: adapter [run|list|probe|inspect-reader]")),
     }
 }
 

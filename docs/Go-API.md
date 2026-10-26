@@ -89,8 +89,8 @@ through DATA indexes and posting arrays. Repeated values for one field are OR
 alternatives; different fields are combined with AND. `Next` and `Previous` are
 raw movement helpers; use `Step` and `StepBack` for filtered SDK iteration.
 Filtered reverse movement returns the nearest preceding match, including after
-forward EOF. A selected ENTRY load error preserves the last successful position
-so repairing the input and retrying can return the failed candidate. See
+forward EOF. A selected ENTRY load error preserves the last successful position;
+it does not promise to follow external reconstruction of damaged entries. See
 [[Reader-APIs|Reader APIs]] for explicit realtime-seek validation boundaries.
 
 `AddDisjunction` and `AddConjunction` now return errors on file and directory
@@ -103,8 +103,8 @@ returned errors. A pending builder with no valid
 
 `FlushMatches` clears the filter and rewinds to the head, matching Rust. To
 continue from an existing location, save and explicitly restore that location
-after clearing. Failed group/build operations retain the pending builder for
-retry; repair the input and retry, or flush to discard the pending matches.
+after clearing. Failed group/build operations retain the pending builder without
+installing a partial filter; flush to discard the pending matches.
 
 ## Scan Payloads With Minimal Work
 

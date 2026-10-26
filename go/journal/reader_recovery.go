@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -34,7 +35,10 @@ type FileRecoveryStatus struct {
 
 type readerRecoveryState struct {
 	RecoveryStatus
-	tail entryHeader
+	tail         entryHeader
+	eofCount     uint64
+	eofDirection Direction
+	eofValid     bool
 }
 
 func (s *readerRecoveryState) Incomplete() bool { return s != nil }
@@ -45,7 +49,34 @@ func (s *readerRecoveryState) status() RecoveryStatus {
 	return s.RecoveryStatus
 }
 func sameRecoveryState(a, b *readerRecoveryState) bool {
-	return a == b || (a != nil && b != nil && *a == *b)
+	return a == b || (a != nil && b != nil && a.RecoveryStatus == b.RecoveryStatus && a.tail == b.tail)
+}
+
+func (r *Reader) clearRecoveryEOF() {
+	if r.recovery != nil {
+		r.recovery.eofValid = false
+	}
+}
+
+func (r *Reader) rememberRecoveryEOF(direction Direction) {
+	if r.recovery != nil {
+		r.recovery.eofCount = r.header.nEntries
+		r.recovery.eofDirection = direction
+		r.recovery.eofValid = true
+	}
+}
+
+func (r *Reader) unchangedRecoveryEOF(direction Direction) (bool, error) {
+	state := r.recovery
+	if state == nil || !state.eofValid || state.eofDirection != direction {
+		return false, nil
+	}
+	// Read the live counter without reloading copied index windows or scanning entries.
+	var count [8]byte
+	if _, err := r.file.ReadAt(count[:], 152); err != nil {
+		return false, err
+	}
+	return binary.LittleEndian.Uint64(count[:]) == state.eofCount, nil
 }
 
 func (r *Reader) RecoveryStatus() RecoveryStatus { return r.recovery.status() }

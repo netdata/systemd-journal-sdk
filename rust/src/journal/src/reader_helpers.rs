@@ -262,8 +262,14 @@ pub(super) fn decompress_zst_to_temp(path: &Path, prefix: &str) -> Result<PathBu
         .prefix(prefix)
         .suffix(".journal")
         .tempfile()?;
-    journal_core::file::copy_zstd_stream(source, &mut temp_file)
-        .map_err(|err| SdkError::DecompressionFailed(err.to_string()))?;
+    journal_core::file::copy_zstd_stream(source, &mut temp_file).map_err(|err| {
+        match err.kind() {
+            std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof => {
+                SdkError::DecompressionFailed(err.to_string())
+            }
+            _ => err.into(),
+        }
+    })?;
     let (dest, temp_path) = temp_file.keep().map_err(|err| err.error)?;
     drop(dest);
     Ok(temp_path)

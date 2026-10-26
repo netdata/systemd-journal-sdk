@@ -1,5 +1,5 @@
-use crate::repository::RepositoryError;
 use crate::repository::error::Result;
+use crate::repository::RepositoryError;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
@@ -348,7 +348,7 @@ impl File {
 
     pub fn from_raw_path(path: &Path) -> Option<Self> {
         let raw_path = path;
-        if !raw_path.is_absolute() {
+        if !raw_path.is_absolute() || raw_path.as_os_str().as_encoded_bytes().contains(&0) {
             return None;
         }
         let (path, native_path) = match path.to_str() {
@@ -561,6 +561,19 @@ mod tests {
             Source::Unknown("raw-byte-names".to_string())
         );
         assert_eq!(file.status(), &Status::Active);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_raw_path_rejects_nul() {
+        use std::os::unix::ffi::OsStrExt;
+        for bytes in [
+            b"/invalid\0.journal".as_slice(),
+            b"/invalid\xff\0.journal".as_slice(),
+        ] {
+            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(bytes));
+            assert!(File::from_raw_path(path).is_none());
+        }
     }
 }
 

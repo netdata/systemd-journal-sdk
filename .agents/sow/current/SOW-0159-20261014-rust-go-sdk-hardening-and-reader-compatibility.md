@@ -2,9 +2,11 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: implementation, validation and review disposition are complete after
+Sub-state: reopened 2026-10-25 for reviewed cursor EOF and compressed-file I/O
+classification regressions. Historical completion evidence follows; the appended
+regression gate governs current implementation. Previously complete after
 signed prerequisite commit `4c49205393c719adc19a52a3575facef2c18042e`. Both SDKs
 implement default intact-prefix recovery/status, complete stream decoding,
 native filtering and the approved position/time/error-retry contracts. Internal
@@ -3399,3 +3401,267 @@ verified unresolved blocker and identifies one stale SOW-0045 scheduling
 sentence, which is corrected. Stage explicit paths and create the combined
 signed implementation/lifecycle commit after the final artifact check.
 SOW-0121 may activate only after that commit succeeds. No push is authorized.
+
+## Regression - 2026-10-25
+
+### Evidence And Pre-Implementation Gate
+
+The user approved repairing confirmed PR12 findings and individually adjudicating
+all60 review threads. SDK repairs execute before CLI SOW-0121; no parallel
+implementation SOW is active. At2c12221 the public Go directory facade reproduces
+SeekCursor(t beyond newest) success followed by Next returning the first row.
+facade.go:563 resets an already exhausted reader with SeekTail, clearing the
+directory direction. Preserve observed EOF instead, validating forward EOF and
+backward tail behavior for file/directory and filtered/unfiltered callers.
+Do not broaden this into the separately paused healthy-refresh SOW-0045.
+
+Rust reader_helpers.rs:265 maps every streaming copy error into decompression
+failure, including propagated source/destination I/O. Restore I/O classification
+for actual transport/storage errors, retaining malformed/truncated stream errors
+as decompression failures. Review core stream decoding because decoder wrappers
+can themselves erase source errors. Use injected failing Read/Write tests, not
+actual disk exhaustion or production files. Normal decoding must keep existing
+streaming behavior and allocations. No dependency or compiler changes.
+
+Inspect other SDK comments with concrete reproducers before accepting them.
+TestCursor EOF direct API inconsistency is a separate pending user decision;
+facade semantics remain native-compatible. NUL native path construction/serde
+consistency and small consumer/probe documentation issues are within reviewed
+blast radius; avoid optional refactoring or blanket benchmark/test expansion.
+No implementation of an unresolved policy is authorized. Existing completed
+SOW specifications and prior failure controls are reused. Risks are position
+reversal semantics, decoder error taxonomy and consumer error matching. Fixtures
+are synthetic, scratch/logs under.local only. Update relevant specs/docs/skills,
+status indexes and thread evidence; perform focused plus representative SDK
+validation and internal final review before signed coherent closure.
+
+### User Decision - Direct Cursor EOF
+
+The user selected 1A: both Go direct Reader.TestCursor and
+DirectoryReader.TestCursor return false with ErrEndOfEntries when no current
+entry exists at EOF. The facade normalizes that error to false, nil, matching
+native cursor-test behavior. Preserve errors unrelated to EOF. Cover both
+reader types and filtered/unfiltered exhaustion, then successful reverse steps.
+
+### Repair Validation And Remaining Decision
+
+Implemented the approved direct cursor EOF contract and facade normalization.
+The directory reader uses a private EOF sentinel, so it explicitly translates
+that sentinel to the public ErrEndOfEntries. The four facade regression cases
+exercise file/directory and filtered/unfiltered EOF, repeated forward steps,
+direct/facade cursor tests, and reverse selection of the final row.
+
+Rust stream errors now inspect decoder error sources on failure only. Injected
+source PermissionDenied and destination StorageFull retain I/O categories;
+truncated streams remain decoding failures. Healthy streaming loops and buffers
+are unchanged. Native raw path construction rejects NUL consistently; the probe
+preserves array-shaped field output on failure. Consumer documentation clarifies
+EOF, strict verification and caller-excluded indexed snapshot capture, and the
+adapter help lists inspect-reader.
+
+Validation on the current repair source:
+- Pure Go journal and adapter suites pass (137.480 s and 0.005 s).
+- Rust core, registry and SDK suites, including doctests, pass.
+- Shared reader-hardening suite passes 552 observations against pinned v262.
+- All wiki pages validate and executable documentation examples pass.
+- Internal final-review of this bounded repair diff finds no blocking defect;
+  its verdict excludes the separately investigated shared-cursor issue below.
+- Healthy per-entry work is unchanged. New error-source traversal occurs only
+  on decoding failure, cursor error normalization occurs on metadata calls,
+  and path validation occurs during construction. No broad benchmark expansion
+  is needed for these changes.
+
+Review item 13 is now reproduced using advanced public core JournalCursors
+sharing one JournalFile: both read two surviving entries, repair restores the
+third, cursor A sees it, and cursor B remains at EOF after shared recovery clears.
+The reproducer uses doc-hidden recovery initialization, not independent high-level
+readers. Per-filter observed recovery revision versus an explicit-rebuild-only
+advanced contract is awaiting a user design decision. Do not close this SOW or
+advance CLI implementation until resolved. Item 32 is disproven as stated:
+filtered EOF retains its last selected index; the questioned past-end branch
+represents explicit tail/raw state, so moving it back would alter positioning.
+
+Raw synthetic logs and reproduction sources remain under .local/pr12-sdk-triage.
+The published PR remains at 2c12221; its native jobs pass, while Codacy upload
+and remote-configuration failures remain separately recorded, not counted as
+successful checks. No new push has occurred.
+
+### Scope Correction - Corruption Handling Versus Synthetic Restoration
+
+The user clarified that SDK behavior must mimic systemd: readers extract readable
+data without modifying source journals; corruption is not an invitation to repair
+source bytes in place. The prior per-filter revision recommendation and associated
+1A/1B question are withdrawn pending realistic supported-operation evidence.
+The shared-cursor reproduction restores damaged bytes through a separate test
+writer. It proves behavior under synthetic restoration, not normal journald
+corruption handling. It is not sufficient evidence for added runtime bookkeeping.
+
+Upstream systemd/systemd @ 8cc40e0c5e9234bf45084751ac53b1fbfe70b492:
+src/shared/journal-file-util.c:487 rejects or renames/replaces corrupt files;
+src/journal/journald-manager.c:907 selects rotation on corruption;
+src/libsystemd/sd-journal/sd-journal.c:1699 opens readers O_RDONLY.
+The format concurrency contract separately allows temporarily inconsistent
+structures during ordinary publication. That must not be conflated with rewriting
+corrupt entries. Audit shipped source-write behavior and repair-specific promises,
+tests and runtime costs before any further recovery-design implementation.
+No per-filter recovery revision implementation has been made.
+
+### Approved Scope Audit - 2026-10-25
+
+The user approved the correction audit. Preserve default read-only intact-prefix
+recovery and ordinary publication semantics; do not treat externally rewriting
+corrupt entries as a supported lifecycle or a reason for runtime overhead.
+First remove consumer/spec promises that instruct repair/retry and correct the
+runtime skill's test interpretation. Retain synthetic fault-injection evidence
+only as such, not as proof of a journald publication sequence. Review existing
+requalification/state rollback before removing it: these mechanisms can also
+protect initial recovery, error atomicity and Boolean-query completeness.
+No new source-repair API, synchronization, revision counter or per-entry check
+is authorized. Independent read-only audits cover runtime causality and test
+classification. Validate docs, test evidence and any actual code changes, with
+an internal final review of the corrected scope. Historical SOW evidence remains
+intact and is superseded by this explicit scope correction.
+
+### Recovery Scope Audit Results
+
+Independent runtime and test audits confirm no source-byte reconstruction in
+reader recovery or writer reopen. Readers use read-only descriptors/mappings;
+whole-file decompression writes a separate staging file. Writer open rejects
+observed invalid committed bounds/tail rather than reconstructing them. This
+is not a claim of full journald writer-lifecycle parity: core ONLINE reopen and
+optional directory policy remain existing explicitly scoped SDK behavior.
+
+Corrected product scope, Reader-APIs, Go API and the compatibility skill to remove
+promised automatic refresh after arbitrary external repair. Fault-restoration
+controls remain labelled synthetic robustness evidence; they do not establish
+an upstream requirement. Renamed the misleading same-size Publication Go test
+to SyntheticRestoration. The shared 552-observation suite constructs static
+mutations before opening readers and remains valid static recovery evidence.
+Actual Writer.Append publication and injected transport-error retry controls
+remain distinct. Do not mechanically rename synthetic restoration as publication.
+
+Retain initial prefix discovery, effective counts/tail metadata, posting clipping,
+stable Boolean qualification, pending-builder/error rollback and directory-change
+notification: these serve initial damaged-file reads without later reconstruction.
+Retain explicit header refresh and copied-window invalidation: real appends into
+preallocated space can change index bytes without changing file size.
+
+A concrete cost needs an EOF-refresh policy decision: Rust cursor.rs:90 calls
+reader_recovery.rs:419 prefix rediscovery on every EOF while recovery is active;
+Go reader_filter_step.go:87-98 calls reader_filter_recovery.go:32-69, reloading
+ENTRY arrays. Unchanged damaged archived files can therefore incur repeated work
+proportional to their readable population. No locks or atomics are involved.
+No runtime change to that policy has been made in this correction.
+
+Upstream journal-file.c:2421-2435 initializes ENTRY before linkage; :2289-2298
+publishes global ENTRY linkage after a memory fence; :2159-2163 and :2193-2210
+publish slots/links before counts; :2303-2324 update tail and DATA links. Zeroing
+and restoring committed ENTRY bytes is not this writer sequence. Weak storage
+visibility still warrants care before suppressing live rediscovery. The earlier
+shared-cursor generation proposal is rejected for its unsupported reproducer;
+it is not an unresolved request for user approval.
+
+### Native EOF Evidence And Validation
+
+Both baseline v260.1 sd-journal.c:1011-1016 and CLI target v262
+sd-journal.c:1016-1021 skip an exhausted file when direction and declared entry
+count are unchanged. This is concrete evidence against treating unchanged-EOF
+full-prefix rescans as a systemd requirement. A new user decision proposes the
+native eligibility rule for both SDKs, preserving initial recovery and changed
+count/direction handling. Implementation awaits that decision; this replaces
+neither healthy-filter captured-population policy nor the separate SOW-0045 scope.
+
+Scope-correction checks: 16 wiki pages validate, all executable documentation
+examples pass, whitespace checks pass, and focused Go synthetic-restoration,
+actual preallocated Writer.Append and accessor-I/O retry controls pass (0.444 s).
+Runtime behavior remains unchanged by the scope-correction edits.
+
+Internal scope-artifact review found three remaining repair/retry promises in
+Go-API and Rust-API wiki pages. Those are corrected; the broader consumer/spec/
+skill search now finds only explicit exclusions or unrelated software/cache
+repair references. Re-review passes with no blocker in this bounded correction.
+Wiki and whitespace checks pass after the final prose edits; executable example
+blocks are unchanged from the passing example run. The SDK SOW remains open for
+its outstanding implementation/review work and the native EOF policy decision.
+
+### User Decision - Native EOF Eligibility
+
+The user selected 1A: apply systemd's unchanged direction/count EOF rule to both
+SDKs. Include Go raw Next as well as filtered Step; preserve explicit Refresh,
+initial damaged-prefix recovery, movement reversal, seeks and changed counts.
+Keep EOF memo state outside healthy Go readers in the existing recovery
+allocation. Rust's public JournalCursor layout must not change: put terminal
+memo state in the private JournalReader wrapper and move automatic EOF refresh
+there, retaining core cursor initial-error recovery. The low-level cursor is a
+positioning primitive, not a separate automatic repair-following service.
+Clear terminal memos on successful movement, seeks and filter changes; never
+cache failed refreshes. Compare declared header population, not recovered count.
+No cross-thread synchronization or per-filter recovery revisions are introduced.
+Validate actual layout, bounded read work at repeated EOF, unchanged source bytes,
+actual Writer.Append, reversed movement and both filtered/raw access paths.
+Synthetic restoration controls must no longer demand automatic visibility after
+an unchanged terminal poll; retain their initial recovery/rollback assertions.
+
+### Native EOF Implementation And Evidence
+
+Implemented the approved rule. Go stores direction/count/validity in its existing
+exceptional recovery allocation; raw Next and filtered Step consult it before
+repeating terminal work. Explicit Refresh, seeks, filter changes and successful
+movement invalidate it. Recovery equality ignores these traversal memo fields,
+so directory notifications and rollback compare only actual prefix state.
+The healthy filtered path checks the existing recovery pointer before invoking
+the counter-read helper. Unchanged recovered EOF reads the declared count once
+without rebuilding copied windows or scanning the prefix.
+
+Rust JournalReader owns a private 16-byte optional direction/count memo; it checks
+terminal state before cursor traversal. Automatic recovery EOF refresh moved from
+the public JournalCursor into that wrapper. The public cursor layout is unchanged,
+and its initial-error recovery remains. No mutex, atomic, per-filter revision,
+new heap allocation or source-file writes were introduced.
+
+Validation:
+- Full Go journal/adapter suite passes (118.935 s); after early-gate refinement,
+  focused recovery/filter suite passes (7.114 s).
+- Rust SDK 202 tests and core 99 tests pass, with doctest results preserved.
+- Rebuilt shared adapters pass all 552 reader-hardening observations against the
+  pinned v262 oracle. All executable wiki examples pass; wiki/whitespace checks pass.
+- New Go test covers raw/filtered readers in all three access selections,
+  bounded reads over ten unchanged EOF polls, identical source bytes, reversal,
+  unchanged-count synthetic restoration, and a real appended entry changing count.
+  Repeated EOF allocates zero times per poll in all six cases.
+- Equivalent Rust raw/filtered control preserves source bytes and validates
+  unchanged EOF, reversal and real append count changes.
+- Go Reader remains 616 bytes; its exceptional recovery state is 120 bytes
+  (the added memo resides only in already allocated recovered state). Rust
+  JournalReader is 656 bytes including its 16-byte memo; JournalCursor is 280
+  bytes and unchanged. These are local 64-bit layout observations, not API sizes.
+- Same-failure search includes Go raw EOF, filtered EOF, explicit Refresh,
+  seeks/filter mutation and Rust wrapper/core ownership. Synthetic restore tests
+  preserve their initial damaged-prefix assertions and now test unchanged EOF
+  before explicit repositioning; they no longer demand repair-following polling.
+- Independent internal final-review passes the current implementation, including
+  targeted Go/Rust reruns. No external reviewers invoked.
+
+Performance evidence is bounded-work and allocation evidence plus code review,
+not a claim of measured throughput equality. Removing population-sized repeated
+scans dominates the constant counter check on recovered EOF. Healthy paths do
+not scan or allocate for this memo. No broad measurement framework was added.
+Remaining unrelated PR findings and CLI work keep this SOW/PR work open; this
+entry does not assert entire PR readiness or clear remote Codacy service failures.
+
+### Publication Checkpoint - 2026-10-26
+
+The user explicitly requested committing and pushing the validated current work,
+then three independent internal final reviews of different PR aspects. This is
+an interim implementation checkpoint, not SOW completion or merge approval.
+Preserve the current/in-progress lifecycle because remaining PR findings and
+CLI work are not completed. External-model reviews remain waived in favor of
+internal reviewers as previously requested. The three review scopes are SDK
+correctness/recovery/performance, CLI compatibility/portability, and validation/
+consumer contracts/CI; each reviews the entire PR surface relevant to its scope.
+
+Before push, the published head remains 2c12221. Native Linux/macOS/Windows/
+FreeBSD checks and Go/Rust coverage generation passed. Codacy SARIF generation
+and coverage upload retain the previously diagnosed remote-service failures;
+no unrelated CI configuration change is included. Local validation and internal
+review evidence for this checkpoint are recorded above.

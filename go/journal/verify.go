@@ -27,6 +27,8 @@ func (e *VerificationError) Error() string {
 // This compatibility check tolerates some incomplete final-entry links and
 // can revisit DATA posting lists for repeated values. Use VerifyIndex for
 // complete native-index consistency with work proportional to the graph.
+// Recovery is disabled: missing required entries are rejected rather than
+// accepted as a recovered prefix.
 // For sealed journals, this validates structure only; use VerifyFileWithKey
 // when TAG/HMAC verification is required.
 func VerifyFile(path string) error {

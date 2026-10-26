@@ -96,8 +96,9 @@ strict-validation boundaries.
 
 Filtered movement returns the nearest match in the requested direction,
 including after reversing at EOF. A selected ENTRY load error preserves the
-last successful position for repair/retry, including directory and facade
-iteration. Explicit filtered realtime seeks validate the posting slots they
+last successful position, including directory and facade iteration. This does
+not promise to follow external reconstruction of damaged entries.
+Explicit filtered realtime seeks validate the posting slots they
 visit; see [[Reader-APIs|Reader APIs]] for the verification boundary.
 
 ## Scan Payloads With Minimal Work

@@ -1,8 +1,13 @@
 # SOW Status
 
-Last updated: 2026-10-24
+Last updated: 2026-10-26
 
 ## Current
+
+- SOW-0159 - reopened, in-progress for PR12 cursor EOF and compressed-file
+  I/O classification regressions. Approved direct TestCursor EOF behavior and
+  native unchanged-EOF polling are implemented and locally validated.
+  CLI review repairs follow sequentially; no external reviewers are authorized.
 
 - SOW-0045 - Go Reader Alignment Optimization: regression reopened and paused.
   Unchanged HEAD reproduces skipped appends after healthy empty/EOF refresh,
@@ -84,7 +89,8 @@ Last updated: 2026-10-24
   coverage generation and CodeQL pass. These CI limitations stay explicit.
   Broader scalability remains SOW-0122; PR #12 is draft, not merged/released.
 
-- SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: completed.
+- SOW-0159 - Rust/Go SDK Hardening And Reader Compatibility: reopened;
+  historical completion evidence below, active repair listed under Current.
   Both SDKs provide default intact-prefix recovery/status, complete streams,
   native filtering and approved position/time/error retry behavior. Go floor
   amd64/386/race checks pass 1,995/1,996/1,995 events, excluding only the unchanged
