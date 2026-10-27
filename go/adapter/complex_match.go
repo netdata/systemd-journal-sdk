@@ -18,7 +18,9 @@ func runComplexMatchTest(tc *TestCase) Result {
 		return failResult(tc, tc.Expected.ResultFormat, err)
 	}
 	defer r.Close()
-	addSystemdComplexMatchExpression(r)
+	if err := addSystemdComplexMatchExpression(r); err != nil {
+		return failResult(tc, tc.Expected.ResultFormat, err)
+	}
 
 	matched, err := collectMatchedEntries(r)
 	if err != nil {
@@ -135,9 +137,9 @@ func stringEntryFields(entry *journal.Entry) map[string]string {
 
 func addSystemdComplexMatchExpression(r interface {
 	AddMatch([]byte)
-	AddDisjunction()
-	AddConjunction()
-}) {
+	AddDisjunction() error
+	AddConjunction() error
+}) error {
 	r.AddMatch([]byte{'A', '=', 1, 2})
 	r.AddMatch([]byte{'B', '=', 'C', 0, 'D'})
 	r.AddMatch([]byte("HALLO=WALDO"))
@@ -147,16 +149,23 @@ func addSystemdComplexMatchExpression(r interface {
 	r.AddMatch([]byte("QUUX=xxxxx"))
 	r.AddMatch([]byte("QUUX=yyyyy"))
 	r.AddMatch([]byte("PIFF=paff"))
-	r.AddDisjunction()
+	if err := r.AddDisjunction(); err != nil {
+		return err
+	}
 	r.AddMatch([]byte("ONE=one"))
 	r.AddMatch([]byte("ONE=two"))
 	r.AddMatch([]byte("TWO=two"))
-	r.AddConjunction()
+	if err := r.AddConjunction(); err != nil {
+		return err
+	}
 	r.AddMatch([]byte("L4_1=yes"))
 	r.AddMatch([]byte("L4_1=ok"))
 	r.AddMatch([]byte("L4_2=yes"))
 	r.AddMatch([]byte("L4_2=ok"))
-	r.AddDisjunction()
+	if err := r.AddDisjunction(); err != nil {
+		return err
+	}
 	r.AddMatch([]byte("L3=yes"))
 	r.AddMatch([]byte("L3=ok"))
+	return nil
 }

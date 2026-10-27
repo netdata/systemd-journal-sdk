@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess  # nosec B404
 import sys
@@ -49,12 +50,13 @@ READERS = {
 }
 
 
-def run(cmd: list[str], *, cwd: Path = REPO_ROOT, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+def run(cmd: list[str], *, cwd: Path = REPO_ROOT, timeout: int = 60, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     return subprocess.run(  # nosec B603
         cmd,  # nosemgrep
         cwd=str(cwd),
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -89,7 +91,7 @@ def build_tools() -> dict[str, str]:
         "build go livewriter",
     )
     require_ok(
-        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go"),
+        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go", env={**os.environ, "CGO_ENABLED": "1"}),
         "build go journalctl",
     )
 
@@ -102,8 +104,9 @@ def build_tools() -> dict[str, str]:
         "build rust journalctl",
     )
 
-    rust_livewriter = REPO_ROOT / "rust/target/debug/livewriter"
-    rust_journalctl = REPO_ROOT / "rust/target/debug/journalctl"
+    cargo_target = (REPO_ROOT / os.environ.get("CARGO_TARGET_DIR", "rust/target")).resolve()
+    rust_livewriter = cargo_target / "debug/livewriter"
+    rust_journalctl = cargo_target / "debug/journalctl"
     for path in (go_livewriter, go_journalctl, rust_livewriter, rust_journalctl):
         if not path.exists():
             raise RuntimeError(f"expected tool not found after build: {path}")

@@ -100,7 +100,27 @@ does not claim that a particular version has been published.
 ## Core Contracts
 
 - Implementations must not link to system journal libraries.
-- Go implementations must not use CGO.
+- Go SDK implementations must not use CGO. Native PCRE2-8 >=10.42 is permitted
+  only in the standalone journalctl command, which requires CGO and a C compiler.
+  Rust also confines native PCRE2 and its timezone provider to that command.
+- Both commands may use the platform C library for Unix file globbing,
+  temporary thread-local locales and terminal queries. Native Unix filename
+  bytes survive explicit files, directory discovery and facade opening.
+  File patterns use native BRACE/NOCHECK/NOSORT semantics in the environment
+  locale; literal paths bypass expansion. Windows filenames are Unicode,
+  with brace alternatives and Unicode wildcard matching.
+- Rust facade constructors have additive native-path forms: SdJournalOpenPath,
+  SdJournalOpenFilePath, SdJournalOpenDirectoryPath and SdJournalOpenFilePaths,
+  including file/directory/list WithOptions forms. Existing string functions
+  retain their signatures and delegate to the same readers. Journal and
+  whole-file Zstandard suffix checks preserve native filename bytes.
+  Registry File::as_path supplies the original filesystem path. File::path
+  retains ordinary UTF8 text; newly supported non-UTF8 paths return a reserved
+  NUL-prefixed hexadecimal Unix key, which must not be used for filesystem I/O.
+  Metadata deserialization reconstructs those native paths. CACHE_VERSION stays
+  at 4: ordinary serialization and Hash inputs are unchanged, and new raw-path
+  keys cannot alias ordinary paths. Per-file metadata adds one optional pointer;
+  no per-row storage or index interpretation changes.
 - Core journal readers and writers are file-format implementations only. They
   must not execute external programs, probe host identity, read host identity
   files or registries, or enforce writer locks by default.
@@ -485,8 +505,8 @@ Current Go writer feature slice:
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold using the shared systemd threshold policy, including
-  zstd frame content-size metadata required by stock systemd verification and
-  readback of large compressed payloads;
+  zstd frame content-size metadata retained for the v260.1 writer compatibility
+  target and readback of large compressed payloads;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
 - high-level directory writing with Netdata-compatible chain active naming by
@@ -688,6 +708,49 @@ Current shared high-level directory writer API slice:
 
 Readers must support applicable historical journal files represented by the shared fixture suite, including corrupted fixture behavior where the expected result is a controlled error or partial recovery.
 
+Traversed hash, FIELD DATA and ENTRY-array chains must terminate on cycles with
+a controlled error. Ordinary indexed reads retain their native traversal paths
+and accepted acyclic link orders; they do not run a full integrity scan at open.
+A detected cycle must not trigger the field-catalog compatibility row fallback.
+Counted ENTRY-array traversal rejects a required array revisit before consuming
+duplicate slots, including a revisit after an acyclic backward link. Reader
+links beyond the declared population are not traversed or validated. Writer
+tail selection rejects required revisits before modifying a repeated array.
+
+Zstandard DATA and whole-file staging consume complete supported streams,
+including unknown-size, concatenated and skippable frames. Invalid checksums,
+truncated later frames and trailing garbage are errors, not successful decoded
+prefixes. The 768 MiB DATA output limit applies to the aggregate logical DATA
+payload. Whole-file staging is streaming and does not apply that per-DATA limit
+to an entire journal. Known-size single-frame DATA retains its native fast path.
+
+Ordinary Rust/Go SDK file, directory and facade readers recover the intact entry
+prefix by default after observed unavailable ENTRY/ENTRY-array tails. Iteration
+ends with normal EOF; per-file copyable recovery status records the reason,
+associated loss offset, declared count and surviving count. Explicit collection
+diagnostics identify files and allocate on request. Raw header counters remain
+declared. A zero status reports no observed loss, not an integrity certificate;
+native catalog access does not preflight unrelated arrays. Recovery changes
+in-memory reader state only; it never reconstructs source journal bytes.
+Ordinary writer publication may make temporarily unavailable data readable.
+Arbitrary external restoration of damaged entries is not a supported automatic
+refresh contract and must not justify added runtime overhead. Synthetic
+damage/restore tests establish fault-injection behavior, not journald parity.
+Recovered reader EOF polling memoizes direction and declared entry count, so
+unchanged terminal polls do not rediscover the prefix. Successful movement,
+explicit positioning/filter changes and changed declared counts invalidate that
+terminal observation. Go explicit Refresh remains an independent refresh request.
+Rust applies this policy in JournalReader without changing the public
+JournalCursor layout; the low-level cursor handles positioning and initial
+error recovery, not automatic EOF refresh.
+
+Recovery retains native index/header access and does not expand DATA rows to
+establish the prefix. Interior holes followed by readable entries, wrong types,
+cycles, malformed nonzero sizes, decompression failures and general I/O errors
+remain errors. Unknown secondary posting tails that could contain surviving
+matches remain errors. Strict verification, excluded-writer IndexedSnapshot
+capture, append-open and retention preconditions remain separate and strict.
+
 Accepted reader API layers:
 
 - Rust and Go readers use bounded reader-memory access for
@@ -702,6 +765,22 @@ Accepted reader API layers:
   file-path verification APIs are covered by the same bounded access contract:
   object-graph and sealed TAG/HMAC verification read through reader-backed byte
   sources rather than materializing the whole journal file in memory.
+  Internal indexed facet/histogram aggregation must also preserve DATA values
+  across nested posting and ENTRY reads, including mmap eviction and positioned
+  read scratch reuse. Aggregation map keys are owned. Go materializes map keys
+  for contributing values and reuses a histogram key across the DATA object's
+  matching entries without repeated decompression. Indexed results and counters
+  must match across access bounds.
+  Go ENTRY-index header validation uses fitting native cache views and a fixed
+  reader-owned buffer for cached crossing/non-power-of-two-window reads. Header
+  acquisition uses constant per-reader storage instead of a fresh header buffer
+  for each offset; cache-window metadata follows the existing bounded-accessor
+  contract. Header bytes are consumed before any subsequent accessor read.
+  Native Go journal input on Linux uses a blocking read-only descriptor with
+  atomic close-on-exec, interrupted-open retry, typed path errors and normal
+  symlink following. This avoids unnecessary regular-file poller setup while
+  preserving sized random access. Whole-file compressed sources and non-Linux
+  readers retain their existing platform opening paths.
 - Idiomatic file and directory readers expose language-native entry objects,
   binary field values, repeated field values, cursor/realtime metadata, field
   enumeration, unique value enumeration, and boot listing for the accepted file
@@ -771,6 +850,11 @@ Accepted reader API layers:
   consumer-side semantic migrations without changing the physical cache
   directory. Setting the builder namespace does not rewrite keys constructed
   elsewhere with `FileIndexKey::new()`.
+  Unreleased source builds use generation 4 after native-array completeness
+  repairs. Generation-3 entries miss: valid files rebuild on demand once after
+  upgrade. Encountered required native-chain or posting failures fail indexing;
+  existing per-object value tolerance remains. Old storage follows normal
+  cache eviction. Cache-hit algorithms and consumer namespaces are unchanged.
 - Rust and Go also expose explicit Explorer execution
   strategy controls through their idiomatic APIs. `ExplorerStrategy::Traversal`
   is the default and remains the behavior of each product language's ordinary
@@ -798,6 +882,20 @@ Accepted reader API layers:
   syntactically valid cursor is accepted as a seek location even when no current
   entry has that exact cursor. Invalid cursor syntax fails. `test_cursor()`
   remains the exact-current-position check.
+- File and directory readers expose explicit eager directional cursor seeking:
+  Go `SeekCursorDirection`, Rust `seek_cursor_direction`, and facade extension
+  `SdJournalSeekCursorDirection`. Existing cursor seek methods remain unchanged.
+  Forward/backward selects the inclusive first/last eligible boundary using
+  native per-file sequence, boot/monotonic and realtime key precedence, with
+  DATA-index filtering and directory merge ordering. Getters access the selected
+  row immediately; no eligible row succeeds with no current entry. Exactness
+  remains a separate cursor test. IDs normalize to 32 hexadecimal digits.
+  This extension adds no persistent reader fields or changes to Netdata paths.
+- Go direct `Reader.TestCursor` and `DirectoryReader.TestCursor` return
+  `false, ErrEndOfEntries` at EOF. The libsystemd-compatible facade returns
+  `false, nil` instead; other errors remain errors. The Go facade cursor getter
+  returns public `ErrNoEntry` when no current entry exists, matching Rust
+  facade `Error::NoEntry`; other getter failures retain their original errors.
 - `get_cursor()`, JSON output, export output, and file-backed `journalctl`
   cursor files emit official systemd cursor strings with `s=`, `i=`, `b=`,
   `m=`, `t=`, and `x=` fields. `seek_cursor()` and `test_cursor()` accept both
@@ -882,8 +980,8 @@ Current Go reader feature slice:
   diagnostics, constrained-platform investigation, and controlled fallback
   evidence only. Access stats expose the selected backend, fallback reason,
   window budget, mapped/read-buffer bytes, row-arena peak, and refresh counters;
-- whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
-  through pure-Go dependencies;
+- complete whole-file zstd streams and zstd, xz, and lz4-compressed DATA objects
+  through pure-Go dependencies, including the stream variants above;
 - historical unkeyed-hash journal reading, including LZ4-compressed DATA
   objects, with core reader traversal exposing the file-format entry set rather
   than old systemd 239 same-file duplicate suppression behavior;
@@ -896,7 +994,7 @@ Current Go reader feature slice:
 - systemd-compatible export output for binary fields using size-prefixed field
   values and blank-line entry separators;
 - systemd-compatible JSON output for duplicate fields and binary values;
-- file-backed journalctl output modes cover the stock v260.1 family:
+- file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
   `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
@@ -954,8 +1052,8 @@ Current Rust writer feature slice:
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold, including Rust zstd frame content-size metadata
-  required by stock systemd verification, using the shared systemd threshold
-  policy;
+  retained for the v260.1 writer compatibility target, using the shared systemd
+  threshold policy;
 - keyed hash tables using the journal file ID;
 - deterministic file ID selection through `JournalFileOptions::with_file_id()`
   for reference fixture generation and conformance checks;
@@ -1002,8 +1100,9 @@ Current Rust reader feature slice:
 
 - regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
-- whole-file zstd fixtures and zstd, lz4, and xz-compressed DATA objects through
-  pure-Rust dependencies;
+- complete whole-file zstd streams and zstd, lz4, and xz-compressed DATA objects
+  through the existing compression dependencies, including the stream variants
+  above;
 - directory iteration across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
   ordering;
@@ -1013,9 +1112,10 @@ Current Rust reader feature slice:
   systemd-compatible export/json/text formatting;
 - configurable reader bounds through `ReaderOptions`: default `Live` mode uses
   systemd-style cached mutable bounds and refreshes file size only when a read
-  would exceed the cached end of file, while `Snapshot` mode fixes the file
-  size at open time for polling/query use cases that do not need to observe
-  appends during the current scan;
+  would exceed the cached end of file, while `Snapshot` mode caps reads at the
+  original open extent for polling/query use cases that do not need to observe
+  appends during the current scan. Cold recovery can observe physical shrink
+  without increasing that original cap;
 - `ReaderOptions` exposes live/snapshot bounds and window size for public
   consumers. Default Rust live readers remain windowed with a 32 MiB window so
   indexed DATA-chain traversal does not remap per small object. Whole-file mmap
@@ -1035,7 +1135,7 @@ Current Rust reader feature slice:
 - export byte output preserves non-UTF8 RAW field names; JSON output, field
   enumeration, unique queries, and `get_data` facade helpers remain UTF-8
   field-name surfaces;
-- file-backed journalctl output modes cover the stock v260.1 family:
+- file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
   `verbose`, `export`, `json`, `json-pretty`, `json-sse`, `json-seq`,
@@ -1055,6 +1155,31 @@ Current Rust reader feature slice:
   active;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
+- unreleased exact SDK/facade filters resolve native DATA hash/posting indexes
+  in both languages, preserving same-field OR and different-field AND grouping
+  without expanding unrelated rows. Go `Step`/`StepBack` apply filters; its raw
+  `Next`/`Previous` movement helpers do not. File/directory/facade group operators return
+  errors, and an empty pending Go filter builder returns `ErrMalformedFilter`.
+  Required unknown secondary posting tails remain errors. Healthy installed
+  posting populations stay fixed until rebuilding; read-only recovery can clip
+  existing DATA identities to the intact prefix, while absent DATA stays
+  absent until rebuilding. Failed group/build operations retain pending matches
+  for retry. Recovery requalification preserves known DATA identities and retries
+  the whole Boolean view after partial failure. Clearing matches rewinds file,
+  directory and facade readers to the head; callers restore saved locations
+  explicitly when continuation is required. Filtered movement returns the
+  nearest preceding/following match relative to the last successful row,
+  including filter installation/replacement and direction changes after EOF.
+  Directory mutations preserve the committed key and discard prefetched
+  candidates. Proven sequential positions retain sequential traversal rather
+  than probing every file; reversals and merged/recovered states use key-based
+  positioning. Failed selected ENTRY loading retains
+  the previous successful position on failure. Explicit filtered
+  realtime seeks search native posting nodes and binary-search their captured
+  slots, selecting the first match at/after the requested time forward and the
+  last at/before it backward. Errors from visited slots/headers propagate;
+  skipped postings are not certified. Ordinary sequential posting traversal
+  retains its existing error-discovery behavior;
 - file-backed Rust journalctl source selection supports `--file`/`-i`,
   repeated `--file` inputs, stock-style glob expansion with no-match
   preservation, and `--directory`; `--file=-` is explicitly unsupported
@@ -1096,6 +1221,115 @@ Current Rust reader limitations:
 
 Implement journalctl rewrites in Rust and Go for file-backed/query behavior.
 
+The command contract targets `systemd/systemd` tag `v262`, commit
+8cc40e0c5e9234bf45084751ac53b1fbfe70b492. SDK journal-format compatibility
+continues to target v260.1. The complete command option/action classifications
+are in `journalctl-v260-parity-matrix.md` (historical filename retained).
+
+Both commands parse setters in encounter order, preserve required values and
+explicit-empty semantics, and stop at terminal help/version/introspection.
+Opaque Unix match, identifier, exclusion and projection arguments preserve
+raw bytes. Non-UTF8 projection names retain explicit projection presence and
+rendering-time cat validation; they do not expand to unrestricted output.
+The final action controls dispatch and conflicts. PCRE2 compiles the final raw
+pattern once after global parser checks; matching uses the first raw MESSAGE,
+native byte/case behavior and native errors. A show command with no grep-selected
+entries exits 1 without a diagnostic. Rendering exclusions do not erase a
+successful grep selection.
+
+The native CLI dependencies have an accepted small fixed startup cost, measured
+on the tiny Linux control as Go about 3.0ms to 3.8ms and Rust 1.5ms to 1.8ms.
+This allowance is confined to command startup; SDK and sustained query
+performance retain their no-regression requirement. Static native builds are
+not a separate supported packaging profile.
+
+With final `-F`/`-N`, entry/time/cursor/grep/explicit boot or invocation filters
+are errors under v262. Unrestricted enumeration still uses native FIELD/DATA
+indexes. `-F` honors value limits; field-name order is unspecified. Time bounds
+are parsed once per occurrence, including checked duration/epoch arithmetic,
+calendar rounding, local/UTC/offset/IANA zones, TZif leaps and cached DST
+selection. Cursor-relative limits begin at the cursor. Follow streams resolved
+cursor history regardless of numeric line caps; since-only follow, explicit all
+and no-tail include the complete existing matching backlog. Repeated projections
+form a union without trimming field-name bytes. Cat preserves raw first values;
+boot/invocation tables support all four JSON framings.
+Follow without a since bound defaults to ten existing rows, including with
+pager-end; follow with since and pager-end defaults to one thousand. Explicit
+line counts, all/no-tail and cursor positioning retain their precedence.
+
+System/user unit wildcard expansion uses indexed unique field values. If no
+exact selector or wildcard expansion adds a unit, return the native no-data
+error before row output, including with a zero line limit. Exact absent unit
+names and mixed exact/wildcard selectors remain valid. An ordinary journal
+field cannot turn an empty expansion into a match through a private sentinel.
+Unit arguments retain native glob/suffix rules, byte escaping, pure path-to-unit
+conversion and long-path hashing. Empty names are invalid. Unix wildcard
+matching uses fnmatch NOESCAPE in the environment locale. FreeBSD uses a
+shared CLI-private compatibility matcher for extended bracket syntax missing
+from its libc, including named character classes and single-character
+collating elements. Ordinary patterns keep native matching. The Windows fallback
+matches unit payload bytes using the C-locale grammar. Current-user conversion
+deduplicates moved system selectors. Follow retains the initial wildcard
+expansion and invocation selection.
+
+Invocation discovery uses the three base system/user unit fields, excluding
+show-only coredump and slice groups. It reads the first valid nonzero ID from
+the ordered invocation fields and walks indexed matches in native direction.
+ID bounds span every matching row in the selected boot, including rows without
+unit metadata. Explicit IDs without offsets may match secondary ID fields;
+relative offsets advance from the reference ID's boundary. Invocation selection
+replaces boot/unit show matches while retaining identifier, transport, priority
+and facility filters. Readers are reused and metadata getters avoid expanding
+unrelated payloads. Broader input envelopes remain separate performance work.
+
+Native integer options preserve base-prefix/octal syntax and signed 32-bit
+limits for line counts and boot/invocation offsets; vacuum file counts retain
+the unsigned 64-bit range. Descriptor IDs use 32 hexadecimal digits, with an
+explicit sign before an offset. Priority symbols are canonical and case
+sensitive; numeric facilities range through 127. Invalid unique-field names
+fail even with a zero limit. Empty requested cursor-file paths retain their
+requested update semantics.
+
+Bounded show output stops before reading or matching a further row. Boot
+transitions are observed before grep in both directions and follow polls;
+initial follow-tail selection counts native rows before grep and poll resume
+state includes nonmatching visits. Zero-limit boot/invocation tables exit one,
+with quiet/JSON suppressing informational diagnostics. Quiet verification
+retains errors while suppressing successful PASS messages.
+Show-cursor and cursor-file checkpoints retain the final native position,
+including grep misses, bound-crossing rows and zero-line positioning. Finite
+selected counts still stop immediately without another regex evaluation.
+
+Short output selects the last repeated MESSAGE; grep and cat retain their
+first-value rules. No-full output applies native per-line shortening,
+prefix/suffix retention, three-line/300-byte thresholds and the v262 fixed
+Unicode width table. COLUMNS is resolved once per shortened-output renderer;
+valid values from 1 through 65535 override stdout's terminal width, followed by
+an 80-column fallback. The default full-width path bypasses shortening.
+Displayed realtime uses the last source-realtime C-string value when native
+integer parsing yields a value strictly between zero and 2^55; otherwise it
+uses the ENTRY realtime. This does not replace exported ENTRY metadata.
+Before short rendering, native tab/ANSI/CR preparation strips completed color
+and OSC sequences, expands tabs to eight spaces and drops trailing/pre-newline
+CR. Show-all bypasses this step; cat/grep continue to use raw MESSAGE bytes.
+JSON aggregation keeps a single binary byte array distinct from an outer array
+of repeated values in all four framings. Vacuum-size parsing uses native
+ordered uppercase compound suffixes and checked decimal/fraction arithmetic.
+
+Color output follows SYSTEMD_COLORS fixed/automatic/boolean modes, NO_COLOR,
+stdout/stderr terminal state, TERM and COLORTERM. Enabled output includes native
+priority/audit colors, first-match grep highlighting, verbose timestamps,
+cursors and trusted fields, JSON primitive colors, boot separators and table
+headers. Underlining is disabled on the Linux console. Grep captures offsets
+from its existing PCRE2 match; only colored buffered output retains those
+offsets. Plain output avoids color formatting. Verbose multiline fields indent
+continuations; short-delta saturates negative differences to zero on reverse
+output, following native timestamp subtraction.
+Embedded DOCUMENTATION and CONFIG_FILE links follow SYSTEMD_URLIFY; optional
+file links discover the command's hostname lazily outside the SDK. Host catalog
+lookup, including implicit documentation-link lookup, remains outside portable
+mode. Header path output and vacuum filename tie ordering preserve native bytes.
+
 Matching semantics:
 
 - Different fields are ANDed.
@@ -1116,7 +1350,8 @@ File-backed query semantics:
   daemon-backed Linux journal wait APIs on very large inputs.
 - `--pager-end` does not spawn a pager in portable mode, but it preserves stock
   line-selection semantics by applying an implicit 1000-entry tail when no
-  explicit `--lines`, `--head`, or `--tail` option is present.
+  explicit `--lines`, `--head`, or `--tail` option is present. Follow without
+  since retains its implicit ten-entry tail instead.
 - Bare `--lines` and `-n` select the stock default 10-entry tail. Explicit
   empty `--lines=` is a parse error, matching stock `journalctl`.
 - Empty default/verbose show results print `-- No entries --`; `--quiet` and
@@ -1124,23 +1359,22 @@ File-backed query semantics:
 - `--cursor`, `--after-cursor`, `--cursor-file`, and `--show-cursor` use
   official systemd cursor strings for file-backed reads and cursor-file
   updates.
-- `--list-invocations` is correctness-compatible for covered file-backed unit
-  contexts, but the current implementation derives invocation ranges from
-  matching entries. SOW-0122 tracks the remaining performance work before any
-  large-archive performance claim.
+- `--list-invocations` uses native directional indexed discovery and global
+  boot-scoped ID bounds. SOW-0122 retains broader large-input envelope and
+  polling work, beyond the required correctness and performance repair.
 - Recognized options may appear before or after show-action match arguments,
   matching stock argument permutation. Short options accept stock attached
   values and clusters such as `-n2`, `-ball`, and `-rn2`, while stock-invalid
   forms such as `-n=2` and `-b=true` remain invalid.
 - `--identifier`, `--exclude-identifier`, `--priority`, `--facility`,
   `--grep`, `--case-sensitive`, `--dmesg`, `--unit`, and `--user-unit` are
-  file-backed filters. `--exclude-identifier` follows stock v260.1 output-mode
+  file-backed filters. `--exclude-identifier` follows stock v262 output-mode
   scope: short-family outputs filter matching `SYSLOG_IDENTIFIER=` entries,
   while JSON, export, verbose, and cat remain unchanged. `--grep` with
   tail-style `--lines=N` implies reverse traversal unless `--follow` is set.
-  Unit filters use the same systemd v260.1 unit-related fields, disjunction
+  Unit filters use the same systemd v262 unit-related fields, disjunction
   groups, unit suffix mangling, glob expansion over FIELD/DATA indexes, and
-  `--user --unit=` rewrite as stock file-backed `journalctl`.
+  `--user --unit=` rewrite (unless `--system` is also present) as stock file-backed `journalctl`.
 - `--disk-usage` reports allocated filesystem usage for explicit
   `--file`/`--directory` journal inputs. Without explicit input, it remains an
   unsupported host-journal discovery action.
@@ -1150,15 +1384,24 @@ File-backed query semantics:
   non-matching, unknown, and subdirectory files. `--vacuum-files` uses the
   stock count condition: protected active/current files plus remaining archived
   candidates must be at or below the requested count.
+  Age is the earliest available filename, modification, access, change or
+  creation timestamp. Linux includes a valid legacy `user.crtime_usec` xattr
+  and attempts header reads without updating atime, retrying ordinary reads
+  when that open mode is unavailable. Metadata checks are CLI maintenance
+  operations; SDK and query traversal do not perform them.
+  The user accepted the creation-metadata cost for explicit age-based vacuum
+  maintenance: the measured warm control adds about 7 ms in Go and 3.8 ms in
+  Rust for 1000 recent archive names. This is a maintenance-only exception;
+  SDK and sustained query performance requirements remain unchanged.
 - `--new-id128` is a portable standalone utility action and prints a new v4
   ID128 in the same string, UUID, `SD_ID128_MAKE()`, and Python constant forms
-  as stock systemd v260.1.
+  as stock systemd v262.
 - Positional `FIELD=value`, path, and `+` disjunction arguments belong to the
   show action. Non-show actions other than catalog listing/dumping reject
   extra positional arguments with the stock `Extraneous arguments starting with
   '<token>'` parser error before portable unsupported dispatch.
-- The long `--follow` option is supported. Existing short `-f` file aliases are
-  preserved in languages that already used `-f` for `--file`.
+- `--follow` and `-f` follow explicit inputs. `--file` and `-i` select files;
+  the old conflicting `-f` file alias is not part of the v262 contract.
 
 Daemon-only commands are not implemented in this project. They must return documented unsupported behavior rather than silently pretending to perform daemon operations.
 

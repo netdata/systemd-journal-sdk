@@ -2,7 +2,7 @@
 """Shared parser parity runner.
 
 Validates that both Rust and Go journalctl commands recognize every
-official systemd v260.1 option, output mode, and parser interaction.
+official systemd v262 option, output mode, and parser interaction.
 
 For each long option we build a syntactically valid invocation (using a
 synthetic empty path or `--file=...` placeholder as required) and verify:
@@ -22,7 +22,7 @@ For each output mode we run `--output=<mode> --file=<placeholder>` and
 verify the parser accepts the mode (no "unknown output format" error).
 
 For each parser interaction rule we run a synthetic argument combination
-and verify the command reports the official v260.1 conflict error class.
+and verify the command reports the official v262 conflict error class.
 
 Runtime artifacts stay under `.local/parser-parity/`. The harness only
 inspects generated output and the in-repo Rust/Go binaries; it never
@@ -394,7 +394,7 @@ def exercise_help_stdout(cmd: Command, manifest: dict) -> CaseResult:
         missing = [
             f"--{opt['name']}"
             for opt in manifest["long_options"]
-            if f"--{opt['name']}" not in result.stdout
+            if not opt.get("hidden", False) and f"--{opt['name']}" not in result.stdout
         ]
         if not missing:
             return CaseResult(
@@ -425,6 +425,10 @@ def exercise_interaction(cmd: Command, interaction: dict) -> CaseResult:
     require full journal semantics beyond what the placeholder can verify.
     """
     name = interaction["name"]
+    if name == "unscoped-field-enumeration":
+        result = run_command(cmd, ["--file=placeholder.journal", "--fields", "--since=@0"])
+        ok = result.returncode != 0 and "cannot be combined with options that limit the journal" in result.stderr
+        return CaseResult(name, "parser-required", "ok" if ok else "fail", result.stderr.strip()[:300])
     if name == "time-bounds-order":
         # Use the `--since` later than `--until` conflict.
         try:
@@ -850,6 +854,7 @@ def build_go_binary(go_root: Path) -> Path:
     LOCAL_DIR.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["go", "build", "-o", str(bin_path), "./cmd/journalctl"]
     env = os.environ.copy()
+    env["CGO_ENABLED"] = "1"
     env.setdefault("GOCACHE", str(REPO_ROOT / ".local" / "go-build"))
     env.setdefault("GOMODCACHE", str(REPO_ROOT / ".local" / "go-mod-cache"))
     subprocess.run(  # nosec B603 B607
@@ -909,7 +914,7 @@ def main():
         rust_bin = args.rust_bin
         go_bin = args.go_bin
     rust_cmd = Command(name="rust", path=rust_bin, flag_style="gnu-long")
-    go_cmd = Command(name="go", path=go_bin, flag_style="go-flag")
+    go_cmd = Command(name="go", path=go_bin, flag_style="gnu-long")
 
     print(f"rust binary: {rust_cmd.path}")
     print(f"go   binary: {go_cmd.path}")

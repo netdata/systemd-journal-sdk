@@ -40,11 +40,18 @@ impl JournalCursor {
     pub fn set_location(&mut self, location: Location) {
         self.location = location;
         self.array_cursor = None;
+        if matches!(location, Location::ResolvedEntry(_)) {
+            if let Some(filter) = &mut self.filter_expr {
+                filter.invalidate_position();
+            }
+        }
     }
 
-    pub fn set_filter(&mut self, filter_expr: FilterExpr) {
+    pub fn set_filter(&mut self, mut filter_expr: FilterExpr) {
+        if matches!(self.location, Location::ResolvedEntry(_)) {
+            filter_expr.invalidate_position();
+        }
         self.filter_expr = Some(filter_expr);
-        // FIXME: should we set cursor to None?
     }
 
     pub fn clear_filter(&mut self) {
@@ -53,7 +60,51 @@ impl JournalCursor {
         self.set_location(Location::Head);
     }
 
+    #[inline]
     pub fn step<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        direction: Direction,
+    ) -> Result<bool> {
+        let result = self.step_inner(journal_file, direction);
+        if matches!(result, Ok(true)) {
+            return Ok(true);
+        }
+        self.step_recovery(journal_file, direction, result)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn step_recovery<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        direction: Direction,
+        result: Result<bool>,
+    ) -> Result<bool> {
+        let before = self.location;
+        match result {
+            Err(err) if journal_file.recover_reader_tail(&err)? => {
+                self.reset_after_recovery(journal_file, before)?;
+                self.step_inner(journal_file, direction)
+            }
+            other => other,
+        }
+    }
+
+    pub(super) fn reset_after_recovery<M: MemoryMap>(
+        &mut self,
+        file: &JournalFile<M>,
+        before: Location,
+    ) -> Result<()> {
+        self.location = before;
+        self.array_cursor = None;
+        if let Some(filter) = &mut self.filter_expr {
+            filter.refresh_recovery(file)?;
+        }
+        Ok(())
+    }
+
+    fn step_inner<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
         direction: Direction,
@@ -79,10 +130,16 @@ impl JournalCursor {
         }
     }
 
-    fn entry_list<M: MemoryMap>(journal_file: &JournalFile<M>) -> Result<offset_array::List> {
+    fn entry_list<M: MemoryMap>(
+        journal_file: &JournalFile<M>,
+    ) -> Result<Option<offset_array::List>> {
+        if journal_file.reader_entry_count() == 0 {
+            return Ok(None);
+        }
         journal_file
             .entry_list()
-            .ok_or(JournalError::InvalidOffsetArrayOffset)
+            .map(Some)
+            .ok_or(JournalError::ObjectExceedsFileBounds)
     }
 
     fn store_array_cursor_value<M: MemoryMap>(
@@ -101,7 +158,10 @@ impl JournalCursor {
         &mut self,
         journal_file: &JournalFile<M>,
     ) -> Result<Option<Location>> {
-        let cursor = Self::entry_list(journal_file)?.cursor_head();
+        let Some(list) = Self::entry_list(journal_file)? else {
+            return Ok(None);
+        };
+        let cursor = list.cursor_head();
         self.store_array_cursor_value(journal_file, cursor)
     }
 
@@ -109,7 +169,9 @@ impl JournalCursor {
         &mut self,
         journal_file: &JournalFile<M>,
     ) -> Result<Option<Location>> {
-        let entry_list = Self::entry_list(journal_file)?;
+        let Some(entry_list) = Self::entry_list(journal_file)? else {
+            return Ok(None);
+        };
         let cursor = entry_list.cursor_tail(journal_file)?;
         self.store_array_cursor_value(journal_file, cursor)
     }
@@ -117,25 +179,31 @@ impl JournalCursor {
     fn realtime_array_cursor<M: MemoryMap>(
         journal_file: &JournalFile<M>,
         realtime: u64,
-    ) -> Result<offset_array::Cursor> {
-        let entry_list = Self::entry_list(journal_file)?;
+        direction: Direction,
+    ) -> Result<Option<offset_array::Cursor>> {
+        let Some(entry_list) = Self::entry_list(journal_file)? else {
+            return Ok(None);
+        };
         let predicate = |entry_offset| {
             let entry_object = journal_file.entry_ref(entry_offset)?;
-            Ok(entry_object.header.realtime < realtime)
+            Ok(match direction {
+                Direction::Forward => entry_object.header.realtime < realtime,
+                Direction::Backward => entry_object.header.realtime <= realtime,
+            })
         };
 
-        entry_list
-            .directed_partition_point(journal_file, predicate, Direction::Forward)?
-            .map(Ok)
-            .unwrap_or_else(|| entry_list.cursor_tail(journal_file))
+        entry_list.directed_partition_point(journal_file, predicate, direction)
     }
 
     fn resolve_realtime_array<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
         realtime: u64,
+        direction: Direction,
     ) -> Result<Option<Location>> {
-        let cursor = Self::realtime_array_cursor(journal_file, realtime)?;
+        let Some(cursor) = Self::realtime_array_cursor(journal_file, realtime, direction)? else {
+            return Ok(None);
+        };
         self.store_array_cursor_value(journal_file, cursor)
     }
 
@@ -144,6 +212,9 @@ impl JournalCursor {
         journal_file: &JournalFile<M>,
         direction: Direction,
     ) -> Result<Option<Location>> {
+        if self.array_cursor.is_none() {
+            return self.resolve_missing_array_cursor(journal_file, direction);
+        }
         let cursor = self
             .array_cursor
             .as_ref()
@@ -153,6 +224,31 @@ impl JournalCursor {
             Direction::Backward => cursor.previous(journal_file)?,
         };
         let Some(cursor) = cursor else {
+            return Ok(None);
+        };
+        self.store_array_cursor_value(journal_file, cursor)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn resolve_missing_array_cursor<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        direction: Direction,
+    ) -> Result<Option<Location>> {
+        let offset = self.position()?;
+        let Some(list) = Self::entry_list(journal_file)? else {
+            return Ok(None);
+        };
+        let predicate = |candidate| {
+            Ok(if direction == Direction::Forward {
+                candidate <= offset
+            } else {
+                candidate < offset
+            })
+        };
+        let Some(cursor) = list.directed_partition_point(journal_file, predicate, direction)?
+        else {
             return Ok(None);
         };
         self.store_array_cursor_value(journal_file, cursor)
@@ -168,8 +264,8 @@ impl JournalCursor {
             (Location::Head, Direction::Backward) => Ok(None),
             (Location::Tail, Direction::Forward) => Ok(None),
             (Location::Tail, Direction::Backward) => self.resolve_tail_array(journal_file),
-            (Location::Realtime(realtime), _) => {
-                self.resolve_realtime_array(journal_file, realtime)
+            (Location::Realtime(realtime), direction) => {
+                self.resolve_realtime_array(journal_file, realtime, direction)
             }
             (Location::ResolvedEntry(_), direction) => {
                 self.step_array_cursor(journal_file, direction)
@@ -210,17 +306,10 @@ impl JournalCursor {
         direction: Direction,
         entry_offset: NonZeroU64,
     ) -> Result<Option<Location>> {
-        let filter_expr = self.filter_expr_mut()?;
-        match direction {
-            Direction::Forward => Ok(filter_expr
-                .head()
-                .next(journal_file, entry_offset)?
-                .map(Location::ResolvedEntry)),
-            Direction::Backward => Ok(filter_expr
-                .tail(journal_file)?
-                .previous(journal_file, entry_offset)?
-                .map(Location::ResolvedEntry)),
-        }
+        Ok(self
+            .filter_expr_mut()?
+            .seek_realtime(journal_file, entry_offset, direction)?
+            .map(Location::ResolvedEntry))
     }
 
     fn resolve_filter_realtime<M: MemoryMap>(
@@ -229,7 +318,9 @@ impl JournalCursor {
         realtime: u64,
         direction: Direction,
     ) -> Result<Option<Location>> {
-        let cursor = Self::realtime_array_cursor(journal_file, realtime)?;
+        let Some(cursor) = Self::realtime_array_cursor(journal_file, realtime, direction)? else {
+            return Ok(None);
+        };
         let Some(entry_offset) = cursor.value(journal_file)? else {
             return Ok(None);
         };
@@ -268,11 +359,17 @@ impl JournalCursor {
     ) -> Result<Option<Location>> {
         match (self.location, direction) {
             (Location::Head, Direction::Forward) => {
+                if journal_file.reader_entry_count() == 0 {
+                    return Ok(None);
+                }
                 Self::filter_head(self.filter_expr_mut()?, journal_file)
             }
             (Location::Head, Direction::Backward) => Ok(None),
             (Location::Tail, Direction::Forward) => Ok(None),
             (Location::Tail, Direction::Backward) => {
+                if journal_file.reader_entry_count() == 0 {
+                    return Ok(None);
+                }
                 Self::filter_tail(self.filter_expr_mut()?, journal_file)
             }
             (Location::Realtime(realtime), direction) => {

@@ -18,6 +18,7 @@ var (
 )
 
 type sdReader interface {
+	RecoveryStatuses() []FileRecoveryStatus
 	io.Closer
 	GetRealtimeUsec() (uint64, error)
 	GetCursor() (string, error)
@@ -30,8 +31,8 @@ type sdReader interface {
 	EnumerateUniquePayload() ([]byte, bool, error)
 	EnumerateFields() (map[string]struct{}, error)
 	AddMatch(data []byte)
-	AddDisjunction()
-	AddConjunction()
+	AddDisjunction() error
+	AddConjunction() error
 	FlushMatches()
 	SeekHead() error
 	SeekTail() error
@@ -160,14 +161,12 @@ func SdJournalAddMatch(j *sdJournal, data []byte) error {
 
 func SdJournalAddDisjunction(j *sdJournal) error {
 	j.resetIterators()
-	j.reader.AddDisjunction()
-	return nil
+	return j.reader.AddDisjunction()
 }
 
 func SdJournalAddConjunction(j *sdJournal) error {
 	j.resetIterators()
-	j.reader.AddConjunction()
-	return nil
+	return j.reader.AddConjunction()
 }
 
 func SdJournalFlushMatches(j *sdJournal) error {
@@ -286,11 +285,19 @@ func SdJournalGetMonotonicUsec(j *sdJournal) (uint64, UUID, error) {
 }
 
 func SdJournalGetCursor(j *sdJournal) (string, error) {
-	return j.reader.GetCursor()
+	cursor, err := j.reader.GetCursor()
+	if errors.Is(err, errEndOfEntries) {
+		return "", ErrNoEntry
+	}
+	return cursor, err
 }
 
 func SdJournalTestCursor(j *sdJournal, cursor string) (bool, error) {
-	return j.reader.TestCursor(cursor)
+	ok, err := j.reader.TestCursor(cursor)
+	if errors.Is(err, ErrEndOfEntries) {
+		return false, nil
+	}
+	return ok, err
 }
 
 func SdJournalSetOutputMode(j *sdJournal, mode string) {
@@ -320,14 +327,14 @@ func (j *sdJournal) AddMatch(data []byte) {
 	j.reader.AddMatch(data)
 }
 
-func (j *sdJournal) AddDisjunction() {
+func (j *sdJournal) AddDisjunction() error {
 	j.resetIterators()
-	j.reader.AddDisjunction()
+	return j.reader.AddDisjunction()
 }
 
-func (j *sdJournal) AddConjunction() {
+func (j *sdJournal) AddConjunction() error {
 	j.resetIterators()
-	j.reader.AddConjunction()
+	return j.reader.AddConjunction()
 }
 
 func (j *sdJournal) FlushMatches() {
@@ -539,6 +546,9 @@ func SdJournalGetCursorWithRealtime(j *sdJournal, realtime uint64) (string, erro
 
 func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 	j.resetIterators()
+	if reader, ok := j.reader.(*Reader); ok {
+		return reader.SeekCursor(cursor)
+	}
 	want, err := parseCursorLocation(cursor, true)
 	if err != nil {
 		return ErrInvalidCursor
@@ -561,15 +571,19 @@ func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 			return err
 		}
 		if !ok {
+			// An unsuccessful seek has no committed row; keep forward exhaustion.
+			if directory, ok := j.reader.(*DirectoryReader); ok {
+				directory.clearDirectoryPosition()
+			}
 			return nil
 		}
 
-		entry, err := j.reader.GetEntry()
+		current, err := j.reader.GetCursor()
 		if err != nil {
 			return err
 		}
 
-		got, err := parseCursorLocation(entry.Cursor, false)
+		got, err := parseCursorLocation(current, false)
 		if err != nil {
 			return err
 		}

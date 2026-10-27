@@ -35,7 +35,10 @@ func TestReaderJournalZstdUsesTempAccessorAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFileWithOptions(%s) error = %v", zstPath, err)
 	}
-	cleanupPath := r.cleanupPath
+	cleanupPath := r.file.Name()
+	if !r.staged {
+		t.Fatal("expected a staged decompressed file")
+	}
 	if cleanupPath == "" {
 		t.Fatal("cleanupPath is empty; want streamed .journal.zst temp file")
 	}

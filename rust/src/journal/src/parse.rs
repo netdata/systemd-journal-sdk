@@ -256,3 +256,24 @@ mod tests {
         );
     }
 }
+
+pub(crate) fn directional_cursor_anchor(
+    cursor: &str,
+) -> std::result::Result<journal_core::file::CursorAnchor, ParseError> {
+    let parsed = parse_cursor_location(cursor, true)?;
+    let sequence_id = if parsed.seqnum_id.is_empty() {
+        None
+    } else {
+        Some(*uuid::Uuid::parse_str(&parsed.seqnum_id)?.as_bytes())
+    };
+    let boot_id = if parsed.boot_id.is_empty() {
+        None
+    } else {
+        Some(*uuid::Uuid::parse_str(&parsed.boot_id)?.as_bytes())
+    };
+    Ok(journal_core::file::CursorAnchor {
+        sequence: sequence_id.zip(parsed.seqnum_set.then_some(parsed.seqnum)),
+        monotonic: boot_id.zip(parsed.monotonic_set.then_some(parsed.monotonic)),
+        realtime: parsed.realtime_set.then_some(parsed.realtime),
+    })
+}

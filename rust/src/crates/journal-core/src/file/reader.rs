@@ -14,6 +14,8 @@ use std::num::NonZeroU64;
 pub struct JournalReader<'a, M: MemoryMap> {
     cursor: JournalCursor,
 
+    recovery_eof: Option<(Direction, u64)>,
+
     filter: Option<JournalFilter>,
     field_iterator: Option<FieldIterator<'a, M>>,
     field_data_iterator: Option<FieldDataIterator<'a, M>>,
@@ -107,6 +109,7 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
     fn default() -> Self {
         Self {
             cursor: JournalCursor::new(),
+            recovery_eof: None,
             filter: None,
             field_iterator: None,
             field_data_iterator: None,
@@ -119,6 +122,37 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
 }
 
 impl<'a, M: MemoryMap> JournalReader<'a, M> {
+    #[doc(hidden)]
+    pub fn has_filter(&self) -> bool {
+        self.filter.is_some() || self.cursor.filter_expr.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn location(&self) -> Location {
+        self.cursor.location
+    }
+
+    #[doc(hidden)]
+    #[cold]
+    #[inline(never)]
+    pub fn recover_after_error(
+        &mut self,
+        file: &'a JournalFile<M>,
+        before: Location,
+        err: &crate::error::JournalError,
+    ) -> Result<bool> {
+        self.drop_guards();
+        match file.recover_reader_tail(err) {
+            Ok(true) => {
+                self.cursor.reset_after_recovery(file, before)?;
+                Ok(true)
+            }
+            result => {
+                self.cursor.set_location(before);
+                result
+            }
+        }
+    }
     pub fn dump(&self, _journal_file: &'a JournalFile<M>) -> Result<String> {
         if let Some(_filter_expr) = self.cursor.filter_expr.as_ref() {
             Ok(String::from("filter expr active"))
@@ -128,11 +162,35 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     }
 
     pub fn set_location(&mut self, location: Location) {
+        self.recovery_eof = None;
         self.cursor.set_location(location)
+    }
+
+    #[doc(hidden)]
+    pub fn seek_cursor_direction(
+        &mut self,
+        file: &'a JournalFile<M>,
+        anchor: &crate::file::CursorAnchor,
+        direction: Direction,
+    ) -> Result<bool> {
+        self.drop_guards();
+        self.recovery_eof = None;
+        if let Some(filter) = self.filter.as_mut() {
+            let expr = filter.build(file)?;
+            self.cursor.set_filter(expr);
+            self.filter = None;
+        }
+        self.cursor.seek_anchor(file, anchor, direction)
     }
 
     pub fn step(&mut self, journal_file: &'a JournalFile<M>, direction: Direction) -> Result<bool> {
         self.drop_guards();
+
+        if let Some((last_direction, count)) = self.recovery_eof {
+            if direction == last_direction && count == journal_file.journal_header_ref().n_entries {
+                return Ok(false);
+            }
+        }
 
         if let Some(filter) = self.filter.as_mut() {
             let filter_expr = filter.build(journal_file)?;
@@ -140,7 +198,37 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
             self.filter = None;
         }
 
-        self.cursor.step(journal_file, direction)
+        if self.cursor.step(journal_file, direction)? {
+            self.recovery_eof = None;
+            return Ok(true);
+        }
+        self.step_recovery_eof(journal_file, direction)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn step_recovery_eof(
+        &mut self,
+        file: &'a JournalFile<M>,
+        direction: Direction,
+    ) -> Result<bool> {
+        if !file.reader_recovery_active() {
+            return Ok(false);
+        }
+        let observed = (direction, file.journal_header_ref().n_entries);
+        if self.recovery_eof == Some(observed) {
+            return Ok(false);
+        }
+        if file.refresh_reader_recovery()? {
+            self.cursor
+                .reset_after_recovery(file, self.cursor.location)?;
+            if self.cursor.step(file, direction)? {
+                self.recovery_eof = None;
+                return Ok(true);
+            }
+        }
+        self.recovery_eof = Some(observed);
+        Ok(false)
     }
 
     /// Build the pending filter expression (if any) and return it.
@@ -168,22 +256,26 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     }
 
     pub fn add_match(&mut self, data: &[u8]) {
+        self.recovery_eof = None;
         self.filter.get_or_insert_default().add_match(data);
     }
 
     pub fn add_conjunction(&mut self, journal_file: &'a JournalFile<M>) -> Result<()> {
+        self.recovery_eof = None;
         self.filter
             .get_or_insert_default()
             .set_operation(journal_file, LogicalOp::Conjunction)
     }
 
     pub fn add_disjunction(&mut self, journal_file: &'a JournalFile<M>) -> Result<()> {
+        self.recovery_eof = None;
         self.filter
             .get_or_insert_default()
             .set_operation(journal_file, LogicalOp::Disjunction)
     }
 
     pub fn flush_matches(&mut self) {
+        self.recovery_eof = None;
         self.cursor.clear_filter();
         self.filter = None;
     }

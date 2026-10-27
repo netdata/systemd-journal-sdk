@@ -548,8 +548,8 @@ func TestReaderRefreshFailureRestoresStateAndKeepsRowPayload(t *testing.T) {
 			corruptHeaderUint64(t, path, 176, wantSize+1)
 
 			changed, err := r.Refresh()
-			if err != nil || changed {
-				t.Fatalf("Refresh() = %v, %v; want false, nil rollback", changed, err)
+			if err == nil || changed {
+				t.Fatalf("Refresh() = %v, %v; want false, corruption error with rollback", changed, err)
 			}
 			if got := r.AccessStats().FileSize; got != wantSize {
 				t.Fatalf("restored accessor file size = %d, want %d", got, wantSize)
@@ -1123,7 +1123,9 @@ func TestReaderMatchDisjunction(t *testing.T) {
 	defer r.Close()
 
 	r.AddMatch([]byte("L3=ok"))
-	r.AddDisjunction()
+	if err := r.AddDisjunction(); err != nil {
+		t.Fatal(err)
+	}
 	r.AddMatch([]byte("L4=yes"))
 
 	count := 0
@@ -1190,7 +1192,9 @@ func TestReaderSystemdComplexMatchExpression(t *testing.T) {
 	}
 	defer r.Close()
 
-	addSystemdComplexMatchExpression(r)
+	if err := addSystemdComplexMatchExpression(r); err != nil {
+		t.Fatal(err)
+	}
 
 	count := 0
 	for {
@@ -1210,9 +1214,9 @@ func TestReaderSystemdComplexMatchExpression(t *testing.T) {
 
 func addSystemdComplexMatchExpression(r interface {
 	AddMatch([]byte)
-	AddDisjunction()
-	AddConjunction()
-}) {
+	AddDisjunction() error
+	AddConjunction() error
+}) error {
 	r.AddMatch([]byte{'A', '=', 1, 2})
 	r.AddMatch([]byte{'B', '=', 'C', 0, 'D'})
 	r.AddMatch([]byte("HALLO=WALDO"))
@@ -1222,18 +1226,25 @@ func addSystemdComplexMatchExpression(r interface {
 	r.AddMatch([]byte("QUUX=xxxxx"))
 	r.AddMatch([]byte("QUUX=yyyyy"))
 	r.AddMatch([]byte("PIFF=paff"))
-	r.AddDisjunction()
+	if err := r.AddDisjunction(); err != nil {
+		return err
+	}
 	r.AddMatch([]byte("ONE=one"))
 	r.AddMatch([]byte("ONE=two"))
 	r.AddMatch([]byte("TWO=two"))
-	r.AddConjunction()
+	if err := r.AddConjunction(); err != nil {
+		return err
+	}
 	r.AddMatch([]byte("L4_1=yes"))
 	r.AddMatch([]byte("L4_1=ok"))
 	r.AddMatch([]byte("L4_2=yes"))
 	r.AddMatch([]byte("L4_2=ok"))
-	r.AddDisjunction()
+	if err := r.AddDisjunction(); err != nil {
+		return err
+	}
 	r.AddMatch([]byte("L3=yes"))
 	r.AddMatch([]byte("L3=ok"))
+	return nil
 }
 
 func TestReaderBinaryFields(t *testing.T) {

@@ -1,3 +1,5 @@
+//go:build cgo
+
 package main
 
 import (
@@ -72,8 +74,9 @@ func TestShowTailLimitZeroDoesNotScan(t *testing.T) {
 	}
 }
 
-func TestFormatTimestampPreservesFullUint64SourceRealtime(t *testing.T) {
+func TestFormatTimestampFallsBackForInvalidSourceRealtime(t *testing.T) {
 	entry := &journal.Entry{
+		Realtime: 1_700_000_000_000_000,
 		Fields: map[string][]byte{
 			"_SOURCE_REALTIME_TIMESTAMP": []byte("18446744073709551615"),
 		},
@@ -84,7 +87,7 @@ func TestFormatTimestampPreservesFullUint64SourceRealtime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("formatTimestamp error: %v", err)
 	}
-	if want := "586524-01-19T08:01:49.551615+00:00"; got != want {
+	if want := "2023-11-14T22:13:20.000000+00:00"; got != want {
 		t.Fatalf("formatTimestamp = %q, want %q", got, want)
 	}
 }
@@ -234,11 +237,11 @@ type trackingCLIJournal struct {
 	getEntryCalls int
 }
 
-func (j *trackingCLIJournal) Close() error    { return nil }
-func (j *trackingCLIJournal) AddMatch([]byte) {}
-func (j *trackingCLIJournal) AddDisjunction() {}
-func (j *trackingCLIJournal) AddConjunction() {}
-func (j *trackingCLIJournal) FlushMatches()   {}
+func (j *trackingCLIJournal) Close() error          { return nil }
+func (j *trackingCLIJournal) AddMatch([]byte)       {}
+func (j *trackingCLIJournal) AddDisjunction() error { return nil }
+func (j *trackingCLIJournal) AddConjunction() error { return nil }
+func (j *trackingCLIJournal) FlushMatches()         {}
 func (j *trackingCLIJournal) SeekHead() error {
 	j.seekHeadCalls++
 	return nil
@@ -247,9 +250,9 @@ func (j *trackingCLIJournal) SeekTail() error {
 	j.seekTailCalls++
 	return nil
 }
-func (j *trackingCLIJournal) SeekRealtimeUsec(uint64) error   { return nil }
-func (j *trackingCLIJournal) SeekCursor(string) error         { return nil }
-func (j *trackingCLIJournal) TestCursor(string) (bool, error) { return false, nil }
+func (j *trackingCLIJournal) SeekRealtimeUsec(uint64) error                       { return nil }
+func (j *trackingCLIJournal) SeekCursorDirection(string, journal.Direction) error { return nil }
+func (j *trackingCLIJournal) TestCursor(string) (bool, error)                     { return false, nil }
 func (j *trackingCLIJournal) Next() (int, error) {
 	j.nextCalls++
 	return 0, nil
@@ -538,7 +541,7 @@ func patchCompatibleFlags(t *testing.T, path string, flagsToSet uint32) {
 
 // -- SOW-0121 parser parity tests ----------------------------------
 //
-// Every official systemd v260.1 long option must be recognized by the
+// Every official systemd v262 long option must be recognized by the
 // parser. The set is enumerated by the shared manifest at
 // tests/parser-parity/v260-manifest.json and is duplicated here so the
 // parser contract is enforced by Go unit tests in addition to the
@@ -567,18 +570,29 @@ var officialOutputModes = []string{
 }
 
 func TestEveryOfficialLongOptionIsParsed(t *testing.T) {
-	for _, opt := range officialLongOptions {
-		// boolean-style options get a `=true` placeholder so the flag
-		// package does not try to consume the next positional.
-		argv := []string{"--" + opt, "true"}
-		err := parseOnlyForTest(argv)
-		if err != nil {
-			// flag.ErrHelp is a normal parser exit for --help; the
-			// parser still recognized the option.
-			if errors.Is(err, flag.ErrHelp) {
-				continue
+	samples := map[string]string{"output": "short", "since": "@0", "until": "@0", "priority": "3", "facility": "3", "lines": "1", "boot": "all", "invocation": "all", "interval": "1s", "vacuum-time": "1s", "vacuum-size": "1M", "vacuum-files": "1", "synchronize-on-exit": "false"}
+	for _, opt := range append(officialLongOptions, "introspect-cli") {
+		fs, _ := newCLIFlagSet(io.Discard)
+		flg := fs.Lookup(opt)
+		argv := []string{"--" + opt}
+		optional := opt == "boot" || opt == "lines" || opt == "case-sensitive"
+		takesValue := optional
+		if flg != nil {
+			b, ok := flg.Value.(interface{ IsBoolFlag() bool })
+			takesValue = takesValue || !ok || !b.IsBoolFlag()
+		}
+		if takesValue {
+			value, ok := samples[opt]
+			if !ok {
+				value = "placeholder"
 			}
-			t.Errorf("parser rejected official option --%s: %v", opt, err)
+			if opt == "case-sensitive" {
+				value = "true"
+			}
+			argv = append(argv, value)
+		}
+		if err := parseOnlyForTest(argv); err != nil {
+			t.Errorf("parser rejected %s: %v", opt, err)
 		}
 	}
 }
@@ -625,61 +639,31 @@ func TestParseLinesLimitValuePreservesSystemdDirection(t *testing.T) {
 	}
 }
 
-func TestOptionalArgumentPreprocessingMatchesSystemd(t *testing.T) {
-	fs, _ := newCLIFlagSet(io.Discard)
-	tests := []struct {
-		name string
-		args []string
-		want []string
+func TestOrderedOptionalArgumentsAndRequiredValues(t *testing.T) {
+	for _, tc := range []struct {
+		args              []string
+		boot, lines, grep string
+		wantError         bool
 	}{
-		{
-			name: "bare boot",
-			args: []string{"--boot", "TEST_ID=value"},
-			want: []string{"--boot=0", "TEST_ID=value"},
-		},
-		{
-			name: "explicit empty boot",
-			args: []string{"--boot="},
-			want: []string{"--boot="},
-		},
-		{
-			name: "short attached boot",
-			args: []string{"-ball"},
-			want: []string{"-b=all"},
-		},
-		{
-			name: "short equals boot keeps equals in value",
-			args: []string{"-b=true"},
-			want: []string{"-b==true"},
-		},
-		{
-			name: "bare lines",
-			args: []string{"--lines", "TEST_ID=value"},
-			want: []string{"--lines=10", "TEST_ID=value"},
-		},
-		{
-			name: "short attached lines",
-			args: []string{"-n5"},
-			want: []string{"-n=5"},
-		},
-		{
-			name: "short equals lines keeps equals in value",
-			args: []string{"-n=5"},
-			want: []string{"-n==5"},
-		},
-		{
-			name: "short cluster with value option",
-			args: []string{"-qrn2"},
-			want: []string{"-q", "-r", "-n=2"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := preprocessOptionalArgs(normalizeShortFlags(tt.args, fs))
-			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
-				t.Fatalf("preprocess = %#v, want %#v", got, tt.want)
-			}
-		})
+		{args: []string{"--boot", "TEST_ID=value"}, boot: "0"},
+		{args: []string{"-ball", "-n5"}, boot: "all", lines: "5"},
+		{args: []string{"--boot="}, wantError: true},
+		{args: []string{"-b=true"}, wantError: true},
+		{args: []string{"-n=5"}, wantError: true},
+		{args: []string{"--grep", "--help", "-rn2"}, grep: "--help", lines: "2"},
+		{args: []string{"--since=bad", "--help"}, wantError: true},
+	} {
+		fs, f := newCLIFlagSet(io.Discard)
+		_, terminal, err := parseCLIOptions(tc.args, fs, f, io.Discard)
+		if (err != nil) != tc.wantError {
+			t.Fatalf("%q: error=%v", tc.args, err)
+		}
+		if err != nil {
+			continue
+		}
+		if terminal || f.boot.value != tc.boot || f.linesFlag.value != tc.lines || *f.grepFlag != tc.grep {
+			t.Fatalf("%q: boot=%q lines=%q grep=%q terminal=%v", tc.args, f.boot.value, f.linesFlag.value, *f.grepFlag, terminal)
+		}
 	}
 }
 
@@ -691,7 +675,7 @@ func TestPortableUnsupportedMessageFormat(t *testing.T) {
 	}
 	for _, opt := range unsupported {
 		fs, flags := newCLIFlagSet(io.Discard)
-		if err := fs.Parse([]string{opt}); err != nil {
+		if err := parseFlagsForTest(fs, flags, []string{opt}); err != nil {
 			t.Fatalf("parse error for %s: %v", opt, err)
 		}
 		err := flags.validate()
@@ -709,7 +693,7 @@ func TestPortableUnsupportedForSourceOptions(t *testing.T) {
 	unsupported := []string{"--machine", "--root", "--image", "--namespace"}
 	for _, opt := range unsupported {
 		fs, flags := newCLIFlagSet(io.Discard)
-		if err := fs.Parse([]string{opt, "/dev/null"}); err != nil {
+		if err := parseFlagsForTest(fs, flags, []string{opt, "/dev/null"}); err != nil {
 			t.Fatalf("parse error for %s: %v", opt, err)
 		}
 		err := flags.validate()
@@ -725,7 +709,7 @@ func TestPortableUnsupportedForSourceOptions(t *testing.T) {
 
 func TestSourceExclusivityEnforced(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--directory=/tmp", "--file=/tmp/x.journal"}); err != nil {
+	if err := parseFlagsForTest(fs, flags, []string{"--directory=/tmp", "--file=/tmp/x.journal"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	err := flags.validate()
@@ -756,7 +740,7 @@ func TestResolveFileInputsDeduplicatesRepeatedPaths(t *testing.T) {
 
 func TestSinceUntilOrderEnforced(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{
+	if err := parseFlagsForTest(fs, flags, []string{
 		"--file=/tmp/x.journal",
 		"--since=2020-01-02",
 		"--until=2020-01-01",
@@ -774,7 +758,7 @@ func TestSinceUntilOrderEnforced(t *testing.T) {
 
 func TestFollowReverseConflictEnforced(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--file=/tmp/x.journal", "--follow", "--reverse"}); err != nil {
+	if err := parseFlagsForTest(fs, flags, []string{"--file=/tmp/x.journal", "--follow", "--reverse"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	err := flags.validate()
@@ -788,7 +772,7 @@ func TestFollowReverseConflictEnforced(t *testing.T) {
 
 func TestOldestLinesConflictAppliesOnlyToShowAction(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--file=/tmp/x.journal", "--lines=+1", "--reverse"}); err != nil {
+	if err := parseFlagsForTest(fs, flags, []string{"--file=/tmp/x.journal", "--lines=+1", "--reverse"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	if err := flags.validateParserInteractions(); err == nil {
@@ -796,7 +780,7 @@ func TestOldestLinesConflictAppliesOnlyToShowAction(t *testing.T) {
 	}
 
 	fs, flags = newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--file=/tmp/x.journal", "--list-boots", "--lines=+1", "--reverse"}); err != nil {
+	if err := parseFlagsForTest(fs, flags, []string{"--file=/tmp/x.journal", "--list-boots", "--lines=+1", "--reverse"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	if err := flags.validateParserInteractions(); err != nil {
@@ -832,25 +816,28 @@ func TestTimestampParserAcceptsStockISOTForms(t *testing.T) {
 }
 
 func TestDirectoryInputDoesNotOpenRegularFileAsFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "regular.journal")
-	if err := os.WriteFile(path, []byte("not-a-real-journal"), 0o644); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
+	path := writeCLIJournal(t, []cliEntry{{message: "regular-file", priority: "6"}})
 	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--file", path, "--output=cat"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("read regular-file control: %v", err)
+	}
+	if stdout.String() != "regular-file\n" {
+		t.Fatalf("unexpected regular-file control: %q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
 	err := run([]string{"--directory", path, "--output=cat"}, strings.NewReader(""), &stdout, &stderr)
 	if err == nil {
 		t.Fatalf("expected --directory regular file to fail")
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "not a directory") {
-		t.Fatalf("expected not-a-directory error, got: %v", err)
+	if stdout.Len() != 0 {
+		t.Fatalf("--directory rendered a regular file: %q", stdout.String())
 	}
 }
 
 func TestSynchronizeOnExitTrueIsRejected(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--synchronize-on-exit=true"}); err != nil {
+	if err := parseFlagsForTest(fs, flags, []string{"--synchronize-on-exit=true"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	err := flags.validate()
@@ -864,7 +851,7 @@ func TestSynchronizeOnExitTrueIsRejected(t *testing.T) {
 
 func TestSynchronizeOnExitFalseIsAccepted(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--synchronize-on-exit=false"}); err != nil {
+	if err := parseFlagsForTest(fs, flags, []string{"--synchronize-on-exit=false"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	if err := flags.validate(); err != nil {
@@ -874,7 +861,7 @@ func TestSynchronizeOnExitFalseIsAccepted(t *testing.T) {
 
 func TestVacuumWithoutDirectoryIsRejected(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--vacuum-size=1G"}); err != nil {
+	if err := parseFlagsForTest(fs, flags, []string{"--vacuum-size=1G"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	err := flags.validate()
@@ -888,7 +875,7 @@ func TestVacuumWithoutDirectoryIsRejected(t *testing.T) {
 
 func TestRotateWithVacuumIsDistinctUnsupportedAction(t *testing.T) {
 	fs, flags := newCLIFlagSet(io.Discard)
-	if err := fs.Parse([]string{"--rotate", "--vacuum-files=2"}); err != nil {
+	if err := parseFlagsForTest(fs, flags, []string{"--rotate", "--vacuum-files=2"}); err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
 	err := flags.validate()
@@ -954,7 +941,7 @@ func TestVersionPrintsBaselineMetadata(t *testing.T) {
 		t.Fatalf("run --version error: %v; stderr=%s", err, stderr.String())
 	}
 	banner := stdout.String()
-	if !strings.Contains(banner, "v260.1") || !strings.Contains(banner, "baseline") {
+	if !strings.Contains(banner, "v262") || !strings.Contains(banner, "CLI compatibility") {
 		t.Fatalf("expected version banner, got: %q", banner)
 	}
 }
@@ -982,23 +969,24 @@ func TestBootAllMergeIsNotRejectedAsConflict(t *testing.T) {
 }
 
 func TestUnrecognizedOptionIsRejected(t *testing.T) {
-	fs, _ := newCLIFlagSet(io.Discard)
-	err := fs.Parse([]string{"--not-an-official-option"})
+	fs, flags := newCLIFlagSet(io.Discard)
+	err := parseFlagsForTest(fs, flags, []string{"--not-an-official-option"})
 	if err == nil {
 		t.Fatalf("expected parse error for unknown option")
 	}
-	if !strings.Contains(err.Error(), "flag provided but not defined") {
+	if !strings.Contains(err.Error(), "unrecognized option") {
 		t.Fatalf("expected unknown flag error, got: %v", err)
 	}
 }
 
-// parseOnlyForTest parses argv through the flag set used by `run`.
-// It returns nil if the parser accepted every token. It does NOT run
-// validation or dispatch so unknown-class options can be tested in
-// isolation.
+func parseFlagsForTest(fs *flag.FlagSet, f *cliFlags, argv []string) error {
+	_, _, err := parseCLIOptions(argv, fs, f, io.Discard)
+	return err
+}
+
 func parseOnlyForTest(argv []string) error {
-	fs, _ := newCLIFlagSet(io.Discard)
-	return fs.Parse(permuteFlagArgs(preprocessOptionalArgs(normalizeShortFlags(argv, fs)), fs))
+	fs, f := newCLIFlagSet(io.Discard)
+	return parseFlagsForTest(fs, f, argv)
 }
 
 func archivedJournalNameForTest(seq uint64, realtime uint64) string {

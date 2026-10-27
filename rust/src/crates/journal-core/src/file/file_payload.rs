@@ -460,6 +460,7 @@ impl<M: MemoryMap> JournalFile<M> {
         let context = self.data_payload_read_context();
         let mut decompression_buffer = Vec::new();
         let mut object_offset = hash_table.hash_item_ref(hash).head_hash_offset;
+        let mut chain = super::chain_guard::ChainGuard::default();
 
         while let Some(offset) = object_offset {
             let result = self.data_lookup_result_at(
@@ -473,6 +474,7 @@ impl<M: MemoryMap> JournalFile<M> {
             if let Some(match_value) = result.match_value {
                 return Ok(Some((offset, match_value)));
             }
+            chain.advance(offset, result.next_hash_offset, false)?;
             object_offset = result.next_hash_offset;
         }
 

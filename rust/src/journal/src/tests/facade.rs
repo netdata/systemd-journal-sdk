@@ -3,6 +3,96 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[cfg(unix)]
+#[test]
+fn facade_native_paths_preserve_unix_names_and_options() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let source = dir.path().join("source/system.journal");
+    write_facade_test_journal(&source);
+    let native_dir = dir
+        .path()
+        .join(std::ffi::OsString::from_vec(b"parent-\xff".to_vec()));
+    std::fs::create_dir(&native_dir).expect("create native parent");
+    let path = native_dir.join(std::ffi::OsString::from_vec(b"name-\xfe.journal".to_vec()));
+    std::fs::copy(&source, &path).expect("copy native journal");
+    let decoy = PathBuf::from(path.to_string_lossy().as_ref());
+    write_facade_single_message_journal(&decoy, b"decoy", 9000);
+    let extra = dir.path().join("extra/system.journal");
+    write_single_entry_journal(&extra, 3, 5000, 21, b"MESSAGE=extra");
+    let options = ReaderOptions::snapshot();
+    let mut readers = vec![
+        (SdJournalOpenPath(&path, 0).expect("open native path"), 2),
+        (
+            SdJournalOpenFilePath(&path, 0).expect("open native file"),
+            2,
+        ),
+        (
+            SdJournalOpenFilePathWithOptions(&path, 0, options).expect("open native file options"),
+            2,
+        ),
+        (
+            SdJournalOpenDirectoryPath(&native_dir, 0).expect("open native directory"),
+            2,
+        ),
+        (
+            SdJournalOpenDirectoryPathWithOptions(&native_dir, 0, options)
+                .expect("open native directory options"),
+            2,
+        ),
+        (
+            SdJournalOpenFilePaths(&[path.clone(), path.clone()], 0)
+                .expect("deduplicate native paths"),
+            2,
+        ),
+        (
+            SdJournalOpenFilePathsWithOptions(&[path.clone(), extra], 0, options)
+                .expect("merge native paths"),
+            3,
+        ),
+    ];
+    for (reader, expected) in &mut readers {
+        let mut messages = Vec::new();
+        while reader.next().expect("advance native reader") != 0 {
+            messages.push(reader.get_entry().expect("read native entry").fields["MESSAGE"].clone());
+        }
+        assert_eq!(messages.len(), *expected);
+        assert_eq!(messages[0], b"first");
+        assert_eq!(messages[1], b"second");
+    }
+    for error in [
+        SdJournalOpenPath(&path, 1).err(),
+        SdJournalOpenFilePathWithOptions(&path, 1, options).err(),
+        SdJournalOpenDirectoryPathWithOptions(&native_dir, 1, options).err(),
+        SdJournalOpenFilePathsWithOptions(&[&path], 1, options).err(),
+    ] {
+        assert!(matches!(error, Some(FacadeError::Unsupported)));
+    }
+
+    let compressed_dir = native_dir.join("compressed");
+    std::fs::create_dir(&compressed_dir).expect("create compressed directory");
+    let compressed = compressed_dir.join(std::ffi::OsString::from_vec(
+        b"name-\xff.journal.zst".to_vec(),
+    ));
+    let source = std::fs::read(&source).expect("read source");
+    std::fs::write(
+        &compressed,
+        ruzstd::encoding::compress_to_vec(
+            source.as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        ),
+    )
+    .expect("write native compressed journal");
+    let mut reader = SdJournalOpenDirectoryPathWithOptions(&compressed_dir, 0, options)
+        .expect("discover native compressed journal");
+    assert_eq!(reader.next().expect("advance compressed reader"), 1);
+    assert_eq!(
+        reader.get_entry().expect("read compressed row").fields["MESSAGE"],
+        b"first"
+    );
+}
+
 #[test]
 fn facade_uncompressed_data_uses_mmap_payload_for_whole_file_reader() {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -1185,4 +1275,199 @@ fn assert_json_omits_lossy_raw_name(entry: &Entry, lossy_name: &str) {
         !json.contains_key(lossy_name),
         "JSON output must not invent lossy RAW field names"
     );
+}
+
+#[test]
+fn facade_cursor_getter_after_future_seek_reports_no_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("system.journal");
+    write_facade_test_journal(&path);
+    let readers = [
+        SdJournalOpenFilePath(&path, 0).unwrap(),
+        SdJournalOpenDirectoryPath(dir.path(), 0).unwrap(),
+    ];
+    for mut reader in readers {
+        assert_eq!(SdJournalNext(&mut reader).unwrap(), 1);
+        assert!(SdJournalGetCursor(&reader).is_ok());
+        SdJournalSeekCursor(&mut reader, "t=ffffffffffffff").unwrap();
+        assert!(matches!(
+            SdJournalGetCursor(&reader),
+            Err(crate::facade::Error::NoEntry)
+        ));
+    }
+}
+
+#[test]
+fn directional_cursor_native_boundaries() {
+    use journal_core::file::{EntryField, EntryWriteOptions};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("system.journal");
+    let (mut file, mut writer) = create_facade_test_writer(&path);
+    let sequence = uuid::Uuid::from_bytes(file.journal_header_ref().seqnum_id)
+        .simple()
+        .to_string();
+    let boots = [test_uuid(10), test_uuid(11), test_uuid(12)];
+    for i in 0..6u64 {
+        let time = if i == 3 { 1002 } else { 1000 + i };
+        let boot = boots[(i / 2) as usize];
+        let row = format!("ROW={i}");
+        let boot_field = format!("_BOOT_ID={}", boot.simple());
+        let message = if i % 2 == 1 {
+            b"MESSAGE=keep".as_slice()
+        } else {
+            b"MESSAGE=other".as_slice()
+        };
+        writer
+            .add_entry_fields_with_options(
+                &mut file,
+                [row.as_bytes(), message, boot_field.as_bytes()]
+                    .into_iter()
+                    .map(EntryField::Raw),
+                time,
+                i % 2 + 1,
+                EntryWriteOptions::default().boot_id(boot),
+            )
+            .unwrap();
+    }
+    file.sync().unwrap();
+    drop(file);
+    let cases = [
+        ("t=3ea".to_string(), Direction::Forward, "2", "3"),
+        ("t=3ea".to_string(), Direction::Backward, "3", "3"),
+        (
+            format!("s={sequence};i=1;t=3ed"),
+            Direction::Backward,
+            "0",
+            "",
+        ),
+        (
+            format!("s={sequence};i=ffffffff"),
+            Direction::Backward,
+            "5",
+            "5",
+        ),
+        (
+            format!("s={sequence};i=ffffffff"),
+            Direction::Forward,
+            "",
+            "",
+        ),
+        (
+            "s=ffffffffffffffffffffffffffffffff;i=3".into(),
+            Direction::Backward,
+            "5",
+            "5",
+        ),
+        (
+            "s=ffffffffffffffffffffffffffffffff;i=3;m=0".into(),
+            Direction::Backward,
+            "5",
+            "5",
+        ),
+        (
+            format!("b={};m=0", boots[1].simple()),
+            Direction::Backward,
+            "1",
+            "1",
+        ),
+        (
+            format!("b={};m=0", boots[1].simple()),
+            Direction::Forward,
+            "2",
+            "3",
+        ),
+        (
+            format!("b={};m=ffffffff", boots[1].simple()),
+            Direction::Forward,
+            "4",
+            "5",
+        ),
+        (
+            "b=ffffffffffffffffffffffffffffffff;m=0".into(),
+            Direction::Backward,
+            "",
+            "",
+        ),
+        (
+            "b=ffffffffffffffffffffffffffffffff;m=0;t=3ea".into(),
+            Direction::Backward,
+            "3",
+            "3",
+        ),
+    ];
+    for directory in [false, true] {
+        for filtered in [false, true] {
+            for (cursor, direction, raw, filtered_row) in &cases {
+                let mut reader = if directory {
+                    SdJournalOpenDirectoryPath(dir.path(), 0).unwrap()
+                } else {
+                    SdJournalOpenFilePath(&path, 0).unwrap()
+                };
+                if filtered {
+                    SdJournalAddMatch(&mut reader, b"MESSAGE=keep").unwrap();
+                }
+                SdJournalSeekCursorDirection(&mut reader, cursor, *direction).unwrap();
+                let want = if filtered { filtered_row } else { raw };
+                if want.is_empty() {
+                    assert!(
+                        matches!(
+                            SdJournalGetCursor(&reader),
+                            Err(crate::facade::Error::NoEntry)
+                        ),
+                        "{cursor} {direction:?} dir={directory} filter={filtered}"
+                    );
+                } else {
+                    let entry = SdJournalGetEntry(&mut reader).unwrap();
+                    assert_eq!(
+                        entry.fields["ROW"],
+                        want.as_bytes(),
+                        "{cursor} {direction:?} dir={directory} filter={filtered}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn directional_cursor_exact_sequence_overrides_boot_order() {
+    let dir = tempfile::tempdir().unwrap();
+    for (i, times) in [[1100, 1200], [1150, 1180]].into_iter().enumerate() {
+        let path = dir.path().join(format!("{i}.journal"));
+        let repo = RepoFile::from_path(&path).unwrap();
+        let boot = test_uuid(20 + i as u8);
+        let mut file = JournalFile::<MmapMut>::create(
+            &repo,
+            JournalFileOptions::new(test_uuid(1), boot, test_uuid(10 + i as u8)),
+        )
+        .unwrap();
+        let mut writer = JournalWriter::new(&mut file, 1, boot).unwrap();
+        for (n, time) in times.into_iter().enumerate() {
+            let message = format!("MESSAGE={i}-{n}");
+            let boot_field = format!("_BOOT_ID={}", boot.simple());
+            writer
+                .add_entry(
+                    &mut file,
+                    &[message.as_bytes(), boot_field.as_bytes()],
+                    time,
+                    n as u64 + 1,
+                )
+                .unwrap();
+        }
+        file.sync().unwrap();
+    }
+    let mut single = FileReader::open(dir.path().join("0.journal")).unwrap();
+    assert!(single.next().unwrap());
+    let cursor = single.get_cursor().unwrap();
+    let mut reader = DirectoryReader::open(dir.path()).unwrap();
+    reader
+        .seek_cursor_direction(&cursor, Direction::Forward)
+        .unwrap();
+    for want in ["0-0", "0-1"] {
+        assert_eq!(
+            reader.get_entry().unwrap().fields["MESSAGE"],
+            want.as_bytes()
+        );
+        assert_eq!(reader.next().unwrap(), want == "0-0");
+    }
 }

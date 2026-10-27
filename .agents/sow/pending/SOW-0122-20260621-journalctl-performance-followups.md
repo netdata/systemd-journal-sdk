@@ -4,7 +4,9 @@
 
 Status: open
 
-Sub-state: pending activation after SOW-0121 close.
+Sub-state: pending activation; prerequisite SOW-0121 is completed, including vacuum ordering. This separate
+scalability opportunity does not replace mandatory performance preservation in
+the user-requested SDK/journalctl workstreams prepared on 2026-10-14.
 
 ## Requirements
 
@@ -24,18 +26,24 @@ should be tracked before release-quality performance claims.
 
 Facts:
 
-- SOW-0121 brought Rust and Go file-backed `journalctl` correctness parity to
-  the shared stock-oracle parser, directory, and query matrices.
-- `--list-invocations` still derives invocation ranges by iterating matching
-  entries instead of using a more systemd-like indexed discovery path.
+- SOW-0121 passed its shared stock-oracle parser, directory, and query matrices
+  at its earlier close. New combinations failed the 2026-10-14 audit; the
+  originating SOW repaired those failures, then reopened for the 2026-10-26
+  CLI review findings, now corrected and independently reviewed.
+- SOW-0121's 2026-10-19 unit/invocation audit supersedes the old row-scan
+  description. Its provisional implementation enumerated indexed unique IDs
+  and reopened readers for unit-restricted bounds. That approximation had
+  confirmed correctness gaps. Its completed invocation repair delivers native directional
+  discovery, global ID bounds, reader reuse and performance evidence.
 - `--follow` uses portable polling over explicit file/directory inputs. That
   preserves non-Linux correctness and purity, but may be more expensive than a
   daemon-backed Linux journal wait path on very large inputs.
 
 Inferences:
 
-- These are performance and scalability risks, not observed SOW-0121
-  correctness regressions.
+- Broader input-size envelopes and portable polling costs are scalability
+  opportunities. Confirmed invocation correctness gaps and the performance of
+  their repairs were resolved in SOW-0121 and are not deferred here.
 - A production-grade release decision should either improve these paths or
   record measured evidence that the existing shape is acceptable for the target
   package.
@@ -50,8 +58,8 @@ Unknowns:
 
 - Measure `--list-invocations`, `--follow`, reverse output, and large
   file/directory selection on representative synthetic fixtures.
-- Replace entry-scan behavior with journal-native index/facade paths where the
-  journal format can answer the request safely and measurably faster.
+- Evaluate remaining large-input costs using journal-native index/facade paths
+  against SOW-0121's delivered indexed invocation baseline.
 - Preserve SOW-0121 parser and query parity results.
 - Record any intentionally retained slower path with measured cost and release
   implications.
@@ -67,8 +75,13 @@ Sources checked:
 
 Current state:
 
-- Correctness parity is validated by SOW-0121.
+- Earlier invocation correctness and performance repairs remain accepted.
+  SOW-0121 is completed after CLI review fixes, including reverse cursor seeking;
+  completed SOW-0159 owns the approved directional SDK primitives.
 - Performance work remains for invocation listing and follow scalability.
+- This SOW remains pending and is not a third active workstream in the new
+  two-SOW request. Broader optimizations here are not prerequisites for measuring
+  or preserving performance of fixes in SOW-0121 and SOW-0159.
 
 Risks:
 
@@ -82,9 +95,9 @@ Status: pending activation
 
 Problem / root-cause model:
 
-- Some portable CLI actions still use correctness-first row iteration or
-  polling where an optimized implementation should prefer journal-native
-  indexes, cursor seeks, and bounded state.
+- Portable polling and the large-input envelope need measurement after the
+  active correctness work. Activation must inspect the delivered indexed
+  implementation rather than assume the historical invocation algorithm.
 
 Evidence reviewed:
 
@@ -146,7 +159,8 @@ Artifact impact plan:
 
 Open-source reference evidence:
 
-- None checked yet. Activation should inspect `systemd/systemd` v260.1 paths
+- None checked yet in this pending SOW. Activation should inspect the CLI's
+  `systemd/systemd` v262 target paths
   for invocation listing and follow behavior.
 
 Open decisions:
@@ -199,6 +213,21 @@ Failure handling:
 
 - Created as the explicit follow-up mapping for SOW-0121 residual performance
   work.
+
+### 2026-10-14
+
+- Updated the dependency/reference after SOW-0121 regression reopening. The
+  user requires performance as-is or better for both requested workstreams;
+  their correctness and no-regression gates cannot be deferred to this SOW.
+- Kept broad invocation/follow scalability work pending without activation or
+  merging it into the two requested scopes.
+
+### 2026-10-19
+
+- Reconciled the historical invocation description with the confirmed native
+  correctness repair in SOW-0121. This SOW retains only broader envelope and
+  polling opportunities; it does not defer required behavior or performance
+  preservation and remains pending.
 
 ## Validation
 

@@ -56,8 +56,10 @@ metadata during the callback. Independent queries use separate snapshots.
 Context/control cancellation is checked between objects, chunks and payloads.
 One syscall or decompression is cooperative, not interruptible. Regular and
 compact layouts, historical unkeyed files and supported DATA compression work.
-Whole-file `.journal.zst` inputs use existing staging and incur full-file
-decompression at open; ordinary `.journal` files use bounded reader windows.
+Whole-file `.journal.zst` inputs use staging and incur complete-stream
+decompression at open, including concatenated and unknown-size frames; ordinary
+`.journal` files use bounded reader windows. See [[Reader-APIs|Reader APIs]] for
+compressed-input limits and errors.
 
 ## Go
 
@@ -128,6 +130,12 @@ cancellation. `visit_field` and `visit_entries` mirror the Go operations.
 Resources are released on drop.
 
 ## Integrity Before Recovery
+
+Unreleased ordinary readers recover an observed intact prefix by default and
+report tail loss separately from normal EOF. That policy also applies to
+ordinary readers with snapshot bounds. `IndexedSnapshot` capture retains strict
+validation and does not adopt the ordinary-reader recovery policy. See
+[[Reader-APIs|Reader APIs]] for status inspection and its limits.
 
 Snapshot capture checks local bounds and requested metadata; it does not
 certify every index edge. Its precondition is a valid native index graph.

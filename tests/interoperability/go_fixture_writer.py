@@ -59,7 +59,7 @@ def _render_go_mod() -> str:
         "require (\n"
         f"{requirements}\n"
         ")\n\n"
-        f"replace github.com/netdata/systemd-journal-sdk/go => {GO_MODULE_DIR}\n"
+        f"replace github.com/netdata/systemd-journal-sdk/go => {json.dumps(GO_MODULE_DIR.as_posix())}\n"
     )
 
 
@@ -96,6 +96,7 @@ type sealSpec struct {
 }
 
 type spec struct {
+	HeadSeqnum                uint64      `json:"head_seqnum"`
 	Path                      string      `json:"path"`
 	MachineID                 string      `json:"machine_id"`
 	BootID                    string      `json:"boot_id"`
@@ -167,6 +168,7 @@ func buildOptions(s spec) (journal.Options, error) {
 		MachineID:              machineID,
 		BootID:                 bootID,
 		SeqnumID:               seqnumID,
+		HeadSeqnum:             s.HeadSeqnum,
 		FileID:                 fileID,
 		Compact:                s.Compact,
 		Compression:            compression,
@@ -359,18 +361,6 @@ func appendEntry(w *journal.Writer, entry entrySpec) error {
 	return w.Append(fields, opts)
 }
 
-func appendAndSync(w *journal.Writer, entries []entrySpec) error {
-	for _, entry := range entries {
-		if err := appendEntry(w, entry); err != nil {
-			return err
-		}
-		if err := w.Sync(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func main() {
 	if len(os.Args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: livefixturewriter <spec.json>")
@@ -405,9 +395,12 @@ func main() {
 			_ = w.Close()
 		}
 	}()
-	if err := appendAndSync(w, s.Initial); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	// Initial history is complete before readers start; sync the batch once.
+	for _, entry := range s.Initial {
+		if err := appendEntry(w, entry); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 	if err := w.Sync(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -483,6 +476,7 @@ def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env.setdefault("GOPATH", str(local / "go"))
     if extra:
         env.update(extra)
+    env["CGO_ENABLED"] = "0"
     return env
 
 
@@ -510,6 +504,7 @@ def write_journal_file(
     boot_id: str,
     seqnum_id: str,
     entries: list[dict[str, Any]],
+    head_seqnum: int = 0,
     file_id: str = "",
     compact: bool = False,
     compression: str = "none",
@@ -543,6 +538,7 @@ def write_journal_file(
         "machine_id": machine_id,
         "boot_id": boot_id,
         "seqnum_id": seqnum_id,
+        "head_seqnum": head_seqnum,
         "file_id": file_id,
         "compact": compact,
         "compression": compression,

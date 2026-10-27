@@ -22,6 +22,18 @@ Upgrading from Rust `0.8.x`: `0.9.0` adds the `SdkError::Cancelled` and
 so code that matches every variant without a wildcard arm must handle the new
 variants.
 
+Unreleased reader hardening adds `JournalError::CyclicObjectChain`. Exhaustive
+matches must handle this variant. The lower-level `JournalObject::EXPECTED_TYPE`
+hint has a default, so existing custom object implementations can omit it.
+
+The same unreleased update advances `journal-engine`'s persisted index cache
+from generation 3 to 4. Old entries are invalidated, because earlier array
+traversal could cache incomplete or duplicate rows from a damaged file. Valid
+files rebuild on demand. Encountered required native-chain or posting failures
+now fail indexing; existing value-tolerance policies remain. Allow for that
+one-time rebuild cost for valid files after upgrade; cache-hit behavior and
+consumer namespaces stay the same.
+
 Use the lower-level packages only when the public package does not expose the
 type you need. For example, structured directory writes currently use
 `StructuredField` from `systemd-journal-sdk-log-writer`:
@@ -48,6 +60,8 @@ journal_host = { package = "systemd-journal-sdk-host", version = "0.10.0" }
 
 Use `FileReader` when the caller owns ordering and reads one journal file.
 
+Recovery diagnostics in this example require an unreleased source build.
+
 <!-- verify-example: lang=rust id=rust-read-one-file -->
 ```rust
 use journal::FileReader;
@@ -62,11 +76,30 @@ while reader.next()? {
         println!("{message}");
     }
 }
+let status = reader.recovery_status();
+if status.incomplete() {
+    println!("Observed tail loss at offset {}: recovered {}/{} entries",
+        status.first_lost_offset, status.recovered_entries, status.declared_entries);
+}
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 `get_entry()` materializes maps and owned payloads. It is convenient, but it is
 not the lowest-cost scan path.
+
+Ordinary readers in that source build return an intact prefix and normal EOF
+after observed tail loss.
+`RecoveryStatus` describes that observation; it is not an integrity certificate.
+File readers, directory readers and `SdJournal` expose `recovery_statuses()` for
+per-file diagnostics. See [[Reader-APIs|Reader APIs]] for error and
+strict-validation boundaries.
+
+Filtered movement returns the nearest match in the requested direction,
+including after reversing at EOF. A selected ENTRY load error preserves the
+last successful position, including directory and facade iteration. This does
+not promise to follow external reconstruction of damaged entries.
+Explicit filtered realtime seeks validate the posting slots they
+visit; see [[Reader-APIs|Reader APIs]] for the verification boundary.
 
 ## Scan Payloads With Minimal Work
 
@@ -184,7 +217,9 @@ For facade-style stateful enumeration, `FileReader` exposes
 state controls and `enumerate_unique_payload()` for multi-file de-duplicated
 payloads. These methods keep the same indexed FIELD/DATA-chain contract, so
 query setup and each enumeration step can fail independently if the journal
-contains damaged or undecompressible DATA. Directory-level unique enumeration
+contains damaged chains or undecompressible DATA. Discard incomplete aggregates
+after a failure; see [[Reader-APIs|Reader APIs]] for native-index and compressed
+input behavior. Directory-level unique enumeration
 builds an exact 8-entry per-open-reader LRU cache from per-file FIELD/DATA
 chains and reuses it for repeated queries or restarts while the already-open
 file set's header signatures stay unchanged. The entry count is bounded, but

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess  # nosec B404
 import sys
@@ -62,12 +63,13 @@ READERS = {
 }
 
 
-def run(cmd: list[str], *, cwd: Path = REPO_ROOT, timeout: int = 120, binary: bool = False) -> subprocess.CompletedProcess:
+def run(cmd: list[str], *, cwd: Path = REPO_ROOT, timeout: int = 120, binary: bool = False, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     return subprocess.run(  # nosec B603
         cmd,  # nosemgrep
         cwd=str(cwd),
+        env=env,
         text=None if binary else True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -102,7 +104,7 @@ def build_tools() -> dict[str, str]:
         "build go livewriter",
     )
     require_ok(
-        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go"),
+        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go", env={**os.environ, "CGO_ENABLED": "1"}),
         "build go journalctl",
     )
     require_ok(
@@ -114,12 +116,14 @@ def build_tools() -> dict[str, str]:
         "build rust journalctl",
     )
 
+    cargo_target = (REPO_ROOT / os.environ.get("CARGO_TARGET_DIR", "rust/target")).resolve()
     for src, dst in [
-        (REPO_ROOT / "rust/target/debug/livewriter", BIN_DIR / "rust-livewriter"),
-        (REPO_ROOT / "rust/target/debug/journalctl", BIN_DIR / "rust-journalctl"),
+        (cargo_target / "debug/livewriter", BIN_DIR / "rust-livewriter"),
+        (cargo_target / "debug/journalctl", BIN_DIR / "rust-journalctl"),
     ]:
-        if src.exists():
-            shutil.copy2(src, dst)
+        if not src.is_file():
+            raise RuntimeError(f"Cargo did not produce expected binary: {src}")
+        shutil.copy2(src, dst)
 
     for name in ["go-livewriter", "go-journalctl", "rust-livewriter", "rust-journalctl"]:
         path = BIN_DIR / name

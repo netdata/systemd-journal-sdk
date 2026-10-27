@@ -84,7 +84,9 @@ PRs run the release-helper tests; they do not publish anything.
   alignment, published dependency pins, installation examples, Go module path,
   release environment, and any existing release tags or package versions.
 - Runs the full Rust and Go suites using the compiler minimums declared by the
-  selected source. Go runs with CGO disabled.
+  selected source. Go SDK tests run with CGO disabled; separate Go CLI tests
+  enable CGO. CLI-inclusive Rust/Go checks install PCRE2 development files and
+  pkg-config on the CI runner. Publishing and SDK consumer builds remain pure.
 - Dry-runs and publishes serially: **common → registry → core → host →
   log-writer → index → engine → public SDK**. It waits for each uploaded version
   to appear in both the registry API and index before continuing.

@@ -1,19 +1,36 @@
+mod colors;
+mod file_glob;
+mod invocation;
+use invocation::{collect_invocations_from_input, resolve_invocation_filter};
 mod output;
+mod output_links;
+mod parser;
+mod pcre;
+mod terminal;
+mod timestamp;
+mod timestamp_zone;
+mod unit_name;
+mod unit_pattern;
+mod vacuum_metadata;
+mod vacuum_order;
 
 use anyhow::{Result, anyhow};
-use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
+use clap::builder::TypedValueParser;
 use clap::{Parser, ValueEnum};
 use journal::{
     Entry, FacadeError, FileHeader, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalFlushMatches,
-    SdJournalGetEntry, SdJournalNext, SdJournalOpenDirectory, SdJournalOpenFiles,
-    SdJournalPrevious, SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec,
-    SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
-    parse_match_string, verify_file, verify_file_with_key,
+    SdJournalGetCursor, SdJournalGetEntry, SdJournalNext, SdJournalOpenDirectoryPath,
+    SdJournalOpenFilePaths, SdJournalPrevious, SdJournalSeekCursorDirection, SdJournalSeekHead,
+    SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
+    SdJournalVisitUniqueValues, parse_match_bytes, parse_match_string, verify_file,
+    verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
+use std::cell::{Cell, OnceCell};
 use std::collections::{HashSet, VecDeque};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -87,7 +104,7 @@ const OUTPUT_MODE_HELP_LIST: &[&str] = &[
     "with-unit",
 ];
 
-const OFFICIAL_OPTION_SURFACE_HELP: &str = r#"Official systemd v260.1 option reference:
+const OFFICIAL_OPTION_SURFACE_HELP: &str = r#"Official systemd v262 option reference:
   --system                    Show system journals when host-backed; no-op for explicit files.
   --user                      Show user journals when host-backed; no-op for explicit files.
   -M, --machine=CONTAINER     Unsupported: requires host/container journal access.
@@ -201,11 +218,26 @@ fn unsupported_reason(name: &str) -> &'static str {
     }
 }
 
+type UnitSpecs = (Vec<Vec<u8>>, Vec<Vec<u8>>);
+
 #[derive(Parser, Debug)]
-#[command(name = "journalctl")]
-#[command(about = "Pure-Rust file-backed journalctl subset")]
+#[command(name = "journalctl", args_override_self = true)]
+#[command(about = "Portable file-backed journalctl")]
 #[command(after_help = OFFICIAL_OPTION_SURFACE_HELP)]
 struct Args {
+    #[arg(skip)]
+    action: Option<&'static str>,
+    #[arg(skip)]
+    unit_specs: OnceCell<std::result::Result<UnitSpecs, String>>,
+    #[arg(skip)]
+    unit_matches: OnceCell<std::result::Result<UnitSpecs, String>>,
+    #[arg(skip)]
+    resolved_invocation: OnceCell<std::result::Result<Option<String>, String>>,
+    #[arg(skip)]
+    since_usec: Option<u64>,
+    #[arg(skip)]
+    until_usec: Option<u64>,
+
     #[arg(short = 'i', long = "file")]
     file: Vec<PathBuf>,
     #[arg(short = 'D', long = "directory")]
@@ -246,14 +278,14 @@ struct Args {
     verify_only: bool,
     #[arg(long = "verify-key")]
     verify_key: Option<String>,
-    matches: Vec<String>,
+    matches: Vec<OsString>,
 
-    // Parser-recognized v260.1 options that the Rust CLI does not yet
+    // Parser-recognized v262 options that the Rust CLI does not yet
     // dispatch behavior for. They exist so the parser accepts every
     // official long option; downstream validation rejects the ones that
     // are intentionally unsupported in portable mode with a portable
     // unsupported message. This keeps the parser in lock-step with the
-    // shared v260.1 manifest under tests/parser-parity/.
+    // shared v262 manifest under tests/parser-parity/.
     #[arg(long = "system")]
     system: bool,
     #[arg(long = "user")]
@@ -269,34 +301,34 @@ struct Args {
     #[arg(long = "image-policy")]
     image_policy: Option<String>,
     #[arg(long = "namespace")]
-    namespace: Option<String>,
+    namespace: Option<OsString>,
 
     #[arg(short = 'c', long = "cursor")]
     cursor: Option<String>,
     #[arg(long = "after-cursor")]
     after_cursor: Option<String>,
-    #[arg(long = "cursor-file")]
+    #[arg(long = "cursor-file", value_parser = clap::builder::OsStringValueParser::new().map(PathBuf::from))]
     cursor_file: Option<PathBuf>,
     #[arg(long = "this-boot")]
     this_boot: bool,
     #[arg(short = 'u', long = "unit")]
-    unit: Vec<String>,
+    unit: Vec<OsString>,
     #[arg(long = "user-unit")]
-    user_unit: Vec<String>,
+    user_unit: Vec<OsString>,
     #[arg(long = "invocation")]
     invocation: Option<String>,
     #[arg(short = 'I')]
     invocation_latest: bool,
     #[arg(short = 't', long = "identifier")]
-    identifier: Vec<String>,
+    identifier: Vec<OsString>,
     #[arg(short = 'T', long = "exclude-identifier")]
-    exclude_identifier: Vec<String>,
+    exclude_identifier: Vec<OsString>,
     #[arg(short = 'p', long = "priority")]
     priority: Vec<String>,
     #[arg(long = "facility")]
     facility: Vec<String>,
     #[arg(short = 'g', long = "grep")]
-    grep: Option<String>,
+    grep: Option<OsString>,
     #[arg(long = "case-sensitive", num_args = 0..=1, default_missing_value = "true")]
     case_sensitive: Option<String>,
     #[arg(short = 'k', long = "dmesg")]
@@ -331,7 +363,7 @@ struct Args {
     #[arg(short = 'e', long = "pager-end")]
     pager_end: bool,
     #[arg(long = "output-fields")]
-    output_fields: Option<String>,
+    output_fields: Vec<OsString>,
 
     #[arg(long = "interval")]
     interval: Option<String>,
@@ -433,7 +465,9 @@ impl From<OutputModeArg> for OutputMode {
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("Error: {err}");
+        if !err.is::<SilentNoData>() {
+            eprintln!("Error: {err}");
+        }
         exit(1);
     }
 }
@@ -442,54 +476,29 @@ fn portable_unsupported(feature: &str, reason: &str) -> anyhow::Error {
     anyhow!("journalctl portable mode does not support {feature}: {reason}")
 }
 
-fn enforce_stock_invalid_short_equals(raw_args: &[String]) -> Result<()> {
-    for arg in raw_args.iter().skip(1) {
-        if arg == "--" {
-            break;
-        }
-        if arg.starts_with("-n=") {
-            let value = &arg[2..];
-            return Err(anyhow!("Failed to parse --lines='{value}'."));
-        }
-    }
-    Ok(())
-}
-
 fn run() -> Result<()> {
-    // nosemgrep: rust.lang.security.args.args -- CLI entry point parses argv; not an authorization boundary.
-    let raw_args: Vec<String> = std::env::args().collect();
-    enforce_stock_invalid_short_equals(&raw_args)?;
-    let full_width = resolve_full_width(&raw_args);
-    let args = Args::parse_from(preprocess_optional_boot_args(raw_args));
-    if matches!(args.output, OutputModeArg::Help) {
-        print_output_mode_help();
+    let Some(args) = parser::parse_cli(std::env::args_os().collect())? else {
         return Ok(());
-    }
-
-    // Enforce the v260.1 parser-required interaction rules. These run
+    };
+    let full_width = args.full;
+    // Enforce the v262 parser-required interaction rules. These run
     // before any dispatch so the user sees an explicit conflict error.
     enforce_source_exclusivity(&args)?;
-    enforce_since_until_order(&args.since, &args.until)?;
+    if let (Some(s), Some(u)) = (args.since_usec, args.until_usec) {
+        if s > u {
+            return Err(anyhow!("--since= must be before --until=."));
+        }
+    }
     enforce_cursor_source_exclusivity(&args)?;
     enforce_follow_reverse_conflict(&args)?;
     enforce_oldest_lines_conflict(&args)?;
     enforce_case_sensitive_value(&args)?;
     enforce_boot_descriptor_value(&args)?;
 
-    if args.version {
-        println!("journalctl (systemd-journal-sdk Rust rewrite)");
-        println!("baseline: systemd v260.1 (c0a5a2516d28)");
-        println!("portable file-backed mode");
-        return Ok(());
-    }
-
-    if facility_help_requested(&args.facility) {
-        print_facility_help(args.quiet);
-        return Ok(());
-    }
-
     enforce_action_argument_restriction(&args)?;
+    enforce_field_enumeration_scope(&args)?;
     enforce_boot_merge_conflict(&args)?;
+    let post_filters = CliPostFilters::from_args(&args)?;
     enforce_portable_unsupported(&args)?;
 
     // Portable utility actions that do not require a journal file:
@@ -532,122 +541,161 @@ fn run() -> Result<()> {
         return run_list_invocations(&input, &args);
     }
 
-    if args.verify || args.verify_only || args.verify_key.is_some() {
-        return run_verify_input(&input, args.verify_key.as_deref());
+    if args.verify || args.verify_only {
+        return run_verify_input(&input, args.verify_key.as_deref(), effective_quiet(&args));
     }
     if args.list_boots {
         return run_list_boots(&input, &args);
     }
 
-    let since_usec = parse_optional_timestamp(args.since.as_deref())?;
-    let until_usec = parse_optional_timestamp(args.until.as_deref())?;
-    let post_filters = CliPostFilters::from_args(&args)?;
+    let since_usec = args.since_usec;
+    let until_usec = args.until_usec;
     let cursor_control = CursorControl::from_args(&args)?;
     let output_options = OutputOptions::from_args(&args, full_width);
+    post_filters.capture_highlight.set(
+        (output_options.colors().enabled() || output_options.urlify())
+            && (matches!(args.output, OutputModeArg::Cat)
+                || output_uses_exclude_identifier(args.output)),
+    );
 
-    if args.follow {
-        let tail = parse_tail_count(args.tail.as_ref(), args.lines.as_deref()).unwrap_or(10);
+    if args.follow && is_show_action(&args) {
+        let (tail, all) = match parse_lines_limit(args.lines.as_deref())? {
+            Some(LinesLimit::All) => (0, true),
+            Some(LinesLimit::Tail(n) | LinesLimit::Head(n)) => (n, false),
+            None => match args.tail {
+                Some(n) => (n, false),
+                None if args.since.is_none() => (10, false),
+                None if args.pager_end => (1000, false),
+                None => (0, true),
+            },
+        };
         return run_follow(
             &input,
             &args,
             since_usec,
             until_usec,
             tail,
+            all || args.no_tail,
             &post_filters,
             &cursor_control,
             &output_options,
         );
     }
 
-    let mut journal = open_filtered_journal(&input, &args, None)?;
+    let result = (|| -> Result<()> {
+        let mut journal = open_filtered_journal(&input, &args, None)?;
 
-    if args.fields {
-        let mut fields =
-            SdJournalEnumerateFields(&mut journal).map_err(|err| anyhow!("fields: {err}"))?;
-        fields.sort();
-        for field in fields {
-            println!("{field}");
+        if args.fields {
+            let mut fields =
+                SdJournalEnumerateFields(&mut journal).map_err(|err| anyhow!("fields: {err}"))?;
+            fields.sort();
+            for field in fields {
+                println!("{field}");
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
 
-    if let Some(field) = args.field.as_deref() {
-        let mut stdout = std::io::stdout().lock();
-        SdJournalVisitUniqueValues(&mut journal, field, |value| {
-            stdout
-                .write_all(value)
-                .map_err(|err| FacadeError::Other(err.to_string()))?;
-            stdout
-                .write_all(b"\n")
-                .map_err(|err| FacadeError::Other(err.to_string()))?;
-            Ok(())
-        })
-        .map_err(|err| anyhow!("field: {err}"))?;
-        return Ok(());
-    }
+        if let Some(field) = args.field.as_deref() {
+            if !output::valid_field_name(field) {
+                return Err(anyhow!("Invalid field name: {field}"));
+            }
+            let limit = match parse_lines_limit(args.lines.as_deref())? {
+                Some(LinesLimit::Head(n) | LinesLimit::Tail(n)) => Some(n),
+                _ => None,
+            };
+            if limit == Some(0) {
+                return Ok(());
+            }
+            let mut count = 0usize;
+            let mut stopped_at_limit = false;
+            let mut stdout = std::io::stdout().lock();
+            let result = SdJournalVisitUniqueValues(&mut journal, field, |value| {
+                if limit == Some(count) {
+                    stopped_at_limit = true;
+                    return Err(FacadeError::Other("unique-limit".into()));
+                }
+                let value = value.split(|&b| b == 0).next().unwrap_or_default();
+                stdout
+                    .write_all(value)
+                    .map_err(|err| FacadeError::Other(err.to_string()))?;
+                stdout
+                    .write_all(b"\n")
+                    .map_err(|err| FacadeError::Other(err.to_string()))?;
+                count += 1;
+                Ok(())
+            });
+            if let Err(err) = result {
+                if !stopped_at_limit {
+                    return Err(anyhow!("field: {err}"));
+                }
+            }
+            return Ok(());
+        }
 
-    // If --lines is set, it acts as an alternative --head / --tail.
-    let grep_tail_reverse = grep_tail_implies_reverse(&args)?;
-    if let Some(limit) = parse_lines_limit(args.lines.as_deref())? {
-        return match limit {
-            LinesLimit::All => show_head_or_all_with_reverse(
-                &mut journal,
-                None,
-                since_usec,
-                until_usec,
-                args.reverse,
-                args.show_cursor,
-                effective_quiet(&args),
-                &post_filters,
-                &cursor_control,
-                &output_options,
-            ),
-            LinesLimit::Head(n) => show_head_or_all_with_reverse(
-                &mut journal,
-                Some(n),
-                since_usec,
-                until_usec,
-                false,
-                args.show_cursor,
-                effective_quiet(&args),
-                &post_filters,
-                &cursor_control,
-                &output_options,
-            ),
-            LinesLimit::Tail(n) => show_tail_with_reverse(
+        // If --lines is set, it acts as an alternative --head / --tail.
+        let grep_tail_reverse = grep_tail_implies_reverse(&args)?;
+        if let Some(limit) = parse_lines_limit(args.lines.as_deref())? {
+            return match limit {
+                LinesLimit::All => show_head_or_all_with_reverse(
+                    &mut journal,
+                    None,
+                    since_usec,
+                    until_usec,
+                    args.reverse,
+                    args.show_cursor,
+                    effective_quiet(&args),
+                    &post_filters,
+                    &cursor_control,
+                    &output_options,
+                ),
+                LinesLimit::Head(n) => show_head_or_all_with_reverse(
+                    &mut journal,
+                    Some(n),
+                    since_usec,
+                    until_usec,
+                    false,
+                    args.show_cursor,
+                    effective_quiet(&args),
+                    &post_filters,
+                    &cursor_control,
+                    &output_options,
+                ),
+                LinesLimit::Tail(n)
+                    if cursor_control.seek.is_some() && !args.reverse && !grep_tail_reverse =>
+                {
+                    show_head_or_all_with_reverse(
+                        &mut journal,
+                        Some(n),
+                        since_usec,
+                        until_usec,
+                        false,
+                        args.show_cursor,
+                        effective_quiet(&args),
+                        &post_filters,
+                        &cursor_control,
+                        &output_options,
+                    )
+                }
+                LinesLimit::Tail(n) => show_tail_with_reverse(
+                    &mut journal,
+                    n,
+                    since_usec,
+                    until_usec,
+                    args.reverse || grep_tail_reverse,
+                    args.show_cursor,
+                    effective_quiet(&args),
+                    &post_filters,
+                    &cursor_control,
+                    &output_options,
+                ),
+            };
+        }
+
+        let reverse = args.reverse;
+        if let Some(n) = args.tail {
+            show_tail_with_reverse(
                 &mut journal,
                 n,
-                since_usec,
-                until_usec,
-                args.reverse || grep_tail_reverse,
-                args.show_cursor,
-                effective_quiet(&args),
-                &post_filters,
-                &cursor_control,
-                &output_options,
-            ),
-        };
-    }
-
-    let reverse = args.reverse;
-    if let Some(n) = args.tail {
-        show_tail_with_reverse(
-            &mut journal,
-            n,
-            since_usec,
-            until_usec,
-            reverse,
-            args.show_cursor,
-            effective_quiet(&args),
-            &post_filters,
-            &cursor_control,
-            &output_options,
-        )
-    } else {
-        if args.pager_end && args.head.is_none() {
-            return show_tail_with_reverse(
-                &mut journal,
-                1000,
                 since_usec,
                 until_usec,
                 reverse,
@@ -656,33 +704,40 @@ fn run() -> Result<()> {
                 &post_filters,
                 &cursor_control,
                 &output_options,
-            );
+            )
+        } else {
+            if args.pager_end && args.head.is_none() {
+                return show_tail_with_reverse(
+                    &mut journal,
+                    1000,
+                    since_usec,
+                    until_usec,
+                    reverse || grep_tail_reverse,
+                    args.show_cursor,
+                    effective_quiet(&args),
+                    &post_filters,
+                    &cursor_control,
+                    &output_options,
+                );
+            }
+            show_head_or_all_with_reverse(
+                &mut journal,
+                args.head,
+                since_usec,
+                until_usec,
+                reverse,
+                args.show_cursor,
+                effective_quiet(&args),
+                &post_filters,
+                &cursor_control,
+                &output_options,
+            )
         }
-        show_head_or_all_with_reverse(
-            &mut journal,
-            args.head,
-            since_usec,
-            until_usec,
-            reverse,
-            args.show_cursor,
-            effective_quiet(&args),
-            &post_filters,
-            &cursor_control,
-            &output_options,
-        )
+    })();
+    if result.is_ok() && is_show_action(&args) && args.grep.is_some() && !post_filters.shown.get() {
+        return Err(SilentNoData.into());
     }
-}
-
-fn resolve_full_width(args: &[String]) -> bool {
-    let mut full_width = true;
-    for arg in args {
-        match arg.as_str() {
-            "--no-full" => full_width = false,
-            "--full" | "-l" => full_width = true,
-            _ => {}
-        }
-    }
-    full_width
+    result
 }
 
 fn print_output_mode_help() {
@@ -714,15 +769,11 @@ impl CliInput {
 
     fn open_journal(&self) -> Result<SdJournal> {
         match self {
-            Self::Directory(path) => SdJournalOpenDirectory(&path.to_string_lossy(), 0)
-                .map_err(|err| anyhow!("open: {err}")),
+            Self::Directory(path) => {
+                SdJournalOpenDirectoryPath(path, 0).map_err(|err| anyhow!("open: {err}"))
+            }
             Self::Files(paths) => {
-                let strings: Vec<String> = paths
-                    .iter()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .collect();
-                let refs: Vec<&str> = strings.iter().map(String::as_str).collect();
-                SdJournalOpenFiles(&refs, 0).map_err(|err| anyhow!("open: {err}"))
+                SdJournalOpenFilePaths(paths, 0).map_err(|err| anyhow!("open: {err}"))
             }
         }
     }
@@ -747,7 +798,7 @@ fn resolve_file_inputs(values: &[PathBuf]) -> Result<Vec<PathBuf>> {
                 "stdin-backed journals require seekable mmap-capable file descriptors and are not supported in portable mode",
             ));
         }
-        let matches = expand_glob_path(value);
+        let matches = file_glob::expand(value)?;
         if matches.is_empty() {
             push_unique_file(&mut files, &mut seen, value.clone());
         } else {
@@ -764,87 +815,6 @@ fn push_unique_file(files: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path:
     if seen.insert(key) {
         files.push(path);
     }
-}
-
-fn expand_glob_path(pattern: &Path) -> Vec<PathBuf> {
-    let pattern_text = pattern.to_string_lossy();
-    if !is_glob_pattern(&pattern_text) {
-        return Vec::new();
-    }
-
-    let mut prefixes = Vec::<PathBuf>::new();
-    for component in pattern.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => {
-                prefixes = vec![PathBuf::from(prefix.as_os_str())];
-            }
-            std::path::Component::RootDir => {
-                if prefixes.is_empty() {
-                    prefixes.push(PathBuf::from(std::path::MAIN_SEPARATOR.to_string()));
-                } else {
-                    for prefix in &mut prefixes {
-                        prefix.push(std::path::MAIN_SEPARATOR.to_string());
-                    }
-                }
-            }
-            std::path::Component::CurDir => {
-                if prefixes.is_empty() {
-                    prefixes.push(PathBuf::from("."));
-                } else {
-                    for prefix in &mut prefixes {
-                        prefix.push(".");
-                    }
-                }
-            }
-            std::path::Component::ParentDir => {
-                if prefixes.is_empty() {
-                    prefixes.push(PathBuf::from(".."));
-                } else {
-                    for prefix in &mut prefixes {
-                        prefix.push("..");
-                    }
-                }
-            }
-            std::path::Component::Normal(component) => {
-                if prefixes.is_empty() {
-                    prefixes.push(PathBuf::new());
-                }
-                let component_pattern = component.to_string_lossy();
-                if is_glob_pattern(&component_pattern) {
-                    let mut next = Vec::new();
-                    for prefix in &prefixes {
-                        let dir = if prefix.as_os_str().is_empty() {
-                            Path::new(".")
-                        } else {
-                            prefix.as_path()
-                        };
-                        let Ok(entries) = fs::read_dir(dir) else {
-                            continue;
-                        };
-                        for entry in entries.flatten() {
-                            let name = entry.file_name();
-                            let name_text = name.to_string_lossy();
-                            if name_text.starts_with('.') && !component_pattern.starts_with('.') {
-                                continue;
-                            }
-                            if glob_pattern_matches(&component_pattern, &name_text) {
-                                let mut path = prefix.clone();
-                                path.push(name);
-                                next.push(path);
-                            }
-                        }
-                    }
-                    prefixes = next;
-                } else {
-                    for prefix in &mut prefixes {
-                        prefix.push(component);
-                    }
-                }
-            }
-        }
-    }
-    prefixes.sort();
-    prefixes
 }
 
 fn effective_quiet(args: &Args) -> bool {
@@ -867,9 +837,9 @@ enum LinesLimit {
     Tail(usize),
 }
 
-/// Parse `--lines=[+]N` per the v260.1 grammar.
+/// Parse `--lines=[+]N` per the v262 grammar.
 /// Bare `--lines` is normalized to the official default tail count, 10.
-/// Explicit empty `--lines=` is invalid, matching systemd v260.1.
+/// Explicit empty `--lines=` is invalid, matching systemd v262.
 fn parse_lines_limit(value: Option<&str>) -> Result<Option<LinesLimit>> {
     let Some(value) = value else {
         return Ok(None);
@@ -885,25 +855,16 @@ fn parse_lines_limit(value: Option<&str>) -> Result<Option<LinesLimit>> {
     } else {
         (false, value)
     };
-    let n: usize = stripped
-        .parse()
-        .map_err(|_| anyhow!("Failed to parse --lines='{value}'."))?;
+    let n =
+        parse_native_i32(stripped).ok_or_else(|| anyhow!("Failed to parse --lines='{value}'."))?;
+    if n < 0 {
+        return Err(anyhow!("Failed to parse --lines='{value}'."));
+    }
+    let n = n as usize;
     if oldest {
         Ok(Some(LinesLimit::Head(n)))
     } else {
         Ok(Some(LinesLimit::Tail(n)))
-    }
-}
-
-/// Resolve the effective tail count for follow mode. Honors `--tail` first,
-/// then `--lines`. Returns `None` if neither was supplied.
-fn parse_tail_count(tail: Option<&usize>, lines: Option<&str>) -> Option<usize> {
-    if let Some(n) = tail {
-        return Some(*n);
-    }
-    match parse_lines_limit(lines).ok().flatten() {
-        Some(LinesLimit::Tail(n) | LinesLimit::Head(n)) => Some(n),
-        Some(LinesLimit::All) | None => None,
     }
 }
 
@@ -912,9 +873,51 @@ fn grep_tail_implies_reverse(args: &Args) -> Result<bool> {
         return Ok(false);
     }
     let Some(limit) = parse_lines_limit(args.lines.as_deref())? else {
-        return Ok(false);
+        return Ok(args.pager_end);
     };
     Ok(matches!(limit, LinesLimit::Tail(_)))
+}
+
+fn parse_native_number(value: &str) -> Option<(u64, bool)> {
+    let mut value = value.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let mut base = 0;
+    if value.starts_with("0b") || value.starts_with("0B") {
+        base = 2;
+    } else if value.starts_with("0o") || value.starts_with("0O") {
+        base = 8;
+    }
+    if base != 0 {
+        value = value[2..].trim_start_matches(|c: char| c.is_ascii_whitespace());
+    }
+    let negative = value.starts_with('-');
+    value = value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .unwrap_or(value);
+    if base == 0 {
+        base = 10;
+        if value.starts_with("0x") || value.starts_with("0X") {
+            base = 16;
+            value = &value[2..];
+        } else if value.starts_with('0') {
+            base = 8;
+        }
+    }
+    if value.starts_with('+') || value.starts_with('-') {
+        return None;
+    }
+    Some((u64::from_str_radix(value, base).ok()?, negative))
+}
+
+fn parse_native_i32(value: &str) -> Option<i32> {
+    let (number, negative) = parse_native_number(value)?;
+    let number = i64::try_from(number).ok()?;
+    i32::try_from(if negative { -number } else { number }).ok()
+}
+
+fn parse_native_u64(value: &str) -> Option<u64> {
+    let (number, negative) = parse_native_number(value)?;
+    (!negative || number == 0).then_some(number)
 }
 
 #[derive(Debug, Clone)]
@@ -1005,17 +1008,6 @@ fn enforce_source_exclusivity(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn enforce_since_until_order(since: &Option<String>, until: &Option<String>) -> Result<()> {
-    let since_usec = parse_optional_timestamp(since.as_deref())?;
-    let until_usec = parse_optional_timestamp(until.as_deref())?;
-    if let (Some(s), Some(u)) = (since_usec, until_usec) {
-        if s > u {
-            return Err(anyhow!("--since= must be before --until=."));
-        }
-    }
-    Ok(())
-}
-
 fn enforce_cursor_source_exclusivity(args: &Args) -> Result<()> {
     let mut count = 0;
     if args.cursor.is_some() {
@@ -1063,6 +1055,9 @@ fn enforce_oldest_lines_conflict(args: &Args) -> Result<()> {
 }
 
 fn is_show_action(args: &Args) -> bool {
+    if let Some(action) = args.action {
+        return action == "show";
+    }
     !args.version
         && !args.new_id128
         && !args.fields
@@ -1122,11 +1117,14 @@ fn enforce_action_argument_restriction(args: &Args) -> Result<()> {
     }
     Err(anyhow!(
         "Extraneous arguments starting with '{}'",
-        args.matches[0]
+        args.matches[0].to_string_lossy()
     ))
 }
 
 fn action_rejects_arguments(args: &Args) -> bool {
+    if let Some(action) = args.action {
+        return !matches!(action, "show" | "list-catalog" | "dump-catalog");
+    }
     args.new_id128
         || args.setup_keys
         || args.update_catalog
@@ -1188,7 +1186,7 @@ fn enforce_portable_unsupported(args: &Args) -> Result<()> {
     if args.flush {
         return Err(portable_unsupported("--flush", unsupported_reason("flush")));
     }
-    if args.rotate && has_vacuum_flags(args) {
+    if args.action == Some("rotate-and-vacuum") || args.rotate && has_vacuum_flags(args) {
         return Err(portable_unsupported(
             "--rotate with --vacuum-*",
             "official rotate-and-vacuum action requires journald rotation; portable mode can only vacuum explicit directories without rotation",
@@ -1251,64 +1249,6 @@ fn enforce_portable_unsupported(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn preprocess_optional_boot_args<I>(args: I) -> Vec<String>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut input = args.into_iter().peekable();
-    let mut out = Vec::new();
-    while let Some(arg) = input.next() {
-        if arg == "--boot" || arg == "-b" {
-            if let Some(next) = input.peek() {
-                if looks_like_boot_descriptor(next) {
-                    let next = input.next().unwrap();
-                    out.push(format!("{arg}={next}"));
-                    continue;
-                }
-            }
-            out.push(format!("{arg}=0"));
-            continue;
-        }
-        if arg == "--lines" || arg == "-n" {
-            if let Some(next) = input.peek() {
-                if looks_like_lines_descriptor(next) {
-                    let next = input.next().unwrap();
-                    out.push(format!("{arg}={next}"));
-                    continue;
-                }
-            }
-            out.push(format!("{arg}=10"));
-            continue;
-        }
-        out.push(arg);
-    }
-    out
-}
-
-fn looks_like_boot_descriptor(value: &str) -> bool {
-    value == "all"
-        || value.parse::<isize>().is_ok()
-        || parse_boot_id_prefix(value)
-            .map(|id| {
-                let consumed = if value.as_bytes().get(8) == Some(&b'-') {
-                    36
-                } else {
-                    32
-                };
-                let rest = &value[consumed..];
-                !id.is_empty() && (rest.is_empty() || rest.parse::<isize>().is_ok())
-            })
-            .unwrap_or(false)
-}
-
-fn looks_like_lines_descriptor(value: &str) -> bool {
-    if value == "all" {
-        return true;
-    }
-    let value = value.strip_prefix('+').unwrap_or(value);
-    !value.is_empty() && value.parse::<usize>().is_ok()
-}
-
 fn open_filtered_journal(
     input: &CliInput,
     args: &Args,
@@ -1317,6 +1257,7 @@ fn open_filtered_journal(
     let mut journal = input.open_journal()?;
     if let Some(invocation_id) = resolve_invocation_filter(input, args)? {
         add_invocation_matches(&mut journal, &invocation_id)?;
+        apply_non_unit_matches(&mut journal, args)?;
     } else {
         apply_boot_match(&mut journal, args, boot_descriptor_override)?;
         apply_cli_matches(&mut journal, args)?;
@@ -1333,10 +1274,10 @@ fn run_verify(path: &Path, verify_key: Option<&str>) -> Result<()> {
     } else {
         CliInput::Files(vec![path.to_path_buf()])
     };
-    run_verify_input(&input, verify_key)
+    run_verify_input(&input, verify_key, false)
 }
 
-fn run_verify_input(input: &CliInput, verify_key: Option<&str>) -> Result<()> {
+fn run_verify_input(input: &CliInput, verify_key: Option<&str>, quiet: bool) -> Result<()> {
     if verify_key.is_some_and(|key| !valid_verification_key(key)) {
         eprintln!("Failed to parse seed.");
         return Err(anyhow!("failed to parse seed"));
@@ -1369,7 +1310,11 @@ fn run_verify_input(input: &CliInput, verify_key: Option<&str>) -> Result<()> {
 
         if sealed && verify_key.is_some() {
             match verify_file_with_key(file, verify_key.unwrap()) {
-                Ok(()) => eprintln!("PASS: {}", file.display()),
+                Ok(()) => {
+                    if !quiet {
+                        eprintln!("PASS: {}", file.display());
+                    }
+                }
                 Err(err) => {
                     eprintln!("FAIL: {} ({err})", file.display());
                     if first_err.is_none() {
@@ -1402,7 +1347,9 @@ fn run_verify_input(input: &CliInput, verify_key: Option<&str>) -> Result<()> {
             }
             continue;
         }
-        eprintln!("PASS: {}", file.display());
+        if !quiet {
+            eprintln!("PASS: {}", file.display());
+        }
     }
 
     match first_err {
@@ -1418,12 +1365,12 @@ fn is_file_sealed(path: &Path) -> Result<bool> {
 
 fn is_journal_file_name(path: &Path) -> bool {
     path.file_name()
-        .and_then(|name| name.to_str())
+        .map(|name| name.as_encoded_bytes())
         .is_some_and(|name| {
-            name.ends_with(".journal")
-                || name.ends_with(".journal~")
-                || name.ends_with(".journal.zst")
-                || name.ends_with(".journal~.zst")
+            name.ends_with(b".journal")
+                || name.ends_with(b".journal~")
+                || name.ends_with(b".journal.zst")
+                || name.ends_with(b".journal~.zst")
         })
 }
 
@@ -1518,7 +1465,7 @@ struct VacuumOptions {
 #[derive(Debug, Clone)]
 struct VacuumCandidate {
     path: PathBuf,
-    name: String,
+    name: OsString,
     usage: u64,
     seqnum_id: [u8; 16],
     seqnum: u64,
@@ -1527,6 +1474,9 @@ struct VacuumCandidate {
 }
 
 fn has_vacuum_flags(args: &Args) -> bool {
+    if let Some(action) = args.action {
+        return matches!(action, "vacuum" | "rotate-and-vacuum");
+    }
     args.vacuum_size.is_some() || args.vacuum_files.is_some() || args.vacuum_time.is_some()
 }
 
@@ -1549,10 +1499,8 @@ fn parse_vacuum_options(args: &Args) -> Result<VacuumOptions> {
         None => 0,
     };
     let max_files = match args.vacuum_files.as_deref() {
-        Some(value) => value
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| anyhow!("failed to parse --vacuum-files value: {value}"))?,
+        Some(value) => parse_native_u64(value)
+            .ok_or_else(|| anyhow!("failed to parse --vacuum-files value: {value}"))?,
         None => 0,
     };
     let max_retention_usec = match args.vacuum_time.as_deref() {
@@ -1568,29 +1516,53 @@ fn parse_vacuum_options(args: &Args) -> Result<VacuumOptions> {
 }
 
 fn parse_vacuum_size(value: &str) -> Result<u64> {
-    let re = Regex::new(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$")?;
-    let captures = re
-        .captures(value)
-        .ok_or_else(|| anyhow!("failed to parse --vacuum-size value: {value}"))?;
-    let number = captures[1].parse::<f64>()?;
-    let unit = captures
-        .get(2)
-        .map(|m| m.as_str().to_ascii_lowercase())
-        .unwrap_or_default();
-    let multiplier = match unit.as_str() {
-        "" | "b" | "byte" | "bytes" => 1_u64,
-        "k" | "kb" | "kib" => 1024,
-        "m" | "mb" | "mib" => 1024_u64.pow(2),
-        "g" | "gb" | "gib" => 1024_u64.pow(3),
-        "t" | "tb" | "tib" => 1024_u64.pow(4),
-        "p" | "pb" | "pib" => 1024_u64.pow(5),
-        "e" | "eb" | "eib" => 1024_u64.pow(6),
-        _ => return Err(anyhow!("failed to parse --vacuum-size value: {value}")),
-    };
-    if number < 0_f64 || number > u64::MAX as f64 / multiplier as f64 {
-        return Err(anyhow!("failed to parse --vacuum-size value: {value}"));
+    fn parse(value: &str) -> Option<u64> {
+        const UNITS: [&str; 8] = ["E", "P", "T", "G", "M", "K", "B", ""];
+        const FACTORS: [u64; 8] = [1 << 60, 1 << 50, 1 << 40, 1 << 30, 1 << 20, 1 << 10, 1, 1];
+        let mut remaining = value;
+        let mut first_unit = 0;
+        let mut total = 0_u64;
+        loop {
+            remaining = remaining.trim_start_matches([' ', '\t', '\n', '\r']);
+            if remaining.starts_with('-') {
+                return None;
+            }
+            let number = remaining.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+            let negative = number.starts_with('-');
+            let number = number.strip_prefix(['+', '-']).unwrap_or(number);
+            let end = number.bytes().take_while(u8::is_ascii_digit).count();
+            let mut whole = number[..end].parse::<u64>().ok()?;
+            if negative {
+                whole = whole.wrapping_neg();
+            }
+            remaining = &number[end..];
+            let mut fraction = 0.0;
+            if let Some(rest) = remaining.strip_prefix('.') {
+                let end = rest.bytes().take_while(u8::is_ascii_digit).count();
+                if end > 0 {
+                    fraction = rest[..end].parse::<u64>().ok()? as f64;
+                    for _ in 0..end {
+                        fraction /= 10.0;
+                    }
+                }
+                remaining = &rest[end..];
+            }
+            remaining = remaining.trim_start_matches([' ', '\t', '\n', '\r']);
+            let unit = (first_unit..UNITS.len()).find(|&i| remaining.starts_with(UNITS[i]))?;
+            let factor = FACTORS[unit];
+            let ceiling = whole.checked_add(u64::from(fraction > 0.0))?;
+            if ceiling > u64::MAX / factor {
+                return None;
+            }
+            total = total.checked_add(whole * factor + (fraction * factor as f64) as u64)?;
+            remaining = &remaining[UNITS[unit].len()..];
+            if remaining.is_empty() {
+                return Some(total);
+            }
+            first_unit = unit + 1;
+        }
     }
-    Ok((number * multiplier as f64) as u64)
+    parse(value).ok_or_else(|| anyhow!("failed to parse --vacuum-size value: {value}"))
 }
 
 fn vacuum_directory(dir: &Path, opts: VacuumOptions, quiet: bool) -> Result<()> {
@@ -1610,7 +1582,8 @@ fn vacuum_directory(dir: &Path, opts: VacuumOptions, quiet: bool) -> Result<()> 
             Ok(entry) => entry,
             Err(_) => continue,
         };
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let native_name = entry.file_name();
+        let name = native_name.to_string_lossy();
         let path = entry.path();
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() => metadata,
@@ -1663,15 +1636,17 @@ fn vacuum_directory(dir: &Path, opts: VacuumOptions, quiet: bool) -> Result<()> 
         sum = sum.saturating_add(usage);
     }
 
-    candidates.sort_by(vacuum_candidate_cmp);
     let retention_limit = if opts.max_retention_usec > 0 {
         current_realtime_usec().saturating_sub(opts.max_retention_usec)
     } else {
         0
     };
+    patch_vacuum_creation_times(&mut candidates, &opts, retention_limit, sum, active_files);
+    let candidate_count = candidates.len();
+    let order = vacuum_order::VacuumOrder::new(&mut candidates);
 
-    for (idx, candidate) in candidates.iter().enumerate() {
-        let left = active_files.saturating_add((candidates.len() - idx) as u64);
+    for (idx, candidate) in order.enumerate() {
+        let left = active_files.saturating_add((candidate_count - idx) as u64);
         if (opts.max_retention_usec == 0 || candidate.realtime >= retention_limit)
             && (opts.max_use == 0 || sum <= opts.max_use)
             && (opts.max_files == 0 || left <= opts.max_files)
@@ -1687,7 +1662,7 @@ fn vacuum_directory(dir: &Path, opts: VacuumOptions, quiet: bool) -> Result<()> 
                     eprintln!(
                         "Deleted archived journal {}/{} ({}).",
                         dir.display(),
-                        candidate.name,
+                        candidate.name.to_string_lossy(),
                         format_journal_bytes(candidate.usage)
                     );
                 }
@@ -1697,7 +1672,7 @@ fn vacuum_directory(dir: &Path, opts: VacuumOptions, quiet: bool) -> Result<()> 
                 eprintln!(
                     "Failed to delete archived journal {}/{}: {err}",
                     dir.display(),
-                    candidate.name
+                    candidate.name.to_string_lossy()
                 );
             }
             Err(_) => {}
@@ -1736,8 +1711,8 @@ fn parse_vacuum_candidate(
         };
         return (
             Some(VacuumCandidate {
+                name: path.file_name().unwrap_or_default().to_os_string(),
                 path,
-                name: name.to_owned(),
                 usage,
                 seqnum_id,
                 seqnum,
@@ -1756,8 +1731,8 @@ fn parse_vacuum_candidate(
         };
         return (
             Some(VacuumCandidate {
+                name: path.file_name().unwrap_or_default().to_os_string(),
                 path,
-                name: name.to_owned(),
                 usage,
                 seqnum_id: [0u8; 16],
                 seqnum: 0,
@@ -1777,23 +1752,6 @@ fn parse_id128_hex(value: &str) -> Result<[u8; 16]> {
         .map_err(|_| anyhow!("failed to parse id128"))
 }
 
-fn vacuum_candidate_cmp(a: &VacuumCandidate, b: &VacuumCandidate) -> std::cmp::Ordering {
-    if a.have_seqno && b.have_seqno && a.seqnum_id == b.seqnum_id {
-        return a.seqnum.cmp(&b.seqnum);
-    }
-    match a.realtime.cmp(&b.realtime) {
-        std::cmp::Ordering::Equal => {}
-        order => return order,
-    }
-    if a.have_seqno && b.have_seqno {
-        match a.seqnum_id.cmp(&b.seqnum_id) {
-            std::cmp::Ordering::Equal => {}
-            order => return order,
-        }
-    }
-    a.name.cmp(&b.name)
-}
-
 fn vacuum_journal_file_empty(path: &Path, metadata: &fs::Metadata) -> Result<bool> {
     if metadata.len() < JOURNAL_HEADER_SIZE {
         return Ok(true);
@@ -1811,7 +1769,18 @@ fn open_vacuum_candidate(path: &Path) -> Result<fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        let flags = libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+        #[cfg(target_os = "linux")]
+        let flags = flags | libc::O_NOATIME;
+        opts.custom_flags(flags);
+        #[cfg(target_os = "linux")]
+        match opts.open(path) {
+            Ok(file) => return Ok(file),
+            Err(_) => {
+                // Native retries when preserving atime is unavailable to the caller.
+                opts.custom_flags(flags & !libc::O_NOATIME);
+            }
+        }
     }
     opts.open(path)
         .map_err(|err| anyhow!("vacuum: open {}: {err}", path.display()))
@@ -1822,6 +1791,38 @@ fn patch_vacuum_realtime(candidate: &mut VacuumCandidate, metadata: &fs::Metadat
         if usec > 0 && usec < candidate.realtime {
             candidate.realtime = usec;
         }
+    }
+    candidate.realtime = vacuum_metadata::oldest_realtime(metadata, candidate.realtime);
+}
+
+fn patch_vacuum_creation_times(
+    candidates: &mut [VacuumCandidate],
+    opts: &VacuumOptions,
+    retention_limit: u64,
+    usage: u64,
+    active_files: u64,
+) {
+    let Some(first) = candidates.first() else {
+        return;
+    };
+    if retention_limit == 0
+        && (opts.max_use == 0 || usage <= opts.max_use)
+        && (opts.max_files == 0
+            || active_files.saturating_add(candidates.len() as u64) <= opts.max_files)
+    {
+        return;
+    }
+    let sequence_only = first.have_seqno
+        && candidates
+            .iter()
+            .all(|candidate| candidate.have_seqno && candidate.seqnum_id == first.seqnum_id);
+    for candidate in candidates {
+        // A shared sequence ID fixes order; only unresolved age can need I/O.
+        if sequence_only && (retention_limit == 0 || candidate.realtime < retention_limit) {
+            continue;
+        }
+        candidate.realtime =
+            vacuum_metadata::creation_realtime(&candidate.path, candidate.realtime);
     }
 }
 
@@ -1856,7 +1857,12 @@ fn run_header_input(input: &CliInput) -> Result<()> {
 fn print_header(path: &Path, header: &FileHeader, disk_usage: u64) -> Result<()> {
     let data_buckets = header.data_hash_table_size / HASH_ITEM_SIZE;
     let field_buckets = header.field_hash_table_size / HASH_ITEM_SIZE;
-    println!("File path: {}", path.display());
+    {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(b"File path: ")?;
+        stdout.write_all(path.as_os_str().as_encoded_bytes())?;
+        stdout.write_all(b"\n")?;
+    }
     println!("File ID: {}", hex::encode(header.file_id));
     println!("Machine ID: {}", hex::encode(header.machine_id));
     println!("Boot ID: {}", hex::encode(header.tail_entry_boot_id));
@@ -1939,12 +1945,19 @@ fn print_header(path: &Path, header: &FileHeader, disk_usage: u64) -> Result<()>
 fn run_list_boots(input: &CliInput, args: &Args) -> Result<()> {
     let mut journal = input.open_journal()?;
     let boots = collect_boots(&mut journal)?;
-    if boots.is_empty() {
-        return Err(anyhow!("No boot found."));
-    }
     let rows = select_boot_rows(&boots, args)?;
+    if rows.is_empty() {
+        return Err(no_data_error(effective_quiet(args), "No boot found."));
+    }
+    if is_json_output(args.output) {
+        let rows: Vec<_> = rows.iter().map(|row| serde_json::json!({
+            "index": row.index, "boot_id": row.boot_id,
+            "first_entry": table_timestamp(row.first_entry), "last_entry": table_timestamp(row.last_entry),
+        })).collect();
+        return print_json_table(args.output, &rows);
+    }
     if !args.quiet {
-        println!("IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY");
+        print!("{}", colors::Colors::detect().table_header("BOOT ID"));
     }
     let index_width = if args.quiet {
         rows.iter()
@@ -1969,12 +1982,22 @@ fn run_list_boots(input: &CliInput, args: &Args) -> Result<()> {
 
 fn run_list_invocations(input: &CliInput, args: &Args) -> Result<()> {
     let invocations = collect_invocations_from_input(input, args, Some("--list-invocations"))?;
-    if invocations.is_empty() {
-        return Err(anyhow!("No invocation ID found."));
-    }
     let rows = select_invocation_rows(&invocations, args)?;
+    if rows.is_empty() {
+        return Err(no_data_error(
+            effective_quiet(args),
+            "No invocation ID found.",
+        ));
+    }
+    if is_json_output(args.output) {
+        let rows: Vec<_> = rows.iter().map(|(index, row)| serde_json::json!({
+            "index": index, "invocation_id": row.id,
+            "first_entry": table_timestamp(row.first_usec), "last_entry": table_timestamp(row.last_usec),
+        })).collect();
+        return print_json_table(args.output, &rows);
+    }
     if !args.quiet {
-        println!("IDX INVOCATION ID                    FIRST ENTRY                 LAST ENTRY");
+        print!("{}", colors::Colors::detect().table_header("INVOCATION ID"));
     }
     let quiet_index_width = if args.quiet {
         rows.iter()
@@ -2249,22 +2272,28 @@ fn is_hex(b: u8) -> bool {
     b.is_ascii_hexdigit()
 }
 
-fn apply_matches(journal: &mut SdJournal, matches: &[String]) -> Result<()> {
+fn apply_matches(journal: &mut SdJournal, matches: &[OsString]) -> Result<()> {
     for item in matches {
-        if item == "+" {
+        if item.as_encoded_bytes() == b"+" {
             SdJournalAddDisjunction(journal).map_err(|err| anyhow!("add disjunction: {err}"))?;
             continue;
         }
-        let data =
-            parse_match_string(item).map_err(|err| anyhow!("invalid match {item}: {err}"))?;
+        let data = parse_match_bytes(item.as_encoded_bytes())
+            .map_err(|err| anyhow!("invalid match {}: {err}", item.to_string_lossy()))?;
         SdJournalAddMatch(journal, &data).map_err(|err| anyhow!("add match: {err}"))?;
     }
     Ok(())
 }
 
-fn validate_path_match_arguments(matches: &[String]) -> Result<()> {
+fn validate_path_match_arguments(matches: &[OsString]) -> Result<()> {
+    for (i, arg) in matches.iter().enumerate() {
+        if arg == "+" && (i == 0 || i + 1 == matches.len() || matches[i - 1] == "+") {
+            return Err(anyhow!("\"+\" can only be used between terms."));
+        }
+    }
+
     for item in matches {
-        if item != "+" && !item.contains('=') {
+        if item != "+" && !item.as_encoded_bytes().contains(&b'=') {
             return Err(portable_unsupported(
                 "path match argument",
                 "portable mode supports FIELD=VALUE matches and '+' disjunctions only; path matches require host filesystem metadata inspection",
@@ -2320,13 +2349,6 @@ fn add_match_pair(journal: &mut SdJournal, field: &str, value: &str) -> Result<(
     Ok(())
 }
 
-fn add_match_group(journal: &mut SdJournal, pairs: &[(&str, &str)]) -> Result<()> {
-    for (field, value) in pairs {
-        add_match_pair(journal, field, value)?;
-    }
-    Ok(())
-}
-
 fn add_unit_disjunction(journal: &mut SdJournal) -> Result<()> {
     SdJournalAddDisjunction(journal).map_err(|err| anyhow!("add unit disjunction: {err}"))
 }
@@ -2345,11 +2367,6 @@ fn current_uid_string() -> Option<String> {
     {
         None
     }
-}
-
-fn add_impossible_match(journal: &mut SdJournal, reason: &str) -> Result<()> {
-    add_match_pair(journal, "__JOURNALCTL_NEVER_MATCH", reason)?;
-    add_unit_conjunction(journal)
 }
 
 fn effective_boot_descriptor(args: &Args) -> Option<&str> {
@@ -2387,57 +2404,88 @@ fn apply_boot_match(
     Ok(())
 }
 
-fn add_journalctl_unit_matches(
-    journal: &mut SdJournal,
-    system_units: &[String],
-    user_units: &[String],
-) -> Result<()> {
+fn add_unit_match_group(journal: &mut SdJournal, pairs: &[(&str, &[u8])]) -> Result<()> {
+    for (field, value) in pairs {
+        let mut payload = format!("{field}=").into_bytes();
+        payload.extend_from_slice(value);
+        SdJournalAddMatch(journal, &payload)?;
+    }
+    Ok(())
+}
+
+fn add_journalctl_unit_matches(journal: &mut SdJournal, args: &Args) -> Result<()> {
+    if args.unit.is_empty() && args.user_unit.is_empty() {
+        return Ok(());
+    }
+    // Follow retains the initial wildcard expansion, like native journalctl.
+    let (system_units, user_units) = args
+        .unit_matches
+        .get_or_init(|| {
+            (|| -> Result<UnitSpecs> {
+                let (system, user) = effective_unit_specs(args)?;
+                let expanded_system = expand_unit_specs(journal, system, SYSTEM_UNIT_FIELDS_FULL)?;
+                let expanded_user = expand_unit_specs(journal, user, USER_UNIT_FIELDS_FULL)?;
+                if (!system.is_empty() || !user.is_empty())
+                    && expanded_system.is_empty()
+                    && expanded_user.is_empty()
+                {
+                    return Err(anyhow!("Failed to add filter for units: No data available"));
+                }
+                Ok((expanded_system, expanded_user))
+            })()
+            .map_err(|err| err.to_string())
+        })
+        .as_ref()
+        .map_err(|err| anyhow!("{err}"))?;
     if system_units.is_empty() && user_units.is_empty() {
         return Ok(());
     }
 
-    let mut added = false;
-    let system_units = expand_unit_specs(journal, system_units, SYSTEM_UNIT_FIELDS_FULL)?;
-    for unit in &system_units {
-        add_system_unit_match_groups(journal, unit)?;
-        added = true;
+    for unit in system_units {
+        add_system_unit_match_groups(journal, unit, true)?;
     }
 
-    let user_units = expand_unit_specs(journal, user_units, USER_UNIT_FIELDS_FULL)?;
     let uid = current_uid_string();
-    for unit in &user_units {
-        add_user_unit_match_groups(journal, unit, uid.as_deref())?;
-        added = true;
+    for unit in user_units {
+        add_user_unit_match_groups(journal, unit, uid.as_deref(), true)?;
     }
 
-    if added {
-        add_unit_conjunction(journal)
-    } else {
-        add_impossible_match(journal, "unit-glob")
-    }
+    add_unit_conjunction(journal)
 }
 
-fn add_system_unit_match_groups(journal: &mut SdJournal, unit: &str) -> Result<()> {
-    add_match_group(journal, &[("_SYSTEMD_UNIT", unit)])?;
+fn add_system_unit_match_groups(journal: &mut SdJournal, unit: &[u8], full: bool) -> Result<()> {
+    add_unit_match_group(journal, &[("_SYSTEMD_UNIT", unit)])?;
     add_unit_disjunction(journal)?;
 
-    add_match_group(
+    add_unit_match_group(
         journal,
-        &[("_SYSTEMD_CGROUP", "/init.scope"), ("UNIT", unit)],
+        &[
+            ("_SYSTEMD_CGROUP", b"/init.scope".as_slice()),
+            ("UNIT", unit),
+        ],
     )?;
     add_unit_disjunction(journal)?;
 
-    add_match_group(journal, &[("_UID", "0"), ("OBJECT_SYSTEMD_UNIT", unit)])?;
+    add_unit_match_group(
+        journal,
+        &[("_UID", b"0".as_slice()), ("OBJECT_SYSTEMD_UNIT", unit)],
+    )?;
     add_unit_disjunction(journal)?;
 
-    add_match_group(
+    if !full {
+        return Ok(());
+    }
+    add_unit_match_group(
         journal,
-        &[("MESSAGE_ID", COREDUMP_MESSAGE_ID), ("COREDUMP_UNIT", unit)],
+        &[
+            ("MESSAGE_ID", COREDUMP_MESSAGE_ID.as_bytes()),
+            ("COREDUMP_UNIT", unit),
+        ],
     )?;
 
-    if unit.ends_with(".slice") {
+    if unit.ends_with(b".slice") {
         add_unit_disjunction(journal)?;
-        add_match_group(journal, &[("_SYSTEMD_SLICE", unit)])?;
+        add_unit_match_group(journal, &[("_SYSTEMD_SLICE", unit)])?;
     }
 
     add_unit_disjunction(journal)
@@ -2445,8 +2493,9 @@ fn add_system_unit_match_groups(journal: &mut SdJournal, unit: &str) -> Result<(
 
 fn add_user_unit_match_groups(
     journal: &mut SdJournal,
-    unit: &str,
+    unit: &[u8],
     uid: Option<&str>,
+    full: bool,
 ) -> Result<()> {
     add_user_unit_match_group(journal, &[("_SYSTEMD_USER_UNIT", unit)], uid, false)?;
     add_unit_disjunction(journal)?;
@@ -2457,9 +2506,12 @@ fn add_user_unit_match_groups(
     add_user_unit_match_group(journal, &[("OBJECT_SYSTEMD_USER_UNIT", unit)], uid, true)?;
     add_unit_disjunction(journal)?;
 
+    if !full {
+        return Ok(());
+    }
     add_user_unit_match_group(journal, &[("COREDUMP_USER_UNIT", unit)], uid, true)?;
 
-    if unit.ends_with(".slice") {
+    if unit.ends_with(b".slice") {
         add_unit_disjunction(journal)?;
         add_user_unit_match_group(journal, &[("_SYSTEMD_USER_SLICE", unit)], uid, false)?;
     }
@@ -2469,11 +2521,11 @@ fn add_user_unit_match_groups(
 
 fn add_user_unit_match_group(
     journal: &mut SdJournal,
-    pairs: &[(&str, &str)],
+    pairs: &[(&str, &[u8])],
     uid: Option<&str>,
     include_root_uid: bool,
 ) -> Result<()> {
-    add_match_group(journal, pairs)?;
+    add_unit_match_group(journal, pairs)?;
     if let Some(uid) = uid {
         add_match_pair(journal, "_UID", uid)?;
         if include_root_uid {
@@ -2485,16 +2537,16 @@ fn add_user_unit_match_group(
 
 fn expand_unit_specs(
     journal: &mut SdJournal,
-    specs: &[String],
+    specs: &[Vec<u8>],
     fields: &[&str],
-) -> Result<Vec<String>> {
+) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut patterns = Vec::new();
 
     for spec in specs {
-        let unit = mangle_unit_name(spec);
-        if is_glob_pattern(&unit) {
+        let unit = spec.clone();
+        if unit.iter().any(|c| b"*?[".contains(c)) {
             patterns.push(unit);
         } else if seen.insert(unit.clone()) {
             out.push(unit);
@@ -2505,15 +2557,15 @@ fn expand_unit_specs(
         return Ok(out);
     }
 
+    let mut matcher = unit_pattern::Matcher::new(&patterns)?;
     for field in fields {
         SdJournalVisitUniqueValues(journal, field, |value| {
-            let value = String::from_utf8_lossy(value);
-            if patterns
-                .iter()
-                .any(|pattern| glob_pattern_matches(pattern, &value))
-                && seen.insert(value.to_string())
-            {
-                out.push(value.to_string());
+            let value = value.split(|c| *c == 0).next().unwrap_or_default();
+            if matcher.matches(value) {
+                let value = value.to_vec();
+                if seen.insert(value.clone()) {
+                    out.push(value);
+                }
             }
             Ok(())
         })
@@ -2523,74 +2575,122 @@ fn expand_unit_specs(
     Ok(out)
 }
 
-fn mangle_unit_name(value: &str) -> String {
-    let value = value.trim();
-    if UNIT_SUFFIXES.iter().any(|suffix| value.ends_with(suffix)) {
-        value.to_string()
-    } else {
-        format!("{value}.service")
-    }
-}
-
+#[cfg(any(
+    test,
+    not(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))
+))]
 fn is_glob_pattern(value: &str) -> bool {
     value.contains(['*', '?', '['])
 }
 
-fn glob_pattern_matches(pattern: &str, value: &str) -> bool {
-    Regex::new(&glob_pattern_to_regex(pattern)).is_ok_and(|regex| regex.is_match(value))
-}
-
+#[cfg(any(
+    test,
+    not(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))
+))]
 fn glob_pattern_to_regex(pattern: &str) -> String {
-    let mut out = String::from("^");
-    let mut chars = pattern.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
+    let mut out = String::from("(?s)^");
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
             '*' => out.push_str(".*"),
             '?' => out.push('.'),
             '[' => {
-                let mut class = String::from("[");
-                let mut closed = false;
-                if chars
-                    .peek()
-                    .is_some_and(|next| *next == '!' || *next == '^')
-                {
-                    chars.next();
-                    class.push('^');
+                let mut end = i + 1;
+                if end < chars.len() && matches!(chars[end], '!' | '^') {
+                    end += 1;
                 }
-                while let Some(next) = chars.next() {
-                    class.push(next);
-                    if next == ']' {
-                        closed = true;
-                        break;
+                if end < chars.len() && chars[end] == ']' {
+                    end += 1;
+                }
+                while end < chars.len() && chars[end] != ']' {
+                    if chars[end] == '['
+                        && end + 1 < chars.len()
+                        && matches!(chars[end + 1], ':' | '.')
+                    {
+                        let mut k = end + 2;
+                        while k + 1 < chars.len()
+                            && !(chars[k] == chars[end + 1] && chars[k + 1] == ']')
+                        {
+                            k += 1;
+                        }
+                        if k + 1 < chars.len() {
+                            end = k + 2;
+                            continue;
+                        }
                     }
+                    end += 1;
                 }
-                if closed {
-                    out.push_str(&class);
-                } else {
+                if end == chars.len() {
                     out.push_str("\\[");
-                    out.push_str(&regex::escape(&class[1..]));
+                } else {
+                    out.push('[');
+                    let mut start = i + 1;
+                    if matches!(chars[start], '!' | '^') {
+                        out.push('^');
+                        start += 1;
+                    }
+                    let mut k = start;
+                    while k < end {
+                        if chars[k] == '[' && k + 1 < end && matches!(chars[k + 1], ':' | '.') {
+                            let marker = chars[k + 1];
+                            let mut n = k + 2;
+                            while n + 1 < end && !(chars[n] == marker && chars[n + 1] == ']') {
+                                n += 1;
+                            }
+                            if n + 1 < end {
+                                if marker == ':' {
+                                    out.extend(&chars[k..n + 2]);
+                                } else {
+                                    if n != k + 3 {
+                                        return "[".into();
+                                    }
+                                    if r"\[]^-".contains(chars[k + 2]) {
+                                        out.push('\\');
+                                    }
+                                    out.push(chars[k + 2]);
+                                }
+                                k = n + 2;
+                                continue;
+                            }
+                        }
+                        let c = chars[k];
+                        if matches!(c, '\\' | ']' | '[') {
+                            out.push('\\');
+                        }
+                        out.push(c);
+                        k += 1;
+                    }
+                    out.push(']');
+                    i = end;
                 }
             }
-            _ => out.push_str(&regex::escape(&ch.to_string())),
+            c => out.push_str(&regex::escape(&c.to_string())),
         }
+        i += 1;
     }
     out.push('$');
     out
 }
 
 fn apply_cli_matches(journal: &mut SdJournal, args: &Args) -> Result<()> {
-    let (system_units, user_units) = effective_unit_specs(args);
-    add_journalctl_unit_matches(journal, &system_units, &user_units)?;
+    add_journalctl_unit_matches(journal, args)?;
+    apply_non_unit_matches(journal, args)
+}
 
+fn apply_non_unit_matches(journal: &mut SdJournal, args: &Args) -> Result<()> {
     if args.dmesg {
         add_field_matches(journal, "_TRANSPORT", ["kernel"])?;
     }
     if !args.identifier.is_empty() {
-        add_field_matches(
-            journal,
-            "SYSLOG_IDENTIFIER",
-            args.identifier.iter().map(String::as_str),
-        )?;
+        for value in &args.identifier {
+            let mut data = b"SYSLOG_IDENTIFIER=".to_vec();
+            data.extend_from_slice(value.as_encoded_bytes());
+            SdJournalAddMatch(journal, &data)
+                .map_err(|err| anyhow!("add identifier match: {err}"))?;
+        }
+        SdJournalAddConjunction(journal)
+            .map_err(|err| anyhow!("add identifier conjunction: {err}"))?;
     }
 
     let priorities = parse_priority_filter(&args.priority)?;
@@ -2609,63 +2709,123 @@ fn apply_cli_matches(journal: &mut SdJournal, args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn effective_unit_specs(args: &Args) -> (Vec<String>, Vec<String>) {
-    let mut system_units = args.unit.clone();
-    let mut user_units = args.user_unit.clone();
-    if args.user && !system_units.is_empty() {
-        user_units.extend(std::mem::take(&mut system_units));
+fn raw_unit_specs(args: &Args) -> (Vec<OsString>, Vec<OsString>) {
+    let mut system = args.unit.clone();
+    let mut user = args.user_unit.clone();
+    if args.user && !args.system {
+        for value in system.drain(..) {
+            if !user.contains(&value) {
+                user.push(value);
+            }
+        }
     }
-    (system_units, user_units)
+    (system, user)
+}
+
+fn effective_unit_specs(args: &Args) -> Result<&UnitSpecs> {
+    args.unit_specs
+        .get_or_init(|| {
+            let (system, user) = raw_unit_specs(args);
+            let normalize = |values: Vec<OsString>| -> Result<Vec<Vec<u8>>> {
+                values
+                    .iter()
+                    .map(|value| {
+                        let (name, escaped) = unit_name::normalize(value.as_encoded_bytes())?;
+                        if let Some(escaped) = escaped.filter(|_| !args.quiet) {
+                            let mut diagnostic = b"Invalid unit name \"".to_vec();
+                            diagnostic.extend_from_slice(value.as_encoded_bytes());
+                            diagnostic.extend_from_slice(b"\" escaped as \"");
+                            diagnostic.extend_from_slice(escaped.as_bytes());
+                            diagnostic
+                                .extend_from_slice(b"\" (maybe you should use systemd-escape?).\n");
+                            let _ = std::io::stderr().lock().write_all(&diagnostic);
+                        }
+                        Ok(name.into_bytes())
+                    })
+                    .collect()
+            };
+            (|| Ok((normalize(system)?, normalize(user)?)))()
+                .map_err(|e: anyhow::Error| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| anyhow!("{e}"))
 }
 
 #[derive(Debug)]
 struct CliPostFilters {
-    grep: Option<Regex>,
-    exclude_identifiers: std::collections::HashSet<String>,
+    grep: Option<pcre::Pattern>,
+    shown: Cell<bool>,
+    exclude_identifiers: std::collections::HashSet<Vec<u8>>,
+    capture_highlight: Cell<bool>,
+    highlight: Cell<colors::MatchRange>,
+    buffered_highlights: std::cell::RefCell<VecDeque<colors::MatchRange>>,
 }
 
 impl CliPostFilters {
     fn from_args(args: &Args) -> Result<Self> {
         let exclude_identifiers = if output_uses_exclude_identifier(args.output) {
-            args.exclude_identifier.iter().cloned().collect()
+            args.exclude_identifier
+                .iter()
+                .map(|value| value.as_encoded_bytes().to_vec())
+                .collect()
         } else {
             std::collections::HashSet::new()
         };
         Ok(Self {
             grep: compile_grep_filter(args.grep.as_deref(), args.case_sensitive.as_deref())?,
             exclude_identifiers,
+            shown: Cell::new(false),
+            capture_highlight: Cell::new(false),
+            highlight: Cell::new(colors::MatchRange::default()),
+            buffered_highlights: std::cell::RefCell::new(VecDeque::new()),
         })
     }
 
-    fn matches(&self, entry: &Entry) -> bool {
-        if let Some(regex) = &self.grep {
-            let mut matched = false;
-            for_each_entry_value(entry, "MESSAGE", |value| {
-                if regex.is_match(&String::from_utf8_lossy(value)) {
-                    matched = true;
-                }
-            });
-            if !matched {
-                return false;
+    fn matches(&self, entry: &Entry) -> Result<bool> {
+        let Some(pattern) = &self.grep else {
+            return Ok(true);
+        };
+        let value = entry
+            .field_values
+            .get("MESSAGE")
+            .and_then(|v| v.first().map(Vec::as_slice))
+            .or_else(|| entry.fields.get("MESSAGE").map(Vec::as_slice));
+        match value {
+            Some(value) if self.capture_highlight.get() => {
+                let mut highlight = colors::MatchRange::default();
+                let matched = pattern.match_with_highlight(value, &mut highlight)?;
+                self.highlight.set(highlight);
+                Ok(matched)
+            }
+            Some(value) => pattern.matches(value),
+            None => Ok(false),
+        }
+    }
+
+    fn buffer_highlight(&self) {
+        if self.capture_highlight.get() && self.grep.is_some() {
+            self.buffered_highlights
+                .borrow_mut()
+                .push_back(self.highlight.get());
+        }
+    }
+
+    fn restore_highlight(&self) {
+        if self.capture_highlight.get() {
+            if let Some(highlight) = self.buffered_highlights.borrow_mut().pop_front() {
+                self.highlight.set(highlight);
             }
         }
-        true
     }
 
     fn excludes_entry(&self, entry: &Entry) -> bool {
         if self.exclude_identifiers.is_empty() {
             return false;
         }
-        let mut excluded = false;
-        for_each_entry_value(entry, "SYSLOG_IDENTIFIER", |value| {
-            if self
-                .exclude_identifiers
-                .contains(&String::from_utf8_lossy(value).into_owned())
-            {
-                excluded = true;
-            }
-        });
-        excluded
+        output::last_value_for_name(entry, "SYSLOG_IDENTIFIER").is_some_and(|value| {
+            self.exclude_identifiers
+                .contains(value.split(|&b| b == 0).next().unwrap_or_default())
+        })
     }
 }
 
@@ -2684,37 +2844,19 @@ fn output_uses_exclude_identifier(mode: OutputModeArg) -> bool {
     )
 }
 
-fn for_each_entry_value<F>(entry: &Entry, field: &str, mut visitor: F)
-where
-    F: FnMut(&[u8]),
-{
-    if let Some(values) = entry.field_values.get(field) {
-        for value in values {
-            visitor(value);
-        }
-        return;
-    }
-    if let Some(value) = entry.fields.get(field) {
-        visitor(value);
-    }
-}
-
 fn compile_grep_filter(
-    pattern: Option<&str>,
+    pattern: Option<&OsStr>,
     case_sensitive: Option<&str>,
-) -> Result<Option<Regex>> {
+) -> Result<Option<pcre::Pattern>> {
     let Some(pattern) = pattern else {
         return Ok(None);
     };
+    let bytes = pattern.as_encoded_bytes();
     let sensitive = match case_sensitive {
         Some(value) => parse_bool_option("--case-sensitive", value)?,
-        None => pattern.chars().any(char::is_uppercase),
+        None => pcre::Pattern::compile(b"[[:upper:]]", true)?.matches(bytes)?,
     };
-    RegexBuilder::new(pattern)
-        .case_insensitive(!sensitive)
-        .build()
-        .map(Some)
-        .map_err(|err| anyhow!("Bad pattern \"{pattern}\": {err}"))
+    pcre::Pattern::compile(bytes, sensitive).map(Some)
 }
 
 fn parse_bool_option(option: &str, value: &str) -> Result<bool> {
@@ -2742,17 +2884,18 @@ fn parse_priority_filter(values: &[String]) -> Result<Vec<u8>> {
 }
 
 fn parse_priority_level(value: &str) -> Result<u8> {
-    let normalized = value.trim().to_ascii_lowercase();
-    let level = match normalized.as_str() {
-        "emerg" | "panic" => Some(0),
+    let level = match value {
+        "emerg" => Some(0),
         "alert" => Some(1),
-        "crit" | "critical" => Some(2),
-        "err" | "error" => Some(3),
-        "warning" | "warn" => Some(4),
+        "crit" => Some(2),
+        "err" => Some(3),
+        "warning" => Some(4),
         "notice" => Some(5),
         "info" => Some(6),
         "debug" => Some(7),
-        _ => normalized.parse::<u8>().ok().filter(|value| *value <= 7),
+        _ => parse_native_i32(value)
+            .filter(|value| (0..=7).contains(value))
+            .map(|value| value as u8),
     };
     level.ok_or_else(|| anyhow!("Unknown log level {value}"))
 }
@@ -2780,13 +2923,6 @@ const FACILITY_NAMES: [(&str, u8); 20] = [
     ("local7", 23),
 ];
 
-fn facility_help_requested(values: &[String]) -> bool {
-    values
-        .iter()
-        .flat_map(|value| value.split(','))
-        .any(|item| item.trim() == "help")
-}
-
 fn print_facility_help(quiet: bool) {
     if !quiet {
         println!("Available facilities:");
@@ -2807,7 +2943,6 @@ fn parse_facility_filter(values: &[String]) -> Result<Vec<u8>> {
     let mut facilities = Vec::new();
     for value in values {
         for item in value.split(',') {
-            let item = item.trim();
             if item.is_empty() || item == "help" {
                 continue;
             }
@@ -2822,9 +2957,9 @@ fn parse_facility_filter(values: &[String]) -> Result<Vec<u8>> {
 }
 
 fn parse_facility(value: &str) -> Result<u8> {
-    if let Ok(number) = value.parse::<u8>() {
-        if number <= 23 {
-            return Ok(number);
+    if let Some(number) = parse_native_i32(value) {
+        if (0..=127).contains(&number) {
+            return Ok(number as u8);
         }
     }
     FACILITY_NAMES
@@ -2836,6 +2971,7 @@ fn parse_facility(value: &str) -> Result<u8> {
 struct BootSeparatorState {
     enabled: bool,
     previous_boot: Option<[u8; 16]>,
+    colors: colors::Colors,
 }
 
 impl BootSeparatorState {
@@ -2843,6 +2979,7 @@ impl BootSeparatorState {
         Self {
             enabled: !quiet && !suppressed && output_emits_boot_separators(mode),
             previous_boot: None,
+            colors: colors::Colors::default(),
         }
     }
 
@@ -2854,7 +2991,7 @@ impl BootSeparatorState {
             .previous_boot
             .is_some_and(|previous| previous != entry.boot_id)
         {
-            writeln!(stdout, "-- Boot {} --", hex::encode(entry.boot_id))?;
+            stdout.write_all(self.colors.boot(&hex::encode(entry.boot_id)).as_bytes())?;
         }
         self.previous_boot = Some(entry.boot_id);
         Ok(())
@@ -2877,22 +3014,42 @@ fn output_emits_boot_separators(mode: OutputModeArg) -> bool {
     )
 }
 
-fn render_entry<W: Write>(
+fn render_matching_entry<W: Write>(
     stdout: &mut W,
     renderer: &mut OutputRenderer,
-    boot_separators: &mut BootSeparatorState,
+    boots: &mut BootSeparatorState,
     post_filters: &CliPostFilters,
     entry: &Entry,
 ) -> Result<bool> {
-    boot_separators.before_entry(stdout, entry)?;
+    boots.colors = renderer.colors();
+    boots.before_entry(stdout, entry)?;
+    if !post_filters.matches(entry)? {
+        return Ok(false);
+    }
+    render_entry(stdout, renderer, post_filters, entry)?;
+    Ok(true)
+}
+
+fn render_entry<W: Write>(
+    stdout: &mut W,
+    renderer: &mut OutputRenderer,
+    post_filters: &CliPostFilters,
+    entry: &Entry,
+) -> Result<bool> {
     if post_filters.excludes_entry(entry) {
+        post_filters.shown.set(true);
         return Ok(false);
     }
     if renderer.skips_entry(entry) {
+        post_filters.shown.set(true);
         return Ok(false);
+    }
+    if post_filters.capture_highlight.get() {
+        renderer.set_highlight(post_filters.highlight.get());
     }
     let output = renderer.render(entry)?;
     stdout.write_all(&output)?;
+    post_filters.shown.set(true);
     Ok(true)
 }
 
@@ -2909,6 +3066,23 @@ fn show_head_or_all_with_reverse(
     output_options: &OutputOptions,
 ) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
+    if limit == Some(0) {
+        let cursor = initial_cursor(
+            journal,
+            since_usec,
+            until_usec,
+            cursor_control,
+            reverse,
+            show_cursor,
+        )?;
+        print_no_entries(&mut stdout, 0, quiet)?;
+        return finish_cursor_output(
+            &mut stdout,
+            show_cursor,
+            cursor_control.update_file.as_deref(),
+            cursor.as_deref(),
+        );
+    }
     let mut renderer = OutputRenderer::new(output_options.clone());
     let mut boot_separators = BootSeparatorState::new(
         output_options.mode(),
@@ -2916,7 +3090,7 @@ fn show_head_or_all_with_reverse(
         output_options.suppress_boot_separators(),
     );
     let mut shown = 0usize;
-    let mut last_cursor: Option<String> = None;
+    let mut last_cursor = String::new();
     if reverse {
         if limit.is_none() {
             let (count, cursor) = stream_previous_output_events(
@@ -2927,6 +3101,7 @@ fn show_head_or_all_with_reverse(
                 cursor_control.seek.as_ref(),
                 output_options,
                 quiet,
+                show_cursor || cursor_control.update_file.is_some(),
                 &mut stdout,
                 &mut renderer,
             )?;
@@ -2948,22 +3123,21 @@ fn show_head_or_all_with_reverse(
             limit.unwrap_or(0),
             output_options,
             quiet,
+            show_cursor || cursor_control.update_file.is_some(),
         )?;
-        let mut disabled_boot_separators =
-            BootSeparatorState::new(output_options.mode(), quiet, true);
         for event in events {
             match event {
                 ReverseOutputEvent::Boot(boot_id) => {
-                    writeln!(stdout, "-- Boot {} --", hex::encode(boot_id))?;
+                    stdout.write_all(
+                        output_options
+                            .colors()
+                            .boot(&hex::encode(boot_id))
+                            .as_bytes(),
+                    )?;
                 }
                 ReverseOutputEvent::Entry(entry) => {
-                    render_entry(
-                        &mut stdout,
-                        &mut renderer,
-                        &mut disabled_boot_separators,
-                        post_filters,
-                        &entry,
-                    )?;
+                    post_filters.restore_highlight();
+                    render_entry(&mut stdout, &mut renderer, post_filters, &entry)?;
                 }
             }
         }
@@ -2976,29 +3150,25 @@ fn show_head_or_all_with_reverse(
         )?;
         return Ok(());
     }
-    for_each_matching_entry_with_direction(
+    for_each_entry_with_checkpoint(
         journal,
         since_usec,
         until_usec,
         reverse,
-        post_filters,
         cursor_control.seek.as_ref(),
+        (show_cursor || cursor_control.update_file.is_some()).then_some(&mut last_cursor),
         |entry| {
-            if limit.is_some_and(|limit| shown >= limit) {
-                return Ok(false);
-            }
-            render_entry(
+            if !render_matching_entry(
                 &mut stdout,
                 &mut renderer,
                 &mut boot_separators,
                 post_filters,
                 &entry,
-            )?;
-            shown += 1;
-            if !entry.cursor.is_empty() {
-                last_cursor = Some(entry.cursor.clone());
+            )? {
+                return Ok(true);
             }
-            Ok(true)
+            shown += 1;
+            Ok(limit.is_none_or(|limit| shown < limit))
         },
     )?;
     print_no_entries(&mut stdout, shown, quiet)?;
@@ -3006,9 +3176,55 @@ fn show_head_or_all_with_reverse(
         &mut stdout,
         show_cursor,
         cursor_control.update_file.as_deref(),
-        last_cursor.as_deref(),
+        Some(last_cursor.as_str()),
     )?;
     Ok(())
+}
+
+fn initial_cursor(
+    journal: &mut SdJournal,
+    since: Option<u64>,
+    until: Option<u64>,
+    control: &CursorControl,
+    from_tail: bool,
+    show_cursor: bool,
+) -> Result<Option<String>> {
+    if !show_cursor && control.update_file.is_none() && control.seek.is_none() {
+        return Ok(None);
+    }
+    let mut cursor = String::new();
+    if let Some(seek) = control.seek.as_ref() {
+        seek_cursor_start_tracked(journal, seek, from_tail, Some(&mut cursor))?;
+        // A successful --after-cursor advance replaces the seeded cursor.
+        if let Ok(current) = SdJournalGetCursor(journal) {
+            cursor = current;
+        }
+        return Ok((!cursor.is_empty()).then_some(cursor));
+    }
+    if from_tail {
+        if let Some(until) = until {
+            SdJournalSeekRealtimeUsec(journal, until)
+        } else {
+            SdJournalSeekTail(journal)
+        }
+    } else if let Some(since) = since {
+        SdJournalSeekRealtimeUsec(journal, since)
+    } else {
+        SdJournalSeekHead(journal)
+    }
+    .map_err(|err| anyhow!("seek: {err}"))?;
+    let n = if from_tail {
+        SdJournalPrevious(journal)
+    } else {
+        SdJournalNext(journal)
+    }
+    .map_err(|err| anyhow!("iterate: {err}"))?;
+    if n == 0 {
+        return Ok(None);
+    }
+    Ok(Some(
+        SdJournalGetCursor(journal).map_err(|err| anyhow!("get cursor: {err}"))?,
+    ))
 }
 
 fn show_tail_with_reverse(
@@ -3024,20 +3240,27 @@ fn show_tail_with_reverse(
     output_options: &OutputOptions,
 ) -> Result<()> {
     if limit == 0 {
-        if let Some(cursor_seek) = cursor_control.seek.as_ref() {
-            let _ = seek_cursor_start(journal, cursor_seek, false)?;
-        }
+        let cursor = initial_cursor(
+            journal,
+            since_usec,
+            until_usec,
+            cursor_control,
+            true,
+            show_cursor,
+        )?;
         let mut stdout = std::io::stdout().lock();
         print_no_entries(&mut stdout, 0, quiet)?;
         finish_cursor_output(
             &mut stdout,
             show_cursor,
             cursor_control.update_file.as_deref(),
-            None,
+            cursor.as_deref(),
         )?;
         return Ok(());
     }
 
+    let mut last_cursor = String::new();
+    let capture_cursor = show_cursor || cursor_control.update_file.is_some();
     let mut selected = VecDeque::new();
     if reverse {
         let (events, count, last_cursor) = previous_output_events(
@@ -3049,24 +3272,23 @@ fn show_tail_with_reverse(
             limit,
             output_options,
             quiet,
+            show_cursor || cursor_control.update_file.is_some(),
         )?;
         let mut stdout = std::io::stdout().lock();
         let mut renderer = OutputRenderer::new(output_options.clone());
-        let mut disabled_boot_separators =
-            BootSeparatorState::new(output_options.mode(), quiet, true);
         for event in events {
             match event {
                 ReverseOutputEvent::Boot(boot_id) => {
-                    writeln!(stdout, "-- Boot {} --", hex::encode(boot_id))?;
+                    stdout.write_all(
+                        output_options
+                            .colors()
+                            .boot(&hex::encode(boot_id))
+                            .as_bytes(),
+                    )?;
                 }
                 ReverseOutputEvent::Entry(entry) => {
-                    render_entry(
-                        &mut stdout,
-                        &mut renderer,
-                        &mut disabled_boot_separators,
-                        post_filters,
-                        &entry,
-                    )?;
+                    post_filters.restore_highlight();
+                    render_entry(&mut stdout, &mut renderer, post_filters, &entry)?;
                 }
             }
         }
@@ -3079,29 +3301,18 @@ fn show_tail_with_reverse(
         )?;
         return Ok(());
     } else if cursor_control.seek.is_none() {
-        for_each_matching_entry_with_direction(
-            journal,
-            since_usec,
-            until_usec,
-            true,
-            post_filters,
-            None,
-            |entry| {
-                if selected.len() >= limit {
-                    return Ok(false);
-                }
-                selected.push_front(entry);
-                Ok(true)
-            },
-        )?;
+        for_each_entry_with_direction(journal, since_usec, until_usec, true, None, |entry| {
+            selected.push_front(entry);
+            Ok(selected.len() < limit)
+        })?;
     } else {
-        for_each_matching_entry_with_direction(
+        for_each_entry_with_checkpoint(
             journal,
             since_usec,
             until_usec,
             false,
-            post_filters,
             cursor_control.seek.as_ref(),
+            capture_cursor.then_some(&mut last_cursor),
             |entry| {
                 if limit > 0 && selected.len() == limit {
                     selected.pop_front();
@@ -3120,25 +3331,44 @@ fn show_tail_with_reverse(
         quiet,
         output_options.suppress_boot_separators(),
     );
-    let mut last_cursor: Option<String> = None;
+    let mut shown = 0;
     for entry in &selected {
-        render_entry(
+        if capture_cursor && cursor_control.seek.is_none() {
+            last_cursor.clone_from(&entry.cursor);
+        }
+        if render_matching_entry(
             &mut stdout,
             &mut renderer,
             &mut boot_separators,
             post_filters,
             entry,
-        )?;
-        if !entry.cursor.is_empty() {
-            last_cursor = Some(entry.cursor.clone());
+        )? {
+            shown += 1;
         }
     }
-    print_no_entries(&mut stdout, selected.len(), quiet)?;
+    if capture_cursor
+        && cursor_control.seek.is_none()
+        && until_usec.is_some()
+        && selected.len() < limit
+    {
+        if !last_cursor.is_empty() {
+            SdJournalSeekCursorDirection(journal, &last_cursor, journal::Direction::Forward)
+                .map_err(|err| anyhow!("seek cursor: {err}"))?;
+        } else {
+            SdJournalSeekRealtimeUsec(journal, until_usec.unwrap())
+                .map_err(|err| anyhow!("seek realtime: {err}"))?;
+        }
+        if SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? > 0 {
+            last_cursor =
+                SdJournalGetCursor(journal).map_err(|err| anyhow!("get cursor: {err}"))?;
+        }
+    }
+    print_no_entries(&mut stdout, shown, quiet)?;
     finish_cursor_output(
         &mut stdout,
         show_cursor,
         cursor_control.update_file.as_deref(),
-        last_cursor.as_deref(),
+        Some(last_cursor.as_str()),
     )?;
     Ok(())
 }
@@ -3163,6 +3393,7 @@ fn stream_previous_output_events<W: Write>(
     cursor_seek: Option<&CursorSeek>,
     output_options: &OutputOptions,
     quiet: bool,
+    capture_cursor: bool,
     stdout: &mut W,
     renderer: &mut OutputRenderer,
 ) -> Result<(usize, Option<String>)> {
@@ -3171,12 +3402,15 @@ fn stream_previous_output_events<W: Write>(
         quiet,
         output_options.suppress_boot_separators(),
     );
-    let mut disabled_boot_separators = BootSeparatorState::new(output_options.mode(), quiet, true);
-    let mut pending_boot = None;
     let mut count = 0usize;
-    let mut last_cursor = None;
+    let mut last_cursor: Option<String> = None;
 
     let mut visit = |entry: Entry| -> Result<bool> {
+        if capture_cursor && !entry.cursor.is_empty() {
+            last_cursor
+                .get_or_insert_default()
+                .clone_from(&entry.cursor);
+        }
         if since_usec.is_some_and(|since| entry.realtime < since) {
             return Ok(false);
         }
@@ -3185,39 +3419,38 @@ fn stream_previous_output_events<W: Write>(
                 .previous_boot
                 .is_some_and(|previous| previous != entry.boot_id)
             {
-                pending_boot = Some(entry.boot_id);
+                stdout.write_all(
+                    output_options
+                        .colors()
+                        .boot(&hex::encode(entry.boot_id))
+                        .as_bytes(),
+                )?;
             }
             boot_context.previous_boot = Some(entry.boot_id);
         }
         if since_usec.is_none_or(|since| entry.realtime >= since)
             && until_usec.is_none_or(|until| entry.realtime <= until)
-            && post_filters.matches(&entry)
+            && post_filters.matches(&entry)?
         {
-            if let Some(boot_id) = pending_boot.take() {
-                writeln!(stdout, "-- Boot {} --", hex::encode(boot_id))?;
-            }
-            render_entry(
-                stdout,
-                renderer,
-                &mut disabled_boot_separators,
-                post_filters,
-                &entry,
-            )?;
-            if !entry.cursor.is_empty() {
-                last_cursor = Some(entry.cursor.clone());
-            }
+            render_entry(stdout, renderer, post_filters, &entry)?;
             count += 1;
         }
         Ok(true)
     };
 
     if let Some(cursor_seek) = cursor_seek {
-        if let Some(entry) = seek_cursor_start(journal, cursor_seek, true)? {
+        let mut initial = String::new();
+        if let Some(entry) = seek_cursor_start_tracked(
+            journal,
+            cursor_seek,
+            true,
+            capture_cursor.then_some(&mut initial),
+        )? {
             if !visit(entry)? {
                 return Ok((count, last_cursor));
             }
         } else {
-            return Ok((count, last_cursor));
+            return Ok((count, (!initial.is_empty()).then_some(initial)));
         }
     } else if let Some(until) = until_usec {
         SdJournalSeekRealtimeUsec(journal, until).map_err(|err| anyhow!("seek realtime: {err}"))?;
@@ -3237,11 +3470,6 @@ fn stream_previous_output_events<W: Write>(
             }
         }
     }
-    if count > 0 {
-        if let Some(boot_id) = pending_boot {
-            writeln!(stdout, "-- Boot {} --", hex::encode(boot_id))?;
-        }
-    }
     Ok((count, last_cursor))
 }
 
@@ -3254,18 +3482,23 @@ fn previous_output_events(
     limit: usize,
     output_options: &OutputOptions,
     quiet: bool,
+    capture_cursor: bool,
 ) -> Result<(Vec<ReverseOutputEvent>, usize, Option<String>)> {
     let mut boot_context = BootSeparatorState::new(
         output_options.mode(),
         quiet,
         output_options.suppress_boot_separators(),
     );
-    let mut pending_boot = None;
     let mut events = Vec::new();
     let mut count = 0usize;
-    let mut last_cursor = None;
+    let mut last_cursor: Option<String> = None;
 
     let mut visit = |entry: Entry| -> Result<bool> {
+        if capture_cursor && !entry.cursor.is_empty() {
+            last_cursor
+                .get_or_insert_default()
+                .clone_from(&entry.cursor);
+        }
         if since_usec.is_some_and(|since| entry.realtime < since) {
             return Ok(false);
         }
@@ -3274,21 +3507,16 @@ fn previous_output_events(
                 .previous_boot
                 .is_some_and(|previous| previous != entry.boot_id)
             {
-                pending_boot = Some(entry.boot_id);
+                events.push(ReverseOutputEvent::Boot(entry.boot_id));
             }
             boot_context.previous_boot = Some(entry.boot_id);
         }
         if since_usec.is_none_or(|since| entry.realtime >= since)
             && until_usec.is_none_or(|until| entry.realtime <= until)
-            && post_filters.matches(&entry)
+            && post_filters.matches(&entry)?
         {
-            if let Some(boot_id) = pending_boot.take() {
-                events.push(ReverseOutputEvent::Boot(boot_id));
-            }
-            if !entry.cursor.is_empty() {
-                last_cursor = Some(entry.cursor.clone());
-            }
             events.push(ReverseOutputEvent::Entry(entry));
+            post_filters.buffer_highlight();
             count += 1;
             if limit > 0 && count >= limit {
                 return Ok(false);
@@ -3298,12 +3526,18 @@ fn previous_output_events(
     };
 
     if let Some(cursor_seek) = cursor_seek {
-        if let Some(entry) = seek_cursor_start(journal, cursor_seek, true)? {
+        let mut initial = String::new();
+        if let Some(entry) = seek_cursor_start_tracked(
+            journal,
+            cursor_seek,
+            true,
+            capture_cursor.then_some(&mut initial),
+        )? {
             if !visit(entry)? {
                 return Ok((events, count, last_cursor));
             }
         } else {
-            return Ok((events, count, last_cursor));
+            return Ok((events, count, (!initial.is_empty()).then_some(initial)));
         }
     } else if let Some(until) = until_usec {
         SdJournalSeekRealtimeUsec(journal, until).map_err(|err| anyhow!("seek realtime: {err}"))?;
@@ -3323,21 +3557,38 @@ fn previous_output_events(
             }
         }
     }
-    if count > 0 {
-        if let Some(boot_id) = pending_boot {
-            events.push(ReverseOutputEvent::Boot(boot_id));
-        }
-    }
     Ok((events, count, last_cursor))
 }
 
-fn for_each_matching_entry_with_direction<F>(
+fn for_each_entry_with_direction<F>(
     journal: &mut SdJournal,
     since_usec: Option<u64>,
     until_usec: Option<u64>,
     reverse: bool,
-    post_filters: &CliPostFilters,
     cursor_seek: Option<&CursorSeek>,
+    visitor: F,
+) -> Result<()>
+where
+    F: FnMut(Entry) -> Result<bool>,
+{
+    for_each_entry_with_checkpoint(
+        journal,
+        since_usec,
+        until_usec,
+        reverse,
+        cursor_seek,
+        None,
+        visitor,
+    )
+}
+
+fn for_each_entry_with_checkpoint<F>(
+    journal: &mut SdJournal,
+    since_usec: Option<u64>,
+    until_usec: Option<u64>,
+    reverse: bool,
+    cursor_seek: Option<&CursorSeek>,
+    mut checkpoint: Option<&mut String>,
     mut visitor: F,
 ) -> Result<()>
 where
@@ -3345,10 +3596,14 @@ where
 {
     if reverse {
         if let Some(cursor_seek) = cursor_seek {
-            if let Some(entry) = seek_cursor_start(journal, cursor_seek, true)? {
+            if let Some(entry) =
+                seek_cursor_start_tracked(journal, cursor_seek, true, checkpoint.as_deref_mut())?
+            {
+                if let Some(cursor) = checkpoint.as_deref_mut() {
+                    cursor.clone_from(&entry.cursor);
+                }
                 if since_usec.is_none_or(|since| entry.realtime >= since)
                     && until_usec.is_none_or(|until| entry.realtime <= until)
-                    && post_filters.matches(&entry)
                 {
                     if !visitor(entry)? {
                         return Ok(());
@@ -3373,12 +3628,14 @@ where
                 _ => {
                     let entry =
                         SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
+                    if let Some(cursor) = checkpoint.as_deref_mut() {
+                        cursor.clone_from(&entry.cursor);
+                    }
                     if since_usec.is_some_and(|since| entry.realtime < since) {
                         break;
                     }
                     if since_usec.is_none_or(|since| entry.realtime >= since)
                         && until_usec.is_none_or(|until| entry.realtime <= until)
-                        && post_filters.matches(&entry)
                     {
                         if !visitor(entry)? {
                             return Ok(());
@@ -3391,10 +3648,14 @@ where
     }
 
     if let Some(cursor_seek) = cursor_seek {
-        if let Some(entry) = seek_cursor_start(journal, cursor_seek, false)? {
+        if let Some(entry) =
+            seek_cursor_start_tracked(journal, cursor_seek, false, checkpoint.as_deref_mut())?
+        {
+            if let Some(cursor) = checkpoint.as_deref_mut() {
+                cursor.clone_from(&entry.cursor);
+            }
             if since_usec.is_none_or(|since| entry.realtime >= since)
                 && until_usec.is_none_or(|until| entry.realtime <= until)
-                && post_filters.matches(&entry)
             {
                 if !visitor(entry)? {
                     return Ok(());
@@ -3414,12 +3675,14 @@ where
             _ => {
                 let entry =
                     SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
+                if let Some(cursor) = checkpoint.as_deref_mut() {
+                    cursor.clone_from(&entry.cursor);
+                }
                 if until_usec.is_some_and(|until| entry.realtime > until) {
                     break;
                 }
                 if since_usec.is_none_or(|since| entry.realtime >= since)
                     && until_usec.is_none_or(|until| entry.realtime <= until)
-                    && post_filters.matches(&entry)
                 {
                     if !visitor(entry)? {
                         return Ok(());
@@ -3431,13 +3694,29 @@ where
     Ok(())
 }
 
-fn seek_cursor_start(
+fn seek_cursor_start_tracked(
     journal: &mut SdJournal,
     cursor_seek: &CursorSeek,
     reverse: bool,
+    checkpoint: Option<&mut String>,
 ) -> Result<Option<Entry>> {
-    SdJournalSeekCursor(journal, &cursor_seek.cursor)
-        .map_err(|err| anyhow!("seek cursor: {err}"))?;
+    SdJournalSeekCursorDirection(
+        journal,
+        &cursor_seek.cursor,
+        if reverse {
+            journal::Direction::Backward
+        } else {
+            journal::Direction::Forward
+        },
+    )
+    .map_err(|err| anyhow!("seek cursor: {err}"))?;
+    if let Some(checkpoint) = checkpoint {
+        match SdJournalGetCursor(journal) {
+            Ok(cursor) => *checkpoint = cursor,
+            Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => {}
+            Err(err) => return Err(anyhow!("get cursor: {err}")),
+        }
+    }
     if cursor_seek.after {
         match SdJournalTestCursor(journal, &cursor_seek.cursor) {
             Ok(true) => {
@@ -3459,7 +3738,10 @@ fn seek_cursor_start(
     match SdJournalGetEntry(journal) {
         Ok(entry) => Ok(Some(entry)),
         Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => Ok(None),
-        Err(err) => Err(anyhow!("get entry: {err}")),
+        Err(err) => match SdJournalGetCursor(journal) {
+            Err(FacadeError::NoEntry | FacadeError::EndOfEntries) => Ok(None),
+            _ => Err(anyhow!("get entry: {err}")),
+        },
     }
 }
 
@@ -3755,21 +4037,36 @@ fn parse_boot_descriptor(descriptor: &str) -> Result<(String, isize)> {
     if descriptor.is_empty() {
         return Err(anyhow!("failed to parse boot descriptor: {descriptor}"));
     }
-    let (boot_id, rest) = if let Some(id) = parse_boot_id_prefix(descriptor) {
-        let consumed = if descriptor.as_bytes().get(8) == Some(&b'-') {
-            36
-        } else {
-            32
-        };
-        (id, &descriptor[consumed..])
+    let (boot_id, rest) = if descriptor
+        .as_bytes()
+        .get(..32)
+        .is_some_and(|id| id.iter().all(u8::is_ascii_hexdigit))
+    {
+        let id = &descriptor[..32];
+        (
+            if id.bytes().all(|b| b == b'0') {
+                String::new()
+            } else {
+                id.to_ascii_lowercase()
+            },
+            &descriptor[32..],
+        )
     } else {
         (String::new(), descriptor)
     };
+    if descriptor.len() >= 32
+        && !rest.is_empty()
+        && !rest.starts_with('+')
+        && !rest.starts_with('-')
+    {
+        return Err(anyhow!("failed to parse boot descriptor: {descriptor}"));
+    }
     let offset = if rest.is_empty() {
         0
     } else {
-        rest.parse::<isize>()
-            .map_err(|_| anyhow!("failed to parse boot descriptor: {descriptor}"))?
+        parse_native_i32(rest)
+            .ok_or_else(|| anyhow!("failed to parse boot descriptor: {descriptor}"))?
+            as isize
     };
     Ok((boot_id, offset))
 }
@@ -3797,195 +4094,6 @@ fn parse_invocation_descriptor(descriptor: &str) -> Result<Option<(String, isize
         .map_err(|_| anyhow!("failed to parse invocation descriptor: {descriptor}"))
 }
 
-fn resolve_invocation_filter(input: &CliInput, args: &Args) -> Result<Option<String>> {
-    let Some(descriptor) = effective_invocation_descriptor(args) else {
-        return Ok(None);
-    };
-    let Some((id, offset)) = parse_invocation_descriptor(descriptor)? else {
-        return Ok(None);
-    };
-
-    let invocation_unit_option = if id.is_empty() || offset != 0 {
-        Some("-I/--invocation= with an offset")
-    } else {
-        None
-    };
-    let invocations = collect_invocations_from_input(input, args, invocation_unit_option)?;
-    let target = if !id.is_empty() {
-        invocations
-            .iter()
-            .position(|entry| entry.id == id)
-            .map(|base| base as isize + offset)
-    } else if offset > 0 {
-        Some(offset - 1)
-    } else {
-        Some(invocations.len() as isize - 1 + offset)
-    };
-
-    let Some(target) = target else {
-        return Err(anyhow!(
-            "No journal entry found for the invocation ({}{offset:+}).",
-            id
-        ));
-    };
-    if target < 0 || target as usize >= invocations.len() {
-        return Err(anyhow!(
-            "No journal entry found for the invocation ({}{offset:+}).",
-            id
-        ));
-    }
-    Ok(Some(invocations[target as usize].id.clone()))
-}
-
-fn apply_single_invocation_unit(
-    journal: &mut SdJournal,
-    args: &Args,
-    option_name: &str,
-) -> Result<()> {
-    let (system_units, user_units) = single_invocation_unit(journal, args, option_name)?;
-    add_journalctl_unit_matches(journal, &system_units, &user_units)
-}
-
-fn single_invocation_unit(
-    journal: &mut SdJournal,
-    args: &Args,
-    option_name: &str,
-) -> Result<(Vec<String>, Vec<String>)> {
-    let (system_specs, user_specs) = effective_unit_specs(args);
-    let count = system_specs.len() + user_specs.len();
-    if count == 0 {
-        return Err(anyhow!(
-            "Using {option_name} requires a unit. Please specify a unit name with -u/--unit=/--user-unit=."
-        ));
-    }
-    if count > 1 {
-        return Err(anyhow!(
-            "Using {option_name} with multiple units is not supported."
-        ));
-    }
-    if system_specs.len() == 1 {
-        let units = expand_unit_specs(journal, &system_specs, SYSTEM_UNIT_FIELDS_FULL)?;
-        let query = mangle_unit_name(&system_specs[0]);
-        if units.is_empty() {
-            return Err(anyhow!("No matching unit found for '{query}' in journal."));
-        }
-        if units.len() > 1 {
-            return Err(anyhow!(
-                "Multiple matching units found for '{query}' in journal."
-            ));
-        }
-        return Ok((units, Vec::new()));
-    }
-    let units = expand_unit_specs(journal, &user_specs, USER_UNIT_FIELDS_FULL)?;
-    let query = mangle_unit_name(&user_specs[0]);
-    if units.is_empty() {
-        return Err(anyhow!("No matching unit found for '{query}' in journal."));
-    }
-    if units.len() > 1 {
-        return Err(anyhow!(
-            "Multiple matching units found for '{query}' in journal."
-        ));
-    }
-    Ok((Vec::new(), units))
-}
-
-fn collect_invocations_from_input(
-    input: &CliInput,
-    args: &Args,
-    unit_option: Option<&str>,
-) -> Result<Vec<InvocationEntry>> {
-    let mut indexed_journal = open_invocation_scope_journal(input, args, unit_option)?;
-    let candidate_ids = collect_invocation_candidate_ids(&mut indexed_journal)?;
-
-    let mut out = Vec::new();
-    for id in candidate_ids {
-        if let Some(entry) = invocation_bounds_for_id(input, args, unit_option, &id)? {
-            out.push(entry);
-        }
-    }
-    out.sort_by(|a, b| {
-        a.first_usec
-            .cmp(&b.first_usec)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    Ok(out)
-}
-
-fn open_invocation_scope_journal(
-    input: &CliInput,
-    args: &Args,
-    unit_option: Option<&str>,
-) -> Result<SdJournal> {
-    let mut journal = input.open_journal()?;
-    apply_boot_match(&mut journal, args, None)?;
-    if let Some(option_name) = unit_option {
-        apply_single_invocation_unit(&mut journal, args, option_name)?;
-    }
-    Ok(journal)
-}
-
-fn collect_invocation_candidate_ids(journal: &mut SdJournal) -> Result<Vec<String>> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for field in INVOCATION_ID_FIELDS {
-        SdJournalVisitUniqueValues(journal, field, |value| {
-            let Ok(text) = std::str::from_utf8(value) else {
-                return Ok(());
-            };
-            let Some(id) = parse_invocation_id_value(text) else {
-                return Ok(());
-            };
-            if !id.chars().all(|ch| ch == '0') && seen.insert(id.clone()) {
-                out.push(id);
-            }
-            Ok(())
-        })
-        .map_err(|err| anyhow!("visit unique invocation values for {field}: {err}"))?;
-    }
-    Ok(out)
-}
-
-fn invocation_bounds_for_id(
-    input: &CliInput,
-    args: &Args,
-    unit_option: Option<&str>,
-    id: &str,
-) -> Result<Option<InvocationEntry>> {
-    let mut first_journal = open_invocation_scope_journal(input, args, unit_option)?;
-    add_invocation_matches(&mut first_journal, id)?;
-    SdJournalSeekHead(&mut first_journal).map_err(|err| anyhow!("seek invocation head: {err}"))?;
-    if SdJournalNext(&mut first_journal).map_err(|err| anyhow!("next invocation: {err}"))? == 0 {
-        return Ok(None);
-    }
-    let first_entry = SdJournalGetEntry(&mut first_journal)
-        .map_err(|err| anyhow!("get invocation entry: {err}"))?;
-
-    let mut last_journal = open_invocation_scope_journal(input, args, unit_option)?;
-    add_invocation_matches(&mut last_journal, id)?;
-    SdJournalSeekTail(&mut last_journal).map_err(|err| anyhow!("seek invocation tail: {err}"))?;
-    if SdJournalPrevious(&mut last_journal).map_err(|err| anyhow!("previous invocation: {err}"))?
-        == 0
-    {
-        return Ok(None);
-    }
-    let last_entry = SdJournalGetEntry(&mut last_journal)
-        .map_err(|err| anyhow!("get invocation entry: {err}"))?;
-
-    Ok(Some(InvocationEntry {
-        id: id.to_string(),
-        first_usec: first_entry.realtime,
-        last_usec: last_entry.realtime,
-    }))
-}
-
-fn parse_invocation_id_value(value: &str) -> Option<String> {
-    let clean = value.trim().replace('-', "");
-    if clean.len() == 32 && clean.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Some(clean.to_ascii_lowercase());
-    }
-    None
-}
-
 fn parse_boot_id_prefix(value: &str) -> Option<String> {
     if value.len() >= 32 && value[..32].bytes().all(|b| b.is_ascii_hexdigit()) {
         return Some(value[..32].to_ascii_lowercase());
@@ -4006,188 +4114,8 @@ fn parse_boot_id_prefix(value: &str) -> Option<String> {
     None
 }
 
-fn parse_optional_timestamp(value: Option<&str>) -> Result<Option<u64>> {
-    value
-        .filter(|v| !v.trim().is_empty())
-        .map(parse_timestamp_usec)
-        .transpose()
-}
-
-fn parse_timestamp_usec(value: &str) -> Result<u64> {
-    let value = value.trim();
-    match value {
-        "now" => return Ok(Local::now().timestamp_micros() as u64),
-        "today" | "yesterday" | "tomorrow" => {
-            let today = Local::now().date_naive();
-            let date = match value {
-                "yesterday" => today.pred_opt().ok_or_else(|| anyhow!("date underflow"))?,
-                "tomorrow" => today.succ_opt().ok_or_else(|| anyhow!("date overflow"))?,
-                _ => today,
-            };
-            return local_datetime_to_usec(date.and_hms_opt(0, 0, 0).unwrap());
-        }
-        _ => {}
-    }
-    if let Some(epoch) = value.strip_prefix('@') {
-        return parse_epoch_timestamp_usec(epoch);
-    }
-    if let Some(duration) = value.strip_suffix(" ago") {
-        let delta = parse_duration_usec(duration.trim())? as i64;
-        let now = Local::now().timestamp_micros();
-        return Ok(now.saturating_sub(delta) as u64);
-    }
-    let bytes = value.as_bytes();
-    let signed_date_prefix = bytes.len() >= 6
-        && matches!(bytes[0], b'+' | b'-')
-        && bytes[1..5].iter().all(|b| b.is_ascii_digit())
-        && bytes[5] == b'-';
-    if matches!(bytes.first(), Some(b'+' | b'-')) && !signed_date_prefix {
-        let delta = parse_duration_usec(&value[1..])? as i64;
-        let now = Local::now().timestamp_micros();
-        return Ok(if value.starts_with('+') {
-            now + delta
-        } else {
-            now - delta
-        } as u64);
-    }
-    parse_local_timestamp_usec(value)
-}
-
-fn parse_epoch_timestamp_usec(value: &str) -> Result<u64> {
-    let (whole, frac) = value.split_once('.').unwrap_or((value, ""));
-    if whole.is_empty()
-        || !whole.bytes().all(|b| b.is_ascii_digit())
-        || !frac.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err(anyhow!("failed to parse timestamp: @{value}"));
-    }
-    let seconds = whole.parse::<u64>()?;
-    let mut frac_padded = frac.to_string();
-    frac_padded.push_str("000000");
-    let usec = frac_padded[..6].parse::<u64>()?;
-    Ok(seconds * 1_000_000 + usec)
-}
-
-fn parse_local_timestamp_usec(value: &str) -> Result<u64> {
-    if has_compact_timezone_offset(value) {
-        return Err(anyhow!("failed to parse timestamp: {value}"));
-    }
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
-        return Ok(dt.timestamp_micros() as u64);
-    }
-    for fmt in [
-        "%Y-%m-%dT%H:%M:%S%.f%:z",
-        "%Y-%m-%dT%H:%M:%S%:z",
-        "%Y-%m-%dT%H:%M%:z",
-    ] {
-        if let Ok(dt) = chrono::DateTime::parse_from_str(value, fmt) {
-            return Ok(dt.timestamp_micros() as u64);
-        }
-    }
-    for fmt in [
-        "%Y-%m-%dT%H:%M:%S%.f",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M",
-        "%Y-%m-%d %H:%M:%S%.f",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-    ] {
-        if let Ok(dt) = NaiveDateTime::parse_from_str(value, fmt) {
-            return local_datetime_to_usec(dt);
-        }
-    }
-    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-        return local_datetime_to_usec(date.and_hms_opt(0, 0, 0).unwrap());
-    }
-    for fmt in ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M"] {
-        if let Ok(time) = NaiveTime::parse_from_str(value, fmt) {
-            let date = Local::now().date_naive();
-            return local_datetime_to_usec(date.and_time(time));
-        }
-    }
-    Err(anyhow!("failed to parse timestamp: {value}"))
-}
-
-fn has_compact_timezone_offset(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() >= 5
-        && value.contains('T')
-        && matches!(bytes[bytes.len() - 5], b'+' | b'-')
-        && bytes[bytes.len() - 4..]
-            .iter()
-            .all(|byte| byte.is_ascii_digit())
-}
-
-fn local_datetime_to_usec(dt: NaiveDateTime) -> Result<u64> {
-    let local = Local
-        .from_local_datetime(&dt)
-        .earliest()
-        .ok_or_else(|| anyhow!("failed to parse local timestamp"))?;
-    Ok(local.timestamp_micros() as u64)
-}
-
-fn parse_duration_usec(value: &str) -> Result<u64> {
-    parse_duration_usec_mode(value, false)
-}
-
 fn parse_duration_usec_allow_zero(value: &str) -> Result<u64> {
-    parse_duration_usec_mode(value, true)
-}
-
-fn parse_duration_usec_mode(value: &str, allow_zero: bool) -> Result<u64> {
-    let mut total = 0_f64;
-    let bytes = value.as_bytes();
-    let mut i = 0usize;
-    let mut seen = false;
-    while i < bytes.len() {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let start = i;
-        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
-            i += 1;
-        }
-        if start == i {
-            return Err(anyhow!("failed to parse duration: {value}"));
-        }
-        seen = true;
-        let number = value[start..i].parse::<f64>()?;
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let unit_start = i;
-        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
-            i += 1;
-        }
-        let unit = if unit_start == i {
-            "s"
-        } else {
-            &value[unit_start..i]
-        };
-        total += number * duration_unit_multiplier(unit)?;
-    }
-    if !seen || (!allow_zero && total == 0_f64) {
-        return Err(anyhow!("failed to parse duration: {value}"));
-    }
-    Ok(total as u64)
-}
-
-fn duration_unit_multiplier(unit: &str) -> Result<f64> {
-    if unit == "M" {
-        return Ok(2_629_800_000_000_f64);
-    }
-    match unit.to_ascii_lowercase().as_str() {
-        "us" | "usec" | "usecs" => Ok(1_f64),
-        "ms" | "msec" | "msecs" => Ok(1_000_f64),
-        "s" | "sec" | "secs" | "second" | "seconds" => Ok(1_000_000_f64),
-        "m" | "min" | "mins" | "minute" | "minutes" => Ok(60_000_000_f64),
-        "h" | "hr" | "hour" | "hours" => Ok(3_600_000_000_f64),
-        "d" | "day" | "days" => Ok(86_400_000_000_f64),
-        "w" | "week" | "weeks" => Ok(604_800_000_000_f64),
-        "month" | "months" => Ok(2_629_800_000_000_f64),
-        "y" | "year" | "years" => Ok(31_557_600_000_000_f64),
-        _ => Err(anyhow!("failed to parse duration unit: {unit}")),
-    }
+    timestamp::duration(value)
 }
 
 fn for_each_follow_entry<F>(
@@ -4196,7 +4124,6 @@ fn for_each_follow_entry<F>(
     boot_descriptor_override: Option<&str>,
     since_usec: Option<u64>,
     until_usec: Option<u64>,
-    post_filters: &CliPostFilters,
     cursor_seek: Option<&CursorSeek>,
     mut visitor: F,
 ) -> Result<()>
@@ -4204,12 +4131,11 @@ where
     F: FnMut(Entry) -> Result<()>,
 {
     let mut journal = open_filtered_journal(input, args, boot_descriptor_override)?;
-    for_each_matching_entry_with_direction(
+    for_each_entry_with_direction(
         &mut journal,
         since_usec,
         until_usec,
         false,
-        post_filters,
         cursor_seek,
         |entry| {
             visitor(entry)?;
@@ -4237,11 +4163,13 @@ fn run_follow(
     since_usec: Option<u64>,
     until_usec: Option<u64>,
     tail: usize,
+    all: bool,
     post_filters: &CliPostFilters,
     cursor_control: &CursorControl,
     output_options: &OutputOptions,
 ) -> Result<()> {
     let mut last_seen_cursor: Option<String> = None;
+    let mut last_visited_cursor: Option<String> = None;
     let mut renderer = OutputRenderer::new(output_options.clone());
     let mut boot_separators = BootSeparatorState::new(
         output_options.mode(),
@@ -4252,26 +4180,28 @@ fn run_follow(
     let boot_descriptor_override = resolve_follow_boot_descriptor(input, args)?;
     let boot_descriptor_override = boot_descriptor_override.as_deref();
 
-    if args.no_tail {
+    if cursor_control.seek.is_some() || all {
         for_each_follow_entry(
             input,
             args,
             boot_descriptor_override,
             since_usec,
             until_usec,
-            post_filters,
             cursor_control.seek.as_ref(),
             |entry| {
-                render_entry(
+                let matched = render_matching_entry(
                     &mut stdout,
                     &mut renderer,
                     &mut boot_separators,
                     post_filters,
                     &entry,
                 )?;
-                if !entry.cursor.is_empty() {
+                if matched && !entry.cursor.is_empty() {
                     last_seen_cursor = Some(entry.cursor.clone());
                     update_cursor_file(cursor_control, last_seen_cursor.as_deref())?;
+                }
+                if !entry.cursor.is_empty() {
+                    last_visited_cursor = Some(entry.cursor);
                 }
                 Ok(())
             },
@@ -4284,11 +4214,13 @@ fn run_follow(
             boot_descriptor_override,
             since_usec,
             until_usec,
-            post_filters,
             cursor_control.seek.as_ref(),
             |entry| {
-                if !entry.cursor.is_empty() {
-                    last_seen_cursor = Some(entry.cursor.clone());
+                if tail == 0 {
+                    if !entry.cursor.is_empty() {
+                        last_visited_cursor = Some(entry.cursor);
+                    }
+                    return Ok(());
                 }
                 if tail > 0 && selected.len() == tail {
                     selected.pop_front();
@@ -4299,24 +4231,34 @@ fn run_follow(
                 Ok(())
             },
         )?;
+        if let Some(entry) = selected.back().filter(|entry| !entry.cursor.is_empty()) {
+            last_visited_cursor = Some(entry.cursor.clone());
+        }
         for entry in &selected {
-            render_entry(
+            if render_matching_entry(
                 &mut stdout,
                 &mut renderer,
                 &mut boot_separators,
                 post_filters,
                 entry,
-            )?;
+            )? && !entry.cursor.is_empty()
+            {
+                last_seen_cursor = Some(entry.cursor.clone());
+            }
         }
         update_cursor_file(cursor_control, last_seen_cursor.as_deref())?;
     }
 
+    if cursor_control.update_file.is_some() && last_visited_cursor != last_seen_cursor {
+        update_cursor_file(cursor_control, last_visited_cursor.as_deref())?;
+        last_seen_cursor.clone_from(&last_visited_cursor);
+    }
     let min_poll_interval = Duration::from_millis(100);
     let max_poll_interval = Duration::from_secs(1);
     let mut poll_interval = min_poll_interval;
     loop {
         thread::sleep(poll_interval);
-        let last_cursor = last_seen_cursor.clone();
+        let last_cursor = last_visited_cursor.clone();
         let follow_seek = last_cursor.map(|cursor| CursorSeek {
             cursor,
             after: true,
@@ -4329,24 +4271,32 @@ fn run_follow(
             boot_descriptor_override,
             since_usec,
             until_usec,
-            post_filters,
             cursor_seek,
             |entry| {
-                render_entry(
+                let matched = render_matching_entry(
                     &mut stdout,
                     &mut renderer,
                     &mut boot_separators,
                     post_filters,
                     &entry,
                 )?;
-                emitted += 1;
-                if !entry.cursor.is_empty() {
+                if matched {
+                    emitted += 1;
+                }
+                if matched && !entry.cursor.is_empty() {
                     last_seen_cursor = Some(entry.cursor.clone());
                     update_cursor_file(cursor_control, last_seen_cursor.as_deref())?;
+                }
+                if !entry.cursor.is_empty() {
+                    last_visited_cursor = Some(entry.cursor);
                 }
                 Ok(())
             },
         )?;
+        if cursor_control.update_file.is_some() && last_visited_cursor != last_seen_cursor {
+            update_cursor_file(cursor_control, last_visited_cursor.as_deref())?;
+            last_seen_cursor.clone_from(&last_visited_cursor);
+        }
         poll_interval = if emitted > 0 {
             min_poll_interval
         } else {
@@ -4606,7 +4556,7 @@ mod tests {
 
     // -- SOW-0121 parser parity tests ----------------------------------
     //
-    // Every official systemd v260.1 long option must be recognized by the
+    // Every official systemd v262 long option must be recognized by the
     // parser. The set is enumerated by the shared manifest at
     // tests/parser-parity/v260-manifest.json. The list is duplicated
     // here (intentionally) so the parser contract is enforced by Rust
@@ -4711,16 +4661,17 @@ mod tests {
             let flag = match (*opt, *takes_value) {
                 ("output", true) => "--output=short".to_string(),
                 ("synchronize-on-exit", true) => "--synchronize-on-exit=false".to_string(),
+                ("since" | "until", true) => format!("--{opt}=@0"),
+                ("priority" | "facility", true) => format!("--{opt}=3"),
+                ("invocation", true) => "--invocation=all".to_string(),
+                ("interval" | "vacuum-time", true) => format!("--{opt}=1s"),
+                ("vacuum-files", true) => "--vacuum-files=1".to_string(),
+                ("vacuum-size", true) => "--vacuum-size=1M".to_string(),
                 (_, true) => format!("--{opt}=placeholder"),
                 (_, false) => format!("--{opt}"),
             };
             let argv: Vec<String> = vec!["journalctl".to_string(), flag];
-            let parsed = Args::try_parse_from(&argv);
-            if *opt == "help" {
-                let err = parsed.expect_err("--help must exit through clap help");
-                assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
-                continue;
-            }
+            let parsed = parser::parse_cli(argv.iter().map(OsString::from).collect());
             assert!(
                 parsed.is_ok(),
                 "parser rejected official option --{opt}: {:?}",
@@ -4733,7 +4684,7 @@ mod tests {
     fn every_official_output_mode_is_accepted() {
         for mode in OFFICIAL_OUTPUT_MODES {
             let argv: Vec<String> = vec!["journalctl".to_string(), format!("--output={mode}")];
-            let parsed = Args::try_parse_from(&argv);
+            let parsed = parser::parse_cli(argv.iter().map(OsString::from).collect());
             assert!(
                 parsed.is_ok(),
                 "parser rejected output mode {mode}: {:?}",
@@ -4795,7 +4746,7 @@ mod tests {
 
     #[test]
     fn oldest_lines_conflict_applies_only_to_show_action() {
-        let show_args = Args::parse_from([
+        let show_args = cli_args(&[
             "journalctl",
             "--file=/tmp/x.journal",
             "--lines=+1",
@@ -4806,7 +4757,7 @@ mod tests {
             "show action must reject --lines=+N with --reverse"
         );
 
-        let list_boots_args = Args::parse_from([
+        let list_boots_args = cli_args(&[
             "journalctl",
             "--file=/tmp/x.journal",
             "--list-boots",
@@ -4819,55 +4770,64 @@ mod tests {
 
     #[test]
     fn timestamp_parser_accepts_stock_iso_t_forms() {
-        let local_space = parse_timestamp_usec("2023-11-15 00:00").expect("space local");
-        let local_t = parse_timestamp_usec("2023-11-15T00:00").expect("T local");
+        let local_space = timestamp::Parser::default()
+            .parse("2023-11-15 00:00")
+            .expect("space local");
+        let local_t = timestamp::Parser::default()
+            .parse("2023-11-15T00:00")
+            .expect("T local");
         assert_eq!(local_t, local_space);
 
-        parse_timestamp_usec("2023-11-15T00:00:00Z").expect("UTC RFC3339");
-        parse_timestamp_usec("2023-11-15T00:00:00.000001Z").expect("UTC RFC3339 fraction");
-        parse_timestamp_usec("2023-11-15T00:00:00+02:00").expect("offset RFC3339");
-        parse_timestamp_usec("2023-11-15T00:00+02:00").expect("offset without seconds");
+        timestamp::Parser::default()
+            .parse("2023-11-15T00:00:00Z")
+            .expect("UTC RFC3339");
+        timestamp::Parser::default()
+            .parse("2023-11-15T00:00:00.000001Z")
+            .expect("UTC RFC3339 fraction");
+        timestamp::Parser::default()
+            .parse("2023-11-15T00:00:00+02:00")
+            .expect("offset RFC3339");
+        timestamp::Parser::default()
+            .parse("2023-11-15T00:00+02:00")
+            .expect("offset without seconds");
         assert!(
-            parse_timestamp_usec("2023-11-15T00:00:00+0200").is_err(),
+            timestamp::Parser::default()
+                .parse("2023-11-15T00:00:00+0200")
+                .is_err(),
             "stock rejects compact timezone offsets"
         );
     }
 
-    #[test]
-    fn lines_optional_argument_does_not_consume_match() {
-        let args = preprocess_optional_boot_args([
-            "journalctl".to_string(),
-            "--lines".to_string(),
-            "TEST_ID=journalctl-query".to_string(),
-        ]);
-        assert_eq!(
-            args,
-            vec![
-                "journalctl".to_string(),
-                "--lines=10".to_string(),
-                "TEST_ID=journalctl-query".to_string()
-            ]
-        );
+    fn cli_args(argv: &[&str]) -> Args {
+        parser::parse_cli(argv.iter().map(OsString::from).collect())
+            .expect("parse")
+            .expect("nonterminal")
+    }
 
-        let args = preprocess_optional_boot_args([
-            "journalctl".to_string(),
-            "--lines".to_string(),
-            "+2".to_string(),
-            "TEST_ID=journalctl-query".to_string(),
-        ]);
-        assert_eq!(
-            args,
-            vec![
-                "journalctl".to_string(),
-                "--lines=+2".to_string(),
-                "TEST_ID=journalctl-query".to_string()
-            ]
+    #[test]
+    fn ordered_optional_and_required_values() {
+        let args = cli_args(&["journalctl", "--lines", "TEST_ID=journalctl-query"]);
+        assert_eq!(args.lines.as_deref(), Some("10"));
+        assert_eq!(args.matches, vec!["TEST_ID=journalctl-query"]);
+        let args = cli_args(&["journalctl", "--lines", "+2", "TEST_ID=journalctl-query"]);
+        assert_eq!(args.lines.as_deref(), Some("+2"));
+        let args = cli_args(&["journalctl", "--grep", "--help", "-rn2"]);
+        assert_eq!(args.grep.as_deref(), Some(OsStr::new("--help")));
+        assert_eq!(args.lines.as_deref(), Some("2"));
+        assert!(args.reverse);
+        assert!(
+            parser::parse_cli(
+                ["journalctl", "--since=bad", "--help"]
+                    .map(OsString::from)
+                    .to_vec()
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn rotate_with_vacuum_is_distinct_unsupported_action() {
-        let args = Args::parse_from(["journalctl", "--rotate", "--vacuum-files=2"]);
+        let args = cli_args(&["journalctl", "--rotate", "--vacuum-files=2"]);
         let err =
             enforce_portable_unsupported(&args).expect_err("rotate+vacuum should be rejected");
         let msg = err.to_string();
@@ -4879,12 +4839,92 @@ mod tests {
 
     #[test]
     fn boot_all_merge_is_not_rejected_as_conflict() {
-        let args = Args::parse_from(preprocess_optional_boot_args([
-            "journalctl".to_string(),
-            "--file=/tmp/x.journal".to_string(),
-            "--boot=all".to_string(),
-            "--merge".to_string(),
-        ]));
+        let args = cli_args(&[
+            "journalctl",
+            "--file=/tmp/x.journal",
+            "--boot=all",
+            "--merge",
+        ]);
         enforce_boot_merge_conflict(&args).expect("boot=all must not conflict with --merge");
     }
+}
+
+#[derive(Debug)]
+struct SilentNoData;
+impl std::fmt::Display for SilentNoData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no matching entries")
+    }
+}
+impl std::error::Error for SilentNoData {}
+
+fn no_data_error(quiet: bool, message: &str) -> anyhow::Error {
+    if quiet {
+        SilentNoData.into()
+    } else {
+        anyhow!("{message}")
+    }
+}
+
+fn enforce_field_enumeration_scope(args: &Args) -> Result<()> {
+    if !args.fields && args.field.is_none() {
+        return Ok(());
+    }
+    let boot = args.this_boot || args.boot.as_deref().is_some_and(|b| b != "all");
+    let invocation =
+        args.invocation_latest || args.invocation.as_deref().is_some_and(|b| b != "all");
+    if boot
+        || invocation
+        || args.dmesg
+        || !args.unit.is_empty()
+        || !args.user_unit.is_empty()
+        || !args.identifier.is_empty()
+        || !args.exclude_identifier.is_empty()
+        || !args.priority.is_empty()
+        || !args.facility.is_empty()
+        || args.since.is_some()
+        || args.until.is_some()
+        || args.cursor.is_some()
+        || args.after_cursor.is_some()
+        || args.cursor_file.is_some()
+        || args.grep.is_some()
+    {
+        return Err(anyhow!(
+            "-F/--field= and -N/--fields cannot be combined with options that limit the journal."
+        ));
+    }
+    Ok(())
+}
+
+fn is_json_output(mode: OutputModeArg) -> bool {
+    matches!(
+        mode,
+        OutputModeArg::Json
+            | OutputModeArg::JsonPretty
+            | OutputModeArg::JsonSse
+            | OutputModeArg::JsonSeq
+    )
+}
+
+fn table_timestamp(value: u64) -> Option<u64> {
+    (value != u64::MAX).then_some(value)
+}
+
+fn print_json_table(mode: OutputModeArg, rows: &[serde_json::Value]) -> Result<()> {
+    let mut text = if matches!(mode, OutputModeArg::JsonPretty) {
+        let mut bytes = Vec::new();
+        output::write_systemd_pretty_json_array_at(&mut bytes, rows, 0)?;
+        String::from_utf8(bytes)?
+    } else {
+        serde_json::to_string(rows)?
+    };
+    if colors::Colors::detect().enabled() {
+        text = String::from_utf8(colors::json(text.as_bytes()))?;
+    }
+    match mode {
+        OutputModeArg::JsonSse => println!("data: {text}\n"),
+        OutputModeArg::JsonSeq => println!("\x1e{text}"),
+        _ => println!("{text}"),
+    }
+    Ok(())
 }

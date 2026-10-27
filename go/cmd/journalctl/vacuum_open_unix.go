@@ -1,4 +1,4 @@
-//go:build unix
+//go:build cgo && unix
 
 package main
 
@@ -9,7 +9,12 @@ import (
 )
 
 func openVacuumCandidate(path string) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK
+	fd, err := unix.Open(path, flags|vacuumNoAtime, 0)
+	if err != nil && vacuumNoAtime != 0 {
+		// Native retries when preserving atime is unavailable to the caller.
+		fd, err = unix.Open(path, flags, 0)
+	}
 	if err != nil {
 		return nil, err
 	}

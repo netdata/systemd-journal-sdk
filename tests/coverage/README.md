@@ -3,6 +3,24 @@
 This directory contains local coverage helpers used by the GitHub Actions
 coverage workflow.
 
+Coverage includes both commands. Install a native C compiler, `pkg-config` and
+PCRE2-8 development files (>=10.42) before running either language's coverage.
+The Go helper first checks the pure SDK with CGO disabled, then enables CGO for
+full coverage so the command cannot be silently omitted by its build tags.
+Both helpers also run the existing portable CLI controls against instrumented
+binaries, including unit naming and indexed invocation selection. Their hits
+are combined with language-test coverage before filtering and upload. Python 3
+and the repository's Go toolchain are required for synthetic fixture generation
+in both jobs; set `PYTHON` to select an existing Python interpreter.
+
+Go subprocess profiles use a fresh per-run directory and are merged by source
+block with the atomic unit-test profile. Rust runs workspace tests and CLI
+subprocesses in the same cargo-llvm-cov collection before generating LCOV.
+Fixture generation is not instrumented. These test-only builds do not change
+release binaries or runtime performance. The full pinned-systemd oracle matrix
+remains a separate compatibility gate; the portable subset needs no systemd
+installation.
+
 Reports are written under `.local/coverage/` by default:
 
 ```bash

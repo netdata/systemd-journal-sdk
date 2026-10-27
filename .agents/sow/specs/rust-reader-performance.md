@@ -44,6 +44,17 @@ scan large journal sets with predictable CPU, memory, and I/O behavior.
    Entry scans are acceptable only when the requested operation is inherently
    row-oriented or when an active SOW records evidence that the indexed path is
    unsafe or slower for that operation.
+9. Explicit filtered realtime seeks must binary-search captured posting-node
+   slots rather than linearly visit preceding entries. Preserve lazy empty and
+   singleton paths, existing node/chain validation and ordinary sequential
+   traversal. Keep cursor direction state within existing layout padding where
+   possible, and restore failed ENTRY-load positions without cloning the whole
+   cursor per row.
+10. Counted-array cycle history must preserve the four-word Node shape and
+    within-array movement without per-row sets or allocation. The chain head
+    replaces cached next; uncached array transitions read the current header.
+    Exceptional ordering checks only the visited native prefix. Cached reverse
+    node chains retain their existing reuse.
 
 ## Rolling Mmap Row Pins
 
@@ -91,6 +102,12 @@ Rules:
   maximum.
 - The Rust `ruzstd` fallback remains required for compatibility with frames the
   native fast path rejects or cannot size safely.
+- Decode the complete logical Zstandard stream, including concatenated,
+  skippable and unknown-size frames. Validate each frame's size/checksum when
+  present and reject truncation or trailing garbage. Enforce the 768 MiB DATA
+  output bound across all frames, and clear partial output on error.
+- Whole-file `.journal.zst` staging streams input/output and decodes every
+  frame; the per-DATA output bound does not limit the size of a whole journal.
 - Decompressed bytes live in the current-row arena and are invalidated on row
   advance or explicit row reset.
 - A query-scoped reusable decompression cache is not part of the current

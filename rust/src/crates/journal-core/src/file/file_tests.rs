@@ -5,6 +5,279 @@ use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
+#[test]
+fn custom_object_implementations_can_omit_the_wire_type_hint() {
+    struct Custom;
+    impl JournalObject<&[u8]> for Custom {
+        fn from_data(_: &[u8], _: bool) -> Option<Self> {
+            Some(Self)
+        }
+    }
+    assert!(<Custom as JournalObject<&[u8]>>::EXPECTED_TYPE.is_none());
+}
+
+#[test]
+fn writer_counted_arrays_reject_revisit_before_mutation() {
+    use std::num::NonZeroU64;
+    for kind in 0..3 {
+        for descending in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("system.journal");
+            let repo = crate::repository::File::from_path(&path).unwrap();
+            let mut file = JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .create::<MmapMut>(&repo)
+                .unwrap();
+            let mut writer = JournalWriter::new(&mut file, 1, test_uuid(2)).unwrap();
+            let a = writer
+                .allocate_new_array(&mut file, NonZeroU64::new(4).unwrap())
+                .unwrap();
+            let b = writer
+                .allocate_new_array(&mut file, NonZeroU64::new(8).unwrap())
+                .unwrap();
+            file.offset_array_mut(a, None)
+                .unwrap()
+                .header
+                .next_offset_array = Some(b);
+            file.offset_array_mut(b, None)
+                .unwrap()
+                .header
+                .next_offset_array = Some(a);
+            let head = if descending { b } else { a };
+            let missing_tail = NonZeroU64::new(1024).unwrap();
+            let failed = match kind {
+                0 => writer
+                    .append_to_data_entry_array(&mut file, head, missing_tail, 13)
+                    .is_err(),
+                1 => writer.find_entry_array_tail(&file, head, 13).is_err(),
+                _ => writer
+                    .compute_entry_array_tail_entries(&file, head, missing_tail, 13)
+                    .is_err(),
+            };
+            assert!(failed, "required revisit selected a repeated array");
+            assert!(
+                file.offset_array_ref(a)
+                    .unwrap()
+                    .get(1, 4)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn recovered_tail_cursor_requalification_tracks_its_new_position() {
+    use crate::file::Mmap;
+    use crate::file::filter::FilterExpr;
+    use std::io::{Seek, SeekFrom, Write};
+
+    for compact in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("system.journal");
+        let repo = crate::repository::File::from_path(&path).unwrap();
+        let mut writable = JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+            .with_compact(compact)
+            .create::<MmapMut>(&repo)
+            .unwrap();
+        let mut writer = JournalWriter::new(&mut writable, 1, test_uuid(2)).unwrap();
+        for i in 1..=3 {
+            writer
+                .add_entry(&mut writable, &[b"COMMON=all"], i * 1000, i)
+                .unwrap();
+        }
+        let mut entries = Vec::new();
+        writable.entry_offsets(&mut entries).unwrap();
+        drop(writer);
+        drop(writable);
+        let mut file = JournalFile::<Mmap>::open_path(&path, 64 * 1024).unwrap();
+        file.set_reader_recovery(true);
+        let data = file
+            .find_data_offset(file.hash(b"COMMON=all"), b"COMMON=all")
+            .unwrap()
+            .unwrap();
+        let cursor = file
+            .reader_data_cursor(data)
+            .unwrap()
+            .unwrap()
+            .tail(&file)
+            .unwrap();
+        let mut disk = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        disk.seek(SeekFrom::Start(entries[2].get())).unwrap();
+        disk.write_all(&[0; 16]).unwrap();
+        assert!(
+            file.recover_reader_tail(&JournalError::ObjectExceedsFileBounds)
+                .unwrap()
+        );
+        assert_eq!(file.recovery_status().recovered_entries, 2);
+        let cursor = cursor.for_reader(&file).unwrap().unwrap();
+        let mut expression = FilterExpr::Match(data, cursor);
+        assert_eq!(
+            expression.previous(&file, entries[1]).unwrap(),
+            Some(entries[1])
+        );
+    }
+}
+
+// Synthetic reconstruction exercises consistency after injected failures. It
+// does not establish an upstream publication sequence or a repair contract.
+fn filter_repair_retry(
+    compact: bool,
+    installed: bool,
+    backward: bool,
+    compose: bool,
+    tail_error: bool,
+    zero_data: bool,
+) {
+    use crate::file::Mmap;
+    use crate::file::filter::{FilterExpr, JournalFilter, LogicalOp};
+    use std::io::{Seek, SeekFrom, Write};
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("system.journal");
+    let repo = crate::repository::File::from_path(&path).unwrap();
+    let mut writable = JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+        .with_compact(compact)
+        .with_data_hash_table_buckets(64)
+        .with_field_hash_table_buckets(16)
+        .create::<MmapMut>(&repo)
+        .unwrap();
+    let mut writer = JournalWriter::new(&mut writable, 1, test_uuid(2)).unwrap();
+    writer
+        .add_entry(&mut writable, &[b"COMMON=all"], 1_000, 1)
+        .unwrap();
+    writer
+        .add_entry(&mut writable, &[b"COMMON=all", b"TARGET=yes"], 2_000, 2)
+        .unwrap();
+    let mut entries = Vec::new();
+    writable.entry_offsets(&mut entries).unwrap();
+    drop(writer);
+    drop(writable);
+    let original = std::fs::read(&path).unwrap();
+    let mut file = JournalFile::<Mmap>::open_path(&path, 64 * 1024).unwrap();
+    file.set_reader_recovery(true);
+    let target = file
+        .find_data_offset(file.hash(b"TARGET=yes"), b"TARGET=yes")
+        .unwrap()
+        .unwrap();
+    assert!(target.get() % 4096 < 4096 - 16);
+    let mut filter = JournalFilter::default();
+    filter.add_match(b"COMMON=all");
+    filter.set_operation(&file, LogicalOp::Conjunction).unwrap();
+    filter.add_match(b"TARGET=yes");
+    filter.set_operation(&file, LogicalOp::Conjunction).unwrap();
+
+    let mut installed_expression = if installed {
+        Some(filter.build(&file).unwrap())
+    } else {
+        None
+    };
+
+    let mut disk = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    disk.set_len(target.get() + 8).unwrap();
+    assert!(
+        file.recover_reader_tail(&JournalError::ObjectExceedsFileBounds)
+            .unwrap()
+    );
+    assert!(file.recovery_status().incomplete());
+    if let Some(expression) = installed_expression.as_mut() {
+        assert!(expression.refresh_recovery(&file).is_err());
+    } else {
+        assert!(filter.build(&file).is_err());
+    }
+
+    let mut partial = original.clone();
+    let start = target.get() as usize;
+    partial[start..start + 16].fill(0);
+    let common = file
+        .find_data_offset(file.hash(b"COMMON=all"), b"COMMON=all")
+        .unwrap()
+        .unwrap();
+    if zero_data {
+        let common = common.get() as usize;
+        partial[common + 40..common + 64].fill(0);
+    }
+    disk.seek(SeekFrom::Start(0)).unwrap();
+    disk.write_all(&partial).unwrap();
+    if let Some(expression) = installed_expression.as_mut() {
+        assert!(expression.refresh_recovery(&file).is_err());
+    } else {
+        assert!(filter.build(&file).is_err());
+    }
+    assert!(!file.recovery_status().incomplete());
+    disk.seek(SeekFrom::Start(target.get())).unwrap();
+    disk.write_all(&original[start..start + 16]).unwrap();
+    if zero_data {
+        let start = common.get() as usize;
+        disk.seek(SeekFrom::Start(common.get())).unwrap();
+        disk.write_all(&original[start..start + 64]).unwrap();
+    }
+    let mut expression = installed_expression.unwrap_or_else(|| filter.build(&file).unwrap());
+    if compose {
+        let mut clean = JournalFilter::default();
+        clean.add_match(b"COMMON=all");
+        expression = FilterExpr::Conjunction(vec![clean.build(&file).unwrap(), expression]);
+    }
+    if tail_error {
+        let common = file
+            .find_data_offset(file.hash(b"COMMON=all"), b"COMMON=all")
+            .unwrap()
+            .unwrap();
+        let array = file
+            .data_ref(common)
+            .unwrap()
+            .header
+            .entry_array_offset
+            .unwrap();
+        disk.seek(SeekFrom::Start(array.get() + 8)).unwrap();
+        disk.write_all(&8u64.to_le_bytes()).unwrap();
+        assert!(expression.previous(&file, NonZeroU64::MAX).is_err());
+        let start = array.get() as usize + 8;
+        disk.seek(SeekFrom::Start(array.get() + 8)).unwrap();
+        disk.write_all(&original[start..start + 8]).unwrap();
+        let mut append = JournalFile::<MmapMut>::open_for_append(&repo, 64 * 1024).unwrap();
+        let mut writer = JournalWriter::new(&mut append, 1, test_uuid(2)).unwrap();
+        writer
+            .add_entry(&mut append, &[b"COMMON=all", b"TARGET=yes"], 3_000, 3)
+            .unwrap();
+        drop(writer);
+        drop(append);
+    }
+    let found = if backward {
+        expression.previous(&file, NonZeroU64::MAX)
+    } else {
+        expression.next(&file, entries[1])
+    };
+    assert_eq!(
+        found.unwrap(),
+        Some(entries[1]),
+        "compact={compact}, installed={installed}, backward={backward}, compose={compose}, tail_error={tail_error}"
+    );
+}
+
+#[test]
+fn pending_filter_retries_all_branches_after_repair_clears_recovery() {
+    for compact in [false, true] {
+        for installed in [false, true] {
+            for backward in [false, true] {
+                for compose in [false, true] {
+                    for zero_data in [false, true] {
+                        filter_repair_retry(
+                            compact, installed, backward, compose, false, zero_data,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn recovered_filter_tail_retry_preserves_captured_populations() {
+    for compact in [false, true] {
+        filter_repair_retry(compact, true, true, true, true, false);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ExpectedSanitizedHeader {
     header_size: u64,

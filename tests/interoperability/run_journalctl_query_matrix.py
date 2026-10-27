@@ -16,12 +16,15 @@ import os
 import re
 import shutil
 import subprocess  # nosec B404
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from go_fixture_writer import start_live_journal_writer, write_journal_file
+from journalctl_v262_cases import run_v262_cases
+from journalctl_timestamp_cases import run_timestamp_cases
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -207,6 +210,7 @@ def build_env() -> dict[str, str]:
     env.setdefault("GOPATH", str(local / "go"))
     env.setdefault("CARGO_HOME", str(local / "cargo-home"))
     env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
+    env["CARGO_TARGET_DIR"] = str((REPO_ROOT / env["CARGO_TARGET_DIR"]).resolve())
     return env
 
 
@@ -216,7 +220,7 @@ def build_tools() -> dict[str, str]:
 
     go_journalctl = BIN_DIR / "go-journalctl"
     require_ok(
-        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go", env=env),
+        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go", env={**env, "CGO_ENABLED": "1"}),
         "build go journalctl",
     )
     require_ok(
@@ -230,8 +234,9 @@ def build_tools() -> dict[str, str]:
 
     rust_src = Path(env["CARGO_TARGET_DIR"]) / "debug" / "journalctl"
     rust_journalctl = BIN_DIR / "rust-journalctl"
-    if rust_src.exists():
-        shutil.copy2(rust_src, rust_journalctl)
+    if not rust_src.is_file():
+        raise RuntimeError(f"expected Rust build output not found: {rust_src}")
+    shutil.copy2(rust_src, rust_journalctl)
 
     for path in (go_journalctl, rust_journalctl):
         if not path.exists():
@@ -243,11 +248,17 @@ def build_tools() -> dict[str, str]:
     }
 
 
-def systemd_version() -> str:
-    result = run(["journalctl", "--version"], timeout=10)
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.splitlines()[0]
-    return "unavailable"
+def systemd_version(journalctl: str) -> str:
+    result = run([journalctl, "--version"], timeout=10)
+    require_ok(result, "selected journalctl --version")
+    lines = result.stdout.splitlines()
+    if not lines or not re.match(r"^systemd 262(?:\s|$)", lines[0]):
+        raise RuntimeError("query matrix requires the pinned systemd v262 oracle")
+    features = set(" ".join(lines[1:]).split())
+    missing = {"+PCRE2", "+ZSTD", "+XZ", "+LZ4"} - features
+    if missing:
+        raise RuntimeError("selected v262 oracle lacks required features: " + ", ".join(sorted(missing)))
+    return lines[0]
 
 
 def make_fixtures() -> dict[str, Path]:
@@ -536,7 +547,7 @@ def row_entry(message: str, realtime: int, monotonic: int, test_id: str, boot_id
 
 def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, args: list[str]) -> list[str]:
     if reader == "stock":
-        base = ["journalctl", f"--{mode}", str(path), "--output=json", "--no-pager", "--quiet"]
+        base = [tools["stock_journalctl"], f"--{mode}", str(path), "--output=json", "--no-pager", "--quiet"]
     elif reader == "go":
         base = [tools["go_journalctl"], f"--{mode}", str(path), "--output=json"]
     elif reader == "rust":
@@ -548,7 +559,7 @@ def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, ar
 
 def raw_reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, args: list[str]) -> list[str]:
     if reader == "stock":
-        base = ["journalctl", f"--{mode}", str(path), "--no-pager"]
+        base = [tools["stock_journalctl"], f"--{mode}", str(path), "--no-pager"]
     elif reader == "go":
         base = [tools["go_journalctl"], f"--{mode}", str(path)]
     elif reader == "rust":
@@ -560,7 +571,7 @@ def raw_reader_command(reader: str, tools: dict[str, str], mode: str, path: Path
 
 def action_command(reader: str, tools: dict[str, str], args: list[str]) -> list[str]:
     if reader == "stock":
-        return ["journalctl", "--no-pager", "--quiet", *args]
+        return [tools["stock_journalctl"], "--no-pager", "--quiet", *args]
     if reader == "go":
         return [tools["go_journalctl"], "--quiet", *args]
     if reader == "rust":
@@ -692,6 +703,7 @@ def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
     mismatched_x_cursor = replace_cursor_x(file_cursors[1], "ffffffffffffffff")
 
     cases = [
+
         ("directory-all", "directory", fixtures["directory"], ["TEST_ID=journalctl-query"]),
         ("directory-reverse", "directory", fixtures["directory"], ["--reverse", "TEST_ID=journalctl-query"]),
         ("directory-since", "directory", fixtures["directory"], ["--since", "@1700004000.000001", "TEST_ID=journalctl-query"]),
@@ -1649,6 +1661,96 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
                 }
             )
 
+    if sys.platform == "linux":
+        results.extend(run_vacuum_metadata_cases(tools, fixtures["file"], vacuum_root))
+    return results
+
+
+def run_vacuum_metadata_cases(tools: dict[str, str], source: Path,
+                              vacuum_root: Path) -> list[dict[str, object]]:
+    """Recent names and mtimes must not hide an older native timestamp."""
+    now = time.time_ns() // 1000
+    old = now - 30 * 86400 * 1_000_000
+    fresh_ns = (now + 3600 * 1_000_000) * 1000
+    results = []
+    for name, retention, xattr, deleted in [
+        ("atime", "1day", None, True),
+        ("creation-xattr", "1day", old.to_bytes(8, "little"), True),
+        ("creation-zero", "1day", bytes(8), False),
+        ("creation-infinity", "1day", ((1 << 64) - 1).to_bytes(8, "little"), False),
+        ("creation-short", "1day", b"\x01", False),
+        ("preserve-atime", "90days", None, False),
+    ]:
+        observed = {}
+        for reader in READERS:
+            directory = vacuum_root / ("metadata-" + name) / reader
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / archived_journal_name(1, fresh_ns // 1000)
+            shutil.copyfile(source, path)
+            atime_ns = old * 1000 if xattr is None else fresh_ns
+            os.utime(path, ns=(atime_ns, fresh_ns))
+            if xattr is not None:
+                os.setxattr(path, "user.crtime_usec", xattr)
+            result = run(action_command(reader, tools,
+                         ["--directory", str(directory), "--vacuum-time=" + retention]), timeout=30)
+            exists = path.exists()
+            observed[reader] = (result.returncode, exists, path.stat().st_atime_ns if exists else None)
+        expected = observed["stock"]
+        if expected[0] != 0 or expected[1] == deleted:
+            raise AssertionError(f"stock vacuum metadata-{name} control changed: {expected!r}")
+        for reader in ("go", "rust"):
+            actual = observed[reader]
+            results.append({"test": "vacuum-metadata-" + name, "reader": reader,
+                            "status": "PASS" if actual == expected else "FAIL",
+                            "expected": expected, "actual": actual,
+                            "returncode": actual[0]})
+    for same_sequence in (True, False):
+        name = "shared-sequence" if same_sequence else "mixed-sequence"
+        first_name = archived_journal_name(1, fresh_ns // 1000)
+        second_name = archived_journal_name(2, fresh_ns // 1000)
+        if not same_sequence:
+            second_name = second_name.replace(VACUUM_SEQNUM_ID, "34343434343434343434343434343434")
+        observed = {}
+        for reader in READERS:
+            directory = vacuum_root / ("metadata-order-" + name) / reader
+            directory.mkdir(parents=True, exist_ok=True)
+            for filename in (first_name, second_name):
+                path = directory / filename
+                shutil.copyfile(source, path)
+                os.utime(path, ns=(fresh_ns, fresh_ns))
+            os.setxattr(directory / second_name, "user.crtime_usec", old.to_bytes(8, "little"))
+            result = run(action_command(reader, tools,
+                         ["--directory", str(directory), "--vacuum-files=1"]), timeout=30)
+            observed[reader] = (result.returncode, remaining_names(directory))
+        expected = observed["stock"]
+        survivor = second_name if same_sequence else first_name
+        if expected != (0, [survivor]):
+            raise AssertionError(f"stock vacuum metadata order-{name} control changed: {expected!r}")
+        for reader in ("go", "rust"):
+            actual = observed[reader]
+            results.append({"test": "vacuum-metadata-order-" + name, "reader": reader,
+                            "status": "PASS" if actual == expected else "FAIL",
+                            "expected": expected, "actual": actual,
+                            "returncode": actual[0]})
+    suffix = f"@{old:016x}-0000000000000001.journal~"
+    raw_names = [os.fsdecode(prefix) + suffix for prefix in (b"raw-\xff", b"raw-\xef")]
+    observed = {}
+    for reader in READERS:
+        directory = vacuum_root / "metadata-order-raw-names" / reader
+        directory.mkdir(parents=True, exist_ok=True)
+        for filename in raw_names:
+            shutil.copyfile(source, directory / filename)
+        result = run(action_command(reader, tools,
+                     ["--directory", str(directory), "--vacuum-files=1"]), timeout=30)
+        observed[reader] = (result.returncode, remaining_names(directory))
+    expected = observed["stock"]
+    if expected != (0, [raw_names[0]]):
+        raise AssertionError(f"stock raw vacuum filename order changed: {expected!r}")
+    for reader in ("go", "rust"):
+        actual = observed[reader]
+        results.append({"test": "vacuum-metadata-order-raw-names", "reader": reader,
+                        "status": "PASS" if actual == expected else "FAIL",
+                        "expected": expected, "actual": actual, "returncode": actual[0]})
     return results
 
 
@@ -2013,7 +2115,7 @@ def run_empty_result_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> 
     path = fixtures["file"]
     for case_name, extra_args, _expected_hint in cases:
         args = [*extra_args, "--boot=all", "TEST_ID=journalctl-empty-result"]
-        stock_cmd = ["journalctl", "--file", str(path), "--no-pager", *args]
+        stock_cmd = [tools["stock_journalctl"], "--file", str(path), "--no-pager", *args]
         stock = run(stock_cmd, timeout=30)
         require_ok(stock, f"stock {case_name}")
         expected = stock.stdout
@@ -2044,6 +2146,77 @@ def run_empty_result_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> 
 def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
     results = []
     cases = [
+        {
+            "name": "follow-unit-glob-frozen",
+            "test_id": "journalctl-follow-unit-glob",
+            "args": ["--follow", "--no-tail", "--boot=all", "--merge", "-uapp-*"],
+            "initial": [("initial-alpha", 1_700_006_180_000_000)],
+            "appends": [("new-beta", 1_700_006_180_000_001),
+                        ("late-alpha", 1_700_006_180_000_002)],
+            "initial_fields": [[("_SYSTEMD_UNIT", "app-alpha.service")]],
+            "append_fields": [[("_SYSTEMD_UNIT", unit + ".service")] for unit in ("app-beta", "app-alpha")],
+            "expected": ["initial-alpha", "late-alpha"],
+        },
+        {
+            "name": "follow-invocation-frozen",
+            "test_id": "journalctl-follow-invocation",
+            "args": ["--follow", "--no-tail", "--boot=all", "--merge", "-ualpha", "-I"],
+            "initial": [("initial-one", 1_700_006_190_000_000),
+                        ("initial-two", 1_700_006_190_000_001)],
+            "appends": [("new-three", 1_700_006_190_000_002),
+                        ("late-two", 1_700_006_190_000_003)],
+            "initial_fields": [[("_SYSTEMD_UNIT", "alpha.service"), ("_SYSTEMD_INVOCATION_ID", c * 32)]
+                               for c in "12"],
+            "append_fields": [[("_SYSTEMD_UNIT", "alpha.service"), ("_SYSTEMD_INVOCATION_ID", c * 32)]
+                              for c in "32"],
+            "expected": ["initial-two", "late-two"],
+        },
+        {
+            "name": "follow-cursor-skipped-suffix",
+            "test_id": "journalctl-follow-cursor-suffix",
+            "args": ["--follow", "--no-tail", "--boot=all", "--merge", "--grep=hit"],
+            "initial": [("hit", 1_700_006_200_000_000)],
+            "appends": [("miss", 1_700_006_200_000_001)],
+            "expected": ["hit"],
+            "cursor_file": True,
+            "checkpoint_final": True,
+        },
+        {
+            "name": "follow-cursor-no-grep-matches",
+            "test_id": "journalctl-follow-cursor-no-matches",
+            "args": ["--follow", "--no-tail", "--boot=all", "--merge", "--grep=hit"],
+            "initial": [("miss-initial", 1_700_006_210_000_000)],
+            "appends": [("miss-final", 1_700_006_210_000_001)],
+            "expected": [],
+            "cursor_file": True,
+            "checkpoint_final": True,
+        },
+        {
+            "name": "follow-grep-native-tail",
+            "test_id": "journalctl-follow-grep-tail",
+            "args": ["--follow", "--lines=2", "--boot=all", "--merge", "--grep=hit"],
+            "initial": [("hit-a", 1_700_006_300_000_000, BOOT_A),
+                        ("miss-b", 1_700_006_300_000_001, BOOT_B),
+                        ("hit-c", 1_700_006_300_000_002, BOOT_C)],
+            "appends": [("hit-new", 1_700_006_300_001_000, BOOT_C)],
+            "expected": ["hit-c", "hit-new"],
+        },
+        {
+            "name": "follow-grep-boot-events",
+            "test_id": "journalctl-follow-grep-boots",
+            "args": ["--follow", "--no-tail", "--boot=all", "--grep=hit",
+                     "--utc", "--no-hostname", "-oshort"],
+            "initial": [("hit-a", 1_700_006_300_000_000, BOOT_A),
+                        ("miss-b", 1_700_006_300_000_001, BOOT_B)],
+            "appends": [("miss-c", 1_700_006_300_000_002, BOOT_C),
+                        ("hit-d", 1_700_006_300_000_003, "d" * 32)],
+            "raw_output": True,
+            "expected": [
+                datetime.fromtimestamp(1_700_006_300, tz=timezone.utc).strftime("%b %d %H:%M:%S") + " unknown: hit-a",
+                f"-- Boot {BOOT_B} --", f"-- Boot {BOOT_C} --", f"-- Boot {'d' * 32} --",
+                datetime.fromtimestamp(1_700_006_300, tz=timezone.utc).strftime("%b %d %H:%M:%S") + " unknown: hit-d",
+            ],
+        },
         {
             "name": "follow-live-append-no-tail",
             "test_id": "journalctl-follow",
@@ -2107,6 +2280,39 @@ def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             "writer_boot_id": BOOT_C,
         },
     ]
+    backlog = [(f"history-{i:04d}", 1_700_006_000_000_000 + i) for i in range(1005)]
+    appended = [("history-new-0", 1_700_006_000_002_000), ("history-new-1", 1_700_006_000_002_001)]
+    for name, extra, all_history in [
+        ("since-default", ["--since=@0"], True),
+        ("explicit-all", ["--lines=all"], True),
+        ("no-tail-overrides-one", ["--no-tail", "--lines=1"], True),
+        ("explicit-zero", ["--lines=0"], False),
+    ]:
+        cases.append({"name": "follow-history-" + name, "test_id": "journalctl-history-" + name,
+                      "args": ["--follow", "--boot=all", "--merge", *extra], "initial": backlog,
+                      "appends": appended, "expected": [row[0] for row in (backlog if all_history else []) + appended]})
+    for name, extra, count in [
+        ("pager-default", [], 10),
+        ("pager-since", ["--since=@0"], 1000),
+    ]:
+        cases.append({"name": "follow-history-" + name, "test_id": "journalctl-history-" + name,
+                      "args": ["--follow", "--pager-end", "--boot=all", "--merge", *extra],
+                      "initial": backlog, "appends": appended,
+                      "expected": [row[0] for row in backlog[-count:] + appended]})
+    initial = [(f"cursor-history-{i}",1_700_006_100_000_000+i) for i in range(12)]
+    appends = [("cursor-new",1_700_006_100_001_000)]
+    for name, cursor_mode, limit, start in [
+        ("cursor-one","--cursor",1,1), ("after-cursor-one","--after-cursor",1,2),
+        ("cursor-zero","--cursor",0,1), ("cursor-file-one","--cursor-file",1,2),
+    ]:
+        cases.append({"name":"follow-"+name,"test_id":"journalctl-"+name,
+                      "args":["--follow","--boot=all","--merge",f"-n{limit}"],
+                      "initial":initial,"appends":appends,"cursor_mode":cursor_mode,"cursor_index":1,
+                      "cursor_file":cursor_mode=="--cursor-file",
+                      "expected":[row[0] for row in initial[start:]+appends]})
+    cases.append({"name":"follow-empty-cursor-file","test_id":"journalctl-empty-cursor-file",
+                  "args":["--follow","--boot=all","--merge","-n1"],"initial":initial,"appends":appends,
+                  "cursor_file":True,"empty_cursor_file":True,"expected":[initial[-1][0],appends[0][0]]})
     for case in cases:
         mode = str(case.get("mode", "file"))
         for reader in READERS:
@@ -2117,7 +2323,7 @@ def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
             else:
                 read_path = fixtures["follow"] / case["name"] / f"{reader}.journal"
                 write_path = read_path
-            actual, returncode, stderr, cmd, cursor_written = run_follow_reader(reader, tools, mode, read_path, write_path, case)
+            actual, returncode, stderr, cmd, cursor_written, child_returncode, stopped_by_harness = run_follow_reader(reader, tools, mode, read_path, write_path, case)
             expected = case["expected"]
             ok = returncode == 0 and actual == expected and (not case.get("cursor_file") or cursor_written)
             results.append(
@@ -2129,6 +2335,8 @@ def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[d
                     "expected": expected,
                     "actual": actual,
                     "cursor_written": cursor_written,
+                    "child_returncode": child_returncode,
+                    "stopped_by_harness": stopped_by_harness,
                     "returncode": returncode,
                     "stderr": stderr[-1000:],
                 }
@@ -2143,23 +2351,29 @@ def run_follow_reader(
     read_path: Path,
     write_path: Path,
     case: dict[str, object],
-) -> tuple[list[str], int, str, list[str], bool]:
+) -> tuple[list[str], int, str, list[str], bool, int | None, bool]:
     if mode == "directory":
         read_path.mkdir(parents=True, exist_ok=True)
     write_path.parent.mkdir(parents=True, exist_ok=True)
     ready_file = write_path.with_suffix(write_path.suffix + ".ready")
     seq = 1
     initial_entries = []
-    for row in case["initial"]:
+    for i, row in enumerate(case["initial"]):
         message, realtime, *boot_override = row
         boot_id = str(boot_override[0]) if boot_override else BOOT_A
-        initial_entries.append(row_entry(message, realtime, seq, str(case["test_id"]), boot_id=boot_id))
+        entry = row_entry(message, realtime, seq, str(case["test_id"]), boot_id=boot_id)
+        if case.get("initial_fields"):
+            entry["fields"].extend(case["initial_fields"][i])
+        initial_entries.append(entry)
         seq += 1
     append_entries = []
-    for row in case["appends"]:
+    for i, row in enumerate(case["appends"]):
         message, realtime, *boot_override = row
         boot_id = str(boot_override[0]) if boot_override else BOOT_A
-        append_entries.append(row_entry(message, realtime, seq, str(case["test_id"]), boot_id=boot_id))
+        entry = row_entry(message, realtime, seq, str(case["test_id"]), boot_id=boot_id)
+        if case.get("append_fields"):
+            entry["fields"].extend(case["append_fields"][i])
+        append_entries.append(entry)
         seq += 1
     writer_proc = start_live_journal_writer(
         write_path,
@@ -2172,14 +2386,28 @@ def run_follow_reader(
     )
     ready_error = wait_for_writer_ready(writer_proc, ready_file)
     if ready_error is not None:
-        return [], ready_error[0], ready_error[1], [], False
+        return [], ready_error[0], ready_error[1], [], False, None, False
     cursor_file = write_path.with_suffix(write_path.suffix + ".cursor")
     args = [*case["args"], f"TEST_ID={case['test_id']}"]
     if case.get("cursor_file"):
         if cursor_file.exists():
             cursor_file.unlink()
         args = ["--cursor-file", str(cursor_file), *args]
-    cmd = reader_command(
+        if case.get("empty_cursor_file"):
+            cursor_file.write_text("")
+    if case.get("cursor_mode"):
+        probe = subprocess.run(  # nosec B603 - private writer fixture and selected oracle.
+            [tools["stock_journalctl"],"--file",str(write_path),"--output=json","--boot=all"],
+            capture_output=True, timeout=30, check=False)
+        if probe.returncode != 0:
+            raise AssertionError("follow cursor probe failed: " + probe.stderr.decode(errors="replace"))
+        cursor = json.loads(probe.stdout.splitlines()[int(case["cursor_index"])])["__CURSOR"]
+        if case["cursor_mode"] == "--cursor-file":
+            cursor_file.write_text(cursor+"\n")
+        else:
+            args = [str(case["cursor_mode"]),cursor,*args]
+    command = raw_reader_command if case.get("raw_output") else reader_command
+    cmd = command(
         reader,
         tools,
         mode,
@@ -2189,28 +2417,51 @@ def run_follow_reader(
     proc: subprocess.Popen[str] | None = None
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
+    # Follow history can exceed pipe capacity before the append window ends.
+    # File-backed capture keeps every reader draining without timing-dependent truncation.
+    stdout_path = write_path.with_suffix(".reader.stdout.log")
+    stderr_path = write_path.with_suffix(".reader.stderr.log")
+    captured_stdout = stdout_path.open("w", encoding="utf-8")
+    captured_stderr = stderr_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(  # nosec B603
         cmd,  # nosemgrep
         cwd=str(REPO_ROOT),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=captured_stdout,
+        stderr=captured_stderr,
     )
     try:
         writer_stdout, writer_stderr = communicate_or_stop(writer_proc, timeout=10, stop_timeout=2)
         time.sleep(0.7)
-        proc.terminate()
-        stdout, stderr = communicate_or_kill(proc, timeout=5)
+        stopped_by_harness = proc.poll() is None
+        if stopped_by_harness:
+            proc.terminate()
+        communicate_or_kill(proc, timeout=5)
     finally:
         stop_process_if_running(writer_proc)
         stop_process_if_running(proc)
+        captured_stdout.close()
+        captured_stderr.close()
+    stdout = stdout_path.read_text(encoding="utf-8")
+    stderr = stderr_path.read_text(encoding="utf-8")
 
-    actual = parse_messages(stdout)
-    expected = case["expected"]
+    actual = stdout.splitlines() if case.get("raw_output") else parse_messages(stdout)
     cursor_written = cursor_file.exists() and bool(cursor_file.read_text(encoding="utf-8").strip())
+    if case.get("checkpoint_final"):
+        probe = subprocess.run(  # nosec B603 - private fixture and explicitly selected oracle.
+            [tools["stock_journalctl"], "--file", str(write_path), "-n1", "-ojson"],
+            capture_output=True, timeout=30, check=False,
+        )
+        require_ok(probe, "follow final cursor probe")
+        expected_cursor = json.loads(probe.stdout)["__CURSOR"]
+        cursor_written = cursor_written and cursor_file.read_text(encoding="utf-8").strip() == expected_cursor
     if writer_proc.returncode != 0:
-        return actual, writer_proc.returncode or 1, (writer_stdout + writer_stderr + stderr)[-1000:], cmd, cursor_written
-    return actual, 0 if actual == expected else proc.returncode or 1, stderr, cmd, cursor_written
+        return actual, writer_proc.returncode or 1, (writer_stdout + writer_stderr + stderr)[-1000:], cmd, cursor_written, proc.returncode, stopped_by_harness
+    # The harness sends SIGTERM only to its own child after the append window.
+    # A real exit 1 remains a failure even if its partial output happens to match.
+    normal_stop = stopped_by_harness and proc.returncode in (-15, 143)
+    result_code = 0 if proc.returncode == 0 or normal_stop else proc.returncode or 1
+    return actual, result_code, stderr, cmd, cursor_written, proc.returncode, stopped_by_harness
 
 
 def wait_for_writer_ready(writer_proc: subprocess.Popen[str], ready_file: Path) -> tuple[int, str] | None:
@@ -2254,9 +2505,14 @@ def stop_process_if_running(proc: subprocess.Popen[str] | None) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-follow", action="store_true", help="skip live follow checks")
+    parser.add_argument("--journalctl", type=Path, required=True,
+                        help="path to the full-feature systemd v262 journalctl oracle")
     args = parser.parse_args()
+    oracle = str(args.journalctl.resolve(strict=True))
+    version = systemd_version(oracle)
 
     tools = build_tools()
+    tools["stock_journalctl"] = oracle
     fixtures = make_fixtures()
     results = run_static_cases(tools, fixtures)
     results.extend(run_cursor_file_cases(tools, fixtures))
@@ -2264,13 +2520,16 @@ def main() -> int:
     results.extend(run_utility_action_cases(tools, fixtures))
     results.extend(run_output_mode_cases(tools, fixtures))
     results.extend(run_empty_result_cases(tools, fixtures))
+    results.extend(run_v262_cases(tools, fixtures))
+    results.extend(run_timestamp_cases(tools, fixtures))
     if not args.skip_follow:
         results.extend(run_follow_cases(tools, fixtures))
 
     failures = [r for r in results if r["status"] != "PASS"]
     report = {
         "status": "PASS" if not failures else "FAIL",
-        "systemd": systemd_version(),
+        "systemd": version,
+        "stock_journalctl": oracle,
         "fixture_dir": str(FIXTURE_DIR),
         "results": results,
         "failures": failures,

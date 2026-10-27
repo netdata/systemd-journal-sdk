@@ -160,6 +160,7 @@ def build_env() -> dict[str, str]:
     env.setdefault("GOPATH", str(local / "go"))
     env.setdefault("CARGO_HOME", str(local / "cargo-home"))
     env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
+    env["CARGO_TARGET_DIR"] = str((REPO_ROOT / env["CARGO_TARGET_DIR"]).resolve())
     return env
 
 
@@ -169,7 +170,7 @@ def build_tools() -> dict[str, str]:
 
     go_journalctl = BIN_DIR / "go-journalctl"
     require_ok(
-        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go", env=env),
+        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go", env={**env, "CGO_ENABLED": "1"}),
         "build go journalctl",
     )
     require_ok(
@@ -183,8 +184,9 @@ def build_tools() -> dict[str, str]:
 
     rust_src = Path(env["CARGO_TARGET_DIR"]) / "debug" / "journalctl"
     rust_journalctl = BIN_DIR / "rust-journalctl"
-    if rust_src.exists():
-        shutil.copy2(rust_src, rust_journalctl)
+    if not rust_src.is_file():
+        raise RuntimeError(f"expected Rust build output not found: {rust_src}")
+    shutil.copy2(rust_src, rust_journalctl)
 
     for path in (go_journalctl, rust_journalctl):
         if not path.exists():

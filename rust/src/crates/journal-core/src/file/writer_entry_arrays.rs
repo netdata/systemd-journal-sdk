@@ -65,9 +65,11 @@ impl JournalWriter {
         };
         let mut depth = 0;
         let mut object_offset = hash_table.hash_item_ref(hash).head_hash_offset;
+        let mut chain = super::chain_guard::ChainGuard::default();
         while let Some(offset) = object_offset {
             let object = journal_file.data_ref(offset)?;
             object_offset = object.header.next_hash_offset;
+            chain.advance(offset, object_offset, false)?;
             if object_offset.is_some() {
                 depth += 1;
             }
@@ -84,9 +86,11 @@ impl JournalWriter {
         };
         let mut depth = 0;
         let mut object_offset = hash_table.hash_item_ref(hash).head_hash_offset;
+        let mut chain = super::chain_guard::ChainGuard::default();
         while let Some(offset) = object_offset {
             let object = journal_file.field_ref(offset)?;
             object_offset = object.header.next_hash_offset;
+            chain.advance(offset, object_offset, false)?;
             if object_offset.is_some() {
                 depth += 1;
             }
@@ -172,17 +176,31 @@ impl JournalWriter {
         mut offset: NonZeroU64,
         mut remaining: u64,
     ) -> Result<NonZeroU64> {
+        let head = offset;
+        let mut highest = offset;
         loop {
             let array_guard = journal_file.offset_array_ref(offset)?;
             let capacity = array_guard.capacity() as u64;
+            if capacity == 0 {
+                return Err(JournalError::EmptyOffsetArrayNode);
+            }
             if remaining < capacity || array_guard.header.next_offset_array.is_none() {
                 return Ok(offset);
             }
             remaining -= capacity;
-            offset = array_guard
+            let next = array_guard
                 .header
                 .next_offset_array
                 .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+            drop(array_guard);
+            if next <= highest {
+                super::array_chain::reject_array_revisit(head, offset, next, |at| {
+                    Ok(journal_file.offset_array_ref(at)?.header.next_offset_array)
+                })?;
+            } else {
+                highest = next;
+            }
+            offset = next;
         }
     }
 
@@ -221,13 +239,30 @@ impl JournalWriter {
         tail_offset: NonZeroU64,
         mut entries: u64,
     ) -> Result<u64> {
+        let head = offset;
+        let mut highest = offset;
         while offset != tail_offset {
             let array_guard = journal_file.offset_array_ref(offset)?;
-            entries -= array_guard.capacity() as u64;
-            offset = array_guard
+            let capacity = array_guard.capacity() as u64;
+            if capacity == 0 {
+                return Err(JournalError::EmptyOffsetArrayNode);
+            }
+            entries = entries
+                .checked_sub(capacity)
+                .ok_or(JournalError::InvalidOffset)?;
+            let next = array_guard
                 .header
                 .next_offset_array
                 .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+            drop(array_guard);
+            if next <= highest {
+                super::array_chain::reject_array_revisit(head, offset, next, |at| {
+                    Ok(journal_file.offset_array_ref(at)?.header.next_offset_array)
+                })?;
+            } else {
+                highest = next;
+            }
+            offset = next;
         }
         Ok(entries)
     }
@@ -288,10 +323,15 @@ impl JournalWriter {
         let mut current_index = 0u64;
         #[allow(unused_assignments)]
         let mut tail_offset = array_offset;
+        let head = array_offset;
+        let mut highest = array_offset;
 
         loop {
             let array_guard = journal_file.offset_array_ref(array_offset)?;
             let capacity = array_guard.capacity() as u64;
+            if capacity == 0 {
+                return Err(JournalError::EmptyOffsetArrayNode);
+            }
 
             if current_index + capacity >= current_count {
                 // This is the tail array
@@ -306,6 +346,14 @@ impl JournalWriter {
                 return Err(JournalError::InvalidOffsetArrayOffset);
             };
 
+            drop(array_guard);
+            if next_offset <= highest {
+                super::array_chain::reject_array_revisit(head, array_offset, next_offset, |at| {
+                    Ok(journal_file.offset_array_ref(at)?.header.next_offset_array)
+                })?;
+            } else {
+                highest = next_offset;
+            }
             array_offset = next_offset;
         }
 

@@ -1,6 +1,9 @@
+//go:build cgo
+
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -14,11 +17,20 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
-	"unicode"
 
 	"github.com/netdata/systemd-journal-sdk/go/journal"
 )
+
+var errSilentNoData = errors.New("no matching entries")
+
+func noDataError(quiet bool, message string) error {
+	if quiet {
+		return errSilentNoData
+	}
+	return errors.New(message)
+}
 
 // HEADER_COMPATIBLE_SEALED from systemd journal-def.h
 const compatibleSealed = 1
@@ -38,20 +50,11 @@ const coredumpMessageID = "fc2e22bc6ee647b6b90729ab34a250b1"
 var (
 	errStopIteration = errors.New("stop iteration")
 
-	signedDatePrefixRe = regexp.MustCompile(`^[+-]\d{4}-`)
-	epochTimestampRe   = regexp.MustCompile(`^\d+(\.\d+)?$`)
-	durationTokenRe    = regexp.MustCompile(`\s*(\d+(?:\.\d+)?)(?:\s*([A-Za-z]+))?`)
-	sizeTokenRe        = regexp.MustCompile(`^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$`)
-
-	bootDescriptorRe       = regexp.MustCompile(`^(([0-9A-Fa-f]{32})|([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}))?([+-]?\d+)?$`)
-	bootDescriptorPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`^[+-]?\d+$`),
-		regexp.MustCompile(`^[0-9A-Fa-f]{32}([+-]\d+)?$`),
-		regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}([+-]\d+)?$`),
-	}
-	archivedJournalNameRe = regexp.MustCompile(`^.+@([0-9A-Fa-f]{32})-([0-9A-Fa-f]{16})-([0-9A-Fa-f]{16})\.journal$`)
-	corruptJournalNameRe  = regexp.MustCompile(`^.+@([0-9A-Fa-f]{16})-([0-9A-Fa-f]{16})\.journal~$`)
-	unitSuffixes          = []string{
+	archivedJournalNameRe = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile(`^.+@([0-9A-Fa-f]{32})-([0-9A-Fa-f]{16})-([0-9A-Fa-f]{16})\.journal$`)
+	})
+	corruptJournalNameRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^.+@([0-9A-Fa-f]{16})-([0-9A-Fa-f]{16})\.journal~$`) })
+	unitSuffixes         = []string{
 		".automount",
 		".device",
 		".mount",
@@ -86,7 +89,7 @@ var (
 	}
 )
 
-const officialOptionSurfaceHelp = `Official systemd v260.1 option surface:
+const officialOptionSurfaceHelp = `Official systemd v262 option surface:
   --system --user --machine --merge --directory --file --root --image --image-policy --namespace
   --since --until --cursor --after-cursor --cursor-file --boot --this-boot --unit --user-unit --invocation
   --identifier --exclude-identifier --priority --facility --grep --case-sensitive --dmesg
@@ -108,13 +111,13 @@ var invocationIDFields = []string{
 type cliJournal interface {
 	Close() error
 	AddMatch([]byte)
-	AddDisjunction()
-	AddConjunction()
+	AddDisjunction() error
+	AddConjunction() error
 	FlushMatches()
 	SeekHead() error
 	SeekTail() error
 	SeekRealtimeUsec(uint64) error
-	SeekCursor(string) error
+	SeekCursorDirection(string, journal.Direction) error
 	TestCursor(string) (bool, error)
 	Next() (int, error)
 	Previous() (int, error)
@@ -132,28 +135,45 @@ type optionalStringFlag struct {
 }
 
 type cliFlags struct {
-	file       multiStringFlag
-	directory  *string
-	output     *string
-	listBoots  *bool
-	noTail     *bool
-	follow     *bool
-	boot       optionalStringFlag
-	fields     *bool
-	field      *string
-	head       *int
-	tail       *int
-	since      *string
-	until      *string
-	sync       *bool
-	flush      *bool
-	rotate     *bool
-	relinquish *bool
-	verify     *bool
-	verifyOnly *bool
-	verifyKey  *string
+	diagnostics          io.Writer
+	unitsReady           bool
+	units                unitSelection
+	unitsError           error
+	unitMatchesReady     bool
+	unitMatches          unitSelection
+	unitMatchesError     error
+	invocationReady      bool
+	invocationID         string
+	invocationActive     bool
+	invocationError      error
+	action               cliAction
+	parsed               bool
+	seen                 map[string]bool
+	sinceUsec, untilUsec *uint64
+	fullWidth            bool
+	timestamps           timestampParser
+	file                 multiStringFlag
+	directory            *string
+	output               *string
+	listBoots            *bool
+	noTail               *bool
+	follow               *bool
+	boot                 optionalStringFlag
+	fields               *bool
+	field                *string
+	head                 *int
+	tail                 *int
+	since                *string
+	until                *string
+	sync                 *bool
+	flush                *bool
+	rotate               *bool
+	relinquish           *bool
+	verify               *bool
+	verifyOnly           *bool
+	verifyKey            *string
 
-	// Parser-recognized v260.1 options. Each long option is registered
+	// Parser-recognized v262 options. Each long option is registered
 	// with `flag.Var` so the parser accepts it; the runtime dispatch
 	// then either implements the requested behavior or returns a
 	// portable-mode unsupported message. Source-of-truth for the option
@@ -279,57 +299,40 @@ func (f *optionalStringFlag) IsBoolFlag() bool {
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if !errors.Is(err, errSilentNoData) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs, flags := newCLIFlagSet(stderr)
-	if argsContainHelp(args) {
-		printUsage(fs, stdout)
-		return nil
-	}
-	parseArgs := permuteFlagArgs(preprocessOptionalArgs(normalizeShortFlags(args, fs)), fs)
-
-	if err := fs.Parse(parseArgs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printUsage(fs, stdout)
-			return nil
-		}
+	operands, terminal, err := parseCLIOptions(args, fs, flags, stdout)
+	if err != nil || terminal {
 		return err
 	}
-	flags.invocationSet = flagWasSet(fs, "invocation") || *flags.invocationShortFlag
-	flags.grepSet = flagWasSet(fs, "grep") || flagWasSet(fs, "g")
-	if *flags.output == "help" {
-		printOutputModeHelp(stdout)
-		return nil
+	if *flags.noTail {
+		flags.linesFlag = optionalStringFlag{set: true, value: "all"}
 	}
-	if err := validateOutputMode(*flags.output); err != nil {
-		return err
-	}
-
 	if err := flags.validateParserInteractions(); err != nil {
 		return err
 	}
 
-	if *flags.versionFlag {
-		fmt.Fprintln(stdout, "journalctl (systemd-journal-sdk Go rewrite)")
-		fmt.Fprintln(stdout, "baseline: systemd v260.1 (c0a5a2516d28)")
-		fmt.Fprintln(stdout, "portable file-backed mode")
-		return nil
-	}
-
-	if facilityHelpRequested(flags.facilityFlag.Values()) {
-		printFacilityHelp(stdout, *flags.quietFlag)
-		return nil
-	}
-
-	hasVerifyKey := hasStringFlag(args, "verify-key")
-	fieldWasSet := flagWasSet(fs, "field") || flagWasSet(fs, "F")
-	if err := flags.validateActionArguments(fs.Args(), hasVerifyKey, fieldWasSet); err != nil {
+	hasVerifyKey := flags.seen["verify-key"]
+	fieldWasSet := flags.action == "field"
+	if err := flags.validateActionArguments(operands, hasVerifyKey, fieldWasSet); err != nil {
 		return err
 	}
+	boot := effectiveBootFlag(flags)
+	if (boot.set && boot.value != "all" || flags.action == "list-boots") && *flags.mergeFlag {
+		return errors.New("Using --boot or --list-boots with --merge is not supported.")
+	}
+	postFilters, err := newCLIPostFilters(flags)
+	if err != nil {
+		return err
+	}
+	defer postFilters.grep.Close()
 	if err := flags.validatePostAction(); err != nil {
 		return err
 	}
@@ -340,7 +343,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := validatePathMatchArguments(fs.Args()); err != nil {
+	if err := validatePathMatchArguments(operands); err != nil {
 		return err
 	}
 	if *flags.diskUsageFlag {
@@ -355,8 +358,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if *flags.listInvocationsFlag {
 		return runListInvocations(input, flags, stdout)
 	}
-	if *flags.verify || *flags.verifyOnly || hasVerifyKey {
-		return runVerify(input, *flags.verifyKey, hasVerifyKey, stdout, stderr)
+	if flags.action == "verify" || flags.action == "verify-only" {
+		return runVerify(input, *flags.verifyKey, hasVerifyKey, flags.effectiveQuiet(), stdout, stderr)
 	}
 	if *flags.listBoots {
 		return runListBoots(input, flags, stdout)
@@ -366,41 +369,50 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	postFilters, err := newCLIPostFilters(flags)
-	if err != nil {
-		return err
-	}
 	cursorControl, err := newCursorControl(flags)
 	if err != nil {
 		return err
 	}
 
-	outputOptions := newOutputOptions(flags, flagWasSet(fs, "output-fields"), resolveFullWidth(args))
+	outputOptions := newOutputOptions(flags, *flags.outputFieldsFlag != "", flags.fullWidth)
+	postFilters.captureHighlight = (outputOptions.colors.level != 0 || outputOptions.urlify) && (outputOptions.mode == "cat" || outputSkipsMissingMessage(outputOptions.mode))
 
-	if *flags.follow {
-		tail := 10
-		if flagWasSet(fs, "tail") {
-			tail = *flags.tail
+	if *flags.follow && flags.action == actionShow {
+		tail, all := 0, true
+		if !flags.seen["since"] {
+			tail, all = 10, false
+		} else if *flags.pagerEndFlag {
+			tail, all = 1000, false
 		}
-		if flagWasSet(fs, "lines") {
+		if flagWasSet(fs, "tail") {
+			tail, all = *flags.tail, false
+		}
+		if flags.linesFlag.set {
 			limit, err := parseLinesLimitValue(flags.linesFlag.value)
 			if err != nil {
 				return err
 			}
-			if limit.set && !limit.all {
-				tail = limit.count
+			if limit.all {
+				tail, all = 0, true
+			} else {
+				tail, all = limit.count, false
 			}
 		}
-		return runFollow(input, fs.Args(), flags, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout, postFilters, cursorControl, outputOptions)
+		all = all || *flags.noTail
+		return runFollow(input, operands, flags, *flags.output, sinceUsec, untilUsec, tail, all, stdout, postFilters, cursorControl, outputOptions)
 	}
 
-	j, err := openFilteredJournal(input, fs.Args(), flags, *flags.output, optionalStringFlag{})
+	j, err := openFilteredJournal(input, operands, flags, *flags.output, optionalStringFlag{})
 	if err != nil {
 		return err
 	}
 	defer j.Close()
 
-	return flags.dispatch(j, sinceUsec, untilUsec, stdout, postFilters, cursorControl, outputOptions)
+	err = flags.dispatch(j, sinceUsec, untilUsec, stdout, postFilters, cursorControl, outputOptions)
+	if err == nil && flags.action == actionShow && flags.grepSet && !postFilters.shown {
+		return errSilentNoData
+	}
+	return err
 }
 
 func resolveFullWidth(args []string) bool {
@@ -441,8 +453,8 @@ func parseLinesLimitValue(value string) (linesLimit, error) {
 	}
 	oldest := strings.HasPrefix(value, "+")
 	stripped := strings.TrimPrefix(value, "+")
-	n, err := strconv.Atoi(stripped)
-	if err != nil || n < 0 {
+	n, err := parseNativeInt32(stripped)
+	if err != nil || n < 0 || uint64(n) > 2147483647 {
 		return linesLimit{}, fmt.Errorf("Failed to parse --lines='%s'.", value)
 	}
 	return linesLimit{set: true, oldest: oldest, count: n}, nil
@@ -455,30 +467,30 @@ type cursorSeek struct {
 
 type cursorControl struct {
 	seek       *cursorSeek
-	updateFile string
+	updateFile *string
 }
 
 func newCursorControl(f *cliFlags) (cursorControl, error) {
-	if *f.cursorFlag != "" {
+	if *f.cursorFlag != "" || f.seen["cursor"] {
 		return cursorControl{seek: &cursorSeek{cursor: *f.cursorFlag}}, nil
 	}
-	if *f.afterCursorFlag != "" {
+	if *f.afterCursorFlag != "" || f.seen["after-cursor"] {
 		return cursorControl{seek: &cursorSeek{cursor: *f.afterCursorFlag, after: true}}, nil
 	}
-	if *f.cursorFileFlag == "" {
+	if *f.cursorFileFlag == "" && !f.seen["cursor-file"] {
 		return cursorControl{}, nil
 	}
 
 	content, err := os.ReadFile(*f.cursorFileFlag) // nosec G304 - caller explicitly supplies --cursor-file path.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return cursorControl{updateFile: *f.cursorFileFlag}, nil
+			return cursorControl{updateFile: f.cursorFileFlag}, nil
 		}
 		return cursorControl{}, fmt.Errorf("Failed to read cursor file %s: %w", *f.cursorFileFlag, err)
 	}
 	cursor := strings.SplitN(string(content), "\n", 2)[0]
 	cursor = strings.TrimSuffix(cursor, "\r")
-	control := cursorControl{updateFile: *f.cursorFileFlag}
+	control := cursorControl{updateFile: f.cursorFileFlag}
 	if cursor != "" {
 		control.seek = &cursorSeek{cursor: cursor, after: true}
 	}
@@ -489,24 +501,25 @@ func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
 	fs := flag.NewFlagSet("journalctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	flags := &cliFlags{
-		directory:  fs.String("directory", "", "journal directory"),
-		output:     fs.String("output", "short", "output mode: short, short-full, short-iso, short-iso-precise, short-precise, short-monotonic, short-delta, short-unix, verbose, export, json, json-pretty, json-sse, json-seq, cat, with-unit"),
-		listBoots:  fs.Bool("list-boots", false, "list boots"),
-		noTail:     fs.Bool("no-tail", false, "show all entries, start from the beginning"),
-		follow:     fs.Bool("follow", false, "follow appended entries"),
-		fields:     fs.Bool("fields", false, "show field names"),
-		field:      fs.String("field", "", "show values for a field"),
-		head:       fs.Int("head", 0, "show first N entries"),
-		tail:       fs.Int("tail", 0, "show last N entries"),
-		since:      fs.String("since", "", "show entries since timestamp"),
-		until:      fs.String("until", "", "show entries until timestamp"),
-		sync:       fs.Bool("sync", false, "sync journal (portable mode does not support this)"),
-		flush:      fs.Bool("flush", false, "flush journal (portable mode does not support this)"),
-		rotate:     fs.Bool("rotate", false, "rotate journal (portable mode does not support this)"),
-		relinquish: fs.Bool("relinquish-var", false, "relinquish var (portable mode does not support this)"),
-		verify:     fs.Bool("verify", false, "verify journal file"),
-		verifyOnly: fs.Bool("verify-only", false, "verify only"),
-		verifyKey:  fs.String("verify-key", "", "FSS verification key"),
+		diagnostics: stderr,
+		directory:   fs.String("directory", "", "journal directory"),
+		output:      fs.String("output", "short", "output mode: short, short-full, short-iso, short-iso-precise, short-precise, short-monotonic, short-delta, short-unix, verbose, export, json, json-pretty, json-sse, json-seq, cat, with-unit"),
+		listBoots:   fs.Bool("list-boots", false, "list boots"),
+		noTail:      fs.Bool("no-tail", false, "show all entries, start from the beginning"),
+		follow:      fs.Bool("follow", false, "follow appended entries"),
+		fields:      fs.Bool("fields", false, "show field names"),
+		field:       fs.String("field", "", "show values for a field"),
+		head:        fs.Int("head", 0, "show first N entries"),
+		tail:        fs.Int("tail", 0, "show last N entries"),
+		since:       fs.String("since", "", "show entries since timestamp"),
+		until:       fs.String("until", "", "show entries until timestamp"),
+		sync:        fs.Bool("sync", false, "sync journal (portable mode does not support this)"),
+		flush:       fs.Bool("flush", false, "flush journal (portable mode does not support this)"),
+		rotate:      fs.Bool("rotate", false, "rotate journal (portable mode does not support this)"),
+		relinquish:  fs.Bool("relinquish-var", false, "relinquish var (portable mode does not support this)"),
+		verify:      fs.Bool("verify", false, "verify journal file"),
+		verifyOnly:  fs.Bool("verify-only", false, "verify only"),
+		verifyKey:   fs.String("verify-key", "", "FSS verification key"),
 
 		systemFlag:      fs.Bool("system", false, "show the system journal (portable: no-op)"),
 		userFlag:        fs.Bool("user", false, "show the user journal (portable: no-op)"),
@@ -609,23 +622,10 @@ func printUsage(fs *flag.FlagSet, out io.Writer) {
 	fs.SetOutput(out)
 	defer fs.SetOutput(previous)
 	fmt.Fprintf(out, "Usage: %s [options]\n", fs.Name())
-	fmt.Fprintf(out, "Pure-Go systemd journal reader (portable mode, systemd v260.1 baseline)\n")
+	fmt.Fprintf(out, "Go systemd journal reader (portable mode, systemd v262 CLI; native PCRE2)\n")
 	fmt.Fprintf(out, "\nOptions:\n")
 	fs.PrintDefaults()
 	fmt.Fprintf(out, "\n%s", officialOptionSurfaceHelp)
-}
-
-func argsContainHelp(args []string) bool {
-	for _, arg := range args {
-		if arg == "--" {
-			return false
-		}
-		switch arg {
-		case "--help", "-help", "-h":
-			return true
-		}
-	}
-	return false
 }
 
 func (f *cliFlags) validate() error {
@@ -642,10 +642,10 @@ func (f *cliFlags) validateParserInteractions() error {
 	if len(f.file.values) > 0 {
 		sources++
 	}
-	if *f.directory != "" {
+	if *f.directory != "" || f.seen["directory"] {
 		sources++
 	}
-	if *f.machineFlag != "" {
+	if *f.machineFlag != "" || f.seen["machine"] {
 		sources++
 	}
 	if *f.rootFlag != "" {
@@ -659,11 +659,7 @@ func (f *cliFlags) validateParserInteractions() error {
 	}
 
 	// Since/until order.
-	sinceUsec, err := parseOptionalTimestampUsec(*f.since)
-	if err != nil {
-		return err
-	}
-	untilUsec, err := parseOptionalTimestampUsec(*f.until)
+	sinceUsec, untilUsec, err := f.timeBounds()
 	if err != nil {
 		return err
 	}
@@ -673,16 +669,16 @@ func (f *cliFlags) validateParserInteractions() error {
 
 	// Cursor source exclusivity.
 	cursorSources := 0
-	if *f.cursorFlag != "" {
+	if *f.cursorFlag != "" || f.seen["cursor"] {
 		cursorSources++
 	}
-	if *f.afterCursorFlag != "" {
+	if *f.afterCursorFlag != "" || f.seen["after-cursor"] {
 		cursorSources++
 	}
-	if *f.cursorFileFlag != "" {
+	if *f.cursorFileFlag != "" || f.seen["cursor-file"] {
 		cursorSources++
 	}
-	if *f.since != "" {
+	if *f.since != "" || f.seen["since"] {
 		cursorSources++
 	}
 	if cursorSources > 1 {
@@ -722,6 +718,9 @@ func (f *cliFlags) validateParserInteractions() error {
 }
 
 func (f *cliFlags) isShowAction() bool {
+	if f.parsed {
+		return f.action == actionShow
+	}
 	return !*f.versionFlag &&
 		!*f.newID128Flag &&
 		!*f.fields &&
@@ -747,6 +746,9 @@ func (f *cliFlags) isShowAction() bool {
 }
 
 func (f *cliFlags) validateActionArguments(args []string, hasVerifyKey, fieldWasSet bool) error {
+	if len(args) == 0 && f.parsed && (f.action == "field" || f.action == "fields") && f.fieldListHasScope() {
+		return errors.New("-F/--field= and -N/--fields cannot be combined with options that limit the journal.")
+	}
 	if len(args) == 0 || !f.actionRejectsArguments(hasVerifyKey, fieldWasSet) {
 		return nil
 	}
@@ -754,6 +756,9 @@ func (f *cliFlags) validateActionArguments(args []string, hasVerifyKey, fieldWas
 }
 
 func (f *cliFlags) actionRejectsArguments(hasVerifyKey, fieldWasSet bool) bool {
+	if f.parsed {
+		return f.action != actionShow && f.action != "list-catalog" && f.action != "dump-catalog"
+	}
 	return *f.newID128Flag ||
 		*f.setupKeysFlag ||
 		*f.updateCatalogFlag ||
@@ -814,7 +819,7 @@ func (f *cliFlags) validatePostAction() error {
 	if *f.flush {
 		return portableUnsupported("--flush", "daemon-only runtime-to-persistent flush; no journald in portable mode")
 	}
-	if *f.rotate && hasVacuumFlags(f) {
+	if f.action == actionRotateVacuum || !f.parsed && *f.rotate && hasVacuumFlags(f) {
 		return portableUnsupported("--rotate with --vacuum-*", "official rotate-and-vacuum action requires journald rotation; portable mode can only vacuum explicit directories without rotation")
 	}
 	if *f.rotate {
@@ -844,7 +849,7 @@ func (f *cliFlags) validatePostAction() error {
 	if *f.diskUsageFlag && len(f.file.values) == 0 && *f.directory == "" {
 		return portableUnsupported("--disk-usage", "requires host journal directory; pass --file or --directory to compute disk usage for explicit input")
 	}
-	if *f.vacuumSizeFlag != "" || *f.vacuumFilesFlag != "" || *f.vacuumTimeFlag != "" {
+	if hasVacuumFlags(f) {
 		if *f.directory == "" {
 			return portableUnsupported("--vacuum-*", "vacuum actions require explicit --directory= input")
 		}
@@ -868,11 +873,45 @@ type cliInput struct {
 	files     []string
 }
 
-func (i cliInput) openJournal() (cliJournal, error) {
-	if i.directory != "" {
-		return journal.SdJournalOpenDirectory(i.directory, 0)
+type cursorJournal struct {
+	cliJournal
+	cursor func() (string, error)
+}
+
+func currentJournalCursor(j cliJournal) (string, error) {
+	if source, ok := j.(*cursorJournal); ok {
+		return source.cursor()
 	}
-	return journal.SdJournalOpenFiles(i.files, 0)
+	entry, err := j.GetEntry()
+	if err != nil {
+		return "", err
+	}
+	return entry.Cursor, nil
+}
+
+func (i cliInput) openJournal() (cliJournal, error) {
+	return i.openJournalWithCursor(false)
+}
+
+func (i cliInput) openJournalWithCursor(capture bool) (cliJournal, error) {
+	if i.directory != "" {
+		j, err := journal.SdJournalOpenDirectory(i.directory, 0)
+		if err != nil {
+			return nil, err
+		}
+		if !capture {
+			return j, nil
+		}
+		return &cursorJournal{j, func() (string, error) { return journal.SdJournalGetCursor(j) }}, nil
+	}
+	j, err := journal.SdJournalOpenFiles(i.files, 0)
+	if err != nil {
+		return nil, err
+	}
+	if !capture {
+		return j, nil
+	}
+	return &cursorJournal{j, func() (string, error) { return journal.SdJournalGetCursor(j) }}, nil
 }
 
 func (i cliInput) journalFiles(context string) ([]string, bool, error) {
@@ -913,7 +952,7 @@ func resolveFileInputs(values []string) ([]string, error) {
 				"stdin-backed journals require seekable mmap-capable file descriptors and are not supported in portable mode",
 			)
 		}
-		matches, err := filepath.Glob(value)
+		matches, err := globFilePaths(value)
 		if err != nil {
 			return nil, fmt.Errorf("failed to add paths: %w", err)
 		}
@@ -949,6 +988,12 @@ func canonicalFileKey(path string) string {
 }
 
 func (f *cliFlags) timeBounds() (*uint64, *uint64, error) {
+	if f.parsed {
+		if f.sinceUsec != nil && f.untilUsec != nil && *f.sinceUsec > *f.untilUsec {
+			return nil, nil, errors.New("--since= must be before --until=.")
+		}
+		return f.sinceUsec, f.untilUsec, nil
+	}
 	sinceUsec, err := parseOptionalTimestampUsec(*f.since)
 	if err != nil {
 		return nil, nil, err
@@ -964,6 +1009,9 @@ func (f *cliFlags) timeBounds() (*uint64, *uint64, error) {
 }
 
 func validatePathMatchArguments(matches []string) error {
+	if err := validateDisjunctions(matches); err != nil {
+		return err
+	}
 	for _, item := range matches {
 		if item != "+" && !strings.Contains(item, "=") {
 			return portableUnsupported(
@@ -989,11 +1037,13 @@ func effectiveBootFlag(flags *cliFlags) optionalStringFlag {
 }
 
 func applyCLIMatches(j cliJournal, flags *cliFlags) error {
-	systemUnits, userUnits := effectiveUnitSpecs(flags)
-	if err := addJournalctlUnitMatches(j, systemUnits, userUnits); err != nil {
+	if err := addJournalctlUnitMatches(j, flags); err != nil {
 		return err
 	}
+	return applyNonUnitMatches(j, flags)
+}
 
+func applyNonUnitMatches(j cliJournal, flags *cliFlags) error {
 	if *flags.dmesgFlag {
 		if err := addFieldMatches(j, "_TRANSPORT", []string{"kernel"}); err != nil {
 			return err
@@ -1033,16 +1083,6 @@ func applyCLIMatches(j cliJournal, flags *cliFlags) error {
 	return nil
 }
 
-func effectiveUnitSpecs(flags *cliFlags) ([]string, []string) {
-	systemUnits := flags.unitFlag.Values()
-	userUnits := flags.userUnitFlag.Values()
-	if *flags.userFlag && len(systemUnits) > 0 {
-		userUnits = append(userUnits, systemUnits...)
-		systemUnits = nil
-	}
-	return systemUnits, userUnits
-}
-
 func addFieldMatches(j cliJournal, field string, values []string) error {
 	if len(values) == 0 {
 		return nil
@@ -1054,8 +1094,7 @@ func addFieldMatches(j cliJournal, field string, values []string) error {
 		}
 		j.AddMatch(match)
 	}
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
 func addInvocationMatches(j cliJournal, id string) error {
@@ -1067,14 +1106,15 @@ func addInvocationMatches(j cliJournal, id string) error {
 	}
 	for i, field := range fields {
 		if i > 0 {
-			j.AddDisjunction()
+			if err := j.AddDisjunction(); err != nil {
+				return err
+			}
 		}
 		if err := addMatchPair(j, field, id); err != nil {
 			return err
 		}
 	}
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
 func addMatchPair(j cliJournal, field, value string) error {
@@ -1106,8 +1146,7 @@ func applyBootMatch(j cliJournal, flags *cliFlags, bootOverride optionalStringFl
 		return err
 	}
 	j.AddMatch(match)
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
 func addMatchGroup(j cliJournal, pairs [][2]string) error {
@@ -1119,110 +1158,129 @@ func addMatchGroup(j cliJournal, pairs [][2]string) error {
 	return nil
 }
 
-func addImpossibleMatch(j cliJournal, reason string) error {
-	if err := addMatchPair(j, "__JOURNALCTL_NEVER_MATCH", reason); err != nil {
-		return err
+func addJournalctlUnitMatches(j cliJournal, flags *cliFlags) error {
+	if len(flags.unitFlag.values) == 0 && len(flags.userUnitFlag.values) == 0 {
+		return nil
 	}
-	j.AddConjunction()
-	return nil
-}
-
-func addJournalctlUnitMatches(j cliJournal, systemUnits, userUnits []string) error {
+	// Follow retains the initial wildcard expansion, like native journalctl.
+	if !flags.unitMatchesReady {
+		flags.unitMatchesReady = true
+		system, user, err := effectiveUnitSpecs(flags)
+		if err == nil {
+			flags.unitMatches.system, err = expandUnitSpecs(j, system, systemUnitFieldsFull)
+		}
+		if err == nil {
+			flags.unitMatches.user, err = expandUnitSpecs(j, user, userUnitFieldsFull)
+		}
+		if err == nil && len(system)+len(user) > 0 && len(flags.unitMatches.system)+len(flags.unitMatches.user) == 0 {
+			err = errors.New("Failed to add filter for units: No data available")
+		}
+		flags.unitMatchesError = err
+	}
+	if flags.unitMatchesError != nil {
+		return flags.unitMatchesError
+	}
+	systemUnits, userUnits := flags.unitMatches.system, flags.unitMatches.user
 	if len(systemUnits) == 0 && len(userUnits) == 0 {
 		return nil
 	}
 
-	added := false
-	expandedSystemUnits, err := expandUnitSpecs(j, systemUnits, systemUnitFieldsFull)
-	if err != nil {
-		return err
-	}
-	for _, unit := range expandedSystemUnits {
-		if err := addSystemUnitMatchGroups(j, unit); err != nil {
+	for _, unit := range systemUnits {
+		if err := addSystemUnitMatchGroups(j, unit, true); err != nil {
 			return err
 		}
-		added = true
 	}
 
-	expandedUserUnits, err := expandUnitSpecs(j, userUnits, userUnitFieldsFull)
-	if err != nil {
-		return err
-	}
 	uid, uidOK := currentUIDString()
-	for _, unit := range expandedUserUnits {
-		if err := addUserUnitMatchGroups(j, unit, uid, uidOK); err != nil {
+	for _, unit := range userUnits {
+		if err := addUserUnitMatchGroups(j, unit, uid, uidOK, true); err != nil {
 			return err
 		}
-		added = true
 	}
 
-	if !added {
-		return addImpossibleMatch(j, "unit-glob")
-	}
-	j.AddConjunction()
-	return nil
+	return j.AddConjunction()
 }
 
-func addSystemUnitMatchGroups(j cliJournal, unit string) error {
+func addSystemUnitMatchGroups(j cliJournal, unit string, full bool) error {
 	if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_UNIT", unit}}); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_CGROUP", "/init.scope"}, {"UNIT", unit}}); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addMatchGroup(j, [][2]string{{"_UID", "0"}, {"OBJECT_SYSTEMD_UNIT", unit}}); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
+	if !full {
+		return nil
+	}
 	if err := addMatchGroup(j, [][2]string{{"MESSAGE_ID", coredumpMessageID}, {"COREDUMP_UNIT", unit}}); err != nil {
 		return err
 	}
 
 	if strings.HasSuffix(unit, ".slice") {
-		j.AddDisjunction()
+		if err := j.AddDisjunction(); err != nil {
+			return err
+		}
 		if err := addMatchGroup(j, [][2]string{{"_SYSTEMD_SLICE", unit}}); err != nil {
 			return err
 		}
 	}
 
-	j.AddDisjunction()
-	return nil
+	return j.AddDisjunction()
 }
 
-func addUserUnitMatchGroups(j cliJournal, unit, uid string, uidOK bool) error {
+func addUserUnitMatchGroups(j cliJournal, unit, uid string, uidOK, full bool) error {
 	if err := addUserUnitMatchGroup(j, [][2]string{{"_SYSTEMD_USER_UNIT", unit}}, uid, uidOK, false); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addUserUnitMatchGroup(j, [][2]string{{"USER_UNIT", unit}}, uid, uidOK, false); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
 	if err := addUserUnitMatchGroup(j, [][2]string{{"OBJECT_SYSTEMD_USER_UNIT", unit}}, uid, uidOK, true); err != nil {
 		return err
 	}
-	j.AddDisjunction()
+	if err := j.AddDisjunction(); err != nil {
+		return err
+	}
 
+	if !full {
+		return nil
+	}
 	if err := addUserUnitMatchGroup(j, [][2]string{{"COREDUMP_USER_UNIT", unit}}, uid, uidOK, true); err != nil {
 		return err
 	}
 
 	if strings.HasSuffix(unit, ".slice") {
-		j.AddDisjunction()
+		if err := j.AddDisjunction(); err != nil {
+			return err
+		}
 		if err := addUserUnitMatchGroup(j, [][2]string{{"_SYSTEMD_USER_SLICE", unit}}, uid, uidOK, false); err != nil {
 			return err
 		}
 	}
 
-	j.AddDisjunction()
-	return nil
+	return j.AddDisjunction()
 }
 
 func addUserUnitMatchGroup(j cliJournal, pairs [][2]string, uid string, uidOK, includeRootUID bool) error {
@@ -1248,7 +1306,7 @@ func expandUnitSpecs(j cliJournal, specs []string, fields []string) ([]string, e
 	var patterns []string
 
 	for _, spec := range specs {
-		unit := mangleUnitName(spec)
+		unit := spec
 		if isGlobPattern(unit) {
 			patterns = append(patterns, unit)
 			continue
@@ -1262,13 +1320,21 @@ func expandUnitSpecs(j cliJournal, specs []string, fields []string) ([]string, e
 	if len(patterns) == 0 {
 		return out, nil
 	}
+	matcher, err := newUnitPatternMatcher(patterns)
+	if err != nil {
+		return nil, err
+	}
+	defer matcher.Close()
 
 	for _, field := range fields {
 		err := j.VisitUnique(field, func(value []byte) error {
-			unit := string(value)
-			if !matchesAnyGlob(patterns, unit) {
+			if end := bytes.IndexByte(value, 0); end >= 0 {
+				value = value[:end]
+			}
+			if !matcher.Matches(value) {
 				return nil
 			}
+			unit := string(value)
 			if _, ok := seen[unit]; ok {
 				return nil
 			}
@@ -1284,82 +1350,106 @@ func expandUnitSpecs(j cliJournal, specs []string, fields []string) ([]string, e
 	return out, nil
 }
 
-func mangleUnitName(value string) string {
-	value = strings.TrimSpace(value)
-	for _, suffix := range unitSuffixes {
-		if strings.HasSuffix(value, suffix) {
-			return value
-		}
-	}
-	return value + ".service"
-}
-
 func isGlobPattern(value string) bool {
 	return strings.ContainsAny(value, "*?[")
 }
 
-func matchesAnyGlob(patterns []string, value string) bool {
-	for _, pattern := range patterns {
-		if globPatternMatches(pattern, value) {
-			return true
-		}
-	}
-	return false
-}
-
-func globPatternMatches(pattern, value string) bool {
-	re, err := regexp.Compile(globPatternToRegex(pattern))
-	return err == nil && re.MatchString(value)
-}
-
 func globPatternToRegex(pattern string) string {
-	var b strings.Builder
-	b.WriteString("^")
-	runes := []rune(pattern)
-	for i := 0; i < len(runes); i++ {
-		switch runes[i] {
+	var out strings.Builder
+	out.WriteString("(?s)^")
+	chars := []rune(pattern)
+	for i := 0; i < len(chars); i++ {
+		switch chars[i] {
 		case '*':
-			b.WriteString(".*")
+			out.WriteString(".*")
 		case '?':
-			b.WriteByte('.')
+			out.WriteByte('.')
 		case '[':
-			class := []rune{'['}
-			closed := false
-			if i+1 < len(runes) && (runes[i+1] == '!' || runes[i+1] == '^') {
-				i++
-				class = append(class, '^')
+			end := i + 1
+			if end < len(chars) && (chars[end] == '!' || chars[end] == '^') {
+				end++
 			}
-			for i+1 < len(runes) {
-				i++
-				class = append(class, runes[i])
-				if runes[i] == ']' {
-					closed = true
-					break
+			if end < len(chars) && chars[end] == ']' {
+				end++
+			}
+			for end < len(chars) && chars[end] != ']' {
+				if chars[end] == '[' && end+1 < len(chars) && (chars[end+1] == ':' || chars[end+1] == '.') {
+					k := end + 2
+					for k+1 < len(chars) && !(chars[k] == chars[end+1] && chars[k+1] == ']') {
+						k++
+					}
+					if k+1 < len(chars) {
+						end = k + 2
+						continue
+					}
 				}
+				end++
 			}
-			if closed {
-				b.WriteString(string(class))
-			} else {
-				b.WriteString(`\[`)
-				b.WriteString(regexp.QuoteMeta(string(class[1:])))
+			if end == len(chars) {
+				out.WriteString(`\[`)
+				continue
 			}
+			out.WriteByte('[')
+			start := i + 1
+			if chars[start] == '!' || chars[start] == '^' {
+				out.WriteByte('^')
+				start++
+			}
+			for k := start; k < end; k++ {
+				if chars[k] == '[' && k+1 < end && (chars[k+1] == ':' || chars[k+1] == '.') {
+					marker := chars[k+1]
+					n := k + 2
+					for n+1 < end && !(chars[n] == marker && chars[n+1] == ']') {
+						n++
+					}
+					if n+1 < end {
+						if marker == ':' {
+							out.WriteString(string(chars[k : n+2]))
+						} else {
+							if n != k+3 {
+								return "["
+							}
+							if strings.ContainsRune(`\[]^-`, chars[k+2]) {
+								out.WriteByte('\\')
+							}
+							out.WriteRune(chars[k+2])
+						}
+						k = n + 1
+						continue
+					}
+				}
+				if chars[k] == '\\' || chars[k] == ']' || chars[k] == '[' {
+					out.WriteByte('\\')
+				}
+				out.WriteRune(chars[k])
+			}
+			out.WriteByte(']')
+			i = end
 		default:
-			b.WriteString(regexp.QuoteMeta(string(runes[i])))
+			out.WriteString(regexp.QuoteMeta(string(chars[i])))
 		}
 	}
-	b.WriteString("$")
-	return b.String()
+	out.WriteString("$")
+	return out.String()
 }
 
 type cliPostFilters struct {
-	grep               *regexp.Regexp
+	grep               *pcrePattern
+	shown              bool
 	excludeIdentifiers map[string]struct{}
+	captureHighlight   bool
+	highlight          matchRange
+	bufferedHighlights []matchRange
 }
 
 func newCLIPostFilters(flags *cliFlags) (*cliPostFilters, error) {
-	grep, err := compileGrepFilter(*flags.grepFlag, flags.caseSensitiveFlag)
-	if err != nil {
-		return nil, err
+	var grep *pcrePattern
+	if flags.grepSet {
+		var err error
+		grep, err = compileGrepFilter(*flags.grepFlag, flags.caseSensitiveFlag)
+		if err != nil {
+			return nil, err
+		}
 	}
 	filters := &cliPostFilters{grep: grep}
 	if outputUsesExcludeIdentifier(*flags.output) {
@@ -1374,35 +1464,50 @@ func newCLIPostFilters(flags *cliFlags) (*cliPostFilters, error) {
 	return filters, nil
 }
 
-func (f *cliPostFilters) matches(entry *journal.Entry) bool {
-	if f == nil {
-		return true
+func (f *cliPostFilters) matches(entry *journal.Entry) (bool, error) {
+	if f == nil || f.grep == nil {
+		return true, nil
 	}
-	if f.grep != nil {
-		matched := false
-		for _, value := range entryValues(entry, "MESSAGE") {
-			if f.grep.MatchString(string(value)) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
+	values := entryValues(entry, "MESSAGE")
+	if len(values) == 0 {
+		return false, nil
 	}
-	return true
+	if f.captureHighlight {
+		return f.grep.match(values[0], &f.highlight)
+	}
+	return f.grep.Match(values[0])
+}
+
+func (f *cliPostFilters) bufferHighlight() {
+	if f != nil && f.captureHighlight && f.grep != nil {
+		f.bufferedHighlights = append(f.bufferedHighlights, f.highlight)
+	}
+}
+
+func (f *cliPostFilters) restoreHighlight() {
+	if f != nil && len(f.bufferedHighlights) > 0 {
+		f.highlight = f.bufferedHighlights[0]
+		f.bufferedHighlights = f.bufferedHighlights[1:]
+	}
+}
+
+func entryMatches(entry *journal.Entry, since, until *uint64, filters *cliPostFilters) (bool, error) {
+	if !entryInTimeRange(entry, since, until) {
+		return false, nil
+	}
+	return filters.matches(entry)
 }
 
 func (f *cliPostFilters) excludesEntry(entry *journal.Entry) bool {
 	if f == nil || len(f.excludeIdentifiers) == 0 {
 		return false
 	}
-	for _, value := range entryValues(entry, "SYSLOG_IDENTIFIER") {
-		if _, found := f.excludeIdentifiers[string(value)]; found {
-			return true
-		}
+	value, ok := lastEntryValue(entry, "SYSLOG_IDENTIFIER")
+	if !ok {
+		return false
 	}
-	return false
+	_, found := f.excludeIdentifiers[string(cStringBytes(value))]
+	return found
 }
 
 func outputUsesExcludeIdentifier(mode string) bool {
@@ -1428,39 +1533,8 @@ func entryValues(entry *journal.Entry, field string) [][]byte {
 	return nil
 }
 
-func compileGrepFilter(pattern string, caseSensitive optionalStringFlag) (*regexp.Regexp, error) {
-	if pattern == "" {
-		return nil, nil
-	}
-	sensitive := hasUppercase(pattern)
-	if caseSensitive.set {
-		parsed, err := parseBoolOption("--case-sensitive", caseSensitive.value)
-		if err != nil {
-			return nil, err
-		}
-		sensitive = parsed
-	}
-	if !sensitive {
-		pattern = "(?i)" + pattern
-	}
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("Bad pattern %q: %w", pattern, err)
-	}
-	return re, nil
-}
-
-func hasUppercase(value string) bool {
-	for _, ch := range value {
-		if unicode.IsUpper(ch) {
-			return true
-		}
-	}
-	return false
-}
-
 func parseBoolOption(option, value string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+	switch strings.ToLower(value) {
 	case "1", "true", "yes", "y", "t", "on":
 		return true, nil
 	case "0", "false", "no", "n", "f", "off":
@@ -1468,6 +1542,59 @@ func parseBoolOption(option, value string) (bool, error) {
 	default:
 		return false, fmt.Errorf("Bad %s= argument %q", option, value)
 	}
+}
+
+// Match journalctl's integer grammar, including its fixed 32-bit int range.
+func parseNativeNumber(value string) (uint64, bool, error) {
+	value = strings.TrimLeft(value, " \t\n\r\v\f")
+	base := 0
+	if strings.HasPrefix(value, "0b") || strings.HasPrefix(value, "0B") {
+		base = 2
+	} else if strings.HasPrefix(value, "0o") || strings.HasPrefix(value, "0O") {
+		base = 8
+	}
+	if base != 0 {
+		value = strings.TrimLeft(value[2:], " \t\n\r\v\f")
+	}
+	negative := strings.HasPrefix(value, "-")
+	if strings.HasPrefix(value, "+") || negative {
+		value = value[1:]
+	}
+	if base == 0 {
+		base = 10
+		if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
+			base, value = 16, value[2:]
+		} else if strings.HasPrefix(value, "0") {
+			base = 8
+		}
+	}
+	number, err := strconv.ParseUint(value, base, 64)
+	return number, negative, err
+}
+
+func parseNativeUint64(value string) (uint64, error) {
+	number, negative, err := parseNativeNumber(value)
+	if err == nil && negative && number != 0 {
+		err = strconv.ErrRange
+	}
+	return number, err
+}
+
+func parseNativeInt32(value string) (int, error) {
+	number, negative, err := parseNativeNumber(value)
+	if err != nil {
+		return 0, strconv.ErrRange
+	}
+	if negative {
+		if number > 1<<31 {
+			return 0, strconv.ErrRange
+		}
+		return int(-int64(number)), nil
+	}
+	if number > 1<<31-1 {
+		return 0, strconv.ErrRange
+	}
+	return int(number), nil
 }
 
 func parsePriorityFilter(values []string) ([]uint8, error) {
@@ -1506,16 +1633,16 @@ func parsePriorityFilter(values []string) ([]uint8, error) {
 }
 
 func parsePriorityLevel(value string) (uint8, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "emerg", "panic":
+	switch value {
+	case "emerg":
 		return 0, nil
 	case "alert":
 		return 1, nil
-	case "crit", "critical":
+	case "crit":
 		return 2, nil
-	case "err", "error":
+	case "err":
 		return 3, nil
-	case "warning", "warn":
+	case "warning":
 		return 4, nil
 	case "notice":
 		return 5, nil
@@ -1524,7 +1651,7 @@ func parsePriorityLevel(value string) (uint8, error) {
 	case "debug":
 		return 7, nil
 	}
-	number, err := strconv.Atoi(value)
+	number, err := parseNativeInt32(value)
 	if err == nil && number >= 0 && number <= 7 {
 		return uint8(number), nil
 	}
@@ -1543,17 +1670,6 @@ var facilityHelpNames = []string{
 	"kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news",
 	"uucp", "cron", "authpriv", "ftp", "12", "13", "14", "15",
 	"local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7",
-}
-
-func facilityHelpRequested(values []string) bool {
-	for _, value := range values {
-		for _, item := range strings.Split(value, ",") {
-			if strings.TrimSpace(item) == "help" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func printFacilityHelp(stdout io.Writer, quiet bool) {
@@ -1590,7 +1706,7 @@ func parseFacilityFilter(values []string) ([]uint8, error) {
 }
 
 func parseFacility(value string) (uint8, error) {
-	if number, err := strconv.Atoi(value); err == nil && number >= 0 && number <= 23 {
+	if number, err := parseNativeInt32(value); err == nil && number >= 0 && number <= 127 {
 		return uint8(number), nil
 	}
 	if facility, ok := facilityNames[value]; ok {
@@ -1611,49 +1727,94 @@ func validateOutputMode(mode string) error {
 }
 
 func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
-	grepTailReverse := f.grepTailImpliesReverse()
-	if f.linesFlag.set {
-		limit, err := parseLinesLimitValue(f.linesFlag.value)
-		if err != nil {
-			return err
-		}
-		if limit.set && !limit.all {
-			if limit.oldest {
-				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
-			}
-			if limit.count == 0 {
-				return showTail(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
-			}
-			if grepTailReverse || *f.reverseFlag {
-				return showReverse(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
-			}
-			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
-		}
-	}
-
-	switch {
-	case *f.fields:
+	if *f.fields {
 		fields, err := j.EnumerateFields()
 		if err != nil {
 			return fmt.Errorf("enumerate fields: %w", err)
 		}
-		sort.Strings(fields)
-		for _, f := range fields {
-			fmt.Fprintln(stdout, f)
+		for _, field := range fields {
+			if _, err := fmt.Fprintln(stdout, field); err != nil {
+				return err
+			}
 		}
 		return nil
-
-	case *f.field != "":
-		return j.VisitUnique(*f.field, func(value []byte) error {
+	}
+	if f.action == "field" || !f.parsed && *f.field != "" {
+		if !validFieldName(*f.field) {
+			return fmt.Errorf("Invalid field name: %s", *f.field)
+		}
+		limit := -1
+		if f.linesFlag.set {
+			parsed, err := parseLinesLimitValue(f.linesFlag.value)
+			if err != nil {
+				return err
+			}
+			if !parsed.all {
+				limit = parsed.count
+			}
+		}
+		if limit == 0 {
+			return nil
+		}
+		count := 0
+		err := j.VisitUnique(*f.field, func(value []byte) error {
+			if count == limit {
+				return errStopIteration
+			}
+			if i := strings.IndexByte(string(value), 0); i >= 0 {
+				value = value[:i]
+			}
 			if _, err := stdout.Write(value); err != nil {
 				return err
 			}
 			if _, err := fmt.Fprintln(stdout); err != nil {
 				return err
 			}
+			count++
 			return nil
 		})
+		if errors.Is(err, errStopIteration) {
+			return nil
+		}
+		return err
+	}
 
+	grepTailReverse := f.grepTailImpliesReverse()
+	if *f.noTail {
+		if *f.reverseFlag {
+			return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+		}
+		return showForward(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+	}
+	if f.linesFlag.set && !*f.noTail {
+		limit, err := parseLinesLimitValue(f.linesFlag.value)
+		if err != nil {
+			return err
+		}
+		if limit.set && !limit.all {
+			if limit.count == 0 {
+				return showZero(j, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), cursorControl, !limit.oldest || *f.reverseFlag, *f.reverseFlag || grepTailReverse)
+			}
+			if limit.oldest {
+				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+			}
+			if cursorControl.seek != nil && !*f.reverseFlag && !grepTailReverse {
+				return showForward(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+			}
+			if grepTailReverse || *f.reverseFlag {
+				return showReverse(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+			}
+			return showTail(j, limit.count, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+		}
+		if limit.all {
+			if *f.reverseFlag {
+				return showReverse(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+			}
+			return showForward(j, 0, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
+		}
+	}
+
+	switch {
 	case *f.head > 0:
 		return showForward(j, *f.head, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 
@@ -1665,7 +1826,7 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 
 	default:
 		if *f.pagerEndFlag {
-			if *f.reverseFlag {
+			if *f.reverseFlag || grepTailReverse {
 				return showReverse(j, 1000, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
 			}
 			return showTail(j, 1000, sinceUsec, untilUsec, stdout, *f.showCursorFlag, f.effectiveQuiet(), postFilters, cursorControl, outputOptions)
@@ -1678,8 +1839,11 @@ func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout i
 }
 
 func (f *cliFlags) grepTailImpliesReverse() bool {
-	if !f.grepSet || *f.follow || !f.linesFlag.set {
+	if !f.grepSet || *f.follow || *f.noTail {
 		return false
+	}
+	if !f.linesFlag.set {
+		return *f.pagerEndFlag
 	}
 	limit, err := parseLinesLimitValue(f.linesFlag.value)
 	if err != nil {
@@ -1701,7 +1865,7 @@ func (f *cliFlags) effectiveQuiet() bool {
 }
 
 func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outputMode string, bootOverride optionalStringFlag) (cliJournal, error) {
-	j, err := input.openJournal()
+	j, err := input.openJournalWithCursor(*flags.showCursorFlag || *flags.cursorFileFlag != "" || flags.seen["cursor-file"] || *flags.cursorFlag != "" || *flags.afterCursorFlag != "" || flags.seen["cursor"] || flags.seen["after-cursor"])
 	if err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)
 	}
@@ -1720,6 +1884,9 @@ func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outp
 		if err := addInvocationMatches(j, invocationID); err != nil {
 			return nil, err
 		}
+		if err := applyNonUnitMatches(j, flags); err != nil {
+			return nil, err
+		}
 	} else {
 		if err := applyBootMatch(j, flags, bootOverride); err != nil {
 			return nil, err
@@ -1731,7 +1898,9 @@ func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outp
 
 	for _, arg := range matches {
 		if arg == "+" {
-			j.AddDisjunction()
+			if err := j.AddDisjunction(); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if strings.Contains(arg, "=") {
@@ -1748,154 +1917,6 @@ func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outp
 	return j, nil
 }
 
-func preprocessOptionalArgs(args []string) []string {
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--boot" || arg == "-b" {
-			if i+1 < len(args) && looksLikeBootDescriptor(args[i+1]) {
-				out = append(out, arg+"="+args[i+1])
-				i++
-			} else {
-				out = append(out, arg+"=0")
-			}
-			continue
-		}
-		if arg == "--lines" || arg == "-n" {
-			if i+1 < len(args) && looksLikeLinesDescriptor(args[i+1]) {
-				out = append(out, arg+"="+args[i+1])
-				i++
-			} else {
-				out = append(out, arg+"=10")
-			}
-			continue
-		}
-		out = append(out, arg)
-	}
-	return out
-}
-
-func normalizeShortFlags(args []string, fs *flag.FlagSet) []string {
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			out = append(out, args[i:]...)
-			break
-		}
-		if arg == "-" || strings.HasPrefix(arg, "--") || !strings.HasPrefix(arg, "-") {
-			out = append(out, arg)
-			continue
-		}
-		body := strings.TrimPrefix(arg, "-")
-		for len(body) > 0 {
-			name := body[:1]
-			flg := fs.Lookup(name)
-			if flg == nil {
-				out = append(out, "-"+body)
-				break
-			}
-			body = body[1:]
-			if flagIsBool(flg) && !flagIsOptionalString(flg) {
-				out = append(out, "-"+name)
-				continue
-			}
-			if body == "" {
-				out = append(out, "-"+name)
-			} else {
-				out = append(out, "-"+name+"="+body)
-			}
-			break
-		}
-	}
-	return out
-}
-
-func permuteFlagArgs(args []string, fs *flag.FlagSet) []string {
-	options := make([]string, 0, len(args))
-	operands := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			operands = append(operands, args[i+1:]...)
-			break
-		}
-		name, inlineValue, isFlag := splitFlagArg(arg)
-		if !isFlag {
-			operands = append(operands, arg)
-			continue
-		}
-		flg := fs.Lookup(name)
-		if flg == nil {
-			options = append(options, arg)
-			continue
-		}
-		options = append(options, arg)
-		if inlineValue || flagIsBool(flg) {
-			continue
-		}
-		if i+1 < len(args) {
-			i++
-			options = append(options, args[i])
-		}
-	}
-	return append(options, operands...)
-}
-
-func splitFlagArg(arg string) (string, bool, bool) {
-	if arg == "-" || !strings.HasPrefix(arg, "-") {
-		return "", false, false
-	}
-	if strings.HasPrefix(arg, "--") {
-		body := strings.TrimPrefix(arg, "--")
-		if body == "" {
-			return "", false, false
-		}
-		name, _, found := strings.Cut(body, "=")
-		return name, found, true
-	}
-	body := strings.TrimPrefix(arg, "-")
-	if body == "" {
-		return "", false, false
-	}
-	name, _, found := strings.Cut(body, "=")
-	return name, found, true
-}
-
-func flagIsBool(flg *flag.Flag) bool {
-	boolFlag, ok := flg.Value.(interface{ IsBoolFlag() bool })
-	return ok && boolFlag.IsBoolFlag()
-}
-
-func flagIsOptionalString(flg *flag.Flag) bool {
-	_, ok := flg.Value.(*optionalStringFlag)
-	return ok
-}
-
-func looksLikeBootDescriptor(value string) bool {
-	if value == "all" {
-		return true
-	}
-	for _, pattern := range bootDescriptorPatterns {
-		if pattern.MatchString(value) {
-			return true
-		}
-	}
-	return false
-}
-
-func looksLikeLinesDescriptor(value string) bool {
-	if value == "all" {
-		return true
-	}
-	value = strings.TrimPrefix(value, "+")
-	if value == "" {
-		return false
-	}
-	n, err := strconv.Atoi(value)
-	return err == nil && n >= 0
-}
-
 func parseOptionalTimestampUsec(value string) (*uint64, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
@@ -1908,131 +1929,7 @@ func parseOptionalTimestampUsec(value string) (*uint64, error) {
 }
 
 func parseTimestampUsec(value string) (uint64, error) {
-	value = strings.TrimSpace(value)
-	if usec, ok := parseRelativeTimestampUsec(value); ok {
-		return usec, nil
-	}
-	if strings.HasPrefix(value, "@") {
-		return parseEpochTimestampUsec(strings.TrimPrefix(value, "@"))
-	}
-	if usec, ok, err := parseAgoTimestampUsec(value); ok || err != nil {
-		return usec, err
-	}
-	if usec, ok, err := parseSignedDurationTimestampUsec(value); ok || err != nil {
-		return usec, err
-	}
-
-	now := time.Now()
-	if usec, ok := parseDateTimestampUsec(value); ok {
-		return usec, nil
-	}
-	if usec, ok := parseTimeOfDayTimestampUsec(value, now); ok {
-		return usec, nil
-	}
-	return 0, fmt.Errorf("failed to parse timestamp: %s", value)
-}
-
-func parseRelativeTimestampUsec(value string) (uint64, bool) {
-	switch value {
-	case "now":
-		return uint64(time.Now().UnixMicro()), true
-	case "today", "yesterday", "tomorrow":
-		now := time.Now()
-		day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-		if value == "yesterday" {
-			day = day.AddDate(0, 0, -1)
-		} else if value == "tomorrow" {
-			day = day.AddDate(0, 0, 1)
-		}
-		return uint64(day.UnixMicro()), true
-	default:
-		return 0, false
-	}
-}
-
-func parseAgoTimestampUsec(value string) (uint64, bool, error) {
-	duration, ok := strings.CutSuffix(value, " ago")
-	if !ok {
-		return 0, false, nil
-	}
-	delta, err := parseDurationUsec(strings.TrimSpace(duration))
-	if err != nil {
-		return 0, true, err
-	}
-	now := time.Now().UnixMicro()
-	then := now - int64(delta)
-	if then < 0 {
-		then = 0
-	}
-	return uint64(then), true, nil
-}
-
-func parseSignedDurationTimestampUsec(value string) (uint64, bool, error) {
-	if len(value) <= 1 || (value[0] != '+' && value[0] != '-') || signedDatePrefixRe.MatchString(value) {
-		return 0, false, nil
-	}
-	delta, err := parseDurationUsec(value[1:])
-	if err != nil {
-		return 0, true, err
-	}
-	now := time.Now().UnixMicro()
-	if value[0] == '+' {
-		return uint64(now + int64(delta)), true, nil
-	}
-	return uint64(now - int64(delta)), true, nil
-}
-
-func parseDateTimestampUsec(value string) (uint64, bool) {
-	for _, layout := range []string{
-		"2006-01-02T15:04:05.999999Z07:00",
-		"2006-01-02T15:04:05Z07:00",
-		"2006-01-02T15:04Z07:00",
-	} {
-		if t, err := time.Parse(layout, value); err == nil {
-			return uint64(t.UnixMicro()), true
-		}
-	}
-	for _, layout := range []string{
-		"2006-01-02T15:04:05.999999",
-		"2006-01-02T15:04:05",
-		"2006-01-02T15:04",
-		"2006-01-02 15:04:05.999999",
-		"2006-01-02 15:04:05",
-		"2006-01-02 15:04",
-		"2006-01-02",
-	} {
-		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil {
-			return uint64(t.UnixMicro()), true
-		}
-	}
-	return 0, false
-}
-
-func parseTimeOfDayTimestampUsec(value string, now time.Time) (uint64, bool) {
-	for _, layout := range []string{"15:04:05.999999", "15:04:05", "15:04"} {
-		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil {
-			t = time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.Local)
-			return uint64(t.UnixMicro()), true
-		}
-	}
-	return 0, false
-}
-
-func parseEpochTimestampUsec(value string) (uint64, error) {
-	if !epochTimestampRe.MatchString(value) {
-		return 0, fmt.Errorf("failed to parse timestamp: @%s", value)
-	}
-	whole, frac, _ := strings.Cut(value, ".")
-	seconds, err := strconv.ParseUint(whole, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	frac = (frac + "000000")[:6]
-	usec, err := strconv.ParseUint(frac, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return seconds*1_000_000 + usec, nil
+	return new(timestampParser).parse(value)
 }
 
 func parseDurationUsec(value string) (uint64, error) {
@@ -2044,49 +1941,14 @@ func parseDurationUsecAllowZero(value string) (uint64, error) {
 }
 
 func parseDurationUsecMode(value string, allowZero bool) (uint64, error) {
-	units := map[string]float64{
-		"us": 1, "usec": 1, "usecs": 1,
-		"ms": 1_000, "msec": 1_000, "msecs": 1_000,
-		"s": 1_000_000, "sec": 1_000_000, "secs": 1_000_000, "second": 1_000_000, "seconds": 1_000_000,
-		"m": 60_000_000, "min": 60_000_000, "mins": 60_000_000, "minute": 60_000_000, "minutes": 60_000_000,
-		"h": 3_600_000_000, "hr": 3_600_000_000, "hour": 3_600_000_000, "hours": 3_600_000_000,
-		"d": 86_400_000_000, "day": 86_400_000_000, "days": 86_400_000_000,
-		"w": 604_800_000_000, "week": 604_800_000_000, "weeks": 604_800_000_000,
-		"month": 2_629_800_000_000, "months": 2_629_800_000_000,
-		"y": 31_557_600_000_000, "year": 31_557_600_000_000, "years": 31_557_600_000_000,
+	result, err := durationValue(value)
+	if err != nil {
+		return 0, err
 	}
-	var total float64
-	pos := 0
-	seen := false
-	for _, match := range durationTokenRe.FindAllStringSubmatchIndex(value, -1) {
-		if match[0] != pos {
-			return 0, fmt.Errorf("failed to parse duration: %s", value)
-		}
-		seen = true
-		number, err := strconv.ParseFloat(value[match[2]:match[3]], 64)
-		if err != nil {
-			return 0, err
-		}
-		unit := "s"
-		if match[4] >= 0 {
-			unit = value[match[4]:match[5]]
-		}
-		if unit == "M" {
-			total += number * 2_629_800_000_000
-			pos = match[1]
-			continue
-		}
-		multiplier, ok := units[strings.ToLower(unit)]
-		if !ok {
-			return 0, fmt.Errorf("failed to parse duration: %s", value)
-		}
-		total += number * multiplier
-		pos = match[1]
-	}
-	if pos != len(value) || !seen || (!allowZero && total == 0) {
+	if !allowZero && result == 0 {
 		return 0, fmt.Errorf("failed to parse duration: %s", value)
 	}
-	return uint64(total), nil
+	return result, nil
 }
 
 type bootInfo struct {
@@ -2106,15 +1968,22 @@ func runListBoots(input cliInput, flags *cliFlags, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("list boots: %w", err)
 	}
-	if len(boots) == 0 {
-		return errors.New("No boot found.")
-	}
 	display, err := selectBootRows(boots, flags)
 	if err != nil {
 		return err
 	}
+	if len(display) == 0 {
+		return noDataError(flags.effectiveQuiet(), "No boot found.")
+	}
+	if jsonTableMode(*flags.output) {
+		rows := make([]map[string]any, 0, len(display))
+		for _, row := range display {
+			rows = append(rows, map[string]any{"index": row.index, "boot_id": row.bootID, "first_entry": tableTimestamp(row.firstEntry), "last_entry": tableTimestamp(row.lastEntry)})
+		}
+		return writeTableJSON(stdout, *flags.output, rows)
+	}
 	if !*flags.quietFlag {
-		fmt.Fprintln(stdout, "IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY")
+		fmt.Fprint(stdout, detectOutputColors().tableHeader("BOOT ID"))
 	}
 	idxWidth := 1
 	if *flags.quietFlag {
@@ -2209,7 +2078,9 @@ func collectBootsIndexed(j cliJournal) ([]bootInfo, error) {
 		if err := addMatchPair(j, "_BOOT_ID", bootID); err != nil {
 			return nil, err
 		}
-		j.AddConjunction()
+		if err := j.AddConjunction(); err != nil {
+			return nil, err
+		}
 
 		if err := j.SeekHead(); err != nil {
 			return nil, err
@@ -2364,18 +2235,24 @@ func parseBootDescriptor(descriptor string) (string, int, error) {
 	if descriptor == "" {
 		return "", 0, errors.New("failed to parse boot descriptor: ")
 	}
-	m := bootDescriptorRe.FindStringSubmatch(descriptor)
-	if m == nil {
-		return "", 0, fmt.Errorf("failed to parse boot descriptor: %s", descriptor)
-	}
-	bootID := strings.ToLower(strings.ReplaceAll(m[1], "-", ""))
-	offset := 0
-	if m[4] != "" {
-		var err error
-		offset, err = strconv.Atoi(m[4])
-		if err != nil {
-			return "", 0, err
+	bootID, rest := "", descriptor
+	if len(descriptor) >= 32 {
+		if id, err := journal.ParseUUID(descriptor[:32]); err == nil {
+			if id != (journal.UUID{}) {
+				bootID = id.String()
+			}
+			rest = descriptor[32:]
 		}
+		if rest != "" && rest[0] != '+' && rest[0] != '-' {
+			return "", 0, fmt.Errorf("failed to parse boot descriptor: %s", descriptor)
+		}
+	}
+	if rest == "" {
+		return bootID, 0, nil
+	}
+	offset, err := parseNativeInt32(rest)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to parse boot descriptor: %s", descriptor)
 	}
 	return bootID, offset, nil
 }
@@ -2412,221 +2289,6 @@ func parseInvocationDescriptor(descriptor string) (string, int, bool, error) {
 	return id, offset, true, nil
 }
 
-func resolveInvocationFilter(input cliInput, flags *cliFlags) (string, bool, error) {
-	descriptor, set := effectiveInvocationDescriptor(flags)
-	if !set {
-		return "", false, nil
-	}
-	id, offset, active, err := parseInvocationDescriptor(descriptor)
-	if err != nil {
-		return "", false, err
-	}
-	if !active {
-		return "", false, nil
-	}
-
-	invocationUnitOption := ""
-	if id == "" || offset != 0 {
-		invocationUnitOption = "-I/--invocation= with an offset"
-	}
-
-	infos, err := collectInvocationsFromInput(input, flags, invocationUnitOption)
-	if err != nil {
-		return "", false, err
-	}
-	target := -1
-	if id != "" {
-		for i, info := range infos {
-			if info.id == id {
-				target = i + offset
-				break
-			}
-		}
-	} else if offset > 0 {
-		target = offset - 1
-	} else {
-		target = len(infos) - 1 + offset
-	}
-	if target < 0 || target >= len(infos) {
-		return "", false, fmt.Errorf("No journal entry found for the invocation (%s%+d).", id, offset)
-	}
-	return infos[target].id, true, nil
-}
-
-func applySingleInvocationUnit(j cliJournal, flags *cliFlags, optionName string) error {
-	systemUnits, userUnits, err := singleInvocationUnit(j, flags, optionName)
-	if err != nil {
-		return err
-	}
-	return addJournalctlUnitMatches(j, systemUnits, userUnits)
-}
-
-func singleInvocationUnit(j cliJournal, flags *cliFlags, optionName string) ([]string, []string, error) {
-	systemSpecs, userSpecs := effectiveUnitSpecs(flags)
-	count := len(systemSpecs) + len(userSpecs)
-	if count == 0 {
-		return nil, nil, fmt.Errorf("Using %s requires a unit. Please specify a unit name with -u/--unit=/--user-unit=.", optionName)
-	}
-	if count > 1 {
-		return nil, nil, fmt.Errorf("Using %s with multiple units is not supported.", optionName)
-	}
-	if len(systemSpecs) == 1 {
-		units, err := expandUnitSpecs(j, systemSpecs, systemUnitFieldsFull)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(units) == 0 {
-			return nil, nil, fmt.Errorf("No matching unit found for '%s' in journal.", mangleUnitName(systemSpecs[0]))
-		}
-		if len(units) > 1 {
-			return nil, nil, fmt.Errorf("Multiple matching units found for '%s' in journal.", mangleUnitName(systemSpecs[0]))
-		}
-		return units, nil, nil
-	}
-	units, err := expandUnitSpecs(j, userSpecs, userUnitFieldsFull)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(units) == 0 {
-		return nil, nil, fmt.Errorf("No matching unit found for '%s' in journal.", mangleUnitName(userSpecs[0]))
-	}
-	if len(units) > 1 {
-		return nil, nil, fmt.Errorf("Multiple matching units found for '%s' in journal.", mangleUnitName(userSpecs[0]))
-	}
-	return nil, units, nil
-}
-
-func collectInvocationsFromInput(input cliInput, flags *cliFlags, unitOption string) ([]invocationInfo, error) {
-	indexedJournal, err := openInvocationScopeJournal(input, flags, unitOption)
-	if err != nil {
-		return nil, err
-	}
-	candidateIDs, err := collectInvocationCandidateIDs(indexedJournal)
-	closeErr := indexedJournal.Close()
-	if closeErr != nil && err == nil {
-		return nil, closeErr
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]invocationInfo, 0, len(candidateIDs))
-	for _, id := range candidateIDs {
-		info, ok, err := invocationBoundsForID(input, flags, unitOption, id)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			out = append(out, info)
-		}
-	}
-	sort.Slice(out, func(i, k int) bool {
-		if out[i].firstUsec != out[k].firstUsec {
-			return out[i].firstUsec < out[k].firstUsec
-		}
-		return out[i].id < out[k].id
-	})
-	return out, nil
-}
-
-func openInvocationScopeJournal(input cliInput, flags *cliFlags, unitOption string) (cliJournal, error) {
-	j, err := input.openJournal()
-	if err != nil {
-		return nil, fmt.Errorf("open journal: %w", err)
-	}
-	if err := applyBootMatch(j, flags, optionalStringFlag{}); err != nil {
-		j.Close()
-		return nil, err
-	}
-	if unitOption != "" {
-		if err := applySingleInvocationUnit(j, flags, unitOption); err != nil {
-			j.Close()
-			return nil, err
-		}
-	}
-	return j, nil
-}
-
-func collectInvocationCandidateIDs(j cliJournal) ([]string, error) {
-	seen := make(map[string]struct{})
-	var out []string
-	for _, field := range invocationIDFields {
-		if err := j.VisitUnique(field, func(value []byte) error {
-			id, err := journal.ParseUUID(string(value))
-			if err != nil {
-				return nil
-			}
-			text := id.String()
-			if strings.Trim(text, "0") == "" {
-				return nil
-			}
-			if _, exists := seen[text]; exists {
-				return nil
-			}
-			seen[text] = struct{}{}
-			out = append(out, text)
-			return nil
-		}); err != nil {
-			return nil, fmt.Errorf("visit unique invocation values for %s: %w", field, err)
-		}
-	}
-	return out, nil
-}
-
-func invocationBoundsForID(input cliInput, flags *cliFlags, unitOption, id string) (invocationInfo, bool, error) {
-	firstJournal, err := openInvocationScopeJournal(input, flags, unitOption)
-	if err != nil {
-		return invocationInfo{}, false, err
-	}
-	defer firstJournal.Close()
-	if err := addInvocationMatches(firstJournal, id); err != nil {
-		return invocationInfo{}, false, err
-	}
-	if err := firstJournal.SeekHead(); err != nil {
-		return invocationInfo{}, false, err
-	}
-	ok, err := firstJournal.Next()
-	if err != nil {
-		return invocationInfo{}, false, err
-	}
-	if ok == 0 {
-		return invocationInfo{}, false, nil
-	}
-	firstEntry, err := firstJournal.GetEntry()
-	if err != nil {
-		return invocationInfo{}, false, err
-	}
-
-	lastJournal, err := openInvocationScopeJournal(input, flags, unitOption)
-	if err != nil {
-		return invocationInfo{}, false, err
-	}
-	defer lastJournal.Close()
-	if err := addInvocationMatches(lastJournal, id); err != nil {
-		return invocationInfo{}, false, err
-	}
-	if err := lastJournal.SeekTail(); err != nil {
-		return invocationInfo{}, false, err
-	}
-	ok, err = lastJournal.Previous()
-	if err != nil {
-		return invocationInfo{}, false, err
-	}
-	if ok == 0 {
-		return invocationInfo{}, false, nil
-	}
-	lastEntry, err := lastJournal.GetEntry()
-	if err != nil {
-		return invocationInfo{}, false, err
-	}
-
-	return invocationInfo{
-		id:        id,
-		firstUsec: firstEntry.Realtime,
-		lastUsec:  lastEntry.Realtime,
-	}, true, nil
-}
-
 func entryInTimeRange(entry *journal.Entry, sinceUsec, untilUsec *uint64) bool {
 	if sinceUsec != nil && entry.Realtime < *sinceUsec {
 		return false
@@ -2637,16 +2299,19 @@ func entryInTimeRange(entry *journal.Entry, sinceUsec, untilUsec *uint64) bool {
 	return true
 }
 
-func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
+func nextEntries(j cliJournal, sinceUsec, untilUsec *uint64, cursorSeek *cursorSeek, checkpoint *string, fn func(*journal.Entry) error) error {
 	if cursorSeek != nil {
-		entry, ok, err := seekCursorStart(j, cursorSeek, false)
+		entry, ok, err := seekCursorStartTracked(j, cursorSeek, false, checkpoint)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return nil
 		}
-		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
+		if checkpoint != nil {
+			*checkpoint = entry.Cursor
+		}
+		if entryInTimeRange(entry, sinceUsec, untilUsec) {
 			if err := fn(entry); err != nil {
 				return err
 			}
@@ -2670,10 +2335,13 @@ func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters
 		if err != nil {
 			return err
 		}
+		if checkpoint != nil {
+			*checkpoint = entry.Cursor
+		}
 		if untilUsec != nil && entry.Realtime > *untilUsec {
 			return nil
 		}
-		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
+		if entryInTimeRange(entry, sinceUsec, untilUsec) {
 			if err := fn(entry); err != nil {
 				return err
 			}
@@ -2684,17 +2352,24 @@ func nextMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters
 func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, quiet bool, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
 	count := 0
 	var lastCursor string
+	var checkpoint *string
+	if showCursor || cursorControl.updateFile != nil {
+		checkpoint = &lastCursor
+	}
 	renderer := newOutputRenderer(outputOptions)
 	bootSeparators := newBootSeparatorState(outputOptions.mode, quiet, outputOptions.merge)
-	err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
+	err := nextEntries(j, sinceUsec, untilUsec, cursorControl.seek, checkpoint, func(entry *journal.Entry) error {
+		matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
+		if err != nil {
+			return err
+		}
+		if !matched {
+			return nil
+		}
+		count++
 		if limit > 0 && count >= limit {
 			return errStopIteration
 		}
-		if err := renderEntry(stdout, renderer, &bootSeparators, postFilters, entry); err != nil {
-			return err
-		}
-		lastCursor = entry.Cursor
-		count++
 		return nil
 	})
 	if errors.Is(err, errStopIteration) {
@@ -2707,24 +2382,72 @@ func showForward(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
 }
 
+func initialCursor(j cliJournal, sinceUsec, untilUsec *uint64, seek *cursorSeek, fromTail, reverse bool) (string, error) {
+	var cursor string
+	if seek != nil {
+		entry, ok, err := seekCursorStartTracked(j, seek, reverse, &cursor)
+		if ok {
+			cursor = entry.Cursor
+		}
+		return cursor, err
+	}
+	var err error
+	if fromTail {
+		if untilUsec != nil {
+			err = j.SeekRealtimeUsec(*untilUsec)
+		} else {
+			err = j.SeekTail()
+		}
+	} else if sinceUsec != nil {
+		err = j.SeekRealtimeUsec(*sinceUsec)
+	} else {
+		err = j.SeekHead()
+	}
+	if err != nil {
+		return "", err
+	}
+	var n int
+	if fromTail {
+		n, err = j.Previous()
+	} else {
+		n, err = j.Next()
+	}
+	if err != nil || n == 0 {
+		return "", err
+	}
+	return currentJournalCursor(j)
+}
+
+func showZero(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor, quiet bool, control cursorControl, fromTail, reverse bool) error {
+	var cursor string
+	if showCursor || control.updateFile != nil || control.seek != nil {
+		var err error
+		cursor, err = initialCursor(j, sinceUsec, untilUsec, control.seek, fromTail, reverse)
+		if err != nil {
+			return err
+		}
+	}
+	printNoEntries(stdout, 0, quiet)
+	return finishCursorOutput(stdout, showCursor, control.updateFile, cursor)
+}
+
 func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.Writer, showCursor bool, quiet bool, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
 	if limit == 0 {
-		if cursorControl.seek != nil {
-			if _, _, err := seekCursorStart(j, cursorControl.seek, false); err != nil {
-				return err
-			}
-		}
-		printNoEntries(stdout, 0, quiet)
-		return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, "")
+		return showZero(j, sinceUsec, untilUsec, stdout, showCursor, quiet, cursorControl, true, false)
+	}
+	var lastCursor string
+	var checkpoint *string
+	if showCursor || cursorControl.updateFile != nil {
+		checkpoint = &lastCursor
 	}
 	var entries []*journal.Entry
 	start := 0
 	if cursorControl.seek == nil {
-		err := previousMatchingEntries(j, sinceUsec, untilUsec, postFilters, nil, func(entry *journal.Entry) error {
+		err := previousEntries(j, sinceUsec, untilUsec, nil, func(entry *journal.Entry) error {
+			entries = append(entries, entry)
 			if len(entries) >= limit {
 				return errStopIteration
 			}
-			entries = append(entries, entry)
 			return nil
 		})
 		if errors.Is(err, errStopIteration) {
@@ -2734,7 +2457,7 @@ func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.W
 			return err
 		}
 	} else {
-		if err := nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
+		if err := nextEntries(j, sinceUsec, untilUsec, cursorControl.seek, checkpoint, func(entry *journal.Entry) error {
 			if len(entries) < limit {
 				entries = append(entries, entry)
 				return nil
@@ -2746,16 +2469,20 @@ func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.W
 			return err
 		}
 	}
-	var lastCursor string
 	renderer := newOutputRenderer(outputOptions)
 	bootSeparators := newBootSeparatorState(outputOptions.mode, quiet, outputOptions.merge)
+	count := 0
 	if cursorControl.seek == nil {
 		for i := len(entries) - 1; i >= 0; i-- {
 			entry := entries[i]
-			if err := renderEntry(stdout, renderer, &bootSeparators, postFilters, entry); err != nil {
+			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
+			if err != nil {
 				return err
 			}
 			lastCursor = entry.Cursor
+			if matched {
+				count++
+			}
 		}
 	} else {
 		for i := 0; i < len(entries); i++ {
@@ -2764,13 +2491,33 @@ func showTail(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout io.W
 				idx = (start + i) % limit
 			}
 			entry := entries[idx]
-			if err := renderEntry(stdout, renderer, &bootSeparators, postFilters, entry); err != nil {
+			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
+			if err != nil {
 				return err
 			}
-			lastCursor = entry.Cursor
+			if matched {
+				count++
+			}
 		}
 	}
-	printNoEntries(stdout, len(entries), quiet)
+	if cursorControl.seek == nil && untilUsec != nil && len(entries) < limit && (showCursor || cursorControl.updateFile != nil) {
+		if len(entries) > 0 {
+			if err := j.SeekCursorDirection(lastCursor, journal.DirectionForward); err != nil {
+				return err
+			}
+		} else if err := j.SeekRealtimeUsec(*untilUsec); err != nil {
+			return err
+		}
+		if n, err := j.Next(); err != nil {
+			return err
+		} else if n > 0 {
+			lastCursor, err = currentJournalCursor(j)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	printNoEntries(stdout, count, quiet)
 	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
 }
 
@@ -2779,19 +2526,19 @@ func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 		return streamPreviousOutputEvents(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, stdout, showCursor, quiet, cursorControl, outputOptions)
 	}
 	renderer := newOutputRenderer(outputOptions)
-	events, count, lastCursor, err := previousOutputEvents(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, limit, outputOptions, quiet)
+	events, count, lastCursor, err := previousOutputEvents(j, sinceUsec, untilUsec, postFilters, cursorControl.seek, limit, outputOptions, quiet, showCursor || cursorControl.updateFile != nil)
 	if err != nil {
 		return err
 	}
-	disabledBootSeparators := bootSeparatorState{}
 	for _, event := range events {
 		if event.bootID != "" {
-			if _, err := fmt.Fprintf(stdout, "-- Boot %s --\n", event.bootID); err != nil {
+			if _, err := fmt.Fprint(stdout, outputOptions.colors.boot(event.bootID)); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := renderEntry(stdout, renderer, &disabledBootSeparators, postFilters, event.entry); err != nil {
+		postFilters.restoreHighlight()
+		if err := renderEntry(stdout, renderer, postFilters, event.entry); err != nil {
 			return err
 		}
 	}
@@ -2801,31 +2548,31 @@ func showReverse(j cliJournal, limit int, sinceUsec, untilUsec *uint64, stdout i
 
 func streamPreviousOutputEvents(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, stdout io.Writer, showCursor bool, quiet bool, cursorControl cursorControl, outputOptions outputOptions) error {
 	renderer := newOutputRenderer(outputOptions)
-	disabledBootSeparators := bootSeparatorState{}
 	bootContext := newBootSeparatorState(outputOptions.mode, quiet, outputOptions.merge)
-	var pendingBoot string
 	var count int
 	var lastCursor string
 
 	visit := func(entry *journal.Entry) (bool, error) {
+		lastCursor = entry.Cursor
 		if sinceUsec != nil && entry.Realtime < *sinceUsec {
 			return false, nil
 		}
 		if bootContext.enabled {
 			bootID := entry.BootID.String()
 			if bootContext.previousBoot != "" && bootContext.previousBoot != bootID {
-				pendingBoot = bootID
+				if _, err := fmt.Fprint(stdout, outputOptions.colors.boot(bootID)); err != nil {
+					return false, err
+				}
 			}
 			bootContext.previousBoot = bootID
 		}
-		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
-			if pendingBoot != "" {
-				if _, err := fmt.Fprintf(stdout, "-- Boot %s --\n", pendingBoot); err != nil {
-					return false, err
-				}
-				pendingBoot = ""
-			}
-			if err := renderEntry(stdout, renderer, &disabledBootSeparators, postFilters, entry); err != nil {
+		matched, matchErr := entryMatches(entry, sinceUsec, untilUsec, postFilters)
+		if matchErr != nil {
+			err := matchErr
+			return false, err
+		}
+		if matched {
+			if err := renderEntry(stdout, renderer, postFilters, entry); err != nil {
 				return false, err
 			}
 			lastCursor = entry.Cursor
@@ -2835,7 +2582,11 @@ func streamPreviousOutputEvents(j cliJournal, sinceUsec, untilUsec *uint64, post
 	}
 
 	if cursorSeek != nil {
-		entry, ok, err := seekCursorStart(j, cursorSeek, true)
+		var checkpoint *string
+		if showCursor || cursorControl.updateFile != nil {
+			checkpoint = &lastCursor
+		}
+		entry, ok, err := seekCursorStartTracked(j, cursorSeek, true, checkpoint)
 		if err != nil {
 			return err
 		}
@@ -2879,11 +2630,6 @@ func streamPreviousOutputEvents(j cliJournal, sinceUsec, untilUsec *uint64, post
 			break
 		}
 	}
-	if pendingBoot != "" && count > 0 {
-		if _, err := fmt.Fprintf(stdout, "-- Boot %s --\n", pendingBoot); err != nil {
-			return err
-		}
-	}
 	printNoEntries(stdout, count, quiet)
 	return finishCursorOutput(stdout, showCursor, cursorControl.updateFile, lastCursor)
 }
@@ -2893,30 +2639,32 @@ type reverseOutputEvent struct {
 	entry  *journal.Entry
 }
 
-func previousOutputEvents(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, limit int, outputOptions outputOptions, quiet bool) ([]reverseOutputEvent, int, string, error) {
+func previousOutputEvents(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, limit int, outputOptions outputOptions, quiet, captureCursor bool) ([]reverseOutputEvent, int, string, error) {
 	bootContext := newBootSeparatorState(outputOptions.mode, quiet, outputOptions.merge)
 	var events []reverseOutputEvent
-	var pendingBoot string
 	var count int
 	var lastCursor string
 
 	visit := func(entry *journal.Entry) (bool, error) {
+		lastCursor = entry.Cursor
 		if sinceUsec != nil && entry.Realtime < *sinceUsec {
 			return false, nil
 		}
 		if bootContext.enabled {
 			bootID := entry.BootID.String()
 			if bootContext.previousBoot != "" && bootContext.previousBoot != bootID {
-				pendingBoot = bootID
+				events = append(events, reverseOutputEvent{bootID: bootID})
 			}
 			bootContext.previousBoot = bootID
 		}
-		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
-			if pendingBoot != "" {
-				events = append(events, reverseOutputEvent{bootID: pendingBoot})
-				pendingBoot = ""
-			}
+		matched, matchErr := entryMatches(entry, sinceUsec, untilUsec, postFilters)
+		if matchErr != nil {
+			err := matchErr
+			return false, err
+		}
+		if matched {
 			events = append(events, reverseOutputEvent{entry: entry})
+			postFilters.bufferHighlight()
 			lastCursor = entry.Cursor
 			count++
 			if limit > 0 && count >= limit {
@@ -2927,7 +2675,11 @@ func previousOutputEvents(j cliJournal, sinceUsec, untilUsec *uint64, postFilter
 	}
 
 	if cursorSeek != nil {
-		entry, ok, err := seekCursorStart(j, cursorSeek, true)
+		var checkpoint *string
+		if captureCursor {
+			checkpoint = &lastCursor
+		}
+		entry, ok, err := seekCursorStartTracked(j, cursorSeek, true, checkpoint)
 		if err != nil || !ok {
 			return events, count, lastCursor, err
 		}
@@ -2963,9 +2715,6 @@ func previousOutputEvents(j cliJournal, sinceUsec, untilUsec *uint64, postFilter
 			return events, count, lastCursor, nil
 		}
 	}
-	if pendingBoot != "" && count > 0 {
-		events = append(events, reverseOutputEvent{bootID: pendingBoot})
-	}
 	return events, count, lastCursor, nil
 }
 
@@ -2975,7 +2724,7 @@ func printNoEntries(stdout io.Writer, count int, quiet bool) {
 	}
 }
 
-func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
+func previousEntries(j cliJournal, sinceUsec, untilUsec *uint64, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
 	if cursorSeek != nil {
 		entry, ok, err := seekCursorStart(j, cursorSeek, true)
 		if err != nil {
@@ -2984,7 +2733,7 @@ func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFil
 		if !ok {
 			return nil
 		}
-		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
+		if entryInTimeRange(entry, sinceUsec, untilUsec) {
 			if err := fn(entry); err != nil {
 				return err
 			}
@@ -3011,7 +2760,7 @@ func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFil
 		if sinceUsec != nil && entry.Realtime < *sinceUsec {
 			return nil
 		}
-		if entryInTimeRange(entry, sinceUsec, untilUsec) && postFilters.matches(entry) {
+		if entryInTimeRange(entry, sinceUsec, untilUsec) {
 			if err := fn(entry); err != nil {
 				return err
 			}
@@ -3020,7 +2769,15 @@ func previousMatchingEntries(j cliJournal, sinceUsec, untilUsec *uint64, postFil
 }
 
 func seekCursorStart(j cliJournal, seek *cursorSeek, reverse bool) (*journal.Entry, bool, error) {
-	if err := j.SeekCursor(seek.cursor); err != nil {
+	return seekCursorStartTracked(j, seek, reverse, nil)
+}
+
+func seekCursorStartTracked(j cliJournal, seek *cursorSeek, reverse bool, checkpoint *string) (*journal.Entry, bool, error) {
+	direction := journal.DirectionForward
+	if reverse {
+		direction = journal.DirectionBackward
+	}
+	if err := j.SeekCursorDirection(seek.cursor, direction); err != nil {
 		return nil, false, fmt.Errorf("seek cursor: %w", err)
 	}
 	if seek.after {
@@ -3032,6 +2789,15 @@ func seekCursorStart(j cliJournal, seek *cursorSeek, reverse bool) (*journal.Ent
 			return nil, false, fmt.Errorf("test cursor: %w", err)
 		}
 		if match {
+			if checkpoint != nil {
+				cursor, err := currentJournalCursor(j)
+				if err == nil {
+					*checkpoint = cursor
+				} else if !errors.Is(err, journal.ErrNoEntry) && !errors.Is(err, journal.ErrEndOfEntries) {
+					return nil, false, err
+				}
+			}
+
 			var n int
 			var err error
 			if reverse {
@@ -3053,12 +2819,15 @@ func seekCursorStart(j cliJournal, seek *cursorSeek, reverse bool) (*journal.Ent
 		if errors.Is(err, journal.ErrNoEntry) || errors.Is(err, journal.ErrEndOfEntries) {
 			return nil, false, nil
 		}
+		if _, positionErr := currentJournalCursor(j); errors.Is(positionErr, journal.ErrNoEntry) || errors.Is(positionErr, journal.ErrEndOfEntries) {
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
 	return entry, true, nil
 }
 
-func finishCursorOutput(stdout io.Writer, showCursor bool, cursorFile, cursor string) error {
+func finishCursorOutput(stdout io.Writer, showCursor bool, cursorFile *string, cursor string) error {
 	if cursor == "" {
 		return nil
 	}
@@ -3067,17 +2836,17 @@ func finishCursorOutput(stdout io.Writer, showCursor bool, cursorFile, cursor st
 			return err
 		}
 	}
-	if cursorFile != "" {
-		return writeCursorFileAtomic(cursorFile, cursor)
+	if cursorFile != nil {
+		return writeCursorFileAtomic(*cursorFile, cursor)
 	}
 	return nil
 }
 
 func updateCursorFile(control cursorControl, cursor string) error {
-	if control.updateFile == "" || cursor == "" {
+	if control.updateFile == nil || cursor == "" {
 		return nil
 	}
-	return writeCursorFileAtomic(control.updateFile, cursor)
+	return writeCursorFileAtomic(*control.updateFile, cursor)
 }
 
 func writeCursorFileAtomic(path, cursor string) error {
@@ -3116,6 +2885,7 @@ func writeCursorFileAtomic(path, cursor string) error {
 type bootSeparatorState struct {
 	enabled      bool
 	previousBoot string
+	colors       outputColors
 }
 
 func newBootSeparatorState(mode string, quiet bool, suppressed bool) bootSeparatorState {
@@ -3132,27 +2902,55 @@ func outputEmitsBootSeparators(mode string) bool {
 	}
 }
 
-func renderEntry(stdout io.Writer, renderer *outputRenderer, bootSeparators *bootSeparatorState, postFilters *cliPostFilters, entry *journal.Entry) error {
+func (bootSeparators *bootSeparatorState) beforeEntry(stdout io.Writer, entry *journal.Entry) error {
 	if bootSeparators.enabled {
 		bootID := entry.BootID.String()
 		if bootSeparators.previousBoot != "" && bootSeparators.previousBoot != bootID {
-			if _, err := fmt.Fprintf(stdout, "-- Boot %s --\n", bootID); err != nil {
+			if _, err := fmt.Fprint(stdout, bootSeparators.colors.boot(bootID)); err != nil {
 				return err
 			}
 		}
 		bootSeparators.previousBoot = bootID
 	}
+	return nil
+}
+
+func renderMatchingEntry(stdout io.Writer, renderer *outputRenderer, boots *bootSeparatorState, postFilters *cliPostFilters, entry *journal.Entry) (bool, error) {
+	boots.colors = renderer.options.colors
+	if err := boots.beforeEntry(stdout, entry); err != nil {
+		return false, err
+	}
+	matched, err := postFilters.matches(entry)
+	if err != nil || !matched {
+		return false, err
+	}
+	return true, renderEntry(stdout, renderer, postFilters, entry)
+}
+
+func renderEntry(stdout io.Writer, renderer *outputRenderer, postFilters *cliPostFilters, entry *journal.Entry) error {
 	if postFilters.excludesEntry(entry) {
+		if postFilters != nil {
+			postFilters.shown = true
+		}
 		return nil
 	}
 	if outputSkipsMissingMessage(renderer.options.mode) && len(entryValues(entry, "MESSAGE")) == 0 {
+		if postFilters != nil {
+			postFilters.shown = true
+		}
 		return nil
+	}
+	if postFilters != nil && postFilters.captureHighlight {
+		renderer.highlight = postFilters.highlight
 	}
 	out, err := renderer.render(entry)
 	if err != nil {
 		return err
 	}
 	_, err = fmt.Fprint(stdout, out)
+	if err == nil && postFilters != nil {
+		postFilters.shown = true
+	}
 	return err
 }
 
@@ -3176,27 +2974,33 @@ func resolveFollowBootFlag(input cliInput, flags *cliFlags) (optionalStringFlag,
 	return optionalStringFlag{set: true, value: bootID}, nil
 }
 
-func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, outputMode string, bootOverride optionalStringFlag, sinceUsec, untilUsec *uint64, postFilters *cliPostFilters, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
+func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, outputMode string, bootOverride optionalStringFlag, sinceUsec, untilUsec *uint64, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
 	j, err := openFilteredJournal(input, matches, flags, outputMode, bootOverride)
 	if err != nil {
 		return err
 	}
 	defer j.Close()
-	return nextMatchingEntries(j, sinceUsec, untilUsec, postFilters, cursorSeek, fn)
+	return nextEntries(j, sinceUsec, untilUsec, cursorSeek, nil, fn)
 }
 
 func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
 	var lastSeenCursor string
+	var lastVisitedCursor string
 	renderer := newOutputRenderer(outputOptions)
 	bootSeparators := newBootSeparatorState(outputOptions.mode, flags.effectiveQuiet(), outputOptions.merge)
 	bootOverride, err := resolveFollowBootFlag(input, flags)
 	if err != nil {
 		return err
 	}
-	if noTail {
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
-			if err := renderEntry(stdout, renderer, &bootSeparators, postFilters, entry); err != nil {
+	if noTail || cursorControl.seek != nil {
+		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
+			lastVisitedCursor = entry.Cursor
+			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
+			if err != nil {
 				return err
+			}
+			if !matched {
+				return nil
 			}
 			if entry.Cursor != "" {
 				lastSeenCursor = entry.Cursor
@@ -3209,9 +3013,9 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 	} else {
 		var selected []*journal.Entry
 		start := 0
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, postFilters, cursorControl.seek, func(entry *journal.Entry) error {
+		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
 			if entry.Cursor != "" {
-				lastSeenCursor = entry.Cursor
+				lastVisitedCursor = entry.Cursor
 			}
 			if tail == 0 {
 				return nil
@@ -3231,26 +3035,41 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 			if len(selected) == tail {
 				idx = (start + i) % tail
 			}
-			if err := renderEntry(stdout, renderer, &bootSeparators, postFilters, selected[idx]); err != nil {
+			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, selected[idx])
+			if err != nil {
 				return err
+			}
+			if matched {
+				lastSeenCursor = selected[idx].Cursor
 			}
 		}
 		if err := updateCursorFile(cursorControl, lastSeenCursor); err != nil {
 			return err
 		}
 	}
+	if cursorControl.updateFile != nil && lastVisitedCursor != "" && lastVisitedCursor != lastSeenCursor {
+		if err := updateCursorFile(cursorControl, lastVisitedCursor); err != nil {
+			return err
+		}
+		lastSeenCursor = lastVisitedCursor
+	}
 	pollInterval := 100 * time.Millisecond
 	const maxPollInterval = time.Second
 	for {
 		time.Sleep(pollInterval)
 		seek := cursorControl.seek
-		if lastSeenCursor != "" {
-			seek = &cursorSeek{cursor: lastSeenCursor, after: true}
+		if lastVisitedCursor != "" {
+			seek = &cursorSeek{cursor: lastVisitedCursor, after: true}
 		}
 		emitted := 0
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, postFilters, seek, func(entry *journal.Entry) error {
-			if err := renderEntry(stdout, renderer, &bootSeparators, postFilters, entry); err != nil {
+		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, seek, func(entry *journal.Entry) error {
+			lastVisitedCursor = entry.Cursor
+			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
+			if err != nil {
 				return err
+			}
+			if !matched {
+				return nil
 			}
 			emitted++
 			if entry.Cursor != "" {
@@ -3260,6 +3079,12 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 			return nil
 		}); err != nil {
 			return err
+		}
+		if cursorControl.updateFile != nil && lastVisitedCursor != "" && lastVisitedCursor != lastSeenCursor {
+			if err := updateCursorFile(cursorControl, lastVisitedCursor); err != nil {
+				return err
+			}
+			lastSeenCursor = lastVisitedCursor
 		}
 		if emitted > 0 {
 			pollInterval = 100 * time.Millisecond
@@ -3272,7 +3097,7 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 	}
 }
 
-func runVerify(input cliInput, verifyKey string, hasVerifyKey bool, stdout, stderr io.Writer) error {
+func runVerify(input cliInput, verifyKey string, hasVerifyKey, quiet bool, stdout, stderr io.Writer) error {
 	if err := validateVerificationKeyOption(verifyKey, hasVerifyKey, stderr); err != nil {
 		return err
 	}
@@ -3290,7 +3115,7 @@ func runVerify(input cliInput, verifyKey string, hasVerifyKey bool, stdout, stde
 
 	var firstErr error
 	for _, path := range files {
-		if err := verifyOneFile(path, verifyKey, hasVerifyKey, directoryInput, stderr); err != nil {
+		if err := verifyOneFile(path, verifyKey, hasVerifyKey, directoryInput, quiet, stderr); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -3368,6 +3193,9 @@ type vacuumCandidate struct {
 }
 
 func hasVacuumFlags(f *cliFlags) bool {
+	if f.parsed {
+		return f.action == actionVacuum || f.action == actionRotateVacuum
+	}
 	return *f.vacuumSizeFlag != "" || *f.vacuumFilesFlag != "" || *f.vacuumTimeFlag != ""
 }
 
@@ -3399,7 +3227,7 @@ func parseVacuumOptions(flags *cliFlags) (vacuumOptions, error) {
 		opts.maxUse = value
 	}
 	if *flags.vacuumFilesFlag != "" {
-		value, err := strconv.ParseUint(strings.TrimSpace(*flags.vacuumFilesFlag), 10, 64)
+		value, err := parseNativeUint64(*flags.vacuumFilesFlag)
 		if err != nil {
 			return vacuumOptions{}, fmt.Errorf("failed to parse --vacuum-files value: %s", *flags.vacuumFilesFlag)
 		}
@@ -3417,32 +3245,85 @@ func parseVacuumOptions(flags *cliFlags) (vacuumOptions, error) {
 }
 
 func parseVacuumSize(value string) (uint64, error) {
-	match := sizeTokenRe.FindStringSubmatch(value)
-	if match == nil {
-		return 0, fmt.Errorf("failed to parse --vacuum-size value: %s", value)
+	invalid := func() (uint64, error) { return 0, fmt.Errorf("failed to parse --vacuum-size value: %s", value) }
+	units := [...]string{"E", "P", "T", "G", "M", "K", "B", ""}
+	factors := [...]uint64{1 << 60, 1 << 50, 1 << 40, 1 << 30, 1 << 20, 1 << 10, 1, 1}
+	remaining, firstUnit := value, 0
+	var total uint64
+	for {
+		remaining = strings.TrimLeft(remaining, " \t\n\r")
+		if strings.HasPrefix(remaining, "-") {
+			return invalid()
+		}
+		number := strings.TrimLeft(remaining, " \t\n\r\v\f")
+		negative := strings.HasPrefix(number, "-")
+		if strings.HasPrefix(number, "+") || negative {
+			number = number[1:]
+		}
+		end := 0
+		for end < len(number) && number[end] >= '0' && number[end] <= '9' {
+			end++
+		}
+		if end == 0 {
+			return invalid()
+		}
+		whole, err := strconv.ParseUint(number[:end], 10, 64)
+		if err != nil {
+			return invalid()
+		}
+		if negative {
+			whole = -whole
+		}
+		remaining = number[end:]
+		fraction := float64(0)
+		if strings.HasPrefix(remaining, ".") {
+			remaining = remaining[1:]
+			end = 0
+			for end < len(remaining) && remaining[end] >= '0' && remaining[end] <= '9' {
+				end++
+			}
+			if end > 0 {
+				part, err := strconv.ParseUint(remaining[:end], 10, 64)
+				if err != nil {
+					return invalid()
+				}
+				fraction = float64(part)
+				for range end {
+					fraction /= 10
+				}
+				remaining = remaining[end:]
+			}
+		}
+		remaining = strings.TrimLeft(remaining, " \t\n\r")
+		unit := firstUnit
+		for unit < len(units) && !strings.HasPrefix(remaining, units[unit]) {
+			unit++
+		}
+		if unit == len(units) {
+			return invalid()
+		}
+		factor := factors[unit]
+		ceiling := whole
+		if fraction > 0 {
+			if ceiling == ^uint64(0) {
+				return invalid()
+			}
+			ceiling++
+		}
+		if ceiling > ^uint64(0)/factor {
+			return invalid()
+		}
+		part := whole*factor + uint64(fraction*float64(factor))
+		if part > ^uint64(0)-total {
+			return invalid()
+		}
+		total += part
+		remaining = remaining[len(units[unit]):]
+		if remaining == "" {
+			return total, nil
+		}
+		firstUnit = unit + 1
 	}
-	number, err := strconv.ParseFloat(match[1], 64)
-	if err != nil {
-		return 0, err
-	}
-	unit := strings.ToLower(match[2])
-	multipliers := map[string]uint64{
-		"": 1, "b": 1, "byte": 1, "bytes": 1,
-		"k": 1024, "kb": 1024, "kib": 1024,
-		"m": 1024 * 1024, "mb": 1024 * 1024, "mib": 1024 * 1024,
-		"g": 1024 * 1024 * 1024, "gb": 1024 * 1024 * 1024, "gib": 1024 * 1024 * 1024,
-		"t": 1024 * 1024 * 1024 * 1024, "tb": 1024 * 1024 * 1024 * 1024, "tib": 1024 * 1024 * 1024 * 1024,
-		"p": 1024 * 1024 * 1024 * 1024 * 1024, "pb": 1024 * 1024 * 1024 * 1024 * 1024, "pib": 1024 * 1024 * 1024 * 1024 * 1024,
-		"e": 1024 * 1024 * 1024 * 1024 * 1024 * 1024, "eb": 1024 * 1024 * 1024 * 1024 * 1024 * 1024, "eib": 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
-	}
-	multiplier, ok := multipliers[unit]
-	if !ok {
-		return 0, fmt.Errorf("failed to parse --vacuum-size value: %s", value)
-	}
-	if number < 0 || number > float64(^uint64(0))/float64(multiplier) {
-		return 0, fmt.Errorf("failed to parse --vacuum-size value: %s", value)
-	}
-	return uint64(number * float64(multiplier)), nil
 }
 
 func vacuumDirectory(dir string, opts vacuumOptions, quiet bool, stderr io.Writer) error {
@@ -3493,10 +3374,6 @@ func vacuumDirectory(dir string, opts vacuumOptions, quiet bool, stderr io.Write
 		sum = saturatingAdd(sum, usage)
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return vacuumCandidateLess(candidates[i], candidates[j])
-	})
-
 	retentionLimit := uint64(0)
 	if opts.maxRetentionUsec > 0 {
 		now := currentRealtimeUsec()
@@ -3504,8 +3381,11 @@ func vacuumDirectory(dir string, opts vacuumOptions, quiet bool, stderr io.Write
 			retentionLimit = now - opts.maxRetentionUsec
 		}
 	}
+	patchVacuumCreationTimes(candidates, opts, retentionLimit, sum, activeFiles)
+	order := newVacuumOrder(candidates)
 
-	for i, candidate := range candidates {
+	for i := 0; i < len(candidates); i++ {
+		candidate := order.next()
 		left := activeFiles + uint64(len(candidates)-i)
 		if (opts.maxRetentionUsec == 0 || candidate.realtime >= retentionLimit) &&
 			(opts.maxUse == 0 || sum <= opts.maxUse) &&
@@ -3536,7 +3416,7 @@ func vacuumDirectory(dir string, opts vacuumOptions, quiet bool, stderr io.Write
 
 func parseVacuumCandidate(path, name string, usage uint64) (*vacuumCandidate, bool) {
 	if strings.HasSuffix(name, ".journal") {
-		match := archivedJournalNameRe.FindStringSubmatch(name)
+		match := archivedJournalNameRe().FindStringSubmatch(name)
 		if match == nil {
 			return nil, true
 		}
@@ -3556,7 +3436,7 @@ func parseVacuumCandidate(path, name string, usage uint64) (*vacuumCandidate, bo
 		}, false
 	}
 	if strings.HasSuffix(name, ".journal~") {
-		match := corruptJournalNameRe.FindStringSubmatch(name)
+		match := corruptJournalNameRe().FindStringSubmatch(name)
 		if match == nil {
 			return nil, true
 		}
@@ -3572,19 +3452,6 @@ func parseVacuumCandidate(path, name string, usage uint64) (*vacuumCandidate, bo
 		}, false
 	}
 	return nil, false
-}
-
-func vacuumCandidateLess(a, b vacuumCandidate) bool {
-	if a.haveSeqno && b.haveSeqno && a.seqnumID == b.seqnumID {
-		return a.seqnum < b.seqnum
-	}
-	if a.realtime != b.realtime {
-		return a.realtime < b.realtime
-	}
-	if a.haveSeqno && b.haveSeqno && a.seqnumID != b.seqnumID {
-		return a.seqnumID < b.seqnumID
-	}
-	return a.name < b.name
 }
 
 func vacuumJournalFileEmpty(path string, info os.FileInfo) (bool, error) {
@@ -3611,10 +3478,37 @@ func vacuumJournalFileEmpty(path string, info os.FileInfo) (bool, error) {
 }
 
 func patchVacuumRealtime(candidate *vacuumCandidate, info os.FileInfo) {
-	usec := timeToUsec(info.ModTime())
-	if usec > 0 && usec < candidate.realtime {
-		candidate.realtime = usec
+	realtime := earlierVacuumUsec(candidate.realtime, timeToUsec(info.ModTime()))
+	candidate.realtime = vacuumMetadataRealtime(info, realtime)
+}
+
+func patchVacuumCreationTimes(candidates []vacuumCandidate, opts vacuumOptions, retentionLimit, usage, activeFiles uint64) {
+	if len(candidates) == 0 || retentionLimit == 0 &&
+		(opts.maxUse == 0 || usage <= opts.maxUse) &&
+		(opts.maxFiles == 0 || activeFiles+uint64(len(candidates)) <= opts.maxFiles) {
+		return
 	}
+	sequenceOnly := candidates[0].haveSeqno
+	for _, candidate := range candidates[1:] {
+		if !candidate.haveSeqno || candidate.seqnumID != candidates[0].seqnumID {
+			sequenceOnly = false
+			break
+		}
+	}
+	for i := range candidates {
+		// A shared sequence ID fixes order; only unresolved age can need I/O.
+		if sequenceOnly && (retentionLimit == 0 || candidates[i].realtime < retentionLimit) {
+			continue
+		}
+		candidates[i].realtime = vacuumCreationRealtime(candidates[i].path, candidates[i].realtime)
+	}
+}
+
+func earlierVacuumUsec(current, candidate uint64) uint64 {
+	if candidate > 0 && candidate < current {
+		return candidate
+	}
+	return current
 }
 
 func currentRealtimeUsec() uint64 {
@@ -3738,15 +3632,22 @@ func runListInvocations(input cliInput, flags *cliFlags, stdout io.Writer) error
 	if err != nil {
 		return err
 	}
-	if len(infos) == 0 {
-		return errors.New("No invocation ID found.")
-	}
 	display, err := selectInvocationRows(infos, flags)
 	if err != nil {
 		return err
 	}
+	if len(display) == 0 {
+		return noDataError(flags.effectiveQuiet(), "No invocation ID found.")
+	}
+	if jsonTableMode(*flags.output) {
+		rows := make([]map[string]any, 0, len(display))
+		for _, row := range display {
+			rows = append(rows, map[string]any{"index": row.index, "invocation_id": row.info.id, "first_entry": tableTimestamp(row.info.firstUsec), "last_entry": tableTimestamp(row.info.lastUsec)})
+		}
+		return writeTableJSON(stdout, *flags.output, rows)
+	}
 	if !*flags.quietFlag {
-		fmt.Fprintln(stdout, "IDX INVOCATION ID                    FIRST ENTRY                 LAST ENTRY")
+		fmt.Fprint(stdout, detectOutputColors().tableHeader("INVOCATION ID"))
 	}
 	idxWidth := 1
 	if *flags.quietFlag {
@@ -3886,10 +3787,7 @@ func formatHeaderTimestamp(usec uint64) string {
 	if usec == 0 {
 		return "n/a"
 	}
-	return time.Unix(
-		int64(usec/1_000_000),
-		int64(usec%1_000_000)*1_000,
-	).Local().Format("Mon 2006-01-02 15:04:05 MST")
+	return formatCalendarTimestamp(usec, false, "Mon 2006-01-02 15:04:05 MST", true, false)
 }
 
 func formatHeaderTimespan(usec uint64) string {
@@ -4000,7 +3898,7 @@ func validateVerificationKeyOption(verifyKey string, hasVerifyKey bool, stderr i
 	return errors.New("failed to parse seed")
 }
 
-func verifyOneFile(path, verifyKey string, hasVerifyKey, directoryInput bool, stderr io.Writer) error {
+func verifyOneFile(path, verifyKey string, hasVerifyKey, directoryInput, quiet bool, stderr io.Writer) error {
 	sealed, err := isFileSealed(path)
 	if err != nil {
 		return reportVerifyOpenError(path, err, directoryInput, stderr)
@@ -4012,7 +3910,9 @@ func verifyOneFile(path, verifyKey string, hasVerifyKey, directoryInput bool, st
 		fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
 		return err
 	}
-	fmt.Fprintf(stderr, "PASS: %s\n", path)
+	if !quiet {
+		fmt.Fprintf(stderr, "PASS: %s\n", path)
+	}
 	return nil
 }
 

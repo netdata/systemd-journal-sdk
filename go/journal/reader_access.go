@@ -52,11 +52,13 @@ type readerAccessorVisibleSnapshot struct {
 type readerAccessor interface {
 	selectedMode() ReaderAccessMode
 	size() uint64
+	initialSize() uint64
 	readAt(dst []byte, offset uint64) error
 	tempSlice(offset, size uint64) ([]byte, error)
 	rowSlice(offset, size uint64) ([]byte, error)
 	rowCopy(src []byte) ([]byte, error)
 	clearRow() error
+	invalidateCopiedWindows()
 	snapshotVisibleBounds() readerAccessorVisibleSnapshot
 	restoreVisibleBounds(readerAccessorVisibleSnapshot)
 	refreshVisibleBounds() (journalHeader, bool, uint64, error)
@@ -96,11 +98,13 @@ type rollingReaderAccessor struct {
 
 	backend readerWindowBackend
 
-	requestedMode  ReaderAccessMode
-	selectedModeID ReaderAccessMode
-	fallbackReason string
+	requestedMode    uint8
+	selectedModeID   uint8
+	powerOfTwoWindow bool
+	fallbackReason   string
 
-	fileSize uint64
+	fileSize        uint64
+	initialFileSize uint64
 
 	windowSize uint64
 	maxWindows int
@@ -154,7 +158,7 @@ func newReaderAccessor(file *os.File, opts ReaderOptions) (readerAccessor, Reade
 		if err != nil {
 			return nil, ReaderAccessStats{}, err
 		}
-		return accessor, accessor.stats(), nil
+		return accessor, accessor.statsValue, nil
 	}
 
 	mmapBackend, err := newMmapReaderBackend(file)
@@ -162,7 +166,7 @@ func newReaderAccessor(file *os.File, opts ReaderOptions) (readerAccessor, Reade
 		accessor, mmapErr := newRollingReaderAccessor(file, opts, mmapBackend, fileSize, "")
 		if mmapErr == nil {
 			if probeErr := accessor.probeInitialWindow(); probeErr == nil {
-				return accessor, accessor.stats(), nil
+				return accessor, accessor.statsValue, nil
 			} else {
 				_ = accessor.close()
 				err = probeErr
@@ -185,7 +189,7 @@ func newReaderAccessor(file *os.File, opts ReaderOptions) (readerAccessor, Reade
 	if readAtErr != nil {
 		return nil, ReaderAccessStats{}, readAtErr
 	}
-	return accessor, accessor.stats(), nil
+	return accessor, accessor.statsValue, nil
 }
 
 func newRollingReaderAccessor(file *os.File, opts ReaderOptions, backend readerWindowBackend, fileSize uint64, fallbackReason string) (*rollingReaderAccessor, error) {
@@ -201,10 +205,12 @@ func newRollingReaderAccessor(file *os.File, opts ReaderOptions, backend readerW
 	a := &rollingReaderAccessor{
 		file:             file,
 		backend:          backend,
-		requestedMode:    opts.AccessMode,
-		selectedModeID:   backend.mode(),
+		requestedMode:    uint8(opts.AccessMode),
+		selectedModeID:   uint8(backend.mode()),
+		powerOfTwoWindow: opts.WindowSize&(opts.WindowSize-1) == 0,
 		fallbackReason:   fallbackReason,
 		fileSize:         fileSize,
+		initialFileSize:  fileSize,
 		windowSize:       opts.WindowSize,
 		maxWindows:       opts.MaxWindows,
 		maxRowArenaBytes: opts.MaxRowArenaBytes,
@@ -233,7 +239,7 @@ func (a *rollingReaderAccessor) probeInitialWindow() error {
 }
 
 func (a *rollingReaderAccessor) selectedMode() ReaderAccessMode {
-	return a.selectedModeID
+	return ReaderAccessMode(a.selectedModeID)
 }
 
 func (a *rollingReaderAccessor) size() uint64 {
@@ -274,8 +280,8 @@ func (a *rollingReaderAccessor) tempSlice(offset, size uint64) ([]byte, error) {
 	if size == 0 {
 		return emptySlice(), nil
 	}
-	if err := a.checkBounds(offset, size); err != nil {
-		return nil, err
+	if !a.containsRead(offset, size) {
+		return nil, a.invalidReadBounds(offset, size)
 	}
 	if a.rangeFitsWindow(offset, size) {
 		window, err := a.getWindow(offset, size, false)
@@ -294,8 +300,8 @@ func (a *rollingReaderAccessor) rowSlice(offset, size uint64) ([]byte, error) {
 	if size == 0 {
 		return emptySlice(), nil
 	}
-	if err := a.checkBounds(offset, size); err != nil {
-		return nil, err
+	if !a.containsRead(offset, size) {
+		return nil, a.invalidReadBounds(offset, size)
 	}
 	if a.rangeFitsWindow(offset, size) {
 		window, err := a.getWindow(offset, size, true)
@@ -365,18 +371,25 @@ func (a *rollingReaderAccessor) refreshVisibleBounds() (journalHeader, bool, uin
 		return journalHeader{}, false, oldSize, fmt.Errorf("%w: negative reader file size", errInvalidJournal)
 	}
 	newSize := uint64(info.Size())
+	if newSize < oldSize {
+		a.fileSize = newSize
+		if a.selectedModeID == uint8(ReaderAccessReadAt) {
+			a.markWindowsStale()
+		}
+		a.refreshStats()
+	}
 	header, err := readHeaderFromFileAt(a.file, newSize)
 	if err != nil {
-		return journalHeader{}, false, oldSize, err
+		return journalHeader{}, false, newSize, err
 	}
 	a.fileSize = newSize
 	if err := a.backend.refreshFileSize(a.file, newSize); err != nil {
-		a.fileSize = oldSize
+		a.fileSize = minUint64(oldSize, newSize)
 		a.refreshStats()
 		return journalHeader{}, false, oldSize, err
 	}
 	changed := newSize != oldSize
-	if a.selectedModeID == ReaderAccessReadAt {
+	if a.selectedModeID == uint8(ReaderAccessReadAt) {
 		a.markWindowsStale()
 	}
 	a.refreshStats()
@@ -422,6 +435,9 @@ func (a *rollingReaderAccessor) rangeFitsWindow(offset, size uint64) bool {
 }
 
 func (a *rollingReaderAccessor) windowBase(offset uint64) uint64 {
+	if a.powerOfTwoWindow {
+		return offset & -a.windowSize
+	}
 	return (offset / a.windowSize) * a.windowSize
 }
 
@@ -515,6 +531,13 @@ func (a *rollingReaderAccessor) markWindowsStale() {
 		window.stale = true
 	}
 	a.discardStaleUnpinnedWindows()
+}
+
+func (a *rollingReaderAccessor) invalidateCopiedWindows() {
+	if a.selectedModeID == uint8(ReaderAccessReadAt) {
+		a.markWindowsStale()
+		a.refreshStats()
+	}
 }
 
 func (a *rollingReaderAccessor) discardStaleUnpinnedWindows() {
@@ -653,15 +676,16 @@ func (a *rollingReaderAccessor) updateRowArenaPeak() {
 	}
 }
 
-func (a *rollingReaderAccessor) checkBounds(offset, size uint64) error {
-	end, ok := checkedAdd(offset, size)
-	if !ok || end > a.fileSize {
-		return fmt.Errorf("%w: reader access out of bounds", errInvalidJournal)
+func (a *rollingReaderAccessor) containsRead(offset, size uint64) bool {
+	return offset <= a.fileSize && size <= a.fileSize-offset && size <= uint64(int(^uint(0)>>1))
+}
+
+//go:noinline
+func (a *rollingReaderAccessor) invalidReadBounds(offset, size uint64) error {
+	if offset > a.fileSize || size > a.fileSize-offset {
+		return readerBoundsError{offset, size, a.fileSize}
 	}
-	if end > uint64(int(^uint(0)>>1)) && size > uint64(int(^uint(0)>>1)) {
-		return fmt.Errorf("%w: reader request too large", errInvalidJournal)
-	}
-	return nil
+	return fmt.Errorf("%w: reader request too large", errInvalidJournal)
 }
 
 func (a *rollingReaderAccessor) refreshStats() {
@@ -675,8 +699,8 @@ func (a *rollingReaderAccessor) refreshStats() {
 			pinned++
 		}
 	}
-	a.statsValue.RequestedAccessMode = a.requestedMode
-	a.statsValue.SelectedAccessMode = a.selectedModeID
+	a.statsValue.RequestedAccessMode = ReaderAccessMode(a.requestedMode)
+	a.statsValue.SelectedAccessMode = ReaderAccessMode(a.selectedModeID)
 	a.statsValue.FallbackReason = a.fallbackReason
 	a.statsValue.FileSize = a.fileSize
 	a.statsValue.WindowSize = a.windowSize
@@ -690,7 +714,7 @@ func (a *rollingReaderAccessor) refreshStats() {
 }
 
 func (a *rollingReaderAccessor) recordWindowOpen() {
-	if a.selectedModeID == ReaderAccessReadAt {
+	if a.selectedModeID == uint8(ReaderAccessReadAt) {
 		a.statsValue.ReadWindowCount++
 		return
 	}
@@ -698,7 +722,7 @@ func (a *rollingReaderAccessor) recordWindowOpen() {
 }
 
 func (a *rollingReaderAccessor) recordWindowClose() {
-	if a.selectedModeID == ReaderAccessMmap {
+	if a.selectedModeID == uint8(ReaderAccessMmap) {
 		a.statsValue.UnmapCount++
 	}
 }
@@ -785,3 +809,5 @@ func readFileAtFull(file *os.File, dst []byte, offset uint64) error {
 func emptySlice() []byte {
 	return []byte{}
 }
+
+func (a *rollingReaderAccessor) initialSize() uint64 { return a.initialFileSize }

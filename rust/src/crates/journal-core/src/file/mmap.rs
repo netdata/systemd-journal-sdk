@@ -361,6 +361,21 @@ impl<M: MemoryMap> WindowManager<M> {
         Ok(self.file_size)
     }
 
+    pub(super) fn cached_file_size(&self) -> u64 {
+        self.file_size
+    }
+
+    pub(super) fn reader_extent(&mut self) -> Result<u64> {
+        if self.bounds_mode == BoundsMode::LiveFile {
+            self.refresh_file_size()
+        } else if self.bounds_mode == BoundsMode::Snapshot {
+            self.file_size = self.retained_size.min(self.file.metadata()?.len());
+            Ok(self.file_size)
+        } else {
+            Ok(self.file_size.min(self.file.metadata()?.len()))
+        }
+    }
+
     fn ensure_cached_file_contains(&mut self, end: u64) -> Result<()> {
         if end <= self.file_size {
             return Ok(());

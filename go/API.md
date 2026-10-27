@@ -86,6 +86,13 @@ current entry exactly matches a cursor. Cursor metadata is emitted in the
 official systemd cursor shape; seek and test also accept the older SDK cursor
 shape for compatibility.
 
+`Reader.SeekCursorDirection`, `DirectoryReader.SeekCursorDirection` and the
+`SdJournalSeekCursorDirection` facade extension select an inclusive forward or
+backward cursor boundary immediately, using native indexes and installed
+filters. Read the current entry before stepping. A missing boundary succeeds
+with no current entry; use `TestCursor` to distinguish an exact match from a
+nearby row. Existing `SeekCursor` APIs are unchanged.
+
 Stateful data and unique enumeration return full `FIELD=value` payloads and are
 binary-safe. `SdJournalGetData` returns the first value for a repeated field;
 callers that need all repeated values must use the restart/enumerate data API.
@@ -100,9 +107,27 @@ and Windows targets. `ReaderAccessReadAt` is retained only for tests,
 diagnostics, constrained-platform investigation, and controlled fallback
 evidence. It is not a production reader mode. If `ReaderAccessAuto` selects
 read-at in production, treat that as a deployment issue to investigate and
-benchmark before accepting. `ReaderBoundsLive` refreshes visible entries when
-active files grow; `ReaderBoundsSnapshot` fixes the visible file state at open
-time.
+benchmark before accepting. `ReaderBoundsLive` can observe active-file growth.
+`ReaderBoundsSnapshot` caps visibility at the original byte extent; it does not
+freeze a logical population. In unreleased source builds, a new exact-filter
+builder can see publications inside that original, preallocated extent.
+Installed healthy filters retain their captured DATA posting populations in
+either bounds mode. Flush and rebuild to include new matches; flushing rewinds
+to the head, so explicitly restore any saved location afterward. Group/build
+errors preserve the pending builder for retry. File/directory/facade handle
+`AddDisjunction` and `AddConjunction` methods now return errors; interfaces and
+callers must handle that result. Use `OpenIndexedSnapshot` when a stable logical
+artifact is required. The caller must exclude writers during capture; this API
+does not acquire a writer lock.
+
+Filtered `Step`/`StepBack` select the nearest matching row in the requested
+direction, including direction reversal after EOF. Selected ENTRY load errors
+retain the last successful file/directory/facade selection on failure.
+Recovery never rewrites the source journal. Following arbitrary external repair
+of damaged entries is not a supported contract.
+Explicit filtered realtime seeks binary-search native posting slots and report
+errors from slots/headers they visit; skipped postings are not certified.
+Ordinary sequential filtering still checks postings as it encounters them.
 
 `VisitEntryPayloads`, `EnumerateEntryPayload`, and
 `SdJournalEnumerateAvailableData` are zero-copy hot paths. Returned or callback

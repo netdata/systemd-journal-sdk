@@ -18,6 +18,8 @@ pub struct DirectoryReader {
     #[cfg(test)]
     unique_cache_builds: usize,
     pub(super) non_overlapping: bool,
+    recovery_changed: bool,
+    merging: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,6 +30,7 @@ struct DirectoryUniqueCacheKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct DirectoryUniqueFileSignature {
+    recovery_reason: RecoveryReason,
     file_id: [u8; 16],
     n_objects: u64,
     n_entries: u64,
@@ -76,6 +79,18 @@ struct DirectoryBootNewest {
 }
 
 impl DirectoryReader {
+    pub fn recovery_statuses(&self) -> Vec<FileRecoveryStatus> {
+        self.files
+            .iter()
+            .filter_map(|file| {
+                let status = file.recovery_status();
+                status.incomplete().then_some(FileRecoveryStatus {
+                    file_id: file.header_snapshot.header.file_id,
+                    status,
+                })
+            })
+            .collect()
+    }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(path, ReaderOptions::default())
     }
@@ -127,7 +142,7 @@ impl DirectoryReader {
         Self::from_readers(files, false)
     }
 
-    fn from_readers(mut files: Vec<FileReader>, allow_empty: bool) -> Result<Self> {
+    pub(super) fn from_readers(mut files: Vec<FileReader>, allow_empty: bool) -> Result<Self> {
         if files.is_empty() && !allow_empty {
             return Err(SdkError::InvalidPath(
                 "no readable journal files".to_string(),
@@ -137,6 +152,9 @@ impl DirectoryReader {
         files.sort_by_key(FileReader::header_realtime_start);
         let boot_newest = build_directory_boot_newest(&files);
         let non_overlapping = directory_files_non_overlapping(&files);
+        for reader in &files {
+            reader.take_recovery_change();
+        }
         let candidates = vec![None; files.len()];
         Ok(Self {
             files,
@@ -153,10 +171,13 @@ impl DirectoryReader {
             #[cfg(test)]
             unique_cache_builds: 0,
             non_overlapping,
+            recovery_changed: false,
+            merging: false,
         })
     }
 
     pub fn seek_head(&mut self) {
+        self.merging = false;
         self.pending_realtime_seek = None;
         self.realtime_seek_bound = None;
         self.index = usize::MAX;
@@ -169,6 +190,7 @@ impl DirectoryReader {
     }
 
     pub fn seek_tail(&mut self) {
+        self.merging = false;
         self.pending_realtime_seek = None;
         self.realtime_seek_bound = None;
         self.index = usize::MAX;
@@ -181,6 +203,7 @@ impl DirectoryReader {
     }
 
     pub fn seek_realtime(&mut self, usec: u64) {
+        self.merging = false;
         self.pending_realtime_seek = Some(usec);
         self.realtime_seek_bound = None;
         self.index = usize::MAX;
@@ -198,42 +221,93 @@ impl DirectoryReader {
     }
 
     fn step_merged(&mut self, direction: Direction) -> Result<bool> {
+        let index = self.index;
+        let before = if self.current_key.is_some() {
+            self.files.get(index).and_then(|reader| {
+                reader
+                    .inner
+                    .with_reader(|reader| reader.get_entry_offset().ok())
+            })
+        } else {
+            None
+        };
+        let result = self.step_merged_inner(direction);
+        if result.is_err() {
+            self.index = index;
+            if let Some(offset) = before {
+                let reader = &mut self.files[index];
+                reader
+                    .inner
+                    .with_reader_mut(|reader| reader.release_object_guards());
+                reader
+                    .inner
+                    .with_file(|file| reader.row.clear_current_best_effort(file));
+                reader
+                    .inner
+                    .with_reader_mut(|reader| reader.set_location(Location::ResolvedEntry(offset)));
+                // Other children still own valid prefetched candidates.
+                self.candidates[index] = None;
+            }
+        }
+        result
+    }
+
+    fn step_merged_inner(&mut self, direction: Direction) -> Result<bool> {
         if self.can_step_sequential(direction) {
             return self.step_sequential(direction);
         }
 
-        self.prepare_merge_direction(direction);
+        self.merging = true;
 
-        let mut best: Option<DirectoryCandidate> = None;
-        for idx in 0..self.files.len() {
-            self.fill_candidate(idx, direction)?;
-            let Some(candidate) = self.candidates[idx] else {
-                continue;
-            };
-            let replace = match best {
-                None => true,
-                Some(current) => {
-                    let cmp = self.compare_entry_keys(candidate.key, current.key);
-                    (direction == Direction::Forward && cmp < 0)
-                        || (direction == Direction::Backward && cmp > 0)
+        'retry: loop {
+            self.prepare_merge_direction(direction);
+
+            let mut best: Option<DirectoryCandidate> = None;
+            for idx in 0..self.files.len() {
+                self.fill_candidate(idx, direction)?;
+                if self.recovery_changed {
+                    self.restart_recovery_merge();
+                    continue 'retry;
                 }
-            };
-            if replace {
-                best = Some(candidate);
+                let Some(candidate) = self.candidates[idx] else {
+                    continue;
+                };
+                let replace = match best {
+                    None => true,
+                    Some(current) => {
+                        let cmp = self.compare_entry_keys(candidate.key, current.key);
+                        (direction == Direction::Forward && cmp < 0)
+                            || (direction == Direction::Backward && cmp > 0)
+                    }
+                };
+                if replace {
+                    best = Some(candidate);
+                }
             }
-        }
 
-        let Some(best) = best else {
-            self.index = usize::MAX;
+            let Some(best) = best else {
+                self.index = usize::MAX;
+                self.realtime_seek_bound = None;
+                return Ok(false);
+            };
+
+            self.index = best.reader_index;
+            self.current_key = Some(best.key);
+            self.candidates[best.reader_index] = None;
             self.realtime_seek_bound = None;
-            return Ok(false);
-        };
+            return Ok(true);
+        }
+    }
 
-        self.index = best.reader_index;
-        self.current_key = Some(best.key);
-        self.candidates[best.reader_index] = None;
-        self.realtime_seek_bound = None;
-        Ok(true)
+    fn restart_recovery_merge(&mut self) {
+        self.recovery_changed = false;
+        self.boot_newest = build_directory_boot_newest(&self.files);
+        self.non_overlapping = false;
+        if self.current_key.is_none() {
+            self.pending_realtime_seek = self.realtime_seek_bound.map(|(usec, _)| usec);
+        }
+        self.direction = None;
+        self.reset_candidates();
     }
 
     fn prepare_merge_direction(&mut self, direction: Direction) {
@@ -278,6 +352,9 @@ impl DirectoryReader {
             if !self.advance_candidate_reader(reader_index, direction)? {
                 return Ok(());
             }
+            if self.recovery_changed {
+                return Ok(());
+            }
             let key = self.files[reader_index].current_directory_entry_key()?;
             if !self.candidate_matches_realtime_bound(key) {
                 continue;
@@ -296,10 +373,12 @@ impl DirectoryReader {
         reader_index: usize,
         direction: Direction,
     ) -> Result<bool> {
-        match direction {
+        let result = match direction {
             Direction::Forward => self.files[reader_index].next(),
             Direction::Backward => self.files[reader_index].previous(),
-        }
+        };
+        self.recovery_changed |= self.files[reader_index].take_recovery_change();
+        result
     }
 
     fn candidate_matches_realtime_bound(&self, key: DirectoryEntryKey) -> bool {
@@ -467,6 +546,105 @@ impl DirectoryReader {
             return Ok(false);
         }
         self.files[self.index].test_cursor(cursor)
+    }
+
+    /// Position each file by its native cursor indexes and select the merged boundary.
+    pub fn seek_cursor_direction(&mut self, cursor: &str, direction: Direction) -> Result<()> {
+        let anchor = parse::directional_cursor_anchor(cursor)
+            .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        loop {
+            self.index = self.files.len();
+            self.current_key = None;
+            self.pending_realtime_seek = None;
+            self.realtime_seek_bound = None;
+            self.reset_candidates();
+            self.direction = Some(direction);
+            self.merging = true;
+            self.recovery_changed = false;
+            let mut best: Option<usize> = None;
+            let mut exact = None;
+            for i in 0..self.files.len() {
+                let result = self.files[i].seek_cursor_anchor(&anchor, direction);
+                self.recovery_changed |= self.files[i].take_recovery_change();
+                result?;
+                let key = match self.files[i].current_directory_entry_key() {
+                    Err(SdkError::NoEntry | SdkError::Journal(JournalError::UnsetCursor)) => {
+                        continue;
+                    }
+                    result => result?,
+                };
+                self.candidates[i] = Some(DirectoryCandidate {
+                    reader_index: i,
+                    key,
+                });
+                if anchor.sequence == Some((key.seqnum_id, key.seqnum)) {
+                    exact = Some(i);
+                }
+                if let Some(old) = best {
+                    let cmp = self.compare_entry_keys(key, self.candidates[old].unwrap().key);
+                    if direction == Direction::Forward && cmp < 0
+                        || direction == Direction::Backward && cmp > 0
+                    {
+                        best = Some(i);
+                    }
+                } else {
+                    best = Some(i);
+                }
+            }
+            if self.recovery_changed {
+                self.boot_newest = build_directory_boot_newest(&self.files);
+                continue;
+            }
+            let Some(best) = exact.or(best) else {
+                return Ok(());
+            };
+            let key = self.candidates[best].unwrap().key;
+            let next_anchor = journal_core::file::CursorAnchor {
+                sequence: Some((key.seqnum_id, key.seqnum)),
+                monotonic: Some((key.boot_id, key.monotonic)),
+                realtime: Some(key.realtime),
+            };
+            for i in 0..self.files.len() {
+                if i == best {
+                    continue;
+                }
+                if let Some(candidate) = self.candidates[i] {
+                    let cmp = self.compare_entry_keys(candidate.key, key);
+                    if direction == Direction::Forward && cmp > 0
+                        || direction == Direction::Backward && cmp < 0
+                    {
+                        continue;
+                    }
+                    self.candidates[i] = None;
+                }
+                let result = self.files[i].seek_cursor_anchor(&next_anchor, direction);
+                self.recovery_changed |= self.files[i].take_recovery_change();
+                result?;
+                let candidate = match self.files[i].current_directory_entry_key() {
+                    Err(SdkError::NoEntry | SdkError::Journal(JournalError::UnsetCursor)) => {
+                        continue;
+                    }
+                    result => result?,
+                };
+                let cmp = self.compare_entry_keys(candidate, key);
+                if direction == Direction::Forward && cmp > 0
+                    || direction == Direction::Backward && cmp < 0
+                {
+                    self.candidates[i] = Some(DirectoryCandidate {
+                        reader_index: i,
+                        key: candidate,
+                    });
+                }
+            }
+            if self.recovery_changed {
+                self.boot_newest = build_directory_boot_newest(&self.files);
+                continue;
+            }
+            self.index = best;
+            self.current_key = Some(key);
+            self.candidates[best] = None;
+            return Ok(());
+        }
     }
 
     pub fn seek_cursor(&mut self, cursor: &str) -> Result<()> {
@@ -644,8 +822,9 @@ impl DirectoryReader {
                 .files
                 .iter()
                 .map(|reader| {
-                    let header = reader.header();
+                    let header = reader.effective_header();
                     DirectoryUniqueFileSignature {
+                        recovery_reason: reader.recovery_status().reason,
                         file_id: header.file_id,
                         n_objects: header.n_objects,
                         n_entries: header.n_entries,
@@ -671,7 +850,10 @@ impl DirectoryReader {
     pub fn list_boots(&self) -> Vec<BootInfo> {
         let mut boots: HashMap<String, (i64, i64)> = HashMap::new();
         for reader in &self.files {
-            let header = reader.cached_header().header;
+            let header = reader.effective_header();
+            if reader.recovery_status().incomplete() && header.n_entries == 0 {
+                continue;
+            }
             let boot_id = hex::encode(header.tail_entry_boot_id);
             let first = header.head_entry_realtime as i64;
             let last = header.tail_entry_realtime as i64;
@@ -702,25 +884,25 @@ impl DirectoryReader {
     }
 
     pub fn add_match(&mut self, data: &[u8]) {
+        self.invalidate_filter_candidates();
         for reader in &mut self.files {
             reader.add_match(data);
         }
-        self.reset_merge_state();
     }
 
     pub fn add_conjunction(&mut self) -> Result<()> {
+        self.invalidate_filter_candidates();
         for reader in &mut self.files {
             reader.add_conjunction()?;
         }
-        self.reset_merge_state();
         Ok(())
     }
 
     pub fn add_disjunction(&mut self) -> Result<()> {
+        self.invalidate_filter_candidates();
         for reader in &mut self.files {
             reader.add_disjunction()?;
         }
-        self.reset_merge_state();
         Ok(())
     }
 
@@ -728,10 +910,33 @@ impl DirectoryReader {
         for reader in &mut self.files {
             reader.flush_matches();
         }
+        self.pending_realtime_seek = None;
         self.reset_merge_state();
     }
 
+    fn invalidate_filter_candidates(&mut self) {
+        if self.non_overlapping
+            && !self.merging
+            && self.direction.is_some()
+            && self.current_key.is_some()
+            && self.index < self.files.len()
+        {
+            // Sequential children have no prefetched rows to reposition.
+            self.reset_candidates();
+            return;
+        }
+        if self.current_key.is_none() && self.pending_realtime_seek.is_none() {
+            self.pending_realtime_seek = self.realtime_seek_bound.map(|(usec, _)| usec);
+        }
+        // Revalidate changed matches from the committed key, not prefetched rows.
+        self.merging = self.current_key.is_some();
+        self.direction = None;
+        self.realtime_seek_bound = None;
+        self.reset_candidates();
+    }
+
     fn reset_merge_state(&mut self) {
+        self.merging = false;
         self.index = usize::MAX;
         self.current_key = None;
         self.direction = None;
@@ -740,7 +945,7 @@ impl DirectoryReader {
     }
 
     fn can_step_sequential(&self, direction: Direction) -> bool {
-        if !self.non_overlapping || self.pending_realtime_seek.is_some() {
+        if !self.non_overlapping || self.merging || self.pending_realtime_seek.is_some() {
             return false;
         }
         if self.direction.is_some_and(|current| current != direction) && self.current_key.is_some()
@@ -792,7 +997,12 @@ impl DirectoryReader {
             self.index = 0;
         }
         while self.index < self.files.len() {
-            if self.files[self.index].next()? {
+            let advanced = self.advance_candidate_reader(self.index, Direction::Forward)?;
+            if self.recovery_changed {
+                self.restart_recovery_merge();
+                return self.step_merged_inner(Direction::Forward);
+            }
+            if advanced {
                 self.current_key = Some(self.files[self.index].current_directory_entry_key()?);
                 return Ok(true);
             }
@@ -806,7 +1016,12 @@ impl DirectoryReader {
             self.index = self.files.len() - 1;
         }
         loop {
-            if self.files[self.index].previous()? {
+            let advanced = self.advance_candidate_reader(self.index, Direction::Backward)?;
+            if self.recovery_changed {
+                self.restart_recovery_merge();
+                return self.step_merged_inner(Direction::Backward);
+            }
+            if advanced {
                 self.current_key = Some(self.files[self.index].current_directory_entry_key()?);
                 return Ok(true);
             }
@@ -819,7 +1034,14 @@ impl DirectoryReader {
     }
 
     fn finish_sequential_end(&mut self) -> Result<bool> {
-        self.clear_current_directory_entry();
+        self.index = usize::MAX;
+        if !self
+            .files
+            .first()
+            .is_some_and(|reader| reader.inner.with_reader(|reader| reader.has_filter()))
+        {
+            self.current_key = None;
+        }
         Ok(false)
     }
 
@@ -831,12 +1053,12 @@ impl DirectoryReader {
 
 pub(super) fn is_journal_file_name(path: &Path) -> bool {
     path.file_name()
-        .and_then(|name| name.to_str())
+        .map(|name| name.as_encoded_bytes())
         .is_some_and(|name| {
-            name.ends_with(".journal")
-                || name.ends_with(".journal~")
-                || name.ends_with(".journal.zst")
-                || name.ends_with(".journal~.zst")
+            name.ends_with(b".journal")
+                || name.ends_with(b".journal~")
+                || name.ends_with(b".journal.zst")
+                || name.ends_with(b".journal~.zst")
         })
 }
 
@@ -920,21 +1142,21 @@ fn id128_string_valid(s: &str) -> bool {
 fn build_directory_boot_newest(files: &[FileReader]) -> HashMap<[u8; 16], DirectoryBootNewest> {
     let mut newest: HashMap<[u8; 16], DirectoryBootNewest> = HashMap::new();
     for reader in files {
-        let header = reader.cached_header();
-        if header.header.tail_entry_boot_id == [0; 16] {
+        let header = reader.effective_header();
+        if header.tail_entry_boot_id == [0; 16] {
             continue;
         }
-        let replace = match newest.get(&header.header.tail_entry_boot_id) {
+        let replace = match newest.get(&header.tail_entry_boot_id) {
             None => true,
-            Some(current) => header.header.tail_entry_monotonic > current.monotonic,
+            Some(current) => header.tail_entry_monotonic > current.monotonic,
         };
         if replace {
             newest.insert(
-                header.header.tail_entry_boot_id,
+                header.tail_entry_boot_id,
                 DirectoryBootNewest {
-                    machine_id: header.header.machine_id,
-                    monotonic: header.header.tail_entry_monotonic,
-                    realtime: header.header.tail_entry_realtime,
+                    machine_id: header.machine_id,
+                    monotonic: header.tail_entry_monotonic,
+                    realtime: header.tail_entry_realtime,
                 },
             );
         }

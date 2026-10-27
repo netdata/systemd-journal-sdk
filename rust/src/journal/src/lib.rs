@@ -55,18 +55,21 @@ pub use facade::{
     SdJournalEnumerateField, SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor,
     SdJournalGetData, SdJournalGetEntry, SdJournalGetMonotonicUsec, SdJournalGetRealtimeUsec,
     SdJournalGetSeqnum, SdJournalListBoots, SdJournalNext, SdJournalNextSkip, SdJournalOpen,
-    SdJournalOpenDirectory, SdJournalOpenDirectoryWithOptions, SdJournalOpenFile,
+    SdJournalOpenDirectory, SdJournalOpenDirectoryPath, SdJournalOpenDirectoryPathWithOptions,
+    SdJournalOpenDirectoryWithOptions, SdJournalOpenFile, SdJournalOpenFilePath,
+    SdJournalOpenFilePathWithOptions, SdJournalOpenFilePaths, SdJournalOpenFilePathsWithOptions,
     SdJournalOpenFileWithOptions, SdJournalOpenFiles, SdJournalOpenFilesWithOptions,
-    SdJournalPrevious, SdJournalPreviousSkip, SdJournalProcessOutput, SdJournalQueryUnique,
-    SdJournalQueryUniqueState, SdJournalRestartData, SdJournalRestartFields,
-    SdJournalRestartUnique, SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec,
-    SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
+    SdJournalOpenPath, SdJournalPrevious, SdJournalPreviousSkip, SdJournalProcessOutput,
+    SdJournalQueryUnique, SdJournalQueryUniqueState, SdJournalRecoveryStatuses,
+    SdJournalRestartData, SdJournalRestartFields, SdJournalRestartUnique, SdJournalSeekCursor,
+    SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
+    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
 };
 pub use journal_core::error::JournalError;
 use journal_core::file::ExperimentalMmapStrategy;
 pub use journal_core::file::{
     BucketUtilization, Compression, Direction, EntryItemsType, FieldNamePolicy, HashableObject,
-    JournalFile, JournalReader, Location, Mmap, WindowManagerStats,
+    JournalFile, JournalReader, Location, Mmap, RecoveryReason, RecoveryStatus, WindowManagerStats,
 };
 use journal_core::file::{CurrentRowMetadata, CurrentRowView};
 pub use journal_log_writer::{
@@ -394,6 +397,12 @@ pub struct FileReader {
     bounds: ReaderBounds,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileRecoveryStatus {
+    pub file_id: [u8; 16],
+    pub status: RecoveryStatus,
+}
+
 fn key_from_metadata(metadata: CurrentRowMetadata) -> DirectoryEntryKey {
     DirectoryEntryKey {
         seqnum_id: metadata.seqnum_id,
@@ -427,12 +436,22 @@ impl FileReader {
     }
 
     pub fn open_with_options(path: impl AsRef<Path>, options: ReaderOptions) -> Result<Self> {
+        Self::open_with_recovery(path, options, true)
+    }
+
+    pub(crate) fn open_with_recovery(
+        path: impl AsRef<Path>,
+        options: ReaderOptions,
+        recovery: bool,
+    ) -> Result<Self> {
         let path = path.as_ref();
         if is_zst_file(path) {
-            return Self::open_zst(path, options);
+            return Self::open_zst(path, options, recovery);
         }
 
-        let file = open_journal_file(path, options)?;
+        let mut file = open_journal_file(path, options)?;
+        file.set_reader_recovery(recovery);
+        Self::recover_missing_header_tail(&file)?;
         let header_snapshot = FileHeaderSnapshot::from_file(&file);
         Ok(Self {
             inner: ReaderCellBuilder {
@@ -447,15 +466,21 @@ impl FileReader {
         })
     }
 
-    fn open_zst(path: &Path, options: ReaderOptions) -> Result<Self> {
+    fn open_zst(path: &Path, options: ReaderOptions, recovery: bool) -> Result<Self> {
         let temp_path = decompress_zst_to_temp(path, "rust-sdk-journal")?;
-        let file = match open_journal_file(&temp_path, options) {
+        let mut file = match open_journal_file(&temp_path, options) {
             Ok(file) => file,
             Err(err) => {
                 let _ = std::fs::remove_file(&temp_path);
                 return Err(err);
             }
         };
+        file.set_reader_recovery(recovery);
+        if let Err(err) = Self::recover_missing_header_tail(&file) {
+            drop(file);
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(err);
+        }
         let header_snapshot = FileHeaderSnapshot::from_file(&file);
         Ok(Self {
             inner: ReaderCellBuilder {
@@ -477,8 +502,55 @@ impl FileReader {
         self.live_header()
     }
 
+    fn recover_missing_header_tail(file: &JournalFile<Mmap>) -> Result<()> {
+        let header = file.journal_header_ref();
+        let extent = file.reader_file_size()?;
+        if header
+            .tail_object_offset
+            .is_some_and(|offset| offset.get().checked_add(16).is_none_or(|end| end > extent))
+        {
+            file.recover_reader_tail(&JournalError::ObjectExceedsFileBounds)?;
+        }
+        Ok(())
+    }
+
+    pub fn recovery_status(&self) -> RecoveryStatus {
+        self.inner.with_file(JournalFile::recovery_status)
+    }
+
+    pub fn recovery_statuses(&self) -> Vec<FileRecoveryStatus> {
+        let status = self.recovery_status();
+        if status.incomplete() {
+            vec![FileRecoveryStatus {
+                file_id: self.header_snapshot.header.file_id,
+                status,
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+
     pub(crate) fn cached_header(&self) -> FileHeaderSnapshot {
         self.header_snapshot
+    }
+
+    pub(crate) fn effective_header(&self) -> FileHeader {
+        let mut header = self.header();
+        self.inner.with_file(|file| {
+            if let Some((seqnum, realtime, monotonic, boot)) = file.recovered_tail_metadata() {
+                header.n_entries = file.reader_entry_count();
+                header.tail_entry_seqnum = seqnum;
+                header.tail_entry_realtime = realtime;
+                header.tail_entry_monotonic = monotonic;
+                header.tail_entry_boot_id = boot;
+            }
+        });
+        header
+    }
+
+    pub(crate) fn take_recovery_change(&self) -> bool {
+        self.inner
+            .with_file(JournalFile::take_reader_recovery_change)
     }
 
     fn live_header(&self) -> FileHeader {
@@ -521,6 +593,50 @@ impl FileReader {
         });
     }
 
+    /// Position inclusively using native cursor indexes in the requested direction.
+    /// The existing `seek_cursor` method retains its original behavior.
+    pub fn seek_cursor_direction(&mut self, cursor: &str, direction: Direction) -> Result<()> {
+        let anchor = parse::directional_cursor_anchor(cursor)
+            .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        self.seek_cursor_anchor(&anchor, direction)
+    }
+
+    fn seek_cursor_anchor(
+        &mut self,
+        anchor: &journal_core::file::CursorAnchor,
+        direction: Direction,
+    ) -> Result<()> {
+        self.inner.with_file(|file| self.row.clear_current(file))?;
+        loop {
+            let row = &mut self.row;
+            let retry = self.inner.with_mut(|fields| {
+                if !fields
+                    .reader
+                    .seek_cursor_direction(fields.file, anchor, direction)?
+                {
+                    return Ok(false);
+                }
+                let offset = fields.reader.get_entry_offset()?;
+                match row.load_entry(fields.file, offset) {
+                    Ok(_) => Ok(false),
+                    Err(err)
+                        if fields.reader.recover_after_error(
+                            fields.file,
+                            Location::Head,
+                            &err,
+                        )? =>
+                    {
+                        Ok(true)
+                    }
+                    Err(err) => Err(err),
+                }
+            })?;
+            if !retry {
+                return Ok(());
+            }
+        }
+    }
+
     pub fn seek_cursor(&mut self, cursor: &str) -> Result<()> {
         let want = parse::parse_cursor_location(cursor, true)
             .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
@@ -556,6 +672,12 @@ impl FileReader {
         loop {
             let row = &mut self.row;
             let status = self.inner.with_mut(|fields| {
+                let before_entry = fields.reader.get_entry_offset().ok();
+                let before_anchor = if before_entry.is_none() {
+                    fields.reader.location()
+                } else {
+                    Location::Head
+                };
                 if !fields.reader.step(fields.file, direction)? {
                     return Ok(StepStatus::End);
                 }
@@ -566,7 +688,17 @@ impl FileReader {
                     .and_then(|offset| row.load_entry(fields.file, offset))
                 {
                     Ok(_) => Ok(StepStatus::Valid),
-                    Err(err) if recoverable_entry_error(&err) => Ok(StepStatus::Skip),
+                    Err(err)
+                        if fields.reader.recover_after_error(
+                            fields.file,
+                            before_entry
+                                .map(Location::ResolvedEntry)
+                                .unwrap_or(before_anchor),
+                            &err,
+                        )? =>
+                    {
+                        Ok(StepStatus::Skip)
+                    }
                     Err(err) => Err(err),
                 }
             })?;
@@ -772,6 +904,8 @@ impl FileReader {
     }
 
     pub fn flush_matches(&mut self) {
+        self.inner
+            .with_file(|file| self.row.clear_current_best_effort(file));
         self.inner.with_reader_mut(|reader| reader.flush_matches());
     }
 }
@@ -785,6 +919,7 @@ impl FileReader {
         self.invalidate_entry_data_state();
         match self.enumerate_fields_indexed() {
             Ok(fields) => Ok(fields),
+            Err(err @ SdkError::Journal(JournalError::CyclicObjectChain)) => Err(err),
             Err(_) => enumerate_file_fields_by_scan(self),
         }
     }
