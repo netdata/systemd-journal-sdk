@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: closed
 
-Sub-state: created on 2026-05-28 as the final Netdata cleanup SOW.
+Sub-state: closed; superseded on 2026-10-31 by SOW-0164 (Netdata SDK-exclusive adoption and vendored journal removal), which the user approved as one SOW for removing the old implementation and adopting the SDK.
 
 ## Requirements
 
@@ -228,7 +228,7 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Closed without implementation; scope moved to SOW-0164.
 
 ## Lessons Extracted
 

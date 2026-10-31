@@ -2,10 +2,9 @@
 
 ## Status
 
-Status: open
+Status: closed
 
-Sub-state: source-analysis lead from PR #9 cubic comment 4234196552; pending
-activation. No implementation or product decision is authorized by this record.
+Sub-state: closed on 2026-10-31; merged into SOW-0156 by user decision, since both concern writer/header offset and consistency hardening.
 
 ## Requirements
 

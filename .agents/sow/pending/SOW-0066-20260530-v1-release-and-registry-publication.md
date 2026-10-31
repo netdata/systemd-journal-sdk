@@ -8,6 +8,12 @@ Sub-state: pending final production release and Rust/Go publication
 after SDK compatibility, portability, corpus validation, and integration gates
 are complete.
 
+2026-10-31: registry publication and Go module tags already exist through
+v0.10.0 and Netdata consumes them, so this SOW is now the v1.0.0 API stability
+decision. Its Netdata integration gate is SOW-0164 (SOW-0048 closed as obsolete;
+SOW-0049 and SOW-0050 superseded by SOW-0164). The compatibility, portability and
+corpus gates (SOW-0055, SOW-0063, SOW-0064, SOW-0065) are already done.
+
 ## Requirements
 
 ### Purpose
@@ -93,7 +99,7 @@ Current state:
   `v1.0.0` publication workflow recorded as a SOW.
 - Cross-platform portability and real-world corpus evaluation are pending.
 - Future language parity closure is now tracked by SOW-0065.
-- Netdata integration SOWs are pending and depend on SDK readiness.
+- Netdata integration is tracked by SOW-0164 (supersedes SOW-0048/0049/0050).
 
 Risks:
 
@@ -120,7 +126,7 @@ Evidence reviewed:
 
 - User request for final `v1.0.0` and language registry publication.
 - Pending SOWs that still affect release readiness: SOW-0055, SOW-0063,
-  SOW-0064, SOW-0065, and Netdata integration SOWs.
+  SOW-0064, SOW-0065, and SOW-0164.
 - Project release-tagging skill exists and should be used when this SOW starts.
 
 Affected contracts and surfaces:
