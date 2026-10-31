@@ -3,188 +3,130 @@
 ## Glossary
 
 - CGO: Go's C interoperability mechanism.
-- DATA: systemd journal file object type for a stored field/value payload.
-- ENTRY: systemd journal file object type for a journal row.
-- FIELD: systemd journal file object type for a field name.
-- SOW: Statement of Work.
+- DATA, ENTRY, FIELD: systemd journal file object types for a field/value payload, a journal row, and a field name.
 - FTS: full-text search.
 - IP: Internet Protocol.
 - SNMP: Simple Network Management Protocol.
-- THIS: uppercase English pronoun used in repository-boundary prompt emphasis.
-- DO: uppercase English verb used in repository-boundary prompt emphasis.
-- FOR: uppercase English preposition used in repository-boundary prompt emphasis.
-- MAKE: uppercase English verb used in repository-boundary prompt emphasis.
-- WASM: WebAssembly.
-- DO NOT: uppercase emphasis in agent prompt blocks.
+- SOW: Statement of Work.
 
 ## Goals
 
-This project produces pure SDKs for reading and writing systemd journal files in Rust and Go.
+Pure Rust and Go SDKs for reading and writing systemd journal files, plus
+file-backed journalctl rewrites in both languages. Success means:
 
-Success means:
-
-- SDKs read existing journal files without linking to system journal libraries.
-- SDKs write valid journal files without CGO or external journal libraries.
-- Journal files written by one language can be read by every other language and by compatible systemd tooling where applicable.
-- The same shared conformance suite, fixtures, interoperability tests, benchmarks, and profiling workflows apply to every implementation.
-- SDK APIs exercise the journal format's native performance features.
-- Correct output is not enough when the format has an index, hash table, object chain, offset array, mmap, or reusable object path.
-- Use those structures to avoid row scans, repeated parsing, unnecessary decompression, unnecessary allocation, or avoidable syscalls.
-- journalctl rewrites exist for Rust and Go for file-backed/query behavior.
-- Daemon-only journalctl operations are not implemented in this project.
+- Read and write valid journal files without CGO or system journal libraries.
+- Files written by either language are readable by the other and by systemd
+  tooling.
+- One shared conformance suite, fixture set, interoperability tests and
+  benchmarks apply to both implementations.
+- APIs use the format's native performance features (see Performance Contract).
+- Daemon-only journalctl operations are out of scope.
 
 Project SOW status: initialized
 
 ## Go/Rust Feature Parity
 
-- Accepted SDK functionality MUST be implemented in both Go and Rust as part of
-  the same approved feature scope. APIs SHOULD follow each language's idioms
-  while providing equivalent behavior, failure semantics and operational guarantees.
-- Feature plans and acceptance criteria MUST identify both language surfaces and
-  validate each implementation, including relevant cross-language file behavior.
-  One consumer using only one language does not justify a parity gap.
-- A language-specific exception or staged delivery requires an explicit user
-  decision recorded in the active SOW. A remaining parity gap MUST be resolved
-  with the user before publication; release preparation is not the first parity check.
+Accepted SDK functionality ships in both Go and Rust in the same feature scope,
+idiomatic per language but with equivalent behavior, failure semantics and
+guarantees. Plans and acceptance criteria name both surfaces and validate each,
+including cross-language file behavior. A consumer using only one language
+does not justify a gap. A language-specific exception or staged delivery needs
+an explicit user decision recorded in the SOW, and any remaining gap is
+resolved with the user before publication.
 
 ## Performance Contract
 
-This project is not only a compatibility clone. It is a high-performance
-journal file-format SDK. Design every reader, writer, query helper, and facade
-to use the most efficient journal-native path that preserves the documented
-contract. Any deviation needs active-SOW evidence and an explicit user decision.
+This is a high-performance journal SDK, not only a compatibility clone. Every
+reader, writer, query helper and facade uses the most efficient journal-native
+path that preserves the documented contract; any deviation needs SOW evidence
+and a user decision.
 
-Mandatory rules:
-
-- Prefer journal-native structures over row scans. Use FIELD/DATA hash tables,
-  FIELD DATA chains, DATA entry arrays, ENTRY arrays, offsets, sequence/time
-  metadata, and mmap-backed slices when those structures answer the request.
-- Do not implement a public API by expanding every entry when the journal format
-  can answer it through an index or object chain, unless active-SOW evidence
-  proves the indexed path is unsafe or slower. For example, unfiltered unique
-  field values walk the FIELD object's DATA chain, matching systemd, and do not
-  scan all entries. Field-name enumeration walks FIELD hash tables on valid
-  indexed files, with entry-scan fallback only for documented compatibility
-  cases where the FIELD table cannot be traversed safely.
-- Avoid decoding, decompressing, copying, hashing, sorting, or allocating data
-  outside the requested scope. Compressed DATA must stay compressed unless the
-  caller needs that DATA's value for filtering, faceting, FTS, or returned-row
-  display.
-- Explorer column catalogs must come from FIELD indexes, not row traversal.
-  `ExplorerQuery::debug_collect_column_fields_by_row_traversal` is a
-  discrepancy-debug tool only. Production use, benchmark success, or
-  compatibility acceptance with this flag enabled is invalid evidence and must
-  be treated as an explorer bug.
-- Treat repeated parsing of reusable DATA objects as a performance bug unless a
-  SOW records evidence that the alternative is slower or unsafe.
-- Choose performance evidence by tracing the actual changed work. Careful code
-  review and representative high-level tests can establish that a change does
-  not negatively affect performance. Use existing benchmarks and targeted
-  profiles for credible added costs or observed regressions; do not build or
-  expand a large measurement framework to prove every small detail. An
-  inconclusive timing interval alone is neither proof of equality nor evidence
-  of a regression. Preserve adverse observations and investigate them.
-  Compare equivalent benchmarks against systemd when practical and against the
-  fastest sibling implementation; explain unavailable comparisons.
-- Record any intentionally slower path in the SOW, docs, and tests, with the
-  reason, measured cost, and the conditions where it is acceptable.
+- Answer requests from FIELD/DATA hash tables, FIELD DATA chains, DATA and ENTRY
+  arrays, offsets, sequence/time metadata and mmap slices instead of expanding
+  every entry, unless SOW evidence shows the indexed path is unsafe or slower.
+  For example, unfiltered unique values walk the FIELD's DATA chain as systemd
+  does, and field-name enumeration walks FIELD hash tables, falling back to
+  entry scans only for documented cases where the table is unsafe to traverse.
+- Do not decode, decompress, copy, hash, sort or allocate outside the requested
+  scope. Compressed DATA stays compressed unless its value is needed for
+  filtering, faceting, FTS or returned rows. Repeated parsing of reusable DATA
+  objects is a performance bug.
+- Explorer column catalogs come from FIELD indexes.
+  `ExplorerQuery::debug_collect_column_fields_by_row_traversal` is a debug tool;
+  any production use, benchmark or compatibility claim with it enabled is
+  invalid and is an explorer bug.
+- Choose evidence by tracing the changed work: careful review and
+  representative tests can show no regression; use existing benchmarks and
+  targeted profiles for credible added costs. Do not build large measurement
+  frameworks for small changes. An inconclusive timing proves neither equality
+  nor regression; keep and investigate adverse observations. Compare against
+  systemd and the faster sibling implementation where practical.
+- Record any intentionally slower path in the SOW, docs and tests with its
+  reason, measured cost and acceptable conditions.
 
 ## Runtime Purity Architecture
 
-This project has four separate layers. Keep them separate in every language:
+Keep four layers separate in both languages:
 
-1. **Core journal file-format SDK** - reads and writes journal files only. Core
-   readers and writers do not execute external programs, probe host identity
-   sources, read OS-specific identity files or registries, or enforce writer
-   locks by default. They operate only on caller-provided paths, bytes, options,
-   timestamps, machine IDs, boot IDs, seqnum IDs, and related metadata. Any
-   exception belongs in an explicit optional helper or needs a user-approved SOW
-   contract change.
-2. **Systemd/journald compatibility layer** - applies journald-compatible field
-   naming, metadata, and API conventions. It may require caller-provided machine
-   and boot identity. It does not silently discover host identity. Callers that
-   want automatic identity discovery explicitly invoke an optional identity
-   helper and pass the result in.
-3. **Optional identity helper service** - discovers host machine/boot identity
-   when a caller explicitly opts in. This helper is outside the core
-   file-format SDK contract.
-4. **Optional writer-lock helper service** - provides cooperating-writer
-   exclusion when a caller explicitly opts in. This helper is independent from
-   systemd compatibility. The journal file format requires one writer per file
-   as an operational contract, but systemd does not define or enforce a portable
-   lock protocol in the journal file format. Core writer constructors do not
-   expose lock-enable options; callers acquire and release the lock helper
-   separately around writer use.
+1. **Core file-format SDK** - reads and writes journal files using only
+   caller-provided paths, bytes, options, timestamps and machine/boot/seqnum
+   IDs. It never runs programs, probes host identity or locks writers by default.
+2. **Systemd/journald compatibility layer** - journald field naming, metadata
+   and API conventions. It may require caller-provided identity but never
+   discovers it silently.
+3. **Optional identity helper** - discovers machine/boot identity only when a
+   caller opts in and passes the result on.
+4. **Optional writer-lock helper** - cooperating-writer exclusion on opt-in.
+   One writer per file is an operational contract, but systemd defines no
+   portable lock protocol, so this is not systemd compatibility. Core writer
+   constructors expose no lock options; callers wrap writer use themselves.
 
-Core SDK runtime code reads host identity or process state only inside explicit
-optional helper implementations. Core reader and writer paths do not read from
-these inputs:
-
-- `/proc`
-- `/host/proc`
-- machine identity files: `/etc/machine-id` and `/var/lib/dbus/machine-id`
-- platform registries
-- `sysctl`
-- `system_profiler`
-- `ps`
-- shell commands
-- subprocess APIs
-
-Tests, docs, and examples must use synthetic identities unless explicitly
-testing an optional helper.
+Core reader/writer paths never read `/proc`, `/host/proc`, `/etc/machine-id`,
+`/var/lib/dbus/machine-id`, platform registries, `sysctl`, `system_profiler` or
+`ps`, and never use shell commands or subprocess APIs; only the optional helpers
+may. Tests, docs and examples use synthetic identities unless testing a helper.
 
 ## SOW System
 
-This project uses a local Statement of Work system.
-
-The SOW system is self-contained in this repository. Normal SOW work depends on
-this `AGENTS.md`, project-local SOW files, project-local specs, project-local
-skills, and the active SOW. Use global templates or scripts only when the user
-explicitly asks to repair or upgrade the SOW framework.
+This project uses a self-contained local Statement of Work system: this file,
+the SOW files, specs and project skills. Use global SOW templates or scripts
+only when the user asks to repair or upgrade the framework.
 
 ### Roles
 
-- **User responsibilities:** purpose, scope decisions, design forks, risk acceptance, destructive approvals, and final product judgment.
-- **Project manager responsibilities:** SOW creation, phase planning, code, tests, documentation, benchmark/profiling work, implementation evidence, reviewer coordination, evidence ledgers, status reporting, and gate enforcement.
-- **Reviewer agent responsibilities:** independently review technical behavior and search for regressions.
-- **Reviewer agents review security:** identify vulnerabilities and unwanted side effects.
-- **Reviewer agents assess readiness:** decide whether the result is production-grade.
+- **User:** purpose, scope, design forks, risk acceptance, destructive approvals and final product judgment.
+- **Project manager (the agent):** SOW creation and planning, code, tests, docs, benchmarks, evidence, self-review, status reporting and gate enforcement.
 
-External review is the default, user-waivable technical review gate for
-implementation SOWs. Before submitting code to GitHub, recommend external
-review when the current change set has not already been reviewed. Do not run
-external reviewers before the user authorizes them. Once authorized, standing
-authorization applies for the current conversation within any limits set by the
-user.
+### Review Gate
 
-The system-wide `external-reviewers` skill is the sole source of truth for
-available reviewers, model selection, harnesses, prompts, authorization scope,
-retries, and failure handling. Do not copy those volatile details into
-repository instructions. Review the complete active SOW after local validation
-as one meaningful batch; do not review trivial edits or partial churn.
+The review gate is the test suite plus the project manager's own review. Do
+not run or recommend external reviewers.
 
-Historical note: this repository previously required implementation
-delegation. That mandate is neither required nor preferred now. Historical
-records may retain exact model names and execution trails, but those records
-must not be assumed to describe current practice.
+- Finish the whole active SOW locally, including tests and evidence, then
+  review the entire SOW and changed surface as one batch, not partial churn.
+- Review for behavior, regressions, Go/Rust parity, security, unwanted side
+  effects and production readiness; record each finding and its disposition.
+- After material fixes, rerun tests and re-review the whole scope.
+- A phase advances only when tests pass and blocking findings are resolved,
+  never on "mostly ok".
+
+Done SOWs may record external reviewers or delegated implementation from
+earlier practice; that does not describe current practice.
 
 ### Required First Checks
 
-Before non-trivial work:
-
-1. Read pending/current SOWs for overlap, contradictions, and existing decisions.
-2. Read relevant specs under `.agents/sow/specs/`.
-3. Inspect `.agents/skills/project-*/SKILL.md` and load every runtime project skill whose trigger matches the work.
-4. Inspect code/docs/data as ground truth.
-5. Ask the user only for irreducible product/design/risk decisions.
+Before non-trivial work, read pending/current SOWs and relevant specs for
+overlap and prior decisions, load every project skill whose trigger matches,
+treat code and data as ground truth, and ask the user only for irreducible
+product, design or risk decisions.
 
 ### Git Worktrees
 
-Create a git worktree only when the user explicitly asks for it or approves it.
+Create a git worktree only when the user asks for or approves it.
 
 ### Repository Boundary
 
-CRITICAL: Do not make changes outside this repository. This applies to all assistants and external reviewers.
+CRITICAL: Do not make changes outside this repository. This applies to all assistants and helper agents.
 
 Canonical external-agent prompt block:
 
@@ -198,262 +140,143 @@ CRITICAL REPOSITORY BOUNDARY:
 - Prefer .local/ inside this repository for scratch work, generated temporary files, cloned references, logs, and working notes.
 ```
 
-Rules:
-
-- Read-only inspection outside this repository is allowed when required by a SOW.
-- Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
-- The only write exception is `/tmp`.
-- Prefer `.local/` inside this repository for scratch work, generated temporary files, cloned references, logs, and external-agent working notes.
-- Include the canonical external-agent prompt block verbatim in every external-agent prompt.
-  Any exception needs an explicit user decision recorded in the active SOW first.
+- The block binds this session as well as helper agents. Include it verbatim
+  in every helper-agent prompt; exceptions need a user decision in the SOW.
+- Investigation and review helpers are read-only; their prompts forbid
+  creating, modifying, deleting, moving, formatting, staging or committing files.
+- Package metadata commands (`go get`, `go list`, `cargo metadata`,
+  `npm view`, `pip download`, …) write caches even when they look read-only:
+  point `GOMODCACHE`, `GOCACHE`, `GOPATH`, `CARGO_HOME`, `npm_config_cache`,
+  `PIP_CACHE_DIR` and equivalents under `.local/` or `/tmp`, or forbid fetching.
 
 ### Sensitive Data In Durable Artifacts
 
-Treat SOWs, specs, documentation, project skills, agent instructions, and code comments as commit-ready artifacts.
-Treat them as public by default.
-A repository-specific policy may mark a listed artifact class private.
+SOWs, specs, docs, skills, agent instructions and code comments are
+commit-ready and public by default.
 
 CRITICAL: Never write raw sensitive data to durable artifacts.
-Secure handling exception: if raw sensitive data is required to continue, stop and ask the user for a secure handling path before writing anything.
-This includes passwords, API keys, bearer tokens, SNMP communities, private keys, and connection strings with embedded credentials.
-It also includes session cookies, community member names, customer names, customer identifiers, personal data, customer-identifying public IP addresses, private endpoints, account IDs, and proprietary incident details.
+This covers credentials of any kind (passwords, API keys, tokens, SNMP
+communities, private keys, credentialed connection strings, session cookies)
+and identifying data (community member or customer names and identifiers,
+personal data, customer-identifying public IPs, private endpoints, account IDs,
+proprietary incident details).
 
-Write only sanitized evidence:
-
-- use placeholders such as `[REDACTED_SECRET]`, `[CUSTOMER]`, `[ACCOUNT]`, `[PRIVATE_ENDPOINT]`;
-- use stable aliases such as `customer-a` only when the real mapping is not stored in the repository;
-- cite file paths, line numbers, command names, schema fields, or error classes instead of copying sensitive values;
-- summarize logs and traces; include only minimal redacted snippets.
-
-If sensitive data is required to continue, stop and ask the user for a secure handling path. If sensitive data is found in a durable artifact, sanitize it before any commit. If sensitive data was already committed, tell the user and do not rewrite history without explicit approval.
+Use placeholders such as `[REDACTED_SECRET]` or `[CUSTOMER]`, aliases whose
+mapping is not stored in the repository, and citations of paths, commands or
+error classes instead of values; summarize logs. If raw sensitive data is needed
+to continue, stop and ask the user for a secure handling path. Sanitize any
+found before commit; if it was already committed, tell the user and do not
+rewrite history without approval.
 
 ### Open-Source Reference Evidence
 
-When a SOW uses external open-source repositories as evidence, record the upstream repository identity and checked commit, not the workstation mirror path.
-
-For local mirrored or cloned open-source repositories, cite evidence in this form:
-
-```text
-owner/repo @ commit
-relative/path/inside/repo:line
-```
-
-Rules:
-
-- Never use workstation absolute paths for external open-source evidence in SOWs.
-- Resolve `owner/repo` from the repository remote, not only from the local directory name.
-- Record the commit with `git -C <repo> rev-parse --short=12 HEAD` or the full hash when precision matters.
-- Use paths relative to the upstream repository root after the `owner/repo @ commit` line.
-- If multiple repositories were checked, list each repository and commit separately.
+Cite external open-source evidence as `owner/repo @ commit` followed by
+repository-relative `path:line`, with `owner/repo` taken from the remote. Never
+cite workstation mirror paths: they are meaningless to other readers and leak
+local layout.
 
 ### Pre-Implementation Gate
 
-Implementation must not begin until the active SOW contains a concrete `## Pre-Implementation Gate` section. Before moving a SOW from `pending/open` to `current/in-progress`, or before continuing implementation in an existing current SOW that lacks this section, fill the gate.
-
-The gate must record:
-
-- Problem / root-cause model.
-- Evidence reviewed.
-- Affected contracts and surfaces.
-- Existing patterns to reuse.
-- Risk and blast radius.
-- Sensitive data handling plan.
-- Implementation plan.
-- Validation plan.
-- Artifact impact plan.
-- Open decisions.
-
-Generic placeholders such as `TBD`, `N/A`, or "to be checked later" are invalid unless the SOW explains why the item truly does not apply. If the gate exposes an unknown that cannot be resolved by investigation, stop and ask the user before implementation.
+Before implementation starts, the active SOW's `## Pre-Implementation Gate`
+must show that the problem is understood: the root cause with evidence, the
+affected contracts and both language surfaces, the risks, the plan, how it will
+be validated, and any open decisions. Scale the depth to the change; mark
+headings that do not apply with a one-line reason instead of padding them. If
+investigation cannot resolve an unknown, stop and ask the user.
 
 ### When A SOW Is Required
 
-Create or reuse a SOW for non-trivial work:
-
-- feature work;
-- bug fixes with behavioral impact;
-- refactors;
-- migrations;
-- documentation or content changes with product/business impact;
-- process changes;
-- regressions;
-- spec hygiene;
-- project skill changes;
-- any work with unclear risk.
-
-Trivial work does not need a SOW:
-
-- typo fixes;
-- formatting-only changes;
-- mechanical rename with no behavior change;
-- simple search/replace with low risk.
-
-When unsure, treat the work as non-trivial.
+Non-trivial work needs a SOW: features, behavioral bug fixes, refactors,
+migrations, product-impacting docs, process or skill changes, spec hygiene,
+regressions, and anything of unclear risk. Typos, formatting, behavior-free
+renames and low-risk search/replace do not. When unsure, treat it as non-trivial.
 
 ### SOW Locations
 
-- Pending: `.agents/sow/pending/`
-- Current: `.agents/sow/current/`
-- Done: `.agents/sow/done/`
-- Specs: `.agents/sow/specs/`
-- Template for new SOWs: `.agents/sow/SOW.template.md`
-- Local audit: `.agents/sow/audit.sh`
-
-Create new SOW files from `.agents/sow/SOW.template.md`. The template is project-local and may be customized for this repository.
-
-Empty SOW directories must contain `.gitkeep` or `.keep` so the committed repository preserves the full SOW layout after clone/checkout.
-
-Filename:
-
-```text
-SOW-NNNN-YYYYMMDD-{slug}.md
-```
-
-Status and directory must agree:
-
-- `open` lives in `pending/`
-- `in-progress` lives in `current/`
-- `paused` lives in `current/`
-- `completed` lives in `done/`
-- `closed` lives in `done/`
+SOWs live in `.agents/sow/{pending,current,done}/` (empty directories keep a
+`.gitkeep`), specs in `.agents/sow/specs/`, and are created from
+`.agents/sow/SOW.template.md` as `SOW-NNNN-YYYYMMDD-{slug}.md`. The audit is
+`.agents/sow/audit.sh`. Status and directory must agree: `open` in `pending/`,
+`in-progress` or `paused` in `current/`, `completed` or `closed` in `done/`.
 
 ### SOW Completion And Commit
 
-The successful terminal SOW status is `completed`. `done` is a directory name, not a status value. Never write `Status: done` or `Status: complete`.
+The successful terminal status is `completed`; `done` is only a directory
+name, so never write `Status: done` or `Status: complete`.
 
-After each implementation chunk/SOW is implemented, reviewed, and verified, prefer committing that chunk before starting the next chunk. This preserves rollback points before subsequent work.
-
-If `.agents/sow/audit.sh` fails, do not close the SOW and do not advance to the next chunk. Record the audit failure in the active SOW, repair it inside this repository, rerun the audit, and record the clean result.
-
-When a SOW's work is ready to close:
-
-1. Finish implementation, docs, specs, skills, validation, and follow-up mapping.
-2. Update the SOW to `Status: completed`.
-3. Move the SOW file to `.agents/sow/done/`.
-4. Commit the work, artifact updates, SOW status change, and SOW move together as one commit, unless the user explicitly requested a different commit split.
-
-Do not create a separate commit just to mark or move the SOW. Do not claim a SOW is completed while the implementation and the SOW lifecycle change live in separate uncommitted or separately committed states.
-
-Git staging rule: never use `git add -A` or `git add .`. Stage explicit paths only.
+- Close a SOW only after its implementation, docs, specs, skills, validation
+  and follow-ups are finished and `.agents/sow/audit.sh` reports
+  `SOW initialization complete and clean`. The audit can exit zero while
+  reporting partial state, so read the verdict. If it fails, record and repair
+  it before closing or advancing.
+- Commit the work, artifact updates, status change and move to `done/`
+  together in one commit unless the user asks otherwise, so a completed SOW
+  never lives apart from its implementation. Prefer committing each verified
+  chunk before the next, to keep rollback points.
+- Never use `git add -A` or `git add .`; stage explicit paths only.
 
 ### One SOW At A Time
 
-Never execute multiple SOWs as one batch.
-
-If work overlaps:
-
-- merge or consolidate before implementation; or
-- split into separate SOWs and complete one before starting the next.
-
-Progress reports are not stop points. Once a SOW is in progress, continue until it is delivered, failed with evidence, blocked on a real user decision/approval, or superseded by newer user instructions.
+Never run multiple SOWs as one batch; merge overlapping work before
+implementation or split it and finish one first. Read-only helper agents may
+run in parallel within the active SOW. Progress reports are not stop points:
+an in-progress SOW continues until delivered, failed with evidence, blocked on
+a real user decision, or superseded by the user.
 
 ### User Decisions
 
-When user decisions are needed:
-
-1. Present concrete evidence with files/lines or source references.
-2. Provide numbered options.
-3. Explain pros, cons, implications, and risks.
-4. Recommend one option with reasoning.
-5. Record the user's decision in the SOW before implementation.
+Present concrete evidence (files/lines or sources), numbered options with pros,
+cons and risks, and a recommendation with its reasoning. Record the decision in
+the SOW before implementing it.
 
 ### Followup Discipline
 
-"Deferred" is not a terminal outcome.
-
-Before a SOW can close, every valid deferred item must be:
-
-- implemented in the current SOW; or
-- explicitly rejected as not worth doing, with evidence; or
-- represented by a real pending/current SOW file.
-
-Pre-close, search the SOW for:
-
-```text
-defer|later|follow-up|future|TODO|pending
-```
-
-Map every remaining item to implemented, rejected, or tracked.
+"Deferred" is not a terminal outcome. Before a SOW closes, every valid leftover
+item is implemented, rejected with evidence, or tracked by a real pending SOW,
+so work does not silently disappear.
 
 ### Regressions
 
-A regression is discovered after a SOW was considered completed or closed, later testing or use finds broken behavior, and the original SOW's claimed outcome is no longer true.
-
-When behavior that a completed SOW claimed working stops working:
-
-1. Find the original SOW in `done/`.
-2. Move it back to `current/`.
-3. Mark it `in-progress` with a regression note in `## Status`.
-4. Append a new dated `## Regression - YYYY-MM-DD` section at the end of the file, after the original outcome, lessons, and follow-up content.
-5. In that appended section, record what broke, evidence, why previous validation missed it, the repair plan, validation, and updates needed to specs, skills, docs, audits, or follow-up SOWs.
-6. Fix and validate there.
-
-Never prepend regression content above the original SOW narrative. The original requirements, analysis, plan, validation, outcome, lessons, and follow-up must remain readable first.
-Do not create a new SOW for a true regression.
+When behavior a completed SOW claimed working breaks later, reopen that SOW
+instead of creating a new one: move it back to `current/`, mark it
+`in-progress`, and append a dated `## Regression - YYYY-MM-DD` section at the
+end recording what broke, why validation missed it, the fix, and its
+validation. Never prepend; the original narrative stays readable first.
 
 ### Validation Gate
 
-A SOW cannot be completed until Validation records:
-
-- acceptance criteria evidence;
-- tests or equivalent validation;
-- real-use evidence when a runnable path exists;
-- reviewer findings and how they were handled;
-- same-failure search results;
-- sensitive data gate;
-- artifact maintenance gate;
-- SOW status/directory consistency;
-- spec update or specific reason no spec update was needed;
-- project skill update or specific reason no skill update was needed;
-- end-user/operator docs update or evidence-backed reason none were affected;
-- end-user/operator skill update or evidence-backed reason none were affected by docs/spec changes;
-- lessons extracted or specific reason there were none;
-- follow-up mapping.
-
-Generic "N/A" is invalid.
-
-Reviewer agents must be read-only. Reviewer prompts must forbid creating, modifying, deleting, moving, formatting, staging, committing, or changing files.
+A SOW is complete when its Validation section lets a reader trust the outcome:
+acceptance criteria met with evidence, tests run and their results, real-use
+evidence where a runnable path exists, self-review findings and dispositions,
+a search for the same failure elsewhere, the sensitive-data check, and what
+happened to follow-ups.
 
 ### Artifact Maintenance Gate
 
-Every SOW close must explicitly record whether each durable artifact class was updated or why no update was needed:
-
-- `AGENTS.md` - workflow, responsibility, local framework, project-wide guardrails.
-- Runtime project skills - `.agents/skills/project-*/SKILL.md` for HOW to work here.
-- Specs - `.agents/sow/specs/` for WHAT the project does.
-- End-user/operator docs - README, docs site, runbooks, published guides, help text, or other human-facing documentation.
-- End-user/operator skills - output/reference skills copied or consumed outside normal repo work.
-- SOW lifecycle - split, merge, status, directory, deferred work, regression reopening, and follow-up mapping.
-- `.agents/sow/SOW-status.md` - human-readable project status summary, updated whenever SOW state changes.
+At close, state which durable artifacts changed and why the others did not
+need to: `AGENTS.md`, project skills, specs, end-user docs (README, `docs/`,
+help text), and `.agents/sow/SOW-status.md`, which is updated whenever SOW state
+changes. Stale specs and docs are how this project accumulates false guidance,
+so check them against the change rather than by habit.
 
 ### Specs
 
-Specs are memory of WHAT this project does.
-
-Update specs when shipped work changes:
-
-- product behavior;
-- public contracts;
-- data formats;
-- UX rules;
-- business logic;
-- operational guarantees;
-- known edge cases.
-
-Specs describe current reality, not aspiration. If specs and code disagree, record the discrepancy in the active SOW and resolve or track it.
+Specs in `.agents/sow/specs/` record WHAT the project does today, not
+aspirations. Update them when shipped work changes behavior, public contracts,
+data formats, operational guarantees or known edge cases. If specs and code
+disagree, record the discrepancy in the SOW and resolve or track it.
 
 ### Project Skills
 
-Project skills are memory of HOW to work here.
-
-Runtime input project skills live under `.agents/skills/project-*/SKILL.md`. The `project-` prefix is the generic hook meaning agents working in this repo must consider this skill. Before non-trivial work, inspect those skill descriptions and load every matching runtime skill.
+Project skills record HOW to work here. Skills under
+`.agents/skills/project-*/SKILL.md` must be considered before non-trivial work;
+load each one whose trigger matches.
 
 Runtime input skills:
 
-- `.agents/skills/project-agent-orchestration/SKILL.md`
 - `.agents/skills/project-docs-authoring/SKILL.md`
 - `.agents/skills/project-journal-compatibility/SKILL.md`
 - `.agents/skills/project-release/SKILL.md`
-- `.agents/skills/project-release-tagging/SKILL.md`
 
 Legacy runtime skills:
 
@@ -465,47 +288,36 @@ Output/reference skills:
 
 ### Project-specific overrides
 
-- The baseline systemd compatibility target is `systemd/systemd` tag `v260.1`.
-- The file-backed Rust and Go `journalctl` commands target `systemd/systemd`
-  tag `v262` (8cc40e0c5e9234bf45084751ac53b1fbfe70b492). This CLI target
-  does not advance the SDK journal-format target or compiler minimums.
-- Native PCRE2-8 >=10.42 is allowed only in the two journalctl commands.
-  The Go command requires CGO and a C compiler; the Go SDK remains CGO-free.
-  The commands may also use the platform C library for Unix file globbing,
-  thread-local locale selection, and terminal queries. Windows filenames use
-  the Unicode path contract. These CLI exceptions do not extend to SDKs.
-  Keep CLI build/test steps explicitly CGO-enabled and preserve independent
-  pure SDK checks. System journal library linkage remains prohibited.
-- Netdata's consuming-module declarations are the authority for SDK compiler
-  minimums. The SDK's Go and Rust minimums may match or remain below Netdata's
-  corresponding declared minimums, but must never exceed them. Requiring a
-  newer compiler would make the SDK incompatible with Netdata.
-- Inspect the current Netdata source before setting or changing a compiler
-  minimum. Use the consuming Go module's `go` directive and the consuming Rust
-  workspace's `rust-version`; do not substitute a newer compiler downloaded by
-  packaging, selected by CI, available locally, or preferred by a scanner.
-- Never propose raising an SDK compiler minimum above Netdata's declaration as
-  a dependency-refresh, release-hygiene, vulnerability-remediation, or
-  scanner-cleanup option. Select dependency versions compatible with the
-  Netdata floor instead. Newer toolchains may be used as additional validation
-  targets, but they do not change release metadata or the supported minimum.
-- If a scanner reports findings against Netdata's compiler floor, investigate
-  reachability and validate the actual Netdata build toolchain, then record an
-  explicit scanner disposition. Do not clear the finding by breaking Netdata
-  compatibility.
-- The final writer target includes compression and Forward Secure Sealing where systemd journal files define it, but implementation may be phased.
-- Readers must handle applicable historical journal file variants covered by the shared conformance fixtures.
-- Provide two API layers per language: idiomatic SDK API plus a libsystemd-compatible reader facade. The facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
-- journalctl repeated matches for the same field already provide OR semantics. No new `KEY in [values]` syntax is required.
-- The `+` separator is a systemd journalctl disjunction feature to replicate for file-backed journalctl behavior; it is not a new extension.
-- Implement journalctl rewrites for file-backed/query behavior in Rust and Go.
-- Do not implement daemon-only journalctl commands, including daemon sync, flush, rotate, and relinquish-var operations.
-- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal. CGO remains disallowed in SDKs; the journalctl-only PCRE2 exception above does not permit linking system journal libraries.
-- Before Netdata integration or stable release work advances, GitHub code scanning and Codacy analysis findings must be fixed or explicitly dispositioned under the active SOW policy. Raw SARIF, Codacy exports, and scanner logs must stay under `.local/`; durable artifacts may contain only sanitized aggregate summaries and evidence.
-- Rust and Go sources are frozen for the 2026-06-11 docs-and-parity program (SOW-0103 through SOW-0106). Problems found in Rust or Go become pending SOWs; they are not fixed inside the program SOWs.
-- Current review cadence: finish the complete active SOW locally first, including local validation and SOW evidence.
-- After local validation, recommend external review if it has not been authorized or explicitly waived. When authorized, follow the system-wide `external-reviewers` skill and review the entire SOW and changed surface as one batch.
-- A phase cannot advance until local implementation and validation have completed and external review has either completed with findings resolved or been explicitly waived by the user and recorded in the SOW.
-- After each verified chunk, prefer committing the chunk before starting the next work chunk, using explicit path staging only.
-- After SOW-0003 completes, SOW-0005 (Go writer first) activates before SOW-0004, SOW-0006, SOW-0007, SOW-0008, SOW-0009, or SOW-0010. After SOW-0005 completes, continue according to the active SOW dependency chain, but only one implementation SOW may be active at a time.
-- Reviewer agents may run in parallel within the active SOW; implementation SOWs must not run in parallel unless the user explicitly changes the one-SOW-at-a-time rule.
+- Targets: SDK journal-format compatibility follows `systemd/systemd` tag
+  `v260.1`. The file-backed journalctl commands follow tag `v262`
+  (8cc40e0c5e9234bf45084751ac53b1fbfe70b492); that does not move the SDK format
+  target or compiler minimums.
+- CLI-only native code: the two journalctl commands may use native PCRE2-8
+  >=10.42 (the Go command therefore needs CGO and a C compiler) and the platform
+  C library for Unix globbing, thread-local locale and terminal queries; Windows
+  uses the Unicode path contract. These exceptions never extend to the SDKs:
+  keep CLI builds explicitly CGO-enabled and pure SDK checks separate. SDKs stay
+  CGO-free, and nothing links system journal libraries or depends on
+  systemd/libjournal. Common compression libraries are allowed after review.
+- Compiler minimums: SDK Go and Rust minimums never exceed Netdata's declared
+  ones (the consuming Go module's `go` directive and Rust workspace's
+  `rust-version`, read from current Netdata source), because a higher minimum
+  makes the SDK unusable by Netdata. This holds for dependency refreshes and
+  vulnerability or scanner cleanup too: pick compatible dependency versions and
+  disposition findings by reachability. Newer toolchains are extra validation
+  targets only.
+- API layers: each language provides an idiomatic SDK API plus a
+  libsystemd-compatible reader facade, unless a SOW shows the facade would need
+  native bindings, break the pure-language policy, or be unsafe or
+  unrepresentable.
+- Writer target includes compression and Forward Secure Sealing where systemd
+  defines them, possibly phased. Readers handle the historical variants covered
+  by the shared conformance fixtures.
+- journalctl semantics: repeated matches on one field are already OR, so no
+  `KEY in [values]` syntax is needed; the `+` disjunction separator is systemd
+  behavior to replicate. Daemon-only commands (sync, flush, rotate,
+  relinquish-var) are out of scope.
+- Before Netdata integration or stable release work advances, GitHub code
+  scanning and Codacy findings are fixed or dispositioned in the SOW. Raw SARIF,
+  Codacy exports and scanner logs stay under `.local/`; durable artifacts get
+  sanitized summaries only.
