@@ -31,8 +31,8 @@ Facts:
   `run_lock_matrix.py`, `run_directory_matrix.py` and
   `run_mixed_directory_matrix.py` (nine scripts in total, counting
   `run_verify_matrix.py`).
-- `run_reader_hardening.py` already requires `--journalctl PATH`, and
-  `run_journalctl_query_matrix.py` accepts one and passes it to
+- `run_reader_hardening.py` and `run_journalctl_query_matrix.py` already
+  require `--journalctl PATH`; the query matrix passes it to
   `journalctl_v262_cases.py` as `tools["stock_journalctl"]`; these are the
   patterns to reuse. `run_journalctl_portable_smoke.py` runs only the Go and
   Rust binaries (its `"journalctl"` strings are expected command names).
@@ -82,9 +82,20 @@ Problem / root-cause model:
 - The matrices predate the pinned-oracle rule and resolve `journalctl` from
   `PATH`.
 
-Evidence reviewed:
+Evidence reviewed (`netdata/systemd-journal-sdk @ 334a54a764ed29124f0a3e3a251ec6d5359f6736`):
 
-- See Assistant Understanding.
+- Bare `["journalctl", ...]` launches in `tests/interoperability/`:
+  `run_verify_matrix.py:186,396`, `run_matrix.py:78,182,258`,
+  `run_binary_matrix.py:91,267,278,295,303,467,477`,
+  `run_live_matrix.py:183,353,749`,
+  `run_compression_matrix.py:104,307,318,323,331,464,475,486`,
+  `run_compact_matrix.py:339,350,355,363,483,494,512`,
+  `run_lock_matrix.py:87`, `run_directory_matrix.py:135,296,320`,
+  `run_mixed_directory_matrix.py:202,369,393`.
+- Not launches (expected command names): `run_journalctl_portable_smoke.py:131`,
+  `journalctl_v262_cases.py:385`.
+- Explicit oracle: `run_reader_hardening.py:177`,
+  `run_journalctl_query_matrix.py:2508`, `journalctl_v262_cases.py:40`.
 
 Affected contracts and surfaces:
 
