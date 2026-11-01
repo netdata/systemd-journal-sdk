@@ -200,9 +200,13 @@ pub(super) fn validate_config(config: &Config) -> Result<()> {
                 .to_string(),
         ));
     }
-    if config.fresh_realtime_seed_usec == Some(u64::MAX) {
+    // systemd accepts realtime in (0, 2^55); seed + 1 must stay in that range.
+    if config
+        .fresh_realtime_seed_usec
+        .is_some_and(|seed| seed >= (1 << 55) - 1)
+    {
         return Err(WriterError::InvalidConfig(
-            "fresh realtime seed must be less than u64::MAX".to_string(),
+            "fresh realtime seed must be below 2^55 - 1".to_string(),
         ));
     }
     if config.rotation_policy.size_of_journal_file == Some(0) {

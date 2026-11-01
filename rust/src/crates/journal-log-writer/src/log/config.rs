@@ -158,8 +158,9 @@ pub struct Config {
     /// `None` (the default) starts a fresh chain at the current wall-clock
     /// time, so a caller-supplied realtime in the past is clamped forward.
     /// `Some(seed)` starts it at `seed` instead, so event-time writers can keep
-    /// past, increasing timestamps verbatim. An existing chain tail always
-    /// wins. `u64::MAX` is rejected.
+    /// past timestamps that are strictly above the seed and increasing
+    /// verbatim. An existing chain tail always wins. Seeds at or above
+    /// `2^55 - 1` are rejected, so `seed + 1` stays a valid systemd realtime.
     pub fresh_realtime_seed_usec: Option<u64>,
 }
 

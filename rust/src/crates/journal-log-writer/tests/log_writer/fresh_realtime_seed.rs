@@ -111,14 +111,26 @@ fn fresh_seed_zero_keeps_wall_clock_for_omitted_realtime() {
 }
 
 #[test]
-fn fresh_seed_maximum_is_rejected() {
+fn fresh_seed_outside_systemd_realtime_range_is_rejected() {
+    for seed in [u64::MAX, (1 << 55) - 1] {
+        let dir = TempDir::new().unwrap();
+        let result = Log::new(
+            dir.path(),
+            test_config().with_fresh_realtime_seed_usec(seed),
+        );
+        let Err(error) = result else {
+            panic!("seed {seed} must be rejected");
+        };
+        assert!(matches!(error, WriterError::InvalidConfig(_)), "{error:?}");
+    }
     let dir = TempDir::new().unwrap();
-    let result = Log::new(
+    let mut log = Log::new(
         dir.path(),
-        test_config().with_fresh_realtime_seed_usec(u64::MAX),
-    );
-    let Err(error) = result else {
-        panic!("u64::MAX seed must be rejected");
-    };
-    assert!(matches!(error, WriterError::InvalidConfig(_)), "{error:?}");
+        test_config().with_fresh_realtime_seed_usec((1 << 55) - 2),
+    )
+    .unwrap();
+    write_at(&mut log, b"MESSAGE=at the limit", 1);
+    log.close().unwrap();
+    let bounds = realtime_bounds(&dir);
+    assert_eq!(bounds, vec![(1, (1 << 55) - 1, (1 << 55) - 1)]);
 }

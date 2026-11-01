@@ -422,7 +422,12 @@ Acceptance criteria:
   `TestLogFreshSeedZeroKeepsWallClockForOmittedRealtime`).
 - AC7: low-level direct-file writers are unchanged; the lazy-open requirement for event-time
   filenames is documented.
-- AC8: Rust `fresh_seed_maximum_is_rejected`, Go `TestLogFreshSeedMaximumIsRejected`.
+- AC8: Rust `fresh_seed_outside_systemd_realtime_range_is_rejected`, Go
+  `TestLogFreshSeedOutsideSystemdRealtimeRangeIsRejected`. PR review tightened the bound from
+  the maximum `u64` to `2^55 - 1`: systemd accepts realtime only in `(0, 2^55)`
+  (`systemd/systemd @ c0a5a2516d28 src/libsystemd/sd-journal/journal-file.h:164`), and a seed
+  just below the `u64` limit let a later clamp wrap (Go) or saturate (Rust). Writers that accept
+  caller realtime at or above `2^55` are a separate gap, tracked in SOW-0156.
 
 Tests: Rust `cargo test --workspace` (45 suites, 0 failures); Go `CGO_ENABLED=0 go test ./...`;
 `python3 tests/docs/check_wiki_docs.py` and `tests/docs/verify_examples.py` pass; `gofmt`,
