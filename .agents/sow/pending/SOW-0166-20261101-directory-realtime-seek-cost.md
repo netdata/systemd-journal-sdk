@@ -37,8 +37,12 @@ Inferences (unverified):
 
 - Trace both languages, fix the per-file positioning to use journal-native
   realtime seeks (entry-array bisection) and header head/tail bounds.
-- Directory realtime seek cost at or near stock on the SOW-0122 fixture, with
-  the query matrix and directory matrix still passing.
+- On the SOW-0122 300-file directory fixture and procedure (SOW-0122
+  Implications And Decisions: 3 runs, median wall time), the 60 s
+  `--since/--until` window and the last-minute `--since` each run in at most
+  2x stock's median, or under 0.5 s when stock is below 0.25 s, in both
+  languages (proposed gate, agent-chosen; confirm at activation). The query
+  matrix and directory matrix still pass.
 
 ## Analysis
 

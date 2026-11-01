@@ -43,8 +43,9 @@ Facts (SOW-0122, `.local/sow0122/report.md`):
 
 Decision needed (user):
 
-- A. Linux inotify (via the platform C library, which the CLI-only native
-  code exception already allows) with polling elsewhere.
+- A. Linux inotify with polling elsewhere. This needs an explicit policy
+  decision: the CLI-only native code exception names PCRE2, Unix globbing,
+  thread-local locale and terminal queries, not file-change notification.
 - B. Portable polling only, made cheap: reuse readers, check header
   `n_entries`/`tail_entry_seqnum` per poll, back off while idle.
 - Recommendation: B first (removes most cost on every platform, no new

@@ -167,7 +167,9 @@ Open-source reference evidence:
 
 Open decisions:
 
-- Pending activation priority and target performance envelope.
+- Resolved 2026-11-01 (user backlog order): activated as item 8. Envelope
+  used: claim only gaps of 5x or more against stock, given host load. The fix
+  decisions below are agent-chosen and pending user review.
 
 ## Implications And Decisions
 
@@ -175,8 +177,48 @@ Measurement (2026-11-01, release builds at commit 96eecf5, stock v262 built
 locally, synthetic fixtures from the Go writer: one 931 MB file and a
 300-file 1.8 GB directory, 1.5M entries, 6 boots, 45 active units with 221
 invocations each; 3 runs, median; host load 16-66 on 112 CPUs, so only gaps
-of 5x or more are claimed). Full table and commands:
-`.local/sow0122/report.md`, `.local/sow0122/run-all.sh` (local only).
+of 5x or more are claimed).
+
+Reproduction (the scripts stay in ignored `.local/sow0122/`; the procedure is
+recorded here so the numbers can be re-measured without them):
+
+1. Build release CLIs: `cargo build --release -p journalctl` and
+   `CGO_ENABLED=1 go build ./cmd/journalctl`, plus stock v262 journalctl.
+2. Generate fixtures with a small Go program using the in-repo Go writer:
+   1.5M entries over 6 boots; unit rows rotate over 50 synthetic services with
+   about 200 invocation IDs each, plus periodic kernel rows with no unit
+   (observed in output: 45 units with 221 invocations listed per unit); once
+   as one file and once as 300 files in one directory.
+3. Run each command below with `--file`/`--directory` on each fixture, 3 runs,
+   median wall time, CPU time and max RSS (`/usr/bin/time -v`), and compare
+   output hashes against stock.
+4. `--follow`: start each CLI on the fixture, append bursts with the writer
+   after a 15 s warm-up, record idle CPU over 30 s and append-to-print latency.
+
+Results before the fix (wall s / CPU s / max RSS MB):
+
+| command | src | rust wall/CPU/RSS | go wall/CPU/RSS | stock wall/CPU/RSS | rust/stock | go/stock | outputs |
+|---|---|---|---|---|---|---|---|
+| list-inv -u | file | 29.35 / 29.34 / 299 | 12.13 / 12.27 / 227 | 0.05 / 0.05 / 101 | 587.0x | 242.6x | DIFF (222 lines) |
+| list-inv -u | dir | 11.88 / 11.87 / 3986 | 16.05 / 23.05 / 4226 | 0.96 / 0.96 / 1488 | 12.4x | 16.7x | DIFF (222 lines) |
+| -r -n 1000 | file | 0.01 / 0.00 / 11 | 0.26 / 0.30 / 161 | 0.01 / 0.01 / 6 | 1.0x | 26.0x | match (1000 lines) |
+| -r -n 1000 | dir | 0.02 / 0.02 / 12 | 0.40 / 0.45 / 806 | 0.07 / 0.07 / 142 | 0.3x | 5.7x | match (1000 lines) |
+| -r (full) | file | 8.64 / 8.63 / 363 | 23.78 / 28.05 / 160 | 16.88 / 16.74 / 351 | 0.5x | 1.4x | match (1500005 lines) |
+| -r (full) | dir | 10.48 / 10.47 / 766 | 23.90 / 32.91 / 821 | 45.17 / 45.15 / 780 | 0.2x | 0.5x | match (1500005 lines) |
+| forward (full) | file | 8.18 / 8.17 / 220 | 26.80 / 33.02 / 161 | 15.90 / 15.89 / 251 | 0.5x | 1.7x | match (1500005 lines) |
+| forward (full) | dir | 10.80 / 10.79 / 766 | 21.75 / 26.55 / 829 | 46.58 / 46.39 / 778 | 0.2x | 0.5x | match (1500005 lines) |
+| --since/--until 60s | file | 0.03 / 0.03 / 11 | 0.34 / 0.38 / 161 | 0.06 / 0.06 / 9 | 0.5x | 5.7x | match (6001 lines) |
+| --since/--until 60s | dir | 3.54 / 3.53 / 157 | 3.46 / 3.75 / 818 | 0.21 / 0.21 / 101 | 16.9x | 16.5x | match (6001 lines) |
+| -u unit | file | 0.30 / 0.29 / 373 | 2.20 / 2.35 / 161 | 0.51 / 0.51 / 245 | 0.6x | 4.3x | match (30005 lines) |
+| -u unit | dir | 0.34 / 0.33 / 821 | 0.91 / 1.04 / 942 | 1.11 / 1.10 / 788 | 0.3x | 0.8x | match (30005 lines) |
+| -b -5 | file | 1.39 / 1.39 / 64 | 3.57 / 4.31 / 156 | 2.78 / 2.77 / 128 | 0.5x | 1.3x | match (250000 lines) |
+| -b -5 | dir | 1.76 / 1.75 / 267 | 3.60 / 4.54 / 930 | 7.12 / 7.12 / 369 | 0.2x | 0.5x | match (250000 lines) |
+| _SYSTEMD_INVOCATION_ID= | file | 0.00 / 0.00 / 7 | 0.27 / 0.30 / 161 | 0.00 / 0.00 / 8 | 0.0x | 54.0x | match (137 lines) |
+| _SYSTEMD_INVOCATION_ID= | dir | 0.01 / 0.01 / 28 | 0.34 / 0.33 / 828 | 0.03 / 0.02 / 84 | 0.3x | 11.3x | match (137 lines) |
+| -n 100 | file | 0.00 / 0.00 / 5 | 0.27 / 0.29 / 161 | 0.00 / 0.00 / 6 | 0.0x | 54.0x | match (100 lines) |
+| -n 100 | dir | 0.01 / 0.01 / 6 | 0.33 / 0.30 / 808 | 0.04 / 0.04 / 142 | 0.2x | 8.2x | match (100 lines) |
+
+`DIFF` on `list-inv -u` is the IDX column width only (fixed here).
 
 - Rust is at or faster than stock on full forward/reverse output, `-u`,
   `-b -5`, field matches, `-n` and single-file `--since` (full output is 2x
@@ -271,12 +313,20 @@ Failure handling:
 
 ## Validation
 
+Acceptance criteria evidence:
+
+- Large-input envelope measured for both CLIs against stock v262 (table in
+  Implications And Decisions).
 - `--list-invocations -u` after the fix (same fixtures, single runs, load
   about 36): Rust 0.23 s file / 0.67 s directory (was 27.7 / 13.0); Go
   0.66 s / 1.81 s (was 14.5 / 15.4); stock 0.06 s / 1.03 s. Output of the
   old and new binaries is identical before the IDX fix; after it, output is
   byte-identical to stock for `--list-invocations` with and without `-q`, and
   for `--list-boots`, on the file and the directory, in both languages.
+- Each remaining gap of 5x or more has a pending SOW (Follow-up mapping).
+
+Tests or equivalent validation:
+
 - New tests: Rust `table_index_width_follows_widest_index`, Go
   `TestTableIndexWidthFollowsWidestIndex`.
 - `go test ./cmd/journalctl` and `cargo test -p journalctl` pass.
@@ -284,24 +334,77 @@ Failure handling:
   `run_parser_parity.py`: 134/134 in each language.
 - `tests/interoperability/run_journalctl_query_matrix.py --journalctl`
   (v262 oracle): 3587/3587 PASS.
-- Same-failure search: the eligibility OR is the only value-list prefilter in
-  either CLI (`grep -n eligibility`); both tables share the width helper.
-- Real-use path: the CLIs were run on the synthetic fixtures above.
-- Runtime purity: CLI-only changes; no new native code.
+
+Real-use evidence:
+
+- Both release CLIs were run on the synthetic 931 MB file and the 300-file
+  directory with the commands in the table.
+
+Reviewer findings (self-review of the whole SOW diff; tests are the gate, no
+external reviewers):
+
+1. The 32-ID bound is a heuristic, not a measured crossover. Journals with
+   33 to a few hundred IDs and many ID-less rows were not measured.
+   Disposition: accepted and recorded as agent-chosen. Above the bound the
+   walker visits the unit's rows as stock does and skips ID-less rows, so
+   output is unchanged and cost is bounded by row count, not ID count.
+2. IDX padding also changes `--list-boots` once indexes reach three digits
+   plus sign. Disposition: intended; verified byte-identical to stock.
+3. Rust and Go bounds are separate constants. Disposition: each cites the
+   other in its comment; the parity tests cover the table width, not the
+   bound, which changes cost only.
+
+Same-failure scan:
+
+- The eligibility OR is the only value-list prefilter in either CLI
+  (`grep -n eligibility`); both tables share the width helper.
 
 Sensitive data gate:
 
 - Synthetic fixtures and identities only; fixtures and raw results stay in
-  ignored `.local/sow0122/`.
+  ignored `.local/sow0122/`. This SOW records aggregate numbers only.
 
 Artifact maintenance gate:
 
-- AGENTS.md and project skills: no new rule.
+- AGENTS.md: no new rule; the change follows the existing performance contract.
+- Runtime project skills: `project-journal-compatibility` names the query
+  matrix and parser-parity gates already used here; no new rule.
 - Specs: no spec states the prefilter or IDX width; the parity matrix spec
-  is unaffected (output now closer to stock).
-- End-user docs: `docs/Journalctl-CLI.md` makes no claim about these paths;
-  no change.
-- Status indexes: updated.
+  is unaffected (output is now closer to stock).
+- End-user/operator docs: `docs/Journalctl-CLI.md` makes no claim about
+  these paths; no change.
+- End-user/operator skills: none exist.
+- SOW lifecycle: `Status: completed` and the move to `done/` are in the same
+  commit as the code; three follow-up SOWs were created.
+- SOW-status.md: both the canonical ledger and the root index are updated.
+
+Specs update:
+
+- None needed (see the artifact maintenance gate).
+
+Project skills update:
+
+- None needed.
+
+End-user/operator docs update:
+
+- None needed.
+
+End-user/operator skills update:
+
+- None exist.
+
+Lessons:
+
+- See Lessons Extracted.
+
+Follow-up mapping:
+
+- Directory `--since` seek gap: tracked by SOW-0166.
+- Go eager entry-array load: tracked by SOW-0167.
+- `--follow` polling/reopen cost and the `Error:` prefix: tracked by SOW-0168
+  (needs a user decision).
+- Runtime purity: CLI-only changes; no new native code. Nothing else remains.
 
 ## Outcome
 
