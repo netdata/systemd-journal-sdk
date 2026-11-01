@@ -700,8 +700,8 @@ order; the user may reorder it.
   Node.js; FreeBSD no-stock single-file and directory matrices passed; files
   generated on macOS, Windows, and FreeBSD passed Linux stock
   `journalctl --verify --file`; SOW-0071/SOW-0072 runtime dependencies were
-  resolved for that validation. SOW-0071 now separately tracks a paused
-  guard-coverage regression, with no demonstrated SDK runtime launch.
+  resolved for that validation. SOW-0071's later guard-coverage regression was
+  resolved on 2026-11-01 by removing the static scan.
 - SOW-0067 - Go Cross Platform Portability: completed. Go SDK portability
   implementation, whole-SOW reviews, Linux/Windows tests, FreeBSD/macOS compile
   checks, and parent native macOS/Windows generated-file validation passed.
