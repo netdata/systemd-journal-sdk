@@ -11,7 +11,8 @@ order; the user may reorder it.
 1. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
 2. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
 3. SOW-0160 - Go XZ reader dictionary allocation (analysis done; needs user decision D1).
-4. SOW-0122 - journalctl performance follow-ups.
+4. SOW-0122 - journalctl performance follow-ups (completed 2026-11-01;
+   gaps tracked by SOW-0166, SOW-0167, SOW-0168).
 5. SOW-0097 - Go duplication debt.
 6. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
 7. SOW-0153 - Consumer docs release clarity.
@@ -35,8 +36,12 @@ order; the user may reorder it.
   line numbers need refreshing at activation.
 - SOW-0098 - Rust Legacy Core Duplication Debt: real `jf` duplication; feeds
   SOW-0162.
-- SOW-0122 - Journalctl Performance Followups: unmeasured large-input and
-  `--follow` scalability work for the CLIs.
+- SOW-0166 - Directory Realtime Seek Cost: directory `--since` 17x slower than
+  stock (SOW-0122 measurement).
+- SOW-0167 - Go Reader Eager Entry Array Load: every Go open loads the full
+  entry array.
+- SOW-0168 - Journalctl Follow Wait And Error Parity: polling/reopen follow
+  cost; needs a user decision.
 - SOW-0125 - Netdata Filter Operators Gap Analysis: feature analysis; needs
   semantic decisions before implementation.
 - SOW-0153 - Consumer Documentation Release Clarity: stale `go/v0.3.0` text and
@@ -52,6 +57,8 @@ order; the user may reorder it.
 
 ## Recently Closed Or Completed
 
+- SOW-0122 - Journalctl Performance Followups: completed 2026-11-01;
+  `--list-invocations` 8-120x faster and IDX alignment matches stock.
 - SOW-0161 - File Indexer Source Posting Membership: completed 2026-11-01;
   source histograms count the captured ENTRY population once per entry.
 - SOW-0137 - Rust Writer Residual Array-Open Performance: completed 2026-11-01.

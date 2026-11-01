@@ -10,7 +10,8 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - SOW-0156 - Fixed-Header Consistency Audit: paused; audit done, Rust parity
   gaps fixed, user decisions D1-D6 pending.
 
-SOW-0045, SOW-0071, SOW-0123, SOW-0137 and SOW-0161 completed on 2026-11-01.
+SOW-0045, SOW-0071, SOW-0122, SOW-0123, SOW-0137 and SOW-0161 completed on
+2026-11-01.
 
 ## Pending
 
@@ -22,11 +23,10 @@ SOW-0045, SOW-0071, SOW-0123, SOW-0137 and SOW-0161 completed on 2026-11-01.
 - `SOW-0125-20260625-netdata-filter-operators-gap-analysis.md` - open, parked
   by user decision on 2026-06-25. Preserves string/numeric operator support
   matrix and semantic decisions; not executable until explicitly resumed.
-- `SOW-0122-20260621-journalctl-performance-followups.md` - open. Tracks
-  non-blocking SOW-0121 broader performance follow-up for
-  `--list-invocations`, portable `--follow` scalability, and large-fixture
-  performance evidence. It does not replace the mandatory no-regression gates
-  in the requested SDK and journalctl workstreams.
+- SOW-0166 - Directory Realtime Seek Cost: open; from SOW-0122 measurement.
+- SOW-0167 - Go Reader Eager Entry Array Load: open; from SOW-0122.
+- SOW-0168 - Journalctl Follow Wait And Error Parity: open; needs a user
+  decision.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable Rust/Go `v1.0.0` SDK with Rust registry publication where applicable, Go module tags, and clean consumer install validation after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
 - `SOW-0097-20260607-go-codacy-metric-debt-refactor.md` - open. Follow-up from the Codacy Rust/Go metrics audit for Go production file-size/ownership and duplication reduction.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.

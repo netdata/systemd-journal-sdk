@@ -108,13 +108,17 @@ impl Colors {
         }
     }
 
-    pub fn table_header(self, id: &str) -> String {
+    /// `index_width` is the IDX column width; stock sizes it to the widest index.
+    pub fn table_header(self, id: &str, index_width: usize) -> String {
         if !self.enabled() || !self.underline {
-            return format!("IDX {id:<32} FIRST ENTRY                 LAST ENTRY\n");
+            return format!(
+                "{:<index_width$} {id:<32} FIRST ENTRY                 LAST ENTRY\n",
+                "IDX"
+            );
         }
         let on = if self.underline { "\x1b[4m" } else { "" };
         let fields = [
-            "IDX".to_owned(),
+            format!("{:<index_width$}", "IDX"),
             format!("{id:<32}"),
             format!("{:<27}", "FIRST ENTRY"),
             format!("{:<27}", "LAST ENTRY"),
