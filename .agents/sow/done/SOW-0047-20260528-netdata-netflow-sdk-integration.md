@@ -320,6 +320,8 @@ Follow-up mapping:
   integration.
 - SOW-0050 remains open for final vendored journal code removal after all
   component integrations are complete.
+- 2026-10-31: SOW-0048 closed as obsolete; SOW-0049 and SOW-0050 superseded by
+  SOW-0164.
 
 ## Outcome
 

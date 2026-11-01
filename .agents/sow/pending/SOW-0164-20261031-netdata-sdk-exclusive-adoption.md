@@ -29,16 +29,16 @@ asked to port the legacy logs viewer to the SDK.
 Facts (Netdata master, `netdata/netdata @ eaeb95f5c4`, 2026-10-31):
 
 - `systemd-journal.plugin` uses vendored `src/crates/jf` (`journal_reader_ffi`)
-  in Docker and static builds (`Dockerfile:42`,
+  in Docker and static builds (`packaging/docker/Dockerfile:42`,
   `packaging/makeself/jobs/70-netdata-git.install.sh:40`); other builds link
   libsystemd. Netdata documents a broken no-libsystemd fallback
-  (`NetdataPluginSystemdJournal.cmake:16-22`).
+  (`packaging/cmake/Modules/NetdataPluginSystemdJournal.cmake:16-22`).
 - `otel-legacy-logs` (read-only viewer of the former OTel plugin's journal
-  files, compiled into `otel-plugin`, `otel-legacy-logs/src/lib.rs:1-10`) uses
+  files, compiled into `otel-plugin`, `src/crates/otel-legacy-logs/src/lib.rs:1-10`) uses
   vendored `journal-function` and `journal-index`; `journal-function` uses
   vendored `journal-core`, `journal-engine`, `journal-index`, `journal-registry`.
 - `ng-ingest` (experiment) uses vendored `journal-common` only for
-  `load_machine_id` / `load_boot_id`.
+  `load_machine_id` / `load_boot_id` (`src/crates/ng-ingest/src/main.rs:148,155`).
 - Vendored `journal-log-writer` has no consumer.
 - `netflow-plugin` already uses the published SDK at `0.8.1`; Go consumers use
   `v0.10.0`.
@@ -127,7 +127,7 @@ Artifact impact plan:
 
 Open-source reference evidence:
 
-- `netdata/netdata @ eaeb95f5c4` paths as listed above.
+- `netdata/netdata @ eaeb95f5c4`: the repository-relative `path:line` citations under Facts.
 
 Open decisions:
 

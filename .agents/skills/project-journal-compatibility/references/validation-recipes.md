@@ -151,7 +151,7 @@ Use when changing directory writer retention, rotation, root inventory or header
   array locations declared by complete header fields. Equal pointers count once;
   additional arrays are permitted. Test historical counters before cached-tail
   fields exist and preserve bytes on inventory/startup rejection.
-  Test small in-bounds contradictions, not only overflowing offsets. Do not impose stable counter consistency on live mapping validation.
+  Test small in-bounds contradictions, not only overflowing offsets. Apply these counter checks to stable files only, not to live mapping validation.
 
 ## Byte identity and historical files
 
