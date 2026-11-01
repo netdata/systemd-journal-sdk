@@ -37,7 +37,7 @@ for the user on anything it does not cover.
 - Semver: adding a field to a public Rust struct, or a variant to a public
   enum, breaks downstream exhaustive literals and matches unless the type is
   `#[non_exhaustive]`. Record the semver decision in the preparation SOW.
-- Before tagging, scan `README.md`, `rust/README.md`, `docs/` and
+- Before tagging, scan `README.md`, `go/README.md`, `rust/README.md`, `docs/` and
   `.agents/sow/specs/` for Rust `version = "…"` and Go `@v…` install examples;
   every active one must name the new version.
 - Never record crates.io tokens or credential details in durable artifacts.

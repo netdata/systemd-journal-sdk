@@ -12,8 +12,8 @@ and purity is enforced by review (see the end of this file).
 
 Regression reopened 2026-10-16: the static core-runtime guard misses standard
 Go process-launch API variants. Tracking is paused; no SDK runtime impurity is
-proved and no scanner implementation is authorized by this finding. Preserve
-the active SOW-0108, then SOW-0159, then SOW-0121 execution order.
+proved and no scanner implementation is authorized by this finding. At that time
+the SOW-0108, then SOW-0159, then SOW-0121 execution order took precedence.
 
 2026-10-31: SOW-0108, SOW-0159 and SOW-0121 are all completed, so that
 ordering no longer blocks this SOW. It waits only for activation in the

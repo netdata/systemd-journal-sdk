@@ -231,7 +231,7 @@ Follow-up mapping:
 
 ## Outcome
 
-Closed as obsolete without implementation. Netdata master checked on 2026-10-31 (`netdata/netdata @ eaeb95f5c4`): `src/crates/otel-plugin/Cargo.toml` has no journal crate dependency; OTel logs go through ingestor, WAL and `otel-ledger`. Vendored `journal-log-writer` has no consumer. Removal of the remaining vendored crates is tracked by SOW-0164.
+Closed as obsolete without implementation. Netdata master checked on 2026-10-31 (`netdata/netdata @ eaeb95f5c4`): `src/crates/otel-plugin/Cargo.toml:23-25` has no journal crate dependency (only `otel-ledger` and `otel-legacy-logs`); OTel logs go through ingestor, WAL and `otel-ledger`. Vendored `journal-log-writer` has no consumer. Removal of the remaining vendored crates is tracked by SOW-0164.
 
 ## Lessons Extracted
 
