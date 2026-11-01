@@ -7,7 +7,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- None. SOW-0045 and SOW-0071 completed on 2026-11-01.
+- None.
 
 ## Pending
 
@@ -51,6 +51,8 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- SOW-0045 and SOW-0071: completed 2026-11-01; details in the canonical
+  ledger.
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
   Directional cursor integration and PR12 fixes pass three internal reviews,
   3,514 native comparisons and146 portable controls. Pushed-head native CI is
