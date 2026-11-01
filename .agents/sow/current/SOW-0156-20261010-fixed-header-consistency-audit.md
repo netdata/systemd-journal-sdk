@@ -2,7 +2,7 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
 Sub-state: separate follow-up agreed by the user; not activated by PR #9's
 concrete array-count correction. No implementation is authorized here yet.
