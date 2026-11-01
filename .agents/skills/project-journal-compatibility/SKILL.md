@@ -113,10 +113,10 @@ SDKs; one language's tests never stand in for the other's.
 | Compact writing | `tests/interoperability/run_compact_matrix.py` |
 | Deterministic layout | `tests/interoperability/run_byte_identity.py --final-state all` (requires `all_equal: true`, including hash-chain depth) |
 | Optional writer-lock helper | `tests/interoperability/run_lock_matrix.py` |
-| Directory reading / `--directory` | `tests/interoperability/run_directory_matrix.py`, `run_mixed_directory_matrix.py` |
+| Directory reading / `--directory` | `tests/interoperability/run_directory_matrix.py`, `tests/interoperability/run_mixed_directory_matrix.py` |
 | journalctl query / follow | `tests/interoperability/run_journalctl_query_matrix.py` |
-| journalctl options / parser | `tests/parser-parity/check_v260_manifest.py`, `run_parser_parity.py` |
-| Verifier | `tests/interoperability/run_verify_matrix.py` |
+| journalctl options / parser | `tests/parser-parity/check_v260_manifest.py`, `tests/parser-parity/run_parser_parity.py` |
+| Verifier | `tests/interoperability/run_verify_matrix.py` (stock `journalctl --verify --file`, Rust and Go agree on regular, zstd/xz/lz4, compact, compact+compression and sealed files, and on object type/size, payload hash, hash-chain, entry-array, header-counter, seqnum, monotonic and TAG/FSS corruption) |
 | Traversal, compressed readers, recovery | `tests/interoperability/run_reader_hardening.py` with both adapters built and an explicit stock oracle |
 | Reader performance | `tests/benchmarks/run_reader_regression_comparison.py` |
 
@@ -125,8 +125,9 @@ CGO-disabled SDK cross-build says nothing about CLI portability.
 
 ## Done
 
-A compatibility change is done when the matrices covering it pass for every
-affected language and file variant, cross-language files round-trip, stock
+A compatibility change is done when the shared conformance tests and the
+matrices covering it pass for every affected language and file variant,
+cross-language files round-trip for every affected writer/reader pair, stock
 readers read live files from each affected writer, and the SOW records the
 stock systemd version, commands, durations, entry and reader counts, and
 failure criteria used.
