@@ -96,6 +96,7 @@ func TestAppendOpenRequiresBothHashTables(t *testing.T) {
 
 func TestAppendOpenRejectsCompactFileBeyondFourGiB(t *testing.T) {
 	path := headerGateJournal(t, true)
+	original := readFileForTest(t, path)
 	if err := os.Truncate(path, int64(journalCompactSizeMax)+pageSize); err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +112,19 @@ func TestAppendOpenRejectsCompactFileBeyondFourGiB(t *testing.T) {
 	}
 	if uint64(info.Size()) != journalCompactSizeMax+pageSize {
 		t.Fatalf("rejected append-open resized the file to %d", info.Size())
+	}
+	// The sparse tail beyond the original content is all zero by construction;
+	// compare the written prefix rather than reading 4 GiB.
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	prefix := make([]byte, len(original))
+	if _, err := f.ReadAt(prefix, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(prefix, original) {
+		t.Fatal("rejected append-open mutated the file")
 	}
 }
