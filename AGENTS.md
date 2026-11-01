@@ -14,9 +14,10 @@
 Pure Rust and Go SDKs for reading and writing systemd journal files, plus
 file-backed journalctl rewrites in both languages. Success means:
 
-- Read and write valid journal files without CGO or system journal libraries.
-- Files written by either language are readable by the other and by systemd
-  tooling.
+- The SDKs read and write valid journal files without CGO or system journal
+  libraries (CLI-only native code: see Project-specific overrides).
+- Files written by either language are readable by the other and by compatible
+  systemd tooling where applicable.
 - One shared conformance suite, fixture set, interoperability tests and
   benchmarks apply to both implementations.
 - APIs use the format's native performance features (see Performance Contract).
@@ -204,11 +205,13 @@ SOWs live in `.agents/sow/{pending,current,done}/` (empty directories keep a
 The successful terminal status is `completed`; `done` is only a directory
 name, so never write `Status: done` or `Status: complete`.
 
-- Close a SOW only after its implementation, docs, specs, skills, validation
-  and follow-ups are finished and `.agents/sow/audit.sh` reports
+- Mark a SOW `completed` only after its implementation, docs, specs, skills,
+  validation and follow-ups are finished and `.agents/sow/audit.sh` reports
   `SOW initialization complete and clean`. The audit can exit zero while
   reporting partial state, so read the verdict. If it fails, record and repair
   it before closing or advancing.
+- Mark an obsolete or superseded SOW `closed` with its reason and its
+  successor or disposition recorded; the audit must still be clean.
 - Commit the work, artifact updates, status change and move to `done/`
   together in one commit unless the user asks otherwise, so a completed SOW
   never lives apart from its implementation. Prefer committing each verified
@@ -248,8 +251,9 @@ validation. Never prepend; the original narrative stays readable first.
 A SOW is complete when its Validation section lets a reader trust the outcome:
 acceptance criteria met with evidence, tests run and their results, real-use
 evidence where a runnable path exists, self-review findings and dispositions,
-a search for the same failure elsewhere, the sensitive-data check, and what
-happened to follow-ups.
+a search for the same failure elsewhere, the sensitive-data check, what
+happened to follow-ups, and every other record the template's `## Validation`
+section lists.
 
 ### Artifact Maintenance Gate
 
