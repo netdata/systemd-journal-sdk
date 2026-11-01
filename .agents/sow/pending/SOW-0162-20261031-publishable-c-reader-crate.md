@@ -31,7 +31,7 @@ Facts:
 - Netdata's `systemd-journal.plugin` calls the `rsd_journal_*` C functions
   exported by `journal_reader_ffi` from its vendored `src/crates/jf`
   workspace (`packaging/cmake/Modules/NetdataPluginSystemdJournal.cmake:55-57`,
-  `NetdataRust.cmake:61-63`). Docker and static builds enable it with
+  `packaging/cmake/Modules/NetdataRust.cmake:61-63`). Docker and static builds enable it with
   `--internal-systemd-journal`.
 - This repository has its own evolved `rust/src/crates/jf` with the same
   `rsd_journal_*` entry points (spot-checked: `open_files`, `query_unique`,
@@ -125,7 +125,7 @@ Artifact impact plan:
 
 Open-source reference evidence:
 
-- Netdata repository (`netdata/netdata`) is the consumer; cite `owner/repo @ commit` at activation.
+- `netdata/netdata @ eaeb95f5c4`: `packaging/cmake/Modules/NetdataPluginSystemdJournal.cmake:55-57`, `packaging/cmake/Modules/NetdataRust.cmake:61-63`; refresh at activation.
 
 Open decisions:
 
