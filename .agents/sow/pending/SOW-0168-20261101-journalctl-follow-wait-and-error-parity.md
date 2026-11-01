@@ -27,7 +27,7 @@ Facts (SOW-0122, `.local/sow0122/report.md`):
 - Both CLIs poll and reopen the whole input each poll (Rust `main.rs`
   follow loop, Go `main.go` follow loop); the initial tail scans the input
   forward to keep the last N entries. Stock waits on inotify.
-- Both CLIs prefix errors with `Error: `; stock prints the bare message (for
+- Both CLIs prefix errors with an `Error:` prefix; stock prints the bare message (for
   example `Using --list-invocations requires a unit...`).
 
 ### Acceptance Criteria
