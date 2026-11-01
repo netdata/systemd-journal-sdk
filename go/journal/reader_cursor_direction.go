@@ -44,6 +44,20 @@ func (r *Reader) seekCursorDirection(want parsedCursorLocation, direction Direct
 	}
 	r.clearRecoveryEOF()
 	r.clearCurrentEntryState()
+	if r.liveRefreshAllowed() {
+		// A cursor seek resolves against the current population, as a step does.
+		grown, err := r.liveEntriesChanged()
+		if err == nil && grown {
+			var changed bool
+			changed, err = r.refreshEntryOffsets()
+			if changed && r.filter != nil {
+				r.filter.stale, r.filter.walkValid = true, false
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
 	if r.filter != nil && r.filter.retry {
 		r.accessor.invalidateCopiedWindows()
 		r.filter.retry = false

@@ -213,6 +213,38 @@ fn absent_match_observes_append() {
 }
 
 #[test]
+fn cursor_seek_observes_append() {
+    for filtered in [false, true] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("journal/system.journal");
+        let mut live = LiveJournal::create(&path, false, 3);
+        live.append(1, None);
+        let mut first = FileReader::open(&path).expect("open");
+        assert!(first.next().expect("first row"));
+        let cursor = first.get_cursor().expect("cursor");
+        let mut reader = FileReader::open(&path).expect("open");
+        if filtered {
+            reader.add_match(b"TARGET=new");
+            assert!(!reader.next().expect("absent"));
+        } else {
+            assert!(reader.next().expect("first row") && !reader.next().expect("eof"));
+        }
+        live.append(2, Some(b"TARGET=new"));
+        reader
+            .seek_cursor_direction(&cursor, Direction::Forward)
+            .expect("seek");
+        assert_eq!(
+            reader.get_realtime_usec().expect("appended row"),
+            if filtered { 2 } else { 1 },
+            "filtered={filtered}"
+        );
+        if !filtered {
+            assert!(reader.next().expect("next") && reader.get_realtime_usec().unwrap() == 2);
+        }
+    }
+}
+
+#[test]
 fn getters_keep_last_entry_after_failed_move() {
     for filtered in [false, true] {
         let dir = tempfile::tempdir().expect("temp dir");
