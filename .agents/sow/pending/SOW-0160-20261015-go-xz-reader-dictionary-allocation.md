@@ -41,10 +41,11 @@ Inferences:
 
 Unknowns:
 
-- Whether the compatible dependency API permits bounded reuse, and whether
-  reuse, a dependency improvement or retaining current behavior is best.
-- The real-use frequency of XZ journals and the acceptable retained-memory
-  tradeoff. Investigate measurable costs before requesting a design choice.
+- Resolved 2026-11-01: the dependency has no reset API, so reuse is not
+  available; the cost follows the writer's declared dictionary (Analysis
+  Result). Retained memory returns to baseline after each decode.
+- The real-use frequency of XZ journals; it affects how much D1 matters, not
+  which option is cheaper.
 
 ### Acceptance Criteria
 
@@ -108,8 +109,32 @@ decompression per DATA, 3 runs of 200 iterations):
 | 64 KiB | 0.08 ms | 0.10 MB |
 
 Setting the reader `DictCap` to the minimum changes nothing (allocation
-follows the stream). The compressed size of the 600-byte payload is 120 bytes
-with every dictionary. The 8 MiB declaration also costs stock readers, since
+follows the stream). The table's numbers come from that one 600-byte payload.
+
+Larger payloads (same file, `TestCompressedSizesBySize` and `BenchmarkLarge`;
+deterministic varied synthetic log text, not real journals):
+
+| Payload | 256 KiB dict | 1 MiB dict | 8 MiB dict |
+|---|---|---|---|
+| 600 B | 296 B | 296 B | 296 B |
+| 4 KiB | 1,200 B | 1,200 B | 1,200 B |
+| 64 KiB | 15,904 B | 15,900 B | 15,900 B |
+| 256 KiB | 62,260 B | 62,260 B | 62,252 B |
+| 1 MiB | 247,944 B | 248,164 B | 248,160 B |
+| 4 MiB | 990,224 B | 989,164 B | 982,812 B |
+
+- Compression loss of 256 KiB against 8 MiB is under 0.1% up to 1 MiB and
+  0.75% at 4 MiB. Payloads with long-distance repeats beyond 256 KiB could lose
+  more; this synthetic text does not prove the bound for every workload.
+- Decode allocation grows with the declared dictionary at every size: 0.53 /
+  1.31 / 8.65 MB per 64 KiB decode and 4.0 / 4.8 / 12.1 MB per 1 MiB decode.
+  The decode times on this busy host overlapped across the three runs, so time
+  is inconclusive for large payloads; it is dominated by the payload itself.
+- Retained memory (`TestRetainedMemory`, 4 KiB payload): live heap mid-stream
+  is about the declared dictionary (0.29 / 1.08 / 8.42 MB), and after the reader
+  is released it returns to baseline (within 5 KB) for all three sizes. The SDK
+  drops the reader after each DATA expansion, so the cost is per-decode
+  allocation and peak, not retained memory. The 8 MiB declaration also costs stock readers, since
 liblzma sizes its decoder from the same header. Reuse is not available:
 the library has no reset API for `xz.Reader` or `lzma.Reader2`.
 
@@ -126,8 +151,8 @@ Decision D1 (parked; changes Go writer output bytes):
   a reader-side cap would need rewriting stream headers before decoding,
   which is rejected as unsafe.
 
-Recommendation: A (long-term-best): it is the cheapest decode with no
-measured compression loss on journal-sized payloads, and it removes a Go/Rust
+Recommendation: A (long-term-best): it is the cheapest decode, with under
+0.1% measured compression loss up to 1 MiB synthetic payloads, and it removes a Go/Rust
 writer difference. Validation for A: byte-level check that Go output declares
 256 KiB, cross-language and stock `journalctl --verify` on Go XZ files, the
 existing XZ fixtures, and a payload over 256 KiB round trip.
@@ -138,19 +163,21 @@ Status: needs-user-decision (D1 in Analysis Result)
 
 Problem / root-cause model:
 
-- Repeated independent XZ DATA decoding constructs new decoder state. Existing
-  allocation measurements justify investigation, but do not select a design.
+- Each XZ DATA decode allocates the dictionary size declared in the stream
+  header, and the Go writer declares 8 MiB. Decoder reuse is not available
+  (no reset API) and a reader-side cap is unsafe, so the open choice is the
+  Go writer's declared dictionary (D1), not decoder reuse.
 
 Evidence reviewed:
 
-- The SDK construction call and matched allocation controls described above.
-  A complete dependency/API and lifetime analysis is required on activation.
+- The dependency source, the writer declarations and the measurements in
+  Analysis Result.
 
 Affected contracts and surfaces:
 
-- Go compressed readers and all callers of XZ DATA expansion; preserve Rust
-  parity and cross-language fixture behavior. Writers are affected only if a
-  shared dependency or helper actually changes.
+- Go writer XZ output bytes (`go/journal/writer_compression.go` `xzCompress`)
+  under options A and B; readers in all languages benefit without code change.
+  Existing files keep their declared dictionary.
 
 Existing patterns to reuse:
 
@@ -159,8 +186,9 @@ Existing patterns to reuse:
 
 Risk and blast radius:
 
-- Decoder ownership, memory retention, concurrency, dependency/compiler floors,
-  and allocation/latency regressions in XZ and shared decompression callers.
+- Changed Go writer bytes (byte-identity fixtures or tests that pin Go XZ
+  output), and slightly worse compression of very large payloads with
+  long-distance repeats.
 
 Sensitive data handling plan:
 
@@ -169,24 +197,23 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. After activation, profile constructor/dictionary/output costs and inspect
-   compatible reuse/dependency alternatives without changing production code.
-2. Present measured options and obtain the user's design choice. Implement
-   only the selected minimal-complete design, or reject the opportunity with
-   evidence if every option has worse costs or incompatible behavior.
+1. The user decides D1. No implementation is authorized before that.
+2. Under A or B, set `DictCap` in the Go writer's XZ configuration and update
+   any test or fixture that pins Go XZ bytes. Under C, close this SOW with the
+   measurements as evidence.
 
 Validation plan:
 
-- Cover regular/compact layouts, historical XZ fixtures, multiple blocks and
-  streams, read errors, concurrent readers and repeated opens/closes. Measure
-  time, allocations and retained memory against current Go and the Rust sibling;
-  run non-XZ controls and relevant interoperability checks.
+- A byte-level check that Go output declares the chosen dictionary; Go, Rust
+  and stock `journalctl --verify` on Go-written XZ files; the existing XZ
+  fixtures and compression matrix; a round trip of a payload larger than the
+  dictionary; and the decode benchmark rerun against the numbers above.
 
 Artifact impact plan:
 
 - AGENTS.md: no workflow change is proposed.
-- Runtime project skills: update compression/performance guidance if new reuse
-  or validation rules become necessary.
+- Runtime project skills: update compression guidance if the Go writer's
+  declared dictionary changes.
 - Specs: update only actual operational guarantees changed by an approved design.
 - End-user/operator docs: explain any changed options or memory guarantees;
   an internal improvement may require no usage changes.
@@ -203,8 +230,8 @@ Open-source reference evidence:
 
 Open decisions:
 
-- Activation and the decoder design are not authorized. No immediate user
-  answer is required while the requested SDK/journalctl chain remains active.
+- D1 (Analysis Result) needs a user answer. Activation and implementation are
+  not authorized until it is decided.
 
 ## Implications And Decisions
 

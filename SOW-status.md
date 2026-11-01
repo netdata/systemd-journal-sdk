@@ -12,8 +12,9 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Pending
 
-- SOW-0160 - Go XZ Reader Dictionary Allocation: analysis done; the cost is the
-  Go writer's 8 MiB declared XZ dictionary. User decision D1 pending.
+- SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Analysis
+  done; the cost is the Go writer's 8 MiB declared XZ dictionary. No redesign
+  or implementation is authorized until user decision D1.
 - `SOW-0153-20261007-consumer-docs-release-clarity.md` - open. Tracks stale Go
   consumable-version prose and Rust writer-state method discoverability;
   documentation design and implementation remain unapproved.
