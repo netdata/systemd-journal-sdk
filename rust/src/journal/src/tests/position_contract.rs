@@ -11,6 +11,8 @@ trait PositionCursor {
     fn tail(&mut self);
     fn realtime(&self) -> u64;
     fn add_match(&mut self, data: &[u8]);
+    fn cursor(&self) -> String;
+    fn seek_cursor_forward(&mut self, cursor: &str);
 }
 
 impl PositionCursor for FileReader {
@@ -31,6 +33,13 @@ impl PositionCursor for FileReader {
     }
     fn add_match(&mut self, data: &[u8]) {
         FileReader::add_match(self, data)
+    }
+    fn cursor(&self) -> String {
+        self.get_cursor().expect("cursor")
+    }
+    fn seek_cursor_forward(&mut self, cursor: &str) {
+        self.seek_cursor_direction(cursor, Direction::Forward)
+            .expect("seek cursor")
     }
 }
 
@@ -53,6 +62,13 @@ impl PositionCursor for DirectoryReader {
     fn add_match(&mut self, data: &[u8]) {
         DirectoryReader::add_match(self, data)
     }
+    fn cursor(&self) -> String {
+        self.get_cursor().expect("cursor")
+    }
+    fn seek_cursor_forward(&mut self, cursor: &str) {
+        self.seek_cursor_direction(cursor, Direction::Forward)
+            .expect("seek cursor")
+    }
 }
 
 impl PositionCursor for SdJournal {
@@ -73,6 +89,13 @@ impl PositionCursor for SdJournal {
     }
     fn add_match(&mut self, data: &[u8]) {
         SdJournal::add_match(self, data)
+    }
+    fn cursor(&self) -> String {
+        self.get_cursor().expect("cursor")
+    }
+    fn seek_cursor_forward(&mut self, cursor: &str) {
+        self.seek_cursor_direction(cursor, Direction::Forward)
+            .expect("seek cursor")
     }
 }
 
@@ -214,32 +237,44 @@ fn absent_match_observes_append() {
 
 #[test]
 fn cursor_seek_observes_append() {
-    for filtered in [false, true] {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("journal/system.journal");
-        let mut live = LiveJournal::create(&path, false, 3);
-        live.append(1, None);
-        let mut first = FileReader::open(&path).expect("open");
-        assert!(first.next().expect("first row"));
-        let cursor = first.get_cursor().expect("cursor");
-        let mut reader = FileReader::open(&path).expect("open");
-        if filtered {
-            reader.add_match(b"TARGET=new");
-            assert!(!reader.next().expect("absent"));
-        } else {
-            assert!(reader.next().expect("first row") && !reader.next().expect("eof"));
-        }
-        live.append(2, Some(b"TARGET=new"));
-        reader
-            .seek_cursor_direction(&cursor, Direction::Forward)
-            .expect("seek");
-        assert_eq!(
-            reader.get_realtime_usec().expect("appended row"),
-            if filtered { 2 } else { 1 },
-            "filtered={filtered}"
-        );
-        if !filtered {
-            assert!(reader.next().expect("next") && reader.get_realtime_usec().unwrap() == 2);
+    type Open = fn(&Path) -> Box<dyn PositionCursor>;
+    let openers: [(&str, Open); 3] = [
+        ("file", |path| {
+            Box::new(FileReader::open(path).expect("open file"))
+        }),
+        ("directory", |path| {
+            Box::new(DirectoryReader::open(path.parent().unwrap()).expect("open directory"))
+        }),
+        ("facade", |path| {
+            Box::new(SdJournalOpenFilePath(path, 0).expect("open facade"))
+        }),
+    ];
+    for (kind, open) in openers {
+        for filtered in [false, true] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("journal/system.journal");
+            let mut live = LiveJournal::create(&path, false, 3);
+            live.append(1, None);
+            let mut first = open(&path);
+            assert!(first.step(), "{kind}: first row");
+            let cursor = first.cursor();
+            let mut reader = open(&path);
+            if filtered {
+                reader.add_match(b"TARGET=new");
+                assert!(!reader.step(), "{kind}: absent");
+            } else {
+                assert!(reader.step() && !reader.step(), "{kind}: one row then eof");
+            }
+            live.append(2, Some(b"TARGET=new"));
+            reader.seek_cursor_forward(&cursor);
+            assert_eq!(
+                reader.realtime(),
+                if filtered { 2 } else { 1 },
+                "{kind}/filtered={filtered}"
+            );
+            if !filtered {
+                assert!(reader.step() && reader.realtime() == 2, "{kind}: next row");
+            }
         }
     }
 }

@@ -1132,6 +1132,7 @@ fn append_open_requires_both_hash_tables() {
 fn append_open_rejects_compact_file_beyond_four_gib() {
     let dir = TempDir::new().expect("create temp dir");
     let (path, repo_file) = header_gate_journal(&dir, true);
+    let original = std::fs::read(&path).expect("read journal");
     let size = crate::file::writer::JOURNAL_COMPACT_SIZE_MAX + 4096;
     std::fs::OpenOptions::new()
         .write(true)
@@ -1145,4 +1146,12 @@ fn append_open_rejects_compact_file_beyond_four_gib() {
         "{err:?}"
     );
     assert_eq!(std::fs::metadata(&path).expect("stat journal").len(), size);
+    // The sparse tail is zero by construction; compare the written prefix.
+    use std::os::unix::fs::FileExt;
+    let mut prefix = vec![0; original.len()];
+    std::fs::File::open(&path)
+        .expect("open journal")
+        .read_exact_at(&mut prefix, 0)
+        .expect("read prefix");
+    assert_eq!(prefix, original);
 }
