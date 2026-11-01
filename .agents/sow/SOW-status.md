@@ -24,6 +24,9 @@ order; the user may reorder it.
 13. SOW-0066 - v1.0.0 API stability decision.
 14. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
     (needs a decision at activation).
+15. SOW-0166 - Directory realtime seek cost.
+16. SOW-0167 - Go reader eager entry-array load.
+17. SOW-0168 - journalctl follow wait and error parity (needs a user decision).
 
 ## Current
 
