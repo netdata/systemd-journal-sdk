@@ -31,7 +31,11 @@ type filterExpr interface {
 type matchExpr struct{ posting filterPostingCursor }
 type andExpr []filterExpr
 type orExpr []filterExpr
-type falseExpr struct{}
+
+// falseExpr is a match whose DATA object is absent or has no entries. It keeps
+// the payload so a live refresh can resolve DATA appended later, as libsystemd
+// looks DATA up by hash on every movement.
+type falseExpr struct{ payload []byte }
 
 func (f *filterBuilder) addMatch(data []byte) {
 	f.pending = true
@@ -147,19 +151,9 @@ func buildCurrentFilterExpr(r *Reader, matches [][]byte) (filterExpr, error) {
 			if r.header.dataHashTableOffset == 0 || r.header.dataHashTableSize < hashItemSize {
 				return nil, errCorruptObject
 			}
-			offset, found, err := r.findDataOffsetByPayload(payload)
+			expr, err := resolveFilterMatch(r, payload)
 			if err != nil {
 				return nil, err
-			}
-			var expr filterExpr = falseExpr{}
-			if found {
-				posting, err := r.newFilterPostingCursor(offset)
-				if err != nil {
-					return nil, err
-				}
-				if posting.declared != 0 {
-					expr = &matchExpr{posting: posting}
-				}
 			}
 			values = append(values, expr)
 		}
@@ -167,6 +161,24 @@ func buildCurrentFilterExpr(r *Reader, matches [][]byte) (filterExpr, error) {
 		start = end
 	}
 	return collapseFilterAnd(parts), nil
+}
+
+func resolveFilterMatch(r *Reader, payload []byte) (filterExpr, error) {
+	offset, found, err := r.findDataOffsetByPayload(payload)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return falseExpr{payload: payload}, nil
+	}
+	posting, err := r.newFilterPostingCursor(offset)
+	if err != nil {
+		return nil, err
+	}
+	if posting.declared == 0 {
+		return falseExpr{payload: payload}, nil
+	}
+	return &matchExpr{posting: posting}, nil
 }
 
 func filterMatchKey(payload []byte) []byte { return payload[:bytes.IndexByte(payload, '=')] }
@@ -306,4 +318,4 @@ func (o orExpr) refresh(r *Reader) (filterExpr, error) {
 }
 func (falseExpr) seek(*Reader, uint64, Direction) (uint64, error) { return 0, nil }
 func (falseExpr) reset(*Reader, Direction) error                  { return nil }
-func (f falseExpr) refresh(*Reader) (filterExpr, error)           { return f, nil }
+func (f falseExpr) refresh(r *Reader) (filterExpr, error)         { return resolveFilterMatch(r, f.payload) }

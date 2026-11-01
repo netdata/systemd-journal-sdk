@@ -182,6 +182,11 @@ type Reader struct {
 	entryOffsets []uint64
 	entryIndex   int
 	realtimeSeek *uint64
+	// edge records a libsystemd location that is not a plain entry index: an
+	// explicit tail, which has no current entry, or the last returned entry after
+	// a movement found nothing, which stays current as in libsystemd. Indexes past
+	// the population would change meaning when a live refresh appends rows.
+	edge readerEdge
 
 	currentHeader       entryHeader
 	currentHeaderOffset uint64
@@ -204,6 +209,19 @@ type Reader struct {
 	recovery            *readerRecoveryState
 	directoryOrderDirty *bool
 }
+
+type readerEdge uint8
+
+const (
+	edgeNone readerEdge = iota
+	// edgeTail is an explicit SeekTail: forward movement stays at the tail and
+	// backward movement returns the newest visible entry.
+	edgeTail
+	// edgeAfter and edgeBefore keep entryIndex on the last returned entry after
+	// forward or backward movement found nothing, so movement continues beyond it.
+	edgeAfter
+	edgeBefore
+)
 
 type readerRefreshSnapshot struct {
 	header   journalHeader
@@ -537,6 +555,15 @@ func (r *Reader) clearCurrentEntryState() {
 }
 
 func (r *Reader) currentEntryOffset() (uint64, error) {
+	if r.edge == edgeTail {
+		return 0, errEndOfEntries
+	}
+	return r.locationOffset()
+}
+
+// locationOffset returns the entry the position is anchored to, including an
+// edge location whose entry is not current.
+func (r *Reader) locationOffset() (uint64, error) {
 	if uint(r.entryIndex) < uint(len(r.entryOffsets)) {
 		return r.entryOffsets[r.entryIndex], nil
 	}
@@ -590,11 +617,35 @@ func (r *Reader) refreshEntryOffsets() (bool, error) {
 		r.entryIndex = len(snapshot.offsets) - 1
 	}
 	r.clampEntryIndex()
-	if r.filter != nil &&
-		(!sameRecoveryState(snapshot.recovery, r.recovery)) {
+	changed := header != snapshot.header || size != snapshot.fileSize || !sameRecoveryState(r.recovery, snapshot.recovery) || len(r.entryOffsets) != len(snapshot.offsets)
+	if r.filter != nil && (len(r.entryOffsets) != len(snapshot.offsets) || !sameRecoveryState(snapshot.recovery, r.recovery)) {
+		// Compiled matches capture DATA posting populations; new entries can
+		// extend them, so rebuild from the refreshed native indexes.
 		r.filter.stale = true
+		r.filter.walkValid = false
 	}
-	return header != snapshot.header || size != snapshot.fileSize || !sameRecoveryState(r.recovery, snapshot.recovery) || len(r.entryOffsets) != len(snapshot.offsets), nil
+	return changed, nil
+}
+
+// liveEntriesChanged reports whether the on-disk entry population may differ
+// from the loaded one. It reads only the header, as libsystemd reads n_entries
+// from its mapping, so an unchanged file keeps its cached windows.
+func (r *Reader) liveEntriesChanged() (bool, error) {
+	if !r.liveRefreshAllowed() {
+		return false, nil
+	}
+	if r.recovery.Incomplete() {
+		return true, nil
+	}
+	live, err := r.accessor.liveEntryState(r.header.headerSize)
+	if err != nil {
+		return false, err
+	}
+	// Filter-group preparation can apply a newer header before entries load.
+	return live.nEntries != uint64(len(r.entryOffsets)) ||
+		live.nEntries != r.header.nEntries ||
+		live.tailEntryArrayOffset != r.header.tailEntryArrayOffset ||
+		live.tailEntryArrayNEntries != r.header.tailEntryArrayNEntries, nil
 }
 
 func (r *Reader) sameEntryArrayState(header journalHeader, size uint64) bool {
@@ -653,6 +704,7 @@ func (r *Reader) loadEntryArray() error {
 	r.recovery = nil
 	if r.header.entryArrayOffset == 0 {
 		r.entryOffsets = []uint64{}
+		r.entryIndex = -1
 		if r.header.nEntries != 0 {
 			if r.allowRecovery {
 				return r.retainRecoveredPrefix(nil, RecoveryMissingEntryArray, 0, previousRecovery)
@@ -832,8 +884,14 @@ func (r *Reader) Next() error {
 	}
 	r.clearCurrentEntryState()
 	if r.realtimeSeek != nil {
+		r.edge = edgeNone
 		return r.nextFromRealtimeSeek()
 	}
+	if r.edge == edgeTail {
+		// libsystemd: forward movement from an explicit tail never yields entries.
+		return errEndOfEntries
+	}
+	r.edge = edgeNone
 	if r.entryIndex < -1 {
 		r.entryIndex = -1
 	}
@@ -849,16 +907,19 @@ func (r *Reader) Next() error {
 func (r *Reader) nextFromRealtimeSeek() error {
 	usec := *r.realtimeSeek
 	idx, err := r.firstRealtimeIndexAtOrAfter(usec)
-	r.realtimeSeek = nil
 	if err != nil {
+		// A failed move keeps the seek location, as libsystemd does.
 		return err
 	}
 	idx, err = r.refreshRealtimeSeekIndex(usec, idx)
 	if err != nil {
 		return err
 	}
+	r.realtimeSeek = nil
 	if idx >= len(r.entryOffsets) {
-		r.entryIndex = len(r.entryOffsets)
+		// Keep the seek location so later appends at or after usec are found.
+		r.entryIndex = -1
+		r.realtimeSeek = &usec
 		return errEndOfEntries
 	}
 	r.entryIndex = idx
@@ -877,12 +938,13 @@ func (r *Reader) refreshRealtimeSeekIndex(usec uint64, idx int) (int, error) {
 }
 
 func (r *Reader) nextAfterTailRefresh() error {
+	location := r.entryIndex - 1
 	unchanged, err := r.unchangedRecoveryEOF(DirectionForward)
 	if err != nil {
 		return err
 	}
 	if unchanged {
-		r.entryIndex = len(r.entryOffsets)
+		r.parkAtEdge(location, edgeAfter)
 		return errEndOfEntries
 	}
 	oldLen := len(r.entryOffsets)
@@ -897,9 +959,22 @@ func (r *Reader) nextAfterTailRefresh() error {
 			return nil
 		}
 	}
-	r.entryIndex = len(r.entryOffsets)
+	r.parkAtEdge(location, edgeAfter)
 	r.rememberRecoveryEOF(DirectionForward)
 	return errEndOfEntries
+}
+
+// parkAtEdge keeps the last returned entry as the location after a movement
+// found nothing. Without a returned entry the position is the head.
+func (r *Reader) parkAtEdge(location int, edge readerEdge) {
+	if location >= len(r.entryOffsets) {
+		location = len(r.entryOffsets) - 1
+	}
+	if location < 0 {
+		r.entryIndex, r.edge = -1, edgeNone
+		return
+	}
+	r.entryIndex, r.edge = location, edge
 }
 
 func (r *Reader) Previous() error {
@@ -910,26 +985,47 @@ func (r *Reader) Previous() error {
 		}
 	}
 	r.clearCurrentEntryState()
+	edge := r.edge
+	r.edge = edgeNone
 	if r.realtimeSeek != nil {
 		idx, err := r.lastRealtimeIndexAtOrBefore(*r.realtimeSeek)
-		r.realtimeSeek = nil
 		if err != nil {
+			// A failed move keeps the seek location, as libsystemd does.
 			return err
 		}
 		if idx < 0 {
+			// Keep the seek location, as libsystemd does after a failed move.
 			r.entryIndex = -1
 			return errStartOfEntries
 		}
+		r.realtimeSeek = nil
 		r.entryIndex = idx
 		return nil
+	}
+	if edge == edgeTail {
+		// libsystemd resolves a tail location against the current population.
+		grown, err := r.liveEntriesChanged()
+		if err == nil && grown {
+			_, err = r.refreshEntryOffsets()
+		}
+		if err != nil {
+			r.edge = edgeTail
+			return err
+		}
+		if len(r.entryOffsets) == 0 {
+			r.entryIndex, r.edge = len(r.entryOffsets), edgeTail
+			return errStartOfEntries
+		}
+		r.entryIndex = len(r.entryOffsets)
 	}
 	if r.entryIndex > len(r.entryOffsets) {
 		r.entryIndex = len(r.entryOffsets)
 	}
+	location := r.entryIndex
 	r.entryIndex--
 
 	if r.entryIndex < 0 {
-		r.entryIndex = -1
+		r.parkAtEdge(location, edgeBefore)
 		return errStartOfEntries
 	}
 	return nil
@@ -939,6 +1035,7 @@ func (r *Reader) SeekHead() error {
 	r.clearRecoveryEOF()
 	r.clearCurrentEntryState()
 	r.entryIndex = -1
+	r.edge = edgeNone
 	r.realtimeSeek = nil
 	return nil
 }
@@ -947,6 +1044,7 @@ func (r *Reader) SeekTail() error {
 	r.clearRecoveryEOF()
 	r.clearCurrentEntryState()
 	r.entryIndex = len(r.entryOffsets)
+	r.edge = edgeTail
 	r.realtimeSeek = nil
 	return nil
 }
@@ -955,24 +1053,36 @@ func (r *Reader) SeekRealtimeUsec(usec uint64) error {
 	r.clearRecoveryEOF()
 	r.clearCurrentEntryState()
 	r.entryIndex = -1
+	r.edge = edgeNone
 	value := usec
 	r.realtimeSeek = &value
 	return nil
 }
 
 func (r *Reader) firstRealtimeIndexAtOrAfter(usec uint64) (int, error) {
-	return sort.Search(len(r.entryOffsets), func(i int) bool {
+	var searchErr error
+	idx := sort.Search(len(r.entryOffsets), func(i int) bool {
+		if searchErr != nil {
+			return true
+		}
 		realtime, err := r.entryRealtimeAtIndex(i)
+		searchErr = err
 		return err != nil || realtime >= usec
-	}), nil
+	})
+	return idx, searchErr
 }
 
 func (r *Reader) lastRealtimeIndexAtOrBefore(usec uint64) (int, error) {
+	var searchErr error
 	idx := sort.Search(len(r.entryOffsets), func(i int) bool {
+		if searchErr != nil {
+			return true
+		}
 		realtime, err := r.entryRealtimeAtIndex(i)
+		searchErr = err
 		return err != nil || realtime > usec
 	}) - 1
-	return idx, nil
+	return idx, searchErr
 }
 
 func (r *Reader) readEntryHeaderAt(offset uint64) (entryHeader, error) {

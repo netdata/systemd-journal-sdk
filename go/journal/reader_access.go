@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -62,6 +63,7 @@ type readerAccessor interface {
 	snapshotVisibleBounds() readerAccessorVisibleSnapshot
 	restoreVisibleBounds(readerAccessorVisibleSnapshot)
 	refreshVisibleBounds() (journalHeader, bool, uint64, error)
+	liveEntryState(headerSize uint64) (liveEntryState, error)
 	stats() ReaderAccessStats
 	close() error
 }
@@ -85,6 +87,27 @@ type readerAccessWindow struct {
 	stale           bool
 	lastUsed        uint64
 	viewAddr        uintptr
+}
+
+// liveEntryState holds the header fields a live tail/EOF check compares.
+type liveEntryState struct {
+	nEntries               uint64
+	tailEntryArrayOffset   uint32
+	tailEntryArrayNEntries uint32
+}
+
+func parseLiveEntryState(src []byte, headerSize uint64) (liveEntryState, error) {
+	if len(src) < 160 {
+		return liveEntryState{}, errInvalidJournal
+	}
+	state := liveEntryState{nEntries: binary.LittleEndian.Uint64(src[152:160])}
+	if headerContainsField(src, headerSize, 260) {
+		state.tailEntryArrayOffset = binary.LittleEndian.Uint32(src[256:260])
+	}
+	if headerContainsField(src, headerSize, 264) {
+		state.tailEntryArrayNEntries = binary.LittleEndian.Uint32(src[260:264])
+	}
+	return state, nil
 }
 
 type rowArenaSnapshot struct {
@@ -113,6 +136,11 @@ type rollingReaderAccessor struct {
 	clock   uint64
 
 	scratch []byte
+
+	// headerWindow maps the file start for live checks in mmap mode. It lives
+	// outside the window LRU so a check never maps or unmaps.
+	headerWindow *readerAccessWindow
+	headerBuf    [headerSize]byte
 
 	rowArenaSegments       [][]byte
 	rowArenaActiveSegments int
@@ -396,6 +424,32 @@ func (a *rollingReaderAccessor) refreshVisibleBounds() (journalHeader, bool, uin
 	return header, changed, newSize, nil
 }
 
+// liveEntryState reads the live entry-count fields without touching bounds or
+// cached windows. Mmap readers read them from a mapping, as libsystemd does,
+// so an unchanged file costs no system call; ReadAt readers use one pread.
+func (a *rollingReaderAccessor) liveEntryState(headerLen uint64) (liveEntryState, error) {
+	size := minUint64(headerSize, a.fileSize)
+	if size < headerMinSize {
+		return liveEntryState{}, errInvalidJournal
+	}
+	if a.selectedModeID != uint8(ReaderAccessMmap) {
+		buf := a.headerBuf[:size]
+		if err := readFileAtFull(a.file, buf, 0); err != nil {
+			return liveEntryState{}, err
+		}
+		return parseLiveEntryState(buf, headerLen)
+	}
+	if a.headerWindow == nil {
+		window, err := a.backend.mapWindow(a.file, 0, size)
+		if err != nil {
+			return liveEntryState{}, err
+		}
+		a.headerWindow = window
+		a.recordWindowOpen()
+	}
+	return parseLiveEntryState(a.headerWindow.data, headerLen)
+}
+
 func (a *rollingReaderAccessor) stats() ReaderAccessStats {
 	a.refreshStats()
 	return a.statsValue
@@ -410,6 +464,13 @@ func (a *rollingReaderAccessor) close() error {
 		a.recordWindowClose()
 	}
 	a.windows = nil
+	if a.headerWindow != nil {
+		if err := a.backend.closeWindow(a.headerWindow); err != nil {
+			errs = append(errs, err)
+		}
+		a.recordWindowClose()
+		a.headerWindow = nil
+	}
 	a.rowArenaSegments = nil
 	a.rowArenaActiveSegments = 0
 	a.rowArenaBytes = 0
@@ -698,6 +759,9 @@ func (a *rollingReaderAccessor) refreshStats() {
 		if window.rowPinned {
 			pinned++
 		}
+	}
+	if a.headerWindow != nil {
+		mappedBytes += a.headerWindow.mappedBytes
 	}
 	a.statsValue.RequestedAccessMode = ReaderAccessMode(a.requestedMode)
 	a.statsValue.SelectedAccessMode = ReaderAccessMode(a.selectedModeID)

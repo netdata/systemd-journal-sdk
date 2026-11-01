@@ -4,7 +4,7 @@ use crate::file::{
     EntryItemsType,
     cursor::{JournalCursor, Location},
     file::{EntryDataIterator, FieldDataIterator, FieldIterator, JournalFile},
-    filter::{FilterExpr, JournalFilter, LogicalOp},
+    filter::{FilterExpr, FilterSource, JournalFilter, LogicalOp},
     object::{DataObject, FieldObject},
     offset_array::Direction,
     value_guard::ValueGuard,
@@ -17,6 +17,10 @@ pub struct JournalReader<'a, M: MemoryMap> {
     recovery_eof: Option<(Direction, u64)>,
 
     filter: Option<JournalFilter>,
+    // Source of the installed filter. libsystemd looks DATA up by hash on
+    // every movement, so the installed filter is rebuilt from its source when
+    // the file grows and a movement could miss new rows.
+    installed_source: Option<InstalledFilterSource>,
     field_iterator: Option<FieldIterator<'a, M>>,
     field_data_iterator: Option<FieldDataIterator<'a, M>>,
     entry_data_iterator: Option<EntryDataIterator<'a, M>>,
@@ -24,6 +28,12 @@ pub struct JournalReader<'a, M: MemoryMap> {
     field_guard: Option<ValueGuard<'a, FieldObject<&'a [u8]>>>,
     data_guard: Option<ValueGuard<'a, DataObject<&'a [u8]>>>,
     raw_payload_guard: Option<ValueGuard<'a, &'a [u8]>>,
+}
+
+#[derive(Debug)]
+struct InstalledFilterSource {
+    source: Vec<FilterSource>,
+    entries: u64,
 }
 
 #[cfg(test)]
@@ -111,6 +121,7 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
             cursor: JournalCursor::new(),
             recovery_eof: None,
             filter: None,
+            installed_source: None,
             field_iterator: None,
             field_data_iterator: None,
             entry_data_iterator: None,
@@ -175,11 +186,7 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     ) -> Result<bool> {
         self.drop_guards();
         self.recovery_eof = None;
-        if let Some(filter) = self.filter.as_mut() {
-            let expr = filter.build(file)?;
-            self.cursor.set_filter(expr);
-            self.filter = None;
-        }
+        self.install_pending_filter(file)?;
         self.cursor.seek_anchor(file, anchor, direction)
     }
 
@@ -192,17 +199,80 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
             }
         }
 
-        if let Some(filter) = self.filter.as_mut() {
-            let filter_expr = filter.build(journal_file)?;
-            self.cursor.set_filter(filter_expr);
-            self.filter = None;
+        if self.filter.is_some() {
+            self.install_pending_filter(journal_file)?;
+        }
+        if self.installed_source.is_some()
+            && direction == Direction::Backward
+            && matches!(self.cursor.location, Location::Tail | Location::Realtime(_))
+        {
+            // These locations resolve against the newest population.
+            self.refresh_installed_filter(journal_file)?;
         }
 
         if self.cursor.step(journal_file, direction)? {
             self.recovery_eof = None;
             return Ok(true);
         }
+        self.step_end(journal_file, direction)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn step_end(&mut self, journal_file: &'a JournalFile<M>, direction: Direction) -> Result<bool> {
+        if direction == Direction::Forward
+            && self.refresh_installed_filter(journal_file)?
+            && self.cursor.step(journal_file, direction)?
+        {
+            self.recovery_eof = None;
+            return Ok(true);
+        }
         self.step_recovery_eof(journal_file, direction)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn install_pending_filter(&mut self, file: &JournalFile<M>) -> Result<()> {
+        let Some(filter) = self.filter.as_mut() else {
+            return Ok(());
+        };
+        let entries = file.reader_entry_count();
+        let expr = filter.build(file)?;
+        let source = filter.take_source();
+        self.cursor.set_filter(expr);
+        self.filter = None;
+        self.installed_source = Some(InstalledFilterSource { source, entries });
+        Ok(())
+    }
+
+    // Rebuilds the installed filter when the entry population changed since it
+    // was resolved. Returns whether a rebuild happened.
+    #[cold]
+    #[inline(never)]
+    fn refresh_installed_filter(&mut self, file: &JournalFile<M>) -> Result<bool> {
+        let Some(installed) = self.installed_source.as_mut() else {
+            return Ok(false);
+        };
+        let entries = file.reader_entry_count();
+        if entries == installed.entries || self.cursor.filter_expr.is_none() {
+            return Ok(false);
+        }
+        let mut filter = JournalFilter::default();
+        for item in &installed.source {
+            match item {
+                FilterSource::Match(data) => filter.add_match(data),
+                FilterSource::Operation(op) => filter.set_operation(file, *op)?,
+            }
+        }
+        let expr = filter.build(file)?;
+        installed.entries = entries;
+        self.cursor.set_filter(expr);
+        Ok(true)
+    }
+
+    fn pending_operation(&mut self, file: &JournalFile<M>, op: LogicalOp) -> Result<()> {
+        self.recovery_eof = None;
+        self.filter.get_or_insert_default().set_operation(file, op)
     }
 
     #[cold]
@@ -261,23 +331,18 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     }
 
     pub fn add_conjunction(&mut self, journal_file: &'a JournalFile<M>) -> Result<()> {
-        self.recovery_eof = None;
-        self.filter
-            .get_or_insert_default()
-            .set_operation(journal_file, LogicalOp::Conjunction)
+        self.pending_operation(journal_file, LogicalOp::Conjunction)
     }
 
     pub fn add_disjunction(&mut self, journal_file: &'a JournalFile<M>) -> Result<()> {
-        self.recovery_eof = None;
-        self.filter
-            .get_or_insert_default()
-            .set_operation(journal_file, LogicalOp::Disjunction)
+        self.pending_operation(journal_file, LogicalOp::Disjunction)
     }
 
     pub fn flush_matches(&mut self) {
         self.recovery_eof = None;
         self.cursor.clear_filter();
         self.filter = None;
+        self.installed_source = None;
     }
 
     pub fn get_realtime_usec(&self, journal_file: &'a JournalFile<M>) -> Result<u64> {

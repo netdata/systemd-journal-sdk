@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-10-31
+Last updated: 2026-11-01
 
 ## Backlog Order
 
@@ -8,31 +8,24 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-1. SOW-0045 - Go reader regressions (refresh skips first append; directory
-   seek getters; swallowed time-search errors).
-2. SOW-0071 - Runtime purity guard misses Go process-launch variants.
-3. SOW-0123 - Rust fresh-journal realtime clock seed (event-time lanes).
-4. SOW-0137 - Rust writer residual array-open performance.
-5. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
-6. SOW-0161 - File indexer source posting membership.
-7. SOW-0160 - Go XZ reader dictionary allocation.
-8. SOW-0122 - journalctl performance follow-ups.
-9. SOW-0097 - Go duplication debt.
-10. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
-11. SOW-0153 - Consumer docs release clarity.
-12. SOW-0125 - Netdata filter operators (needs design decisions first).
-13. SOW-0162 - Publishable C reader crate.
-14. SOW-0163 - v0.11.0 release.
-15. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-16. SOW-0066 - v1.0.0 API stability decision.
+1. SOW-0071 - Runtime purity guard misses Go process-launch variants.
+2. SOW-0123 - Rust fresh-journal realtime clock seed (event-time lanes).
+3. SOW-0137 - Rust writer residual array-open performance.
+4. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
+5. SOW-0161 - File indexer source posting membership.
+6. SOW-0160 - Go XZ reader dictionary allocation.
+7. SOW-0122 - journalctl performance follow-ups.
+8. SOW-0097 - Go duplication debt.
+9. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
+10. SOW-0153 - Consumer docs release clarity.
+11. SOW-0125 - Netdata filter operators (needs design decisions first).
+12. SOW-0162 - Publishable C reader crate.
+13. SOW-0163 - v0.11.0 release.
+14. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
+15. SOW-0066 - v1.0.0 API stability decision.
 
 ## Current
 
-- SOW-0045 - Go Reader Alignment Optimization: regression reopened, paused.
-  Healthy Go `Refresh()`/`QueryUnique()` at EOF or on an empty file skips the
-  first newly appended entry (reproduced on HEAD and go/v0.10.0). Also tracks
-  directory-seek stale getters and suppressed time-probe errors. Netdata does
-  not call the affected APIs. Former SOW-0108/0159/0121 blockers are done.
 - SOW-0071 - Runtime Purity And Optional Platform Services: regression
   reopened, paused. The static guard misses `exec.CommandContext`,
   `os.StartProcess` and `syscall.ForkExec`; no SDK runtime process launch
@@ -66,6 +59,14 @@ order; the user may reorder it.
   2026-10-31; supersedes SOW-0049 and SOW-0050.
 
 ## Recently Closed Or Completed
+
+- SOW-0045 - Go Reader Alignment Optimization: regression repair completed
+  2026-11-01. Go and Rust file, directory and facade readers follow the
+  libsystemd position table, observe live appends exactly once (including under
+  installed filters), keep the last entry after a failed move and return
+  realtime-search errors. Go mmap live checks read a dedicated header mapping
+  with no system call. The contract matrices, interoperability matrices and the
+  v262 journalctl query matrix (3,586/3,586) pass.
 
 - SOW-0048 - Netdata OTEL Writer SDK Integration: closed 2026-10-31 as obsolete;
   Netdata's OTel backend no longer writes journal files.

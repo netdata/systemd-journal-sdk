@@ -891,8 +891,21 @@ Accepted reader API layers:
   row immediately; no eligible row succeeds with no current entry. Exactness
   remains a separate cursor test. IDs normalize to 32 hexadecimal digits.
   This extension adds no persistent reader fields or changes to Netdata paths.
+- Live position contract (SOW-0045), Go and Rust file, directory and facade
+  readers, with or without matches: next/previous match stock libsystemd after
+  live appends. Head and an explicit tail are locations without a current
+  entry: previous at the head and next at the tail return nothing, previous at
+  the tail returns the newest entry. A failed move keeps the last returned
+  entry as the location, so a later move continues from it into appended rows,
+  and file and directory getters keep returning that entry. Directory readers
+  report no current entry after a seek until the next successful move. Failed
+  realtime-seek moves keep the seek location; unfiltered realtime search
+  returns ENTRY read errors. Live tail/EOF checks compare only the header entry
+  count and tail entry-array fields and run the full refresh only when they
+  differ: Rust and Go mmap readers read them from a header mapping without a
+  system call, Go ReadAt readers with one header `pread`.
 - Go direct `Reader.TestCursor` and `DirectoryReader.TestCursor` return
-  `false, ErrEndOfEntries` at EOF. The libsystemd-compatible facade returns
+  `false, ErrEndOfEntries` when no entry is current. The libsystemd-compatible facade returns
   `false, nil` instead; other errors remain errors. The Go facade cursor getter
   returns public `ErrNoEntry` when no current entry exists, matching Rust
   facade `Error::NoEntry`; other getter failures retain their original errors.
@@ -1160,10 +1173,13 @@ Current Rust reader feature slice:
   without expanding unrelated rows. Go `Step`/`StepBack` apply filters; its raw
   `Next`/`Previous` movement helpers do not. File/directory/facade group operators return
   errors, and an empty pending Go filter builder returns `ErrMalformedFilter`.
-  Required unknown secondary posting tails remain errors. Healthy installed
-  posting populations stay fixed until rebuilding; read-only recovery can clip
-  existing DATA identities to the intact prefix, while absent DATA stays
-  absent until rebuilding. Failed group/build operations retain pending matches
+  Required unknown secondary posting tails remain errors. Installed filters
+  observe healthy appends as libsystemd does: a live refresh that changes the
+  entry population rebuilds posting cursors from native indexes and looks up
+  DATA that was absent at install time again (SOW-0045). Snapshot-bounded
+  readers keep their opening population, and a raw Rust `FilterExpr` driven
+  without a reader keeps the population it was resolved against. Read-only recovery can clip existing
+  DATA identities to the intact prefix. Failed group/build operations retain pending matches
   for retry. Recovery requalification preserves known DATA identities and retries
   the whole Boolean view after partial failure. Clearing matches rewinds file,
   directory and facade readers to the head; callers restore saved locations

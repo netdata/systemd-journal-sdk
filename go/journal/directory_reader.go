@@ -16,13 +16,18 @@ const directoryUniqueCacheCapacity = 8
 // DirectoryReader reads multiple journal files in journal order. A
 // DirectoryReader is not safe for concurrent use by multiple goroutines.
 type DirectoryReader struct {
-	files              []*Reader
-	index              int
-	filter             *filterBuilder
-	realtimeSeek       *uint64
-	realtimeSeekBound  *directoryRealtimeSeekBound
-	candidates         []*directoryCandidate
-	currentKey         *directoryEntryKey
+	files             []*Reader
+	index             int
+	filter            *filterBuilder
+	realtimeSeek      *uint64
+	realtimeSeekBound *directoryRealtimeSeekBound
+	candidates        []*directoryCandidate
+	currentKey        *directoryEntryKey
+	boundary          directoryBoundary
+	// keyIndex and keyPosition record the file and file position of the last
+	// returned entry, so a failed move can keep it current as libsystemd does.
+	keyIndex           int
+	keyPosition        directoryReaderPosition
 	direction          Direction
 	hasDirection       bool
 	filteredCandidates bool
@@ -36,6 +41,17 @@ type DirectoryReader struct {
 	uniqueState        *directoryUniqueState
 	uniqueCacheBuilds  int
 }
+
+// directoryBoundary records a head or tail location that has no entry key yet.
+// libsystemd keeps such a location across failed moves: previous at the head
+// and next at the tail return nothing, even after live appends.
+type directoryBoundary uint8
+
+const (
+	boundaryHead directoryBoundary = iota
+	boundaryTail
+	boundaryNone
+)
 
 func OpenDirectory(path string) (*DirectoryReader, error) {
 	return OpenDirectoryWithOptions(path, DefaultReaderOptions())
@@ -706,6 +722,7 @@ func (dr *DirectoryReader) EnumerateFields() (map[string]struct{}, error) {
 
 func (dr *DirectoryReader) SeekHead() error {
 	dr.merging = false
+	dr.boundary = boundaryHead
 	dr.index = -1
 	dr.realtimeSeek = nil
 	dr.realtimeSeekBound = nil
@@ -722,6 +739,7 @@ func (dr *DirectoryReader) SeekHead() error {
 
 func (dr *DirectoryReader) SeekTail() error {
 	dr.merging = false
+	dr.boundary = boundaryTail
 	dr.index = -1
 	dr.realtimeSeek = nil
 	dr.realtimeSeekBound = nil
@@ -738,6 +756,9 @@ func (dr *DirectoryReader) SeekTail() error {
 
 func (dr *DirectoryReader) SeekRealtimeUsec(usec uint64) error {
 	dr.merging = false
+	// A seek location has no current entry until the next successful move.
+	dr.index = -1
+	dr.boundary = boundaryNone
 	value := usec
 	dr.realtimeSeek = &value
 	dr.realtimeSeekBound = nil
@@ -751,10 +772,11 @@ type directoryReaderPosition struct {
 	index    int
 	realtime *uint64
 	override uint64
+	edge     readerEdge
 }
 
 func (r *Reader) directoryPosition() directoryReaderPosition {
-	position := directoryReaderPosition{index: r.entryIndex, realtime: r.realtimeSeek}
+	position := directoryReaderPosition{index: r.entryIndex, realtime: r.realtimeSeek, edge: r.edge}
 	if r.filter != nil {
 		position.override = r.filter.overrideOffset
 	}
@@ -763,7 +785,7 @@ func (r *Reader) directoryPosition() directoryReaderPosition {
 
 func (r *Reader) restoreDirectoryPosition(position directoryReaderPosition) {
 	r.clearCurrentEntryState()
-	r.entryIndex, r.realtimeSeek = position.index, position.realtime
+	r.entryIndex, r.realtimeSeek, r.edge = position.index, position.realtime, position.edge
 	if r.filter != nil {
 		r.filter.overrideOffset = position.override
 		r.filter.walkValid = false
@@ -816,6 +838,10 @@ func (dr *DirectoryReader) stepMergedInner(direction Direction, applyFilter bool
 		}
 		dr.resetCandidates()
 	}
+	if dr.boundary == boundaryHead && direction == DirectionBackward ||
+		dr.boundary == boundaryTail && direction == DirectionForward {
+		return false, nil
+	}
 	if dr.canStepSequential(direction, applyFilter) {
 		return dr.stepSequential(direction, applyFilter)
 	}
@@ -849,7 +875,7 @@ retry:
 	}
 
 	if best == nil {
-		dr.index = -1
+		dr.parkOnCurrentKey()
 		dr.realtimeSeekBound = nil
 		return false, nil
 	}
@@ -857,6 +883,8 @@ retry:
 	dr.index = best.readerIndex
 	key := best.key
 	dr.currentKey = &key
+	dr.boundary = boundaryNone
+	dr.rememberKeyPosition()
 	dr.candidates[best.readerIndex] = nil
 	dr.realtimeSeekBound = nil
 	return true, nil
@@ -943,7 +971,7 @@ func (dr *DirectoryReader) stepSequentialForward(applyFilter bool) (bool, error)
 		}
 		dr.index++
 	}
-	dr.finishSequentialEnd(applyFilter)
+	dr.finishSequentialEnd()
 	return false, nil
 }
 
@@ -958,15 +986,14 @@ func (dr *DirectoryReader) stepSequentialBackward(applyFilter bool) (bool, error
 		}
 		dr.index--
 	}
-	dr.finishSequentialEnd(applyFilter)
+	dr.finishSequentialEnd()
 	return false, nil
 }
 
-func (dr *DirectoryReader) finishSequentialEnd(applyFilter bool) {
-	dr.index = -1
-	if !applyFilter || dr.filter == nil {
-		dr.currentKey = nil
-	}
+func (dr *DirectoryReader) finishSequentialEnd() {
+	// The last returned key stays the location and current entry, as in
+	// libsystemd, so reversing after EOF continues from it.
+	dr.parkOnCurrentKey()
 }
 
 func (dr *DirectoryReader) stepSequentialReader(direction Direction, applyFilter bool) (bool, error) {
@@ -986,7 +1013,29 @@ func (dr *DirectoryReader) stepSequentialReader(direction Direction, applyFilter
 		return false, err
 	}
 	dr.currentKey = &key
+	dr.boundary = boundaryNone
+	dr.rememberKeyPosition()
 	return true, nil
+}
+
+func (dr *DirectoryReader) rememberKeyPosition() {
+	dr.keyIndex = dr.index
+	dr.keyPosition = dr.files[dr.index].directoryPosition()
+}
+
+// parkOnCurrentKey keeps the last returned entry current after a failed move.
+// Its file is restored to that entry; continuing from there is equivalent to
+// continuing from its exhausted position, and other files keep theirs.
+func (dr *DirectoryReader) parkOnCurrentKey() {
+	dr.index = -1
+	if dr.currentKey == nil || dr.keyIndex < 0 || dr.keyIndex >= len(dr.files) {
+		return
+	}
+	r := dr.files[dr.keyIndex]
+	r.restoreDirectoryPosition(dr.keyPosition)
+	if key, err := r.currentDirectoryEntryKey(); err == nil && sameDirectoryEntryKey(key, *dr.currentKey) {
+		dr.index = dr.keyIndex
+	}
 }
 
 func (dr *DirectoryReader) prepareMergeDirection(direction Direction) error {
@@ -1233,6 +1282,7 @@ func (dr *DirectoryReader) hasSequentialPosition() bool {
 func (dr *DirectoryReader) resetMergeState() {
 	dr.merging = false
 	dr.currentKey = nil
+	dr.boundary = boundaryHead
 	dr.hasDirection = false
 	dr.index = -1
 	dr.realtimeSeekBound = nil
