@@ -17,9 +17,8 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Tracks
   unchanged decoder allocation measured during SOW-0108; no redesign is
   authorized and no dependency is added to the current execution chain.
-- SOW-0156 - Fixed-Header Consistency Audit: separate follow-up agreed in
-  PR #9. Define invariants, audit both SDKs, then implement/test missing rules.
-  Not activated by the current array-count repair.
+- SOW-0156 - Fixed-Header Consistency Audit: paused; audit done, Rust parity
+  gaps fixed, user decisions D1-D6 pending.
 - SOW-0155 - Writer Tail Offset Representability: source-analysis lead from PR #9.
   Investigate regular writers' unchecked tail-offset narrowing; no implementation
   or public behavior decision is authorized.

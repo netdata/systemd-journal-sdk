@@ -1038,3 +1038,111 @@ fn live_open_rejects_unsafe_header_and_table_mappings() {
         }
     }
 }
+
+// Paired with Go journal/header_open_gate_test.go.
+fn header_gate_journal(dir: &TempDir, compact: bool) -> (PathBuf, crate::repository::File) {
+    let journal_dir = dir.path().join("journals");
+    std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+    let path = journal_dir.join("system.journal");
+    let repo_file =
+        crate::repository::File::from_path(&path).expect("test journal path should parse");
+    let mut journal_file: JournalFile<MmapMut> = JournalFile::create(
+        &repo_file,
+        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).with_compact(compact),
+    )
+    .expect("create journal");
+    let mut writer = JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("writer");
+    writer
+        .add_entry(
+            &mut journal_file,
+            &[b"MESSAGE=gate".as_slice()],
+            1_000_000,
+            100,
+        )
+        .expect("write entry");
+    journal_file.sync().expect("sync journal");
+    drop(journal_file);
+    (path, repo_file)
+}
+
+fn patch_header(path: &std::path::Path, offset: u64, value: &[u8]) {
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open journal for patch");
+    file.write_all_at(value, offset).expect("patch header");
+}
+
+fn append_open_error(repo_file: &crate::repository::File) -> JournalError {
+    match JournalFile::<MmapMut>::open_for_append(repo_file, 8 * 1024 * 1024) {
+        Ok(_) => panic!("append-open should be rejected"),
+        Err(err) => err,
+    }
+}
+
+#[test]
+fn open_rejects_unknown_incompatible_flag() {
+    let dir = TempDir::new().expect("create temp dir");
+    let (path, repo_file) = header_gate_journal(&dir, false);
+    let bytes = std::fs::read(&path).expect("read journal");
+    let flags = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) | 1 << 5;
+    patch_header(&path, 12, &flags.to_le_bytes());
+    let before = std::fs::read(&path).expect("read journal before open");
+
+    let read_err = match JournalFile::<crate::file::Mmap>::open(&repo_file, 4096) {
+        Ok(_) => panic!("reader open should be rejected"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(read_err, JournalError::UnsupportedJournalFile),
+        "{read_err:?}"
+    );
+    let err = append_open_error(&repo_file);
+    assert!(
+        matches!(err, JournalError::UnsupportedJournalFile),
+        "{err:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read journal after open"),
+        before
+    );
+}
+
+#[test]
+fn append_open_requires_both_hash_tables() {
+    for offset in [104, 120] {
+        let dir = TempDir::new().expect("create temp dir");
+        let (path, repo_file) = header_gate_journal(&dir, false);
+        patch_header(&path, offset, &[0; 16]);
+        let before = std::fs::read(&path).expect("read journal before open");
+        let err = append_open_error(&repo_file);
+        assert!(
+            matches!(err, JournalError::InvalidObjectLocation),
+            "{offset}: {err:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read journal after open"),
+            before
+        );
+    }
+}
+
+#[test]
+fn append_open_rejects_compact_file_beyond_four_gib() {
+    let dir = TempDir::new().expect("create temp dir");
+    let (path, repo_file) = header_gate_journal(&dir, true);
+    let size = crate::file::writer::JOURNAL_COMPACT_SIZE_MAX + 4096;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open journal")
+        .set_len(size)
+        .expect("extend journal");
+    let err = append_open_error(&repo_file);
+    assert!(
+        matches!(err, JournalError::ObjectExceedsFileBounds),
+        "{err:?}"
+    );
+    assert_eq!(std::fs::metadata(&path).expect("stat journal").len(), size);
+}

@@ -649,6 +649,9 @@ impl<M: MemoryMap> JournalFile<M> {
         if header.signature != *b"LPKSHHRH" {
             return Err(JournalError::InvalidMagicNumber);
         }
+        if header.incompatible_flags & !SUPPORTED_INCOMPATIBLE_FLAGS != 0 {
+            return Err(JournalError::UnsupportedJournalFile);
+        }
         let sanitized_header =
             (header.header_size < header_size).then(|| sanitize_header_for_size(header));
 

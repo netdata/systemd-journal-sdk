@@ -24,7 +24,8 @@ order; the user may reorder it.
 
 ## Current
 
-- None.
+- SOW-0156 - Fixed-Header Consistency Audit (paused): audit done, Rust parity
+  gaps fixed; waiting on user decisions D1-D6 recorded in the SOW.
 
 ## Pending
 
@@ -40,8 +41,6 @@ order; the user may reorder it.
   semantic decisions before implementation.
 - SOW-0153 - Consumer Documentation Release Clarity: stale `go/v0.3.0` text and
   Rust writer-state discoverability.
-- SOW-0156 - Fixed-Header Consistency Audit: now includes SOW-0155 tail-offset
-  representability.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: per-DATA decoder allocation.
 - SOW-0161 - File Indexer Source Posting Membership: unproven indexer lead.
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.

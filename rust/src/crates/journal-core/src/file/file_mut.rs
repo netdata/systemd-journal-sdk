@@ -53,8 +53,22 @@ impl JournalFile<super::mmap::MmapMut> {
         if header.header_size < header_size {
             return Err(JournalError::UnsupportedJournalFile);
         }
-        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
+        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
+            || header.incompatible_flags & !SUPPORTED_INCOMPATIBLE_FLAGS != 0
+        {
             return Err(JournalError::UnsupportedJournalFile);
+        }
+        // Appends index every object, so both tables must exist before mutation.
+        if header.data_hash_table_offset.is_none()
+            || header.field_hash_table_offset.is_none()
+            || header.tail_object_offset.is_none()
+        {
+            return Err(JournalError::InvalidObjectLocation);
+        }
+        if header.has_incompatible_flag(HeaderIncompatibleFlags::Compact)
+            && file_size > JOURNAL_COMPACT_SIZE_MAX
+        {
+            return Err(JournalError::ObjectExceedsFileBounds);
         }
 
         header.validate_empty_entry_metadata()?;

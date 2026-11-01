@@ -36,6 +36,14 @@ pub enum HeaderIncompatibleFlags {
     Compact = 1 << 4,
 }
 
+/// Every incompatible flag this SDK can read and append to; systemd refuses
+/// files carrying any other incompatible flag in both modes.
+pub(crate) const SUPPORTED_INCOMPATIBLE_FLAGS: u32 = HeaderIncompatibleFlags::CompressedXz as u32
+    | HeaderIncompatibleFlags::CompressedLz4 as u32
+    | HeaderIncompatibleFlags::KeyedHash as u32
+    | HeaderIncompatibleFlags::CompressedZstd as u32
+    | HeaderIncompatibleFlags::Compact as u32;
+
 pub enum HeaderCompatibleFlags {
     Sealed = 1 << 0,
     TailEntryBootId = 1 << 1,
