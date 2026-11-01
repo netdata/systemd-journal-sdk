@@ -194,7 +194,7 @@ of 5x or more are claimed). Full table and commands:
 - Output: default output byte-identical across all three except
   `--list-invocations`, where stock right-aligns a wider IDX column once
   indexes reach three digits plus sign. Fixed here for invocations and boots.
-  The `Error: ` stderr prefix difference is tracked by SOW-0168.
+  The `Error:` stderr prefix difference is tracked by SOW-0168.
 
 Decisions (agent-chosen, pending user review):
 
@@ -319,4 +319,4 @@ both shapes before keeping it.
 
 - SOW-0166: directory realtime seek cost.
 - SOW-0167: Go reader eager entry-array load.
-- SOW-0168: follow waiting/reopen cost and `Error: ` prefix parity.
+- SOW-0168: follow waiting/reopen cost and `Error:` prefix parity.
