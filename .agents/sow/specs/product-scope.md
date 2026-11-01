@@ -864,6 +864,10 @@ Accepted reader API layers:
   upgrade. Encountered required native-chain or posting failures fail indexing;
   existing per-object value tolerance remains. Old storage follows normal
   cache eviction. Cache-hit algorithms and consumer namespaces are unchanged.
+  Generation 5 (SOW-0161) limits source-timestamp postings to the captured
+  ENTRY population and counts each entry once. Generation-4 entries miss, so
+  every cached file reindexes once after upgrade. Stable files whose source
+  postings name no entry now fail indexing; live files drop such postings.
 - Rust and Go also expose explicit Explorer execution
   strategy controls through their idiomatic APIs. `ExplorerStrategy::Traversal`
   is the default and remains the behavior of each product language's ordinary
