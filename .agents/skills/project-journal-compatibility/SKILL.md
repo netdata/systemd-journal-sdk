@@ -116,7 +116,7 @@ SDKs; one language's tests never stand in for the other's.
 | Directory reading / `--directory` | `tests/interoperability/run_directory_matrix.py`, `tests/interoperability/run_mixed_directory_matrix.py` |
 | journalctl query / follow | `tests/interoperability/run_journalctl_query_matrix.py` |
 | journalctl options / parser | `tests/parser-parity/check_v260_manifest.py`, `tests/parser-parity/run_parser_parity.py` |
-| Verifier | `tests/interoperability/run_verify_matrix.py` (stock `journalctl --verify --file`, Rust and Go agree on regular, zstd/xz/lz4, compact, compact+compression and sealed files, and on object type/size, payload hash, hash-chain, entry-array, header-counter, seqnum, monotonic and TAG/FSS corruption) |
+| Verifier | `tests/interoperability/run_verify_matrix.py` (stock `journalctl --verify --file` from `PATH`, version recorded in the report, oracle pinning tracked by SOW-0169; Rust and Go agree on regular, zstd/xz/lz4, compact, compact+compression and sealed files, and on object type/size, payload hash, DATA hash-table bucket, entry-array, header-counter, seqnum, monotonic and TAG/FSS corruption) |
 | Traversal, compressed readers, recovery | `tests/interoperability/run_reader_hardening.py` with both adapters built and an explicit stock oracle |
 | Reader performance | `tests/benchmarks/run_reader_regression_comparison.py` |
 
