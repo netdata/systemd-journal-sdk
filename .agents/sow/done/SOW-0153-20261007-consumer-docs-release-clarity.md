@@ -172,13 +172,13 @@ Open decisions:
 
 Implementation:
 
-- The project manager implements after user selection; no changes to consumer
-  documentation have been made under this SOW.
+- The project manager implemented decision 1A (agent-chosen, pending user
+  review) on 2026-11-01; see Validation.
 
 Reviewers:
 
-- The initial findings are independently confirmed. Apply the current
-  external-review authorization rules at the whole-SOW review milestone.
+- Whole-SOW self-review after local validation; tests are the gate. External
+  reviewers are not used.
 
 Repository boundary block for every external-reviewer prompt:
 
@@ -204,6 +204,14 @@ Failure handling:
 - Created a pending tracking record from the project-local SOW template for
   two confirmed P3 findings. Publication source and consumer docs are unchanged.
 
+### 2026-11-01
+
+- Applied decision 1A and the Rust writer-state wording; validated; closed.
+- PR review: Rust wording refined to say the failing call returns its own
+  error, later mutation attempts return `JournalError::WriterPoisoned`, and
+  `Log` wraps it as `WriterError::Journal` (verified at `journal-core`
+  `writer.rs:629-636` and `journal-log-writer` `error.rs:44`).
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -226,16 +234,23 @@ Real-use evidence:
 
 - Links and API names checked by reading the targets.
 
-Reviewer findings:
+Reviewer findings (self-review; tests are the gate, no external reviewers):
 
-- Own review; no external reviewers.
+1. The first wording implied `WriterPoisoned` is the error of the failing
+   call and named it without `Log`'s `WriterError::Journal` wrapper.
+   Disposition: fixed in both pages (raised in PR review, confirmed against
+   the code above).
+2. `go/API.md` now depends on `go/README.md` staying current. Disposition:
+   accepted; `tests/release/release.py` checks the README install command at
+   release time.
 
 Same-failure scan:
 
 - `grep -rn "go/v0\.[0-9]"` over active Markdown outside SOW records and the
-  status ledger: no other stale version claim. `docs/Indexed-Snapshots.md:176`
-  had the same vague Rust wording ("its failed-writer error"); fixed to name
-  `JournalError::WriterPoisoned` and `is_poisoned()`.
+  status ledger: no other stale version claim. `docs/Indexed-Snapshots.md`
+  had the same vague Rust wording ("its failed-writer error"); fixed.
+- `grep -n "WriterPoisoned" docs/*.md`: `docs/Rust-API.md` only lists the
+  variant in its semver notes; no shape claim to fix.
 
 Sensitive data gate:
 
@@ -243,10 +258,45 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md, project skills and specs: no change; documentation-only fix.
-- End-user docs: `go/API.md`, `docs/Writer-APIs.md`,
+- AGENTS.md: no change; documentation-only fix with no workflow rule.
+- Runtime project skills: `project-docs-authoring` rules were followed;
+  no new rule.
+- Specs: no change; the specs describe writer poisoning behavior, which did
+  not change.
+- End-user/operator docs: `go/API.md`, `docs/Writer-APIs.md`,
   `docs/Indexed-Snapshots.md`.
-- Status indexes updated.
+- End-user/operator skills: none exist.
+- SOW lifecycle: `Status: completed` and the move to `done/` are committed
+  with the documentation change.
+- SOW-status.md: canonical ledger and root index updated.
+
+Specs update:
+
+- None needed (see the artifact maintenance gate).
+
+Project skills update:
+
+- None needed.
+
+End-user/operator docs update:
+
+- `go/API.md`, `docs/Writer-APIs.md`, `docs/Indexed-Snapshots.md`.
+
+End-user/operator skills update:
+
+- None exist.
+
+Lessons:
+
+- See Lessons Extracted.
+
+Follow-up mapping:
+
+- None remain; both findings are implemented.
+
+Audit:
+
+- `.agents/sow/audit.sh`: SOW initialization complete and clean.
 
 ## Outcome
 
