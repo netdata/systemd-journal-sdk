@@ -133,7 +133,7 @@ skills remain unchanged for this unapproved writer contract.
 
 ## Outcome
 
-Pending activation; no implementation authorized.
+Closed without implementation on 2026-10-31; merged into SOW-0156, which tracks the remaining work.
 
 ## Lessons Extracted
 
