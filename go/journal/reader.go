@@ -631,6 +631,9 @@ func (r *Reader) refreshEntryOffsets() (bool, error) {
 // from the loaded one. It reads only the header, as libsystemd reads n_entries
 // from its mapping, so an unchanged file keeps its cached windows.
 func (r *Reader) liveEntriesChanged() (bool, error) {
+	if r.accessor == nil {
+		return false, errInvalidJournal
+	}
 	if !r.liveRefreshAllowed() {
 		return false, nil
 	}

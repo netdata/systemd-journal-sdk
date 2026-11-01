@@ -88,18 +88,31 @@ func positionResult(t *testing.T, c positionCursor, ok bool, err error) uint64 {
 // TestPositionContractMatchesLibsystemd encodes the stock libsystemd results
 // for next/previous after one live append (SOW-0045). 0 means no entry.
 func TestPositionContractMatchesLibsystemd(t *testing.T) {
+	// moves checks each setup movement so a failed setup cannot pass silently.
+	moves := func(c positionCursor, steps ...bool) error {
+		for _, forward := range steps {
+			move := c.stepBack
+			if forward {
+				move = c.step
+			}
+			if _, err := move(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	states := []struct {
 		name           string
 		initial        int
-		setup          func(positionCursor)
+		setup          func(positionCursor) error
 		next, previous uint64
 	}{
-		{"empty-open", 0, func(positionCursor) {}, 1, 0},
-		{"seek-head", 1, func(c positionCursor) { _ = c.seekHead() }, 1, 0},
-		{"on-last-row", 1, func(c positionCursor) { _, _ = c.step() }, 2, 0},
-		{"forward-eof", 1, func(c positionCursor) { _, _ = c.step(); _, _ = c.step() }, 2, 0},
-		{"explicit-tail", 1, func(c positionCursor) { _ = c.seekTail() }, 0, 2},
-		{"backward-eof", 1, func(c positionCursor) { _, _ = c.step(); _, _ = c.stepBack() }, 2, 0},
+		{"empty-open", 0, func(positionCursor) error { return nil }, 1, 0},
+		{"seek-head", 1, func(c positionCursor) error { return c.seekHead() }, 1, 0},
+		{"on-last-row", 1, func(c positionCursor) error { return moves(c, true) }, 2, 0},
+		{"forward-eof", 1, func(c positionCursor) error { return moves(c, true, true) }, 2, 0},
+		{"explicit-tail", 1, func(c positionCursor) error { return c.seekTail() }, 0, 2},
+		{"backward-eof", 1, func(c positionCursor) error { return moves(c, true, false) }, 2, 0},
 	}
 	type opener struct {
 		name string
@@ -153,7 +166,9 @@ func TestPositionContractMatchesLibsystemd(t *testing.T) {
 									if match != "" {
 										c.addMatch(match)
 									}
-									s.setup(c)
+									if err := s.setup(c); err != nil {
+										t.Fatalf("setup: %v", err)
+									}
 									positionAppend(t, w, uint64(s.initial+1), false)
 									if refresh {
 										if err := c.refresh(); err != nil {
@@ -524,5 +539,75 @@ func TestLiveEntryCheckObservesAppendWithoutMapping(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestLiveEdgeMovesAfterCloseReturnErrors(t *testing.T) {
+	for _, filtered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("filtered=%v", filtered), func(t *testing.T) {
+			_, r, _ := positionReader(t, 2)
+			if filtered {
+				r.AddMatch([]byte("K=v"))
+			}
+			r.SeekTail()
+			if err := r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if ok, err := r.StepBack(); err == nil || ok {
+				t.Fatalf("tail previous after close=%v/%v, want an error", ok, err)
+			}
+			// Forward from an explicit tail needs no file access; it must
+			// still return no entry.
+			if ok, _ := r.Step(); ok {
+				t.Fatal("next after close returned an entry")
+			}
+		})
+	}
+}
+
+func TestCursorSeekObservesAppend(t *testing.T) {
+	for _, filtered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("filtered=%v", filtered), func(t *testing.T) {
+			w, first, path := positionReader(t, 1)
+			if ok, err := first.Step(); err != nil || !ok {
+				t.Fatalf("first row=%v/%v", ok, err)
+			}
+			cursor, err := first.GetCursor()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := OpenFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = r.Close() })
+			if filtered {
+				r.AddMatch([]byte("TARGET=new"))
+				if ok, err := r.Step(); err != nil || ok {
+					t.Fatalf("absent match=%v/%v", ok, err)
+				}
+			} else if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("first row=%v/%v", ok, err)
+			}
+			positionAppend(t, w, 2, true)
+			if err := r.SeekCursorDirection(cursor, DirectionForward); err != nil {
+				t.Fatal(err)
+			}
+			want := uint64(1)
+			if filtered {
+				want = 2
+			}
+			if got, err := r.GetRealtimeUsec(); err != nil || got != want {
+				t.Fatalf("seek row=%d/%v want %d", got, err, want)
+			}
+			if !filtered {
+				if ok, err := r.Step(); err != nil || !ok {
+					t.Fatalf("next after seek=%v/%v", ok, err)
+				}
+				if got, _ := r.GetRealtimeUsec(); got != 2 {
+					t.Fatalf("next row=%d want 2", got)
+				}
+			}
+		})
 	}
 }

@@ -148,9 +148,6 @@ func buildCurrentFilterExpr(r *Reader, matches [][]byte) (filterExpr, error) {
 		}
 		values := make([]filterExpr, 0, end-start)
 		for _, payload := range matches[start:end] {
-			if r.header.dataHashTableOffset == 0 || r.header.dataHashTableSize < hashItemSize {
-				return nil, errCorruptObject
-			}
 			expr, err := resolveFilterMatch(r, payload)
 			if err != nil {
 				return nil, err
@@ -164,6 +161,10 @@ func buildCurrentFilterExpr(r *Reader, matches [][]byte) (filterExpr, error) {
 }
 
 func resolveFilterMatch(r *Reader, payload []byte) (filterExpr, error) {
+	// Builds and refreshes both resolve here, so both reject a missing table.
+	if r.header.dataHashTableOffset == 0 || r.header.dataHashTableSize < hashItemSize {
+		return nil, errCorruptObject
+	}
 	offset, found, err := r.findDataOffsetByPayload(payload)
 	if err != nil {
 		return nil, err
