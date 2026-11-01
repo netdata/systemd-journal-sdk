@@ -914,8 +914,10 @@ instructions than the baseline.
   tag `v262`, verified commit `8cc40e0c5e9234bf45084751ac53b1fbfe70b492`, and
   built only `journalctl` under `.local/`. `--version` reports
   `systemd 262 (262)` with `+PCRE2 +LZ4 +XZ +ZSTD`. The only host change was the
-  user-authorized `liblzma-dev` package; host needrestart is list-only, so no
-  service was restarted.
+  `liblzma-dev` build package, installed by the agent after the user
+  explicitly authorized it on 2026-11-01 ("install it yourself and build"): a
+  recorded user exception to the repository boundary for this build only. Host
+  needrestart is list-only, so no service was restarted.
 - `run_journalctl_query_matrix.py --journalctl <v262 oracle>`: status PASS,
   3,586 results PASS, 0 failures, including the `--follow` and cursor-file
   cases. CLI query/follow parity is re-certified on the final code, so the
@@ -929,8 +931,12 @@ sections, in Go and Rust, plus the spec and recipe edits.
 - Behavior: file, directory and facade readers follow the libsystemd position
   table (decisions 1, 3, 7); appends after tail, EOF and installed filters are
   observed exactly once (decisions 2, 5); realtime-search ENTRY errors are
-  returned (decision 4). The full test suites and the 576-cell contract
-  matrix pass in both languages.
+  returned (decision 4). The full test suites pass in both languages,
+  including the contract matrix: 576 cells in Go (three surfaces, two
+  layouts, two access modes, two filter states, refresh on/off, six states,
+  two directions) and 144 in Rust (three surfaces, two layouts, two filter
+  states, six states, two directions; Rust has no ReadAt mode or explicit
+  refresh call).
 - Parity: Go and Rust implement the same boundary, park-on-last-key and filter
   rebuild rules; the shared interoperability matrices pass for Go, Rust and
   stock readers.

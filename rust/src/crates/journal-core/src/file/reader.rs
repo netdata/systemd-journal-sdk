@@ -187,6 +187,8 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
         self.drop_guards();
         self.recovery_eof = None;
         self.install_pending_filter(file)?;
+        // A cursor seek resolves against the current population, as a step does.
+        self.refresh_installed_filter(file)?;
         self.cursor.seek_anchor(file, anchor, direction)
     }
 
