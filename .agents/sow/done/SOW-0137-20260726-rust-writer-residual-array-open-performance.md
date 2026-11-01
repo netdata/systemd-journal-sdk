@@ -163,8 +163,13 @@ agent-chosen (listed at the top of the PR):
   tail capacity the chain walk already read instead of reopening the tail
   read-only.
 - C3 (new array allocation opens the array to size it, then callers reopen it
-  to write slot 0): rejected. It runs only when an array grows, which happens
-  a logarithmic number of times, so it cannot be material.
+  to write slot 0): implemented after PR review. The first rejection assumed
+  growth was rare; measured, the mixed workload allocates 34,157 entry arrays
+  per 20,000 rows (netflow 1,800), because every new DATA object eventually
+  gets its own array. `allocate_array_with_first` writes slot 0 through the
+  allocation guard, before the HMAC and `object_added`. Entry-array HMACs
+  cover only the 16-byte object header (`seal.rs` `hmac_put_object_bytes`),
+  so sealing is unaffected; output bytes are unchanged.
 - Not taken: the regular-format DATA link still walks its array chain from the
   head on every link. That is systemd's own regular-format algorithm
   (compact files carry a tail cache); removing it needs an in-memory tail
@@ -198,6 +203,9 @@ gate is tests plus own review.
 
 - Implemented C1 and C2 in
   `rust/src/crates/journal-core/src/file/writer_entry_arrays.rs`.
+- PR #17 review: the C3 rejection lacked a measurement and the -1.4% timing
+  was called noise without a rerun. Measured C3, implemented it, and reran
+  timing (below).
 
 ## Validation
 
@@ -211,22 +219,41 @@ change). Instructions, baseline -> change:
 - regular mixed-cardinality-32-fields: 3,940.6M -> 3,788.4M (-3.9%).
 
 C1 saves about 240 instructions per entry; C2 accounts for the regular gain.
+
+C3, C1+C2 -> C1+C2+C3:
+
+- compact netflow: 2,114.3M -> 2,113.1M (-0.06%);
+- compact mixed: 3,054.8M -> 3,041.5M (-0.44%);
+- regular netflow: 3,777.0M -> 3,775.7M (-0.03%);
+- regular mixed: 3,788.4M -> 3,774.9M (-0.36%).
+
+The gain follows the array-allocation count: material on mixed, negligible on
+netflow.
 Release timing, 100,000 rows, regular format, output on local disk,
 alternating order, 12 pairs at host load average about 30: mixed median
 37,946 -> 38,648 rows/s (+1.9%, change faster in 8 of 12 pairs); netflow
 66,807 -> 71,804 rows/s (+7.5%, 10 of 12). An earlier 10-pair mixed run at
-load about 55 showed -1.4% with a 31,805 rows/s outlier; with deterministic
-instruction counts lower in every configuration, it is treated as host noise.
+load about 55 showed -1.4% with a 31,805 rows/s outlier.
+
+Rerun after C3 (baseline vs C1+C2+C3, 20,000 rows, regular format, ABBA
+order, 20 pairs per workload, host load average 36-41 on 112 CPUs; a low-load
+window was not available): mixed median 44,920 -> 46,578 rows/s (+3.7%, change
+faster in 19 of 20 pairs); netflow 65,055 -> 72,905 rows/s (+12.1%, 19 of 20).
+The direction agrees with the instruction counts in both workloads; the wall
+time sizes are larger than the instruction deltas, which suggests fewer memory
+touches also count. On a shared, loaded host the sizes are not calibrated, so
+the -1.4% run is still unexplained, but it is not reproduced in 40 pairs.
 
 Correctness:
 
-- All four callgrind outputs are byte-identical to the baseline outputs
+- All four callgrind outputs, with C1+C2 and with C3, are byte-identical to the baseline outputs
   (SHA-256 prefixes 7912891d86e9fbe4, 13ebc8ba3acc0c4b, bcf551c15185a982,
   2c59bfae9a6ded75).
 - Stock `journalctl --verify --file` (host systemd 255) passes all four.
-- `cargo test --workspace` passes (45 suites).
+- `cargo test --workspace` passes (45 suites), including the FSS tests,
+  after C3.
 - `run_live_matrix.py --entries 10 --readers go rust stock --features
-  regular zstd compact sealed`: 8/8.
+  regular zstd compact sealed`: 8/8. Rerun after C3: 8/8.
 - `rustfmt` clean; clippy on `systemd-journal-sdk-core` shows only the
   pre-existing argument-count warning on `append_data_entry_array_link`.
 
@@ -234,8 +261,9 @@ Self-review: the change removes reads, not checks; error kinds on malformed
 files can differ only in which of two failing checks reports first. Go is
 unaffected (Rust-only writer internals); no parity change. Same-failure
 search: every `offset_array_ref`/`offset_array_mut` pair in
-`writer_entry_arrays.rs` was checked; the remaining pairs are the C3
-allocation path and the compact tail path already merged by SOW-0135.
+`writer_entry_arrays.rs` was checked; after C3 the only remaining pair is the
+compact tail path already merged by SOW-0135. `allocate_new_array` is kept
+test-only for `file_tests.rs`.
 
 Sensitive data: synthetic benchmark workloads only; logs under
 `.local/sow0137/`.
@@ -245,14 +273,17 @@ and bytes are unchanged. Status index updated.
 
 ## Outcome
 
-Completed. The Rust writer opens one fewer offset-array object per entry and
-per regular DATA link, with byte-identical output.
+Completed. The Rust writer opens one fewer offset-array object per entry,
+per regular DATA link and per new array, with byte-identical output.
 
 ## Lessons Extracted
 
 - Callgrind instruction counts were the reliable signal on a loaded host; wall
-  time needed low-load, alternating runs to agree.
+  time needed many alternating pairs to agree.
+- Count how often a path runs before calling it immaterial: "only on growth"
+  was wrong because every new DATA object allocates its first array.
 
 ## Followup
 
-None. C3 and the regular-format chain walk are rejected above with evidence.
+None. C3 is implemented; the regular-format chain walk is rejected above with
+evidence.
