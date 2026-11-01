@@ -118,7 +118,9 @@ Unknowns:
   it exists only as an optional independent helper/wrapper and is never
   described as systemd compatibility behavior.
 - Tests or static runtime scans fail if core SDK runtime code imports/runs
-  subprocess APIs or host identity probes.
+  subprocess APIs or host identity probes. (Superseded 2026-11-01 by user
+  decision 4 = A: the static scan was removed and review enforces this rule;
+  see the end of this file.)
 - Existing compatibility, writer, reader, directory, live, and lock tests are
   updated to use explicit identities or optional helper paths.
 - macOS validation is run on `PlakaM4mini` after merge.
@@ -878,6 +880,9 @@ Implementation waits for the user decisions below.
 - `.agents/sow/audit.sh`: see the close-out below.
 
 ### Close-Out - 2026-11-01
+
+Audit: `.agents/sow/audit.sh` reported `SOW initialization complete and
+clean` after the close-out edits.
 
 Artifacts: `AGENTS.md` (review enforcement), SOW-0098 (validation plan), both
 status indexes. Project skills, specs and end-user docs need no change: they
