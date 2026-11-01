@@ -8,7 +8,7 @@ Status: completed
 
 Sub-state: PR12 review regressions completed locally 2026-10-26. Both CLIs
 use the approved directional SDK APIs. Three internal final scopes pass after
-3,514 native comparisons and146 portable controls. PR #12 merged on
+3,514 native comparisons and 146 portable controls. PR #12 merged on
 2026-10-27 (00d33d4); release is tracked by SOW-0163.
 
 ## Requirements
