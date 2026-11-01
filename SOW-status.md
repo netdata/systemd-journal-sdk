@@ -10,8 +10,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - SOW-0156 - Fixed-Header Consistency Audit: paused; audit done, Rust parity
   gaps fixed, user decisions D1-D6 pending.
 
-SOW-0045, SOW-0071, SOW-0123, SOW-0137 and SOW-0161 completed on 2026-11-01.
-
 ## Pending
 
 - SOW-0160 - Go XZ Reader Dictionary Allocation: analysis done; the cost is the
@@ -33,6 +31,8 @@ SOW-0045, SOW-0071, SOW-0123, SOW-0137 and SOW-0161 completed on 2026-11-01.
 
 ## Done
 
+- SOW-0045, SOW-0071, SOW-0123, SOW-0137 and SOW-0161: completed 2026-11-01;
+  details in the canonical ledger.
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
   Directional cursor integration and PR12 fixes pass three internal reviews,
   3,514 native comparisons and146 portable controls. Pushed-head native CI is
