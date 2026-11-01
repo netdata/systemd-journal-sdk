@@ -10,7 +10,7 @@ order; the user may reorder it.
 
 1. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
 2. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
-3. SOW-0160 - Go XZ reader dictionary allocation.
+3. SOW-0160 - Go XZ reader dictionary allocation (analysis done; needs user decision D1).
 4. SOW-0122 - journalctl performance follow-ups.
 5. SOW-0097 - Go duplication debt.
 6. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
@@ -41,7 +41,8 @@ order; the user may reorder it.
   semantic decisions before implementation.
 - SOW-0153 - Consumer Documentation Release Clarity: stale `go/v0.3.0` text and
   Rust writer-state discoverability.
-- SOW-0160 - Go XZ Reader Dictionary Allocation: per-DATA decoder allocation.
+- SOW-0160 - Go XZ Reader Dictionary Allocation: cost is the Go writer's 8 MiB
+  declared dictionary; decision D1 (writer dictionary size) pending.
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
 - SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal: new,

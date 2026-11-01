@@ -4,9 +4,8 @@
 
 Status: open
 
-Sub-state: measured performance opportunity tracked from SOW-0108. Analysis and
-implementation are not activated. Preserve the approved SOW-0108, SOW-0159,
-SOW-0121 execution order; this item is not a prerequisite for that chain.
+Sub-state: analysis done 2026-11-01 (autonomous backlog run); waiting on user
+decision D1 below. No production code changed.
 
 ## Requirements
 
@@ -79,9 +78,62 @@ Risks:
   ownership. Stream completeness and malformed-input behavior must remain
   consistent. A dependency change could affect compiler floors or portability.
 
+## Analysis Result (2026-11-01)
+
+Root cause, corrected: the reader configuration is not the lever. In
+`github.com/ulikunitz/xz` v0.5.16 the LZMA2 filter reader allocates a
+dictionary of max(reader `DictCap`, the stream's declared dictionary)
+(`lzmafilter.go:63-84`, `lzma/reader2.go:59-64`), and the declared size comes
+from the writer. Each XZ DATA expansion therefore allocates and zeroes the
+writer's declared dictionary, regardless of payload size.
+
+Declared dictionaries:
+
+- systemd: 1 MiB (systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced,
+  src/basic/compress.c:180).
+- Rust writer: 256 KiB (`lzma-rust2` preset 0, `journal-core` `writer.rs`
+  `XzOptions::with_preset(0)`).
+- Go writer: 8 MiB (library default; `go/journal/writer_compression.go`
+  `xzCompress` leaves `DictCap` unset).
+
+Measurement (`.local/sow0160/xz_test.go`, one 600-byte payload, Go
+decompression per DATA, 3 runs of 200 iterations):
+
+| Declared dictionary | Time per decode | Allocated per decode |
+|---|---|---|
+| 8 MiB (Go writer) | 1.24-1.95 ms | 8.42 MB |
+| 1 MiB (systemd) | 0.42-0.54 ms | 1.08 MB |
+| 256 KiB (Rust writer) | 0.16-0.18 ms | 0.30 MB |
+| 64 KiB | 0.08 ms | 0.10 MB |
+
+Setting the reader `DictCap` to the minimum changes nothing (allocation
+follows the stream). The compressed size of the 600-byte payload is 120 bytes
+with every dictionary. The 8 MiB declaration also costs stock readers, since
+liblzma sizes its decoder from the same header. Reuse is not available:
+the library has no reset API for `xz.Reader` or `lzma.Reader2`.
+
+Decision D1 (parked; changes Go writer output bytes):
+
+- A: Go writer declares 256 KiB, the Rust writer's value. Pros: Go/Rust
+  writers agree; Go reads of new Go-written files about 9x faster with 28x
+  less allocation; stock readers benefit too. Cons: payloads over 256 KiB
+  compress slightly worse; existing 8 MiB files keep their cost.
+- B: Go writer declares 1 MiB, systemd's value. Pros: matches journald.
+  Cons: about 3x slower decode than A; Go/Rust writers still differ.
+- C: keep 8 MiB. No output change; the cost stays.
+- Existing Go-written XZ files keep their declared size under every option;
+  a reader-side cap would need rewriting stream headers before decoding,
+  which is rejected as unsafe.
+
+Recommendation: A (long-term-best): it is the cheapest decode with no
+measured compression loss on journal-sized payloads, and it removes a Go/Rust
+writer difference. Validation for A: byte-level check that Go output declares
+256 KiB, cross-language and stock `journalctl --verify` on Go XZ files, the
+existing XZ fixtures, and a payload over 256 KiB round trip.
+
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: needs-user-decision (D1 in Analysis Result)
 
 Problem / root-cause model:
 
