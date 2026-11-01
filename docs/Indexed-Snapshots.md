@@ -173,7 +173,7 @@ do not replace strict verification of an uncertain file's complete graph.
 
 After an uncertain mutating failure, writers reject further mutation and close
 only resources, without publishing clean metadata or deleting an empty-looking
-file. Go exposes `ErrWriterFailed`, preserving the original error; Rust exposes
-its failed-writer error. Pre-mutation validation failures do not poison a writer.
+file. Go exposes `ErrWriterFailed`, preserving the original error; Rust returns
+`JournalError::WriterPoisoned` and reports the state through `is_poisoned()`. Pre-mutation validation failures do not poison a writer.
 No automatic repair, deletion or replay is part of strict verification. See
 [[Writer-APIs|Writer APIs]] for lifecycle and durability choices.

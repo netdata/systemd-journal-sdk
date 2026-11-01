@@ -10,16 +10,13 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - SOW-0156 - Fixed-Header Consistency Audit: paused; audit done, Rust parity
   gaps fixed, user decisions D1-D6 pending.
 
-SOW-0045, SOW-0071, SOW-0122, SOW-0123, SOW-0137 and SOW-0161 completed on
-2026-11-01.
+SOW-0045, SOW-0071, SOW-0122, SOW-0123, SOW-0137, SOW-0153 and SOW-0161
+completed on 2026-11-01.
 
 ## Pending
 
 - SOW-0160 - Go XZ Reader Dictionary Allocation: analysis done; the cost is the
   Go writer's 8 MiB declared XZ dictionary. User decision D1 pending.
-- `SOW-0153-20261007-consumer-docs-release-clarity.md` - open. Tracks stale Go
-  consumable-version prose and Rust writer-state method discoverability;
-  documentation design and implementation remain unapproved.
 - `SOW-0125-20260625-netdata-filter-operators-gap-analysis.md` - open, parked
   by user decision on 2026-06-25. Preserves string/numeric operator support
   matrix and semantic decisions; not executable until explicitly resumed.

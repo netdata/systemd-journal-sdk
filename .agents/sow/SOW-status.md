@@ -15,7 +15,7 @@ order; the user may reorder it.
    gaps tracked by SOW-0166, SOW-0167, SOW-0168).
 5. SOW-0097 - Go duplication debt.
 6. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
-7. SOW-0153 - Consumer docs release clarity.
+7. SOW-0153 - Consumer docs release clarity (completed 2026-11-01).
 8. SOW-0125 - Netdata filter operators (needs design decisions first).
 9. SOW-0162 - Publishable C reader crate.
 10. SOW-0163 - v0.11.0 release.
@@ -44,8 +44,6 @@ order; the user may reorder it.
   cost; needs a user decision.
 - SOW-0125 - Netdata Filter Operators Gap Analysis: feature analysis; needs
   semantic decisions before implementation.
-- SOW-0153 - Consumer Documentation Release Clarity: stale `go/v0.3.0` text and
-  Rust writer-state discoverability.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: cost is the Go writer's 8 MiB
   declared dictionary; decision D1 (writer dictionary size) pending.
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
@@ -57,6 +55,7 @@ order; the user may reorder it.
 
 ## Recently Closed Or Completed
 
+- SOW-0153 - Consumer Documentation Release Clarity: completed 2026-11-01.
 - SOW-0122 - Journalctl Performance Followups: completed 2026-11-01;
   `--list-invocations` 8-120x faster and IDX alignment matches stock.
 - SOW-0161 - File Indexer Source Posting Membership: completed 2026-11-01;
