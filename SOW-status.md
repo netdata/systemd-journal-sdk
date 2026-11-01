@@ -7,41 +7,27 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- SOW-0156 paused on user decisions. SOW-0045, SOW-0071, SOW-0123, SOW-0137
-  and SOW-0161 completed on 2026-11-01.
+- SOW-0156 - Fixed-Header Consistency Audit: paused; audit done, Rust parity
+  gaps fixed, user decisions D1-D6 pending.
+
+SOW-0045, SOW-0071, SOW-0123, SOW-0137 and SOW-0161 completed on 2026-11-01.
 
 ## Pending
 
 - SOW-0160 - Go XZ Reader Dictionary Allocation: analysis done; the cost is the
   Go writer's 8 MiB declared XZ dictionary. User decision D1 pending.
-- SOW-0156 - Fixed-Header Consistency Audit: paused; audit done, Rust parity
-  gaps fixed, user decisions D1-D6 pending.
-- SOW-0155 - Writer Tail Offset Representability: source-analysis lead from PR #9.
-  Investigate regular writers' unchecked tail-offset narrowing; no implementation
-  or public behavior decision is authorized.
 - `SOW-0153-20261007-consumer-docs-release-clarity.md` - open. Tracks stale Go
   consumable-version prose and Rust writer-state method discoverability;
   documentation design and implementation remain unapproved.
-- `SOW-0137-20260726-rust-writer-residual-array-open-performance.md` - open.
-  Tracks measurement and design decisions for remaining canonical Rust writer
-  global ENTRY-array and regular/fallback DATA array reopens.
 - `SOW-0125-20260625-netdata-filter-operators-gap-analysis.md` - open, parked
   by user decision on 2026-06-25. Preserves string/numeric operator support
   matrix and semantic decisions; not executable until explicitly resumed.
-- `SOW-0123-20260624-event-time-lane-fresh-clock-seed.md` - open. Fresh-journal
-  event-time realtime-clock seed gap analysis and implementation plan are
-  complete. External read-only reviewer verification returned ready-to-implement
-  votes from glm, minimax, kimi, mimo, deepseek, and qwen; Rust/Go
-  implementation remains pending.
 - `SOW-0122-20260621-journalctl-performance-followups.md` - open. Tracks
   non-blocking SOW-0121 broader performance follow-up for
   `--list-invocations`, portable `--follow` scalability, and large-fixture
   performance evidence. It does not replace the mandatory no-regression gates
   in the requested SDK and journalctl workstreams.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable Rust/Go `v1.0.0` SDK with Rust registry publication where applicable, Go module tags, and clean consumer install validation after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
-- `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.
-- `SOW-0049-20260528-netdata-reader-plugin-sdk-integration.md` - open. Integrate SDK reader/facade paths into Netdata OTEL signal viewer, no-libsystemd systemd-journal plugin mode, and static packaging after reader gates are accepted.
-- `SOW-0050-20260528-netdata-vendored-journal-removal.md` - open. Remove old Netdata vendored journal code only after all Netdata component integrations are complete and fresh searches prove no production references remain.
 - `SOW-0097-20260607-go-codacy-metric-debt-refactor.md` - open. Follow-up from the Codacy Rust/Go metrics audit for Go production file-size/ownership and duplication reduction.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 

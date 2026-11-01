@@ -176,10 +176,10 @@ not affected.
    it now drops the posting on live files, matching the source path.
 3. Agent-chosen: an entry with the source field more than once keeps its
    earliest source timestamp, so every entry is counted once.
-4. Agent-chosen: `CACHE_VERSION` is not bumped. Cached indexes change only
-   for files with corrupt postings or repeated source fields; stable files
-   with corrupt postings now fail indexing rather than reusing a bad entry,
-   and a bump would force every cached file to reindex.
+4. `CACHE_VERSION` bumps from 4 to 5, as `product-scope.md` requires for any
+   change to what the indexer computes. An earlier draft of this SOW skipped
+   the bump; PR review pointed to the spec rule. Impact: every cached file
+   reindexes once after upgrade; the spec records generation 5.
 
 Cost: the healthy path adds one comparison per source posting, one counter
 per global entry and no extra lookups (the deduplicating insert replaces the
@@ -253,8 +253,9 @@ Sensitive data gate:
 Artifact maintenance gate:
 
 - AGENTS.md and project skills: no new rule; the cache-version rule in the
-  compatibility skill was applied (decision 4).
-- Specs: no spec describes indexer membership; none changes.
+  compatibility skill and product scope was applied (decision 4).
+- Specs: `product-scope.md` records cache generation 5 and its reindex
+  impact.
 - End-user docs: the indexer is internal to the engine; no doc describes it.
 - SOW-status.md: both indexes updated.
 - Follow-up mapping: none; native traversal errors remain SOW-0159.
@@ -269,6 +270,8 @@ live files tolerate the writer's link-before-count window.
 
 Chain completion and cross-index membership are distinct guarantees. Writer
 publication order decides which membership checks are valid on live files.
+Read the spec rules for the changed surface before choosing a default: the
+cache-version rule was a spec requirement, not a judgment call.
 
 ## Followup
 

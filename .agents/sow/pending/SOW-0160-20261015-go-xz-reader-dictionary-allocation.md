@@ -81,10 +81,11 @@ Risks:
 ## Analysis Result (2026-11-01)
 
 Root cause, corrected: the reader configuration is not the lever. In
-`github.com/ulikunitz/xz` v0.5.16 the LZMA2 filter reader allocates a
-dictionary of max(reader `DictCap`, the stream's declared dictionary)
-(`lzmafilter.go:63-84`, `lzma/reader2.go:59-64`), and the declared size comes
-from the writer. Each XZ DATA expansion therefore allocates and zeroes the
+ulikunitz/xz @ v0.5.16 (the version pinned in `go/go.mod`) the LZMA2 filter
+reader allocates a dictionary of max(reader `DictCap`, the stream's declared
+dictionary) (`lzmafilter.go:63-84`; allocation in `lzma/reader2.go:59-64`,
+default cap at `lzma/reader2.go:22-23`), and the declared size comes from the
+writer. Each XZ DATA expansion therefore allocates and zeroes the
 writer's declared dictionary, regardless of payload size.
 
 Declared dictionaries:

@@ -199,9 +199,14 @@ Sensitive data gate:
 - Synthetic test journals only; no host journals, identities, credentials or
   customer data in the SOW, tests or PR text.
 
-- Artifacts: no spec, skill, `AGENTS.md` or end-user doc describes these
-  header rules, so none changes now; specs are revisited when D1-D6 change
-  documented behavior. Both status indexes are updated.
+- Artifacts: end-user docs describe append-open only in general terms
+  (`docs/Writer-APIs.md:56-68` "validates supported format metadata",
+  `docs/Indexed-Snapshots.md:171`, `docs/Reader-APIs.md:164`) and the
+  compatibility skill covers stable-file checks
+  (`.agents/skills/project-journal-compatibility/SKILL.md:60`); that wording
+  stays true, so none changes. No spec states the per-flag rules. Specs and
+  docs are revisited when D1-D6 change documented behavior. Both status
+  indexes are updated.
 
 ## Outcome
 
