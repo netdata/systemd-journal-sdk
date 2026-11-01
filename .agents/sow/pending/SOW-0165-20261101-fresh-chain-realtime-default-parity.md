@@ -38,8 +38,10 @@ Unknowns:
 
 ### Acceptance Criteria
 
-- Both languages use the same unset-seed behavior, chosen by the user, with
+- For option A or B: both languages use the same unset-seed behavior, with
   tests in both and updated docs and spec.
+- For option C: the difference is recorded as an approved parity exception in
+  the spec and docs, with the user decision cited.
 
 ## Analysis
 

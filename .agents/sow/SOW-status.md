@@ -19,7 +19,8 @@ order; the user may reorder it.
 9. SOW-0162 - Publishable C reader crate.
 10. SOW-0163 - v0.11.0 release.
 11. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-12. SOW-0066 - v1.0.0 API stability decision.
+12. SOW-0165 - Fresh-chain realtime default parity (needs a user decision).
+13. SOW-0066 - v1.0.0 API stability decision.
 
 ## Current
 
@@ -45,10 +46,10 @@ order; the user may reorder it.
 - SOW-0161 - File Indexer Source Posting Membership: unproven indexer lead.
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
-- SOW-0165 - Fresh-Chain Realtime Default Parity: new, 2026-11-01; needs a
-  user decision on one unset-seed default for Rust and Go.
 - SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal: new,
   2026-10-31; supersedes SOW-0049 and SOW-0050.
+- SOW-0165 - Fresh-Chain Realtime Default Parity: new, 2026-11-01; needs a
+  user decision on one unset-seed default for Rust and Go.
 
 ## Recently Closed Or Completed
 
@@ -58,8 +59,8 @@ order; the user may reorder it.
 
 - SOW-0123 - Event-Time Lane Fresh Clock Seed: completed 2026-11-01. Rust
   `Config::with_fresh_realtime_seed_usec` and Go `LogConfig.FreshRealtimeSeedUsec`
-  set a fresh-chain realtime floor; an existing tail wins and the maximum seed is
-  rejected. Default difference tracked by SOW-0165.
+  set a fresh-chain realtime floor; an existing tail wins and seeds at or above
+  2^55 - 1 are rejected. Default difference tracked by SOW-0165.
 
 - SOW-0071 - Runtime Purity And Optional Platform Services: regression
   resolved 2026-11-01. By user decision the partial static purity scan was
