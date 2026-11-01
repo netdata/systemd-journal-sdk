@@ -57,6 +57,8 @@ order; the user may reorder it.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
 - SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal: new,
   2026-10-31; supersedes SOW-0049 and SOW-0050.
+- SOW-0169 - Pin The Stock journalctl Oracle In Interoperability Matrices: new,
+  2026-11-01; needs a decision at activation.
 
 ## Recently Closed Or Completed
 
