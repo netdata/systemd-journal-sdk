@@ -12,8 +12,9 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Pending
 
-- SOW-0160 - Go XZ Reader Dictionary Allocation: analysis done; the cost is the
-  Go writer's 8 MiB declared XZ dictionary. User decision D1 pending.
+- SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Analysis
+  done; the cost is the Go writer's 8 MiB declared XZ dictionary. No redesign
+  or implementation is authorized until user decision D1.
 - `SOW-0125-20260625-netdata-filter-operators-gap-analysis.md` - open, parked
   by user decision on 2026-06-25. Preserves string/numeric operator support
   matrix and semantic decisions; not executable until explicitly resumed.
