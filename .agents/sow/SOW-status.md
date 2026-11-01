@@ -8,28 +8,24 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-1. SOW-0071 - Runtime purity guard misses Go process-launch variants.
-2. SOW-0123 - Rust fresh-journal realtime clock seed (event-time lanes).
-3. SOW-0137 - Rust writer residual array-open performance.
-4. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
-5. SOW-0161 - File indexer source posting membership.
-6. SOW-0160 - Go XZ reader dictionary allocation.
-7. SOW-0122 - journalctl performance follow-ups.
-8. SOW-0097 - Go duplication debt.
-9. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
-10. SOW-0153 - Consumer docs release clarity.
-11. SOW-0125 - Netdata filter operators (needs design decisions first).
-12. SOW-0162 - Publishable C reader crate.
-13. SOW-0163 - v0.11.0 release.
-14. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-15. SOW-0066 - v1.0.0 API stability decision.
+1. SOW-0123 - Rust fresh-journal realtime clock seed (event-time lanes).
+2. SOW-0137 - Rust writer residual array-open performance.
+3. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
+4. SOW-0161 - File indexer source posting membership.
+5. SOW-0160 - Go XZ reader dictionary allocation.
+6. SOW-0122 - journalctl performance follow-ups.
+7. SOW-0097 - Go duplication debt.
+8. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
+9. SOW-0153 - Consumer docs release clarity.
+10. SOW-0125 - Netdata filter operators (needs design decisions first).
+11. SOW-0162 - Publishable C reader crate.
+12. SOW-0163 - v0.11.0 release.
+13. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
+14. SOW-0066 - v1.0.0 API stability decision.
 
 ## Current
 
-- SOW-0071 - Runtime Purity And Optional Platform Services: regression
-  reopened, paused. The static guard misses `exec.CommandContext`,
-  `os.StartProcess` and `syscall.ForkExec`; no SDK runtime process launch
-  exists. Former blockers are done.
+- None.
 
 ## Pending
 
@@ -59,6 +55,12 @@ order; the user may reorder it.
   2026-10-31; supersedes SOW-0049 and SOW-0050.
 
 ## Recently Closed Or Completed
+
+- SOW-0071 - Runtime Purity And Optional Platform Services: regression
+  resolved 2026-11-01. By user decision the partial static purity scan was
+  removed; `AGENTS.md` now makes review the enforcement, with the forms to
+  search for and the in-package writer-lock helper files. The SDK core was
+  verified clean.
 
 - SOW-0045 - Go Reader Alignment Optimization: regression repair completed
   2026-11-01. Go and Rust file, directory and facade readers follow the

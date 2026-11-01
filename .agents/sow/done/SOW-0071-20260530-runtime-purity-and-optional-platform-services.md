@@ -2,10 +2,13 @@
 
 ## Status
 
-Status: paused
+Status: completed
 
 Sub-state: implementation, local/macOS/Windows validation, three whole-SOW
 review rounds, final cleanup, and final local validation are complete.
+
+Regression resolved 2026-11-01 by user decision: the static guard was removed
+and purity is enforced by review (see the end of this file).
 
 Regression reopened 2026-10-16: the static core-runtime guard misses standard
 Go process-launch API variants. Tracking is paused; no SDK runtime impurity is
@@ -709,7 +712,8 @@ or mapped to existing SOW-0063/SOW-0066 work where applicable.
 
 ## Regression Log
 
-None yet.
+- 2026-10-16: static guard coverage gap; resolved 2026-11-01 by removing the
+  guard (see `## Regression - 2026-10-16`).
 
 Append regression entries here only after this SOW was completed or closed and
 later testing or use found broken behavior. Use a dated `## Regression -
@@ -796,3 +800,85 @@ Status: needs-user-decision; paused tracking only.
 - Follow-up: all guard repair work remains owned here; no new SOW number or
   execution dependency is created. Scope/design approval remains required
   before implementation.
+
+### Activation Analysis - 2026-11-01
+
+Activated after SOW-0045 completed, per the backlog order.
+
+Findings (static, no process launched, no source mutated):
+
+1. Pattern gap (confirmed): `tests/runtime_purity/test_core_runtime_purity.py`
+   lists `exec.Command(` and `Command::new(` but not `exec.CommandContext`,
+   `os.StartProcess`, `syscall.ForkExec`/`syscall.Exec`, or an `os/exec` /
+   `std::process` import.
+2. Coverage gap (new, larger): `CORE_RUNTIME_FILES` names 12 files. The core
+   Go package `go/journal` has about 60 non-test files (for example
+   `reader_access.go`, `directory_reader.go`, `reader_filter*.go`), and
+   `journal-core` alone has 40 Rust files, so most core code is never scanned.
+3. Not wired to CI: no workflow under `.github/workflows/` runs the purity
+   test, so it only runs manually.
+4. Scanning every non-test file in the core Go package and the SDK library
+   crates today finds no core impurity. Its hits are:
+   - the opt-in writer-lock helper, which lives inside the core packages
+     (`go/journal/lock.go`, `lock_owner_*.go`, `file_lock*.go`;
+     `journal-core/src/file/lock.rs`) and legitimately reads `/proc`, calls
+     `sysctlbyname` and uses the process id. No core file references its
+     symbols outside tests;
+   - message-catalog strings containing "sysctl" (`go/journal/netdata.go`,
+     `rust/src/journal/src/netdata.rs`, `journal-engine/.../transformations.rs`);
+   - a doc-comment `tokio::spawn` example (`journal-registry/src/lib.rs`);
+   - a local variable named `boot_id_bytes` holding verified ENTRY bytes
+     (`rust/src/journal/src/sealed_verify.rs`);
+   - Rust test modules kept in separate files (`*_tests.rs`) and an example.
+   A whole-package scan therefore needs comment/string stripping, a test-file
+   rule and an explicit, justified helper allowlist.
+
+Runtime source, journal bytes and performance are unaffected by any option.
+Implementation waits for the user decisions below.
+
+### User Decisions - 2026-11-01
+
+- Decision 3 = A: the purity guard runs in CI, in the release workflow and in
+  one per-PR workflow.
+- Decisions 1 (scan scope) and 2 (writer-lock helper handling) were not
+  taken: the user objected to the guard itself, since a code review finds
+  these calls directly.
+- Decision 4 = A (supersedes decision 3): remove the static guard
+  `tests/runtime_purity/`. Runtime purity stays an `AGENTS.md` rule enforced by
+  review, with a diff-search instruction and the location of the in-package
+  writer-lock helper. No CI wiring.
+
+### Implementation - 2026-11-01
+
+- Deleted `tests/runtime_purity/__init__.py` and
+  `tests/runtime_purity/test_core_runtime_purity.py`.
+- `AGENTS.md` Runtime Purity Architecture: review enforces the rule; names the
+  process-launch and host-access forms to search for and the writer-lock helper
+  files that may use them.
+- SOW-0098 validation plan: the removed scan is replaced by the review step.
+- Correction of earlier claims: the original Execution Log and Validation above
+  say the static scan enforced core purity. It covered 12 of about 100 core
+  source files and missed several process-launch forms, so those claims were
+  overstated. The SDK itself was clean then and is clean now (activation
+  analysis above).
+
+### Validation - 2026-11-01
+
+- No runtime source, journal bytes, public API or docs change; the rule text in
+  `AGENTS.md`, `product-scope.md` and `docs/Getting-Started.md` stays true
+  because it describes the contract, not the scan.
+- Same-failure search: no workflow, script, skill, spec or pending SOW still
+  runs or cites the removed test (the remaining mentions are historical, in
+  done SOWs and this SOW's original narrative).
+- Manual purity review of the current core (all non-test files under
+  `go/journal` and the Rust SDK library crates): only the writer-lock helper
+  reads `/proc` or calls `sysctlbyname`; other hits are message strings, a doc
+  comment and a variable name.
+- Sensitive data: none recorded.
+- `.agents/sow/audit.sh`: see the close-out below.
+
+### Close-Out - 2026-11-01
+
+Artifacts: `AGENTS.md` (review enforcement), SOW-0098 (validation plan), both
+status indexes. Project skills, specs and end-user docs need no change: they
+state the purity contract, which is unchanged. Follow-ups: none.

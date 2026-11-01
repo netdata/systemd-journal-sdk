@@ -1,23 +1,13 @@
 # SOW Status
 
-Last updated: 2026-10-26
+Last updated: 2026-11-01
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0045-20260528-go-reader-alignment-optimization.md` - reopened and paused
-  for a separately reproduced healthy empty/EOF refresh positioning regression.
-  Unique-triggered refresh shares the failure; related pre-existing directory
-  seek/getter state and unfiltered time-probe error suppression are recorded.
-  SDK-then-journalctl execution remains unchanged;
-  no positioning implementation is mixed in.
-
-- `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md` -
-  regression reopened and paused for static guard coverage. No SDK process
-  launch is demonstrated; scanner changes remain unapproved and do not alter
-  the active repair, SDK and journalctl sequence.
+- None. SOW-0045 and SOW-0071 completed on 2026-11-01.
 
 ## Pending
 

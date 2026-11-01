@@ -324,7 +324,7 @@ Validation plan:
 - Historical fixture validation from existing SOW harnesses.
 - Reader benchmark comparison against SOW-0092/SOW-0093 baselines where hot
   paths are affected.
-- `python3 -m pytest tests/runtime_purity/test_core_runtime_purity.py`.
+- Review the diff for runtime-purity violations (see `AGENTS.md`).
 - `python3 tests/interoperability/run_journalctl_query_matrix.py`.
 - `python3 tests/interoperability/run_directory_matrix.py --readers rust`.
 - `python3 tests/interoperability/run_verify_matrix.py`.

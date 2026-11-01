@@ -86,6 +86,15 @@ Core reader/writer paths never read `/proc`, `/host/proc`, `/etc/machine-id`,
 `ps`, and never use shell commands or subprocess APIs; only the optional helpers
 may. Tests, docs and examples use synthetic identities unless testing a helper.
 
+Review enforces this; there is no automated purity scan, because a text scan
+gave false confidence while covering a fraction of the core. When a change
+touches core SDK code, search the diff for process launches (`os/exec`,
+`os.StartProcess`, `syscall.ForkExec`/`Exec`, `std::process`) and host-path or
+`sysctl` access. The writer-lock helper lives inside the core packages
+(`go/journal/lock*.go`, `go/journal/file_lock*.go`,
+`rust/src/crates/journal-core/src/file/lock.rs`) and may use them; no other core
+file may call into it.
+
 ## SOW System
 
 This project uses a self-contained local Statement of Work system: this file,
