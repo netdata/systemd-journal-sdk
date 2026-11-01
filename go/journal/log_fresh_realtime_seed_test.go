@@ -129,9 +129,20 @@ func TestLogFreshSeedZeroKeepsWallClockForOmittedRealtime(t *testing.T) {
 	}
 }
 
-func TestLogFreshSeedMaximumIsRejected(t *testing.T) {
-	_, err := NewLog(t.TempDir(), freshSeedConfig(FreshRealtimeSeed(math.MaxUint64)))
-	if !errors.Is(err, errInvalidJournal) {
-		t.Fatalf("NewLog(MaxUint64 seed) error = %v, want errInvalidJournal", err)
+func TestLogFreshSeedOutsideSystemdRealtimeRangeIsRejected(t *testing.T) {
+	for _, seed := range []uint64{math.MaxUint64, 1<<55 - 1} {
+		_, err := NewLog(t.TempDir(), freshSeedConfig(FreshRealtimeSeed(seed)))
+		if !errors.Is(err, errInvalidJournal) {
+			t.Fatalf("NewLog(seed %d) error = %v, want errInvalidJournal", seed, err)
+		}
+	}
+	root := t.TempDir()
+	config := freshSeedConfig(FreshRealtimeSeed(1<<55 - 2))
+	log := openFreshSeedLog(t, root, config)
+	appendAt(t, log, "at the limit", EntryOptions{RealtimeUsec: 1, MonotonicUsec: 1})
+	closeFreshSeedLog(t, log)
+	want := []realtimeBounds{{1, 1<<55 - 1, 1<<55 - 1}}
+	if got := freshSeedBounds(t, root, config); !reflect.DeepEqual(got, want) {
+		t.Fatalf("bounds = %v, want %v", got, want)
 	}
 }

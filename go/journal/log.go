@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -208,8 +207,9 @@ type LogConfig struct {
 	// epoch, for a chain with no existing tail. Appends clamp realtime to
 	// stay strictly above it. Nil keeps the default: caller-supplied realtime
 	// starts unclamped and omitted realtime uses the wall clock. An existing
-	// chain tail always wins. math.MaxUint64 is rejected. Use
-	// FreshRealtimeSeed to build the pointer.
+	// chain tail always wins. Seeds at or above 2^55-1 are rejected, so
+	// seed+1 stays a valid systemd realtime. Use FreshRealtimeSeed to build
+	// the pointer.
 	FreshRealtimeSeedUsec *uint64
 }
 
@@ -421,8 +421,9 @@ func validateNewLogConfig(dir string, config LogConfig) error {
 	if err := validateRetentionPolicy(config.RetentionPolicy); err != nil {
 		return err
 	}
-	if config.FreshRealtimeSeedUsec != nil && *config.FreshRealtimeSeedUsec == math.MaxUint64 {
-		return fmt.Errorf("%w: fresh realtime seed must be less than MaxUint64", errInvalidJournal)
+	// systemd accepts realtime in (0, 2^55); seed + 1 must stay in that range.
+	if config.FreshRealtimeSeedUsec != nil && *config.FreshRealtimeSeedUsec >= 1<<55-1 {
+		return fmt.Errorf("%w: fresh realtime seed must be below 2^55 - 1", errInvalidJournal)
 	}
 	return validateStrictLogIdentity(config)
 }

@@ -456,9 +456,11 @@ archived files.
 above the previous one becomes previous `+ 1` microsecond. A fresh chain starts
 that floor at zero, so caller-supplied past event times are kept. Set
 `FreshRealtimeSeedUsec: journal.FreshRealtimeSeed(floor)` in `LogConfig` to
-start a fresh chain at a non-zero floor; this is the same option the Rust writer
-uses to keep event times. An existing chain tail always wins over the seed, and
-`math.MaxUint64` is rejected. Use lazy open when the active filename must carry
+start a fresh chain at a non-zero floor, strictly below the first event time to
+keep that event verbatim; this is the same option the Rust writer uses to keep
+event times. An existing chain tail always wins over the seed. Seeds at or above
+`2^55 - 1` are rejected; systemd accepts only realtime values below `2^55`, so
+callers keep their timestamps in that range. Use lazy open when the active filename must carry
 the first event time; eager open names the file before any event exists.
 
 `Log.Close()` applies retention when it archives an active writer, except when
