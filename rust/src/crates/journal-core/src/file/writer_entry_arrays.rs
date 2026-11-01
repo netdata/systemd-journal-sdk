@@ -111,7 +111,6 @@ impl JournalWriter {
         let entry_count = journal_file.journal_header_ref().n_entries;
         let tail_offset =
             self.entry_array_tail_offset(journal_file, entry_array_offset, entry_count)?;
-        let tail_capacity = self.offset_array_capacity(journal_file, tail_offset)?;
         let tail_entries = self.entry_array_tail_entries(
             journal_file,
             entry_array_offset,
@@ -119,14 +118,19 @@ impl JournalWriter {
             entry_count,
         )?;
 
+        // One mutable open reads the capacity and, when there is room, writes
+        // the slot; it validates the object exactly as a read-only open does.
+        let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
+        let tail_capacity = tail_guard.capacity() as u64;
         if tail_entries < tail_capacity {
-            return self.append_to_entry_array_tail(
-                journal_file,
-                tail_offset,
-                tail_entries,
-                entry_offset,
-            );
+            tail_guard.set(tail_entries as usize, entry_offset)?;
+            drop(tail_guard);
+            let header = journal_file.journal_header_mut();
+            header.tail_entry_array_offset = tail_offset.get() as u32;
+            header.tail_entry_array_n_entries = (tail_entries + 1) as u32;
+            return Ok(());
         }
+        drop(tail_guard);
         self.grow_entry_array_tail(
             journal_file,
             tail_offset,
@@ -204,15 +208,6 @@ impl JournalWriter {
         }
     }
 
-    pub(super) fn offset_array_capacity(
-        &self,
-        journal_file: &JournalFile<MmapMut>,
-        offset: NonZeroU64,
-    ) -> Result<u64> {
-        let array_guard = journal_file.offset_array_ref(offset)?;
-        Ok(array_guard.capacity() as u64)
-    }
-
     pub(super) fn entry_array_tail_entries(
         &self,
         journal_file: &JournalFile<MmapMut>,
@@ -267,22 +262,6 @@ impl JournalWriter {
         Ok(entries)
     }
 
-    pub(super) fn append_to_entry_array_tail(
-        &self,
-        journal_file: &mut JournalFile<MmapMut>,
-        tail_offset: NonZeroU64,
-        tail_entries: u64,
-        entry_offset: NonZeroU64,
-    ) -> Result<()> {
-        let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
-        tail_guard.set(tail_entries as usize, entry_offset)?;
-        drop(tail_guard);
-        let header = journal_file.journal_header_mut();
-        header.tail_entry_array_offset = tail_offset.get() as u32;
-        header.tail_entry_array_n_entries = (tail_entries + 1) as u32;
-        Ok(())
-    }
-
     pub(super) fn grow_entry_array_tail(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
@@ -321,8 +300,8 @@ impl JournalWriter {
 
         // Navigate to the tail of the array chain
         let mut current_index = 0u64;
-        #[allow(unused_assignments)]
-        let mut tail_offset = array_offset;
+        let tail_offset;
+        let tail_capacity;
         let head = array_offset;
         let mut highest = array_offset;
 
@@ -334,8 +313,9 @@ impl JournalWriter {
             }
 
             if current_index + capacity >= current_count {
-                // This is the tail array
+                // This is the tail array; the walk already validated it.
                 tail_offset = array_offset;
+                tail_capacity = capacity;
                 break;
             }
 
@@ -356,12 +336,6 @@ impl JournalWriter {
             }
             array_offset = next_offset;
         }
-
-        // Try to add to the tail array
-        let tail_capacity = {
-            let tail_guard = journal_file.offset_array_ref(tail_offset)?;
-            tail_guard.capacity() as u64
-        };
 
         let entries_in_tail = current_count - current_index;
 
