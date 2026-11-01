@@ -58,6 +58,7 @@ facets, histogram, FTS, or returned-row expansion do not require it.
 | `live_publish_every_entries = 0` | no | Disables explicit SDK live publication. | Use for poll/snapshot consumers after validating the integration. |
 | `live_publish_every_entries = N` | no | Publishes every `N` entries. | Good batching compromise for latency-tolerant consumers. |
 | `sync_on_archive` / `SyncOnArchive` | yes | Syncs each archived journal file on the caller path during rotation, close, and stale-active startup archive. | Keep enabled unless the caller has an external durability path before side-index use or retention deletion. |
+| `fresh_realtime_seed_usec` / `FreshRealtimeSeedUsec` | unset | Realtime floor for a chain with no existing tail. Unset: Rust starts at wall-clock time, Go at zero; an existing tail always wins. | Set `0` (or a lower bound of the event times) for event-time-ordered writers that append past timestamps; requires lazy open for event-time filenames. |
 | FSS / seal options | no | Adds sealed TAG/HMAC tamper evidence. | Enable only when sealed verification is required. |
 | optional writer lock helper | no | Cooperating SDK writer exclusion. | Acquire explicitly when deployment needs SDK-level exclusion. |
 

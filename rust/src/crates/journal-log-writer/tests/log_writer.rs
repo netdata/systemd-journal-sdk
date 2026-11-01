@@ -350,6 +350,8 @@ fn parse_u64_field(row: &serde_json::Value, key: &str) -> Option<u64> {
 mod close_without_retention;
 #[path = "log_writer/entries_policy.rs"]
 mod entries_policy;
+#[path = "log_writer/fresh_realtime_seed.rs"]
+mod fresh_realtime_seed;
 #[path = "log_writer/lifecycle.rs"]
 mod lifecycle;
 #[path = "log_writer/naming.rs"]

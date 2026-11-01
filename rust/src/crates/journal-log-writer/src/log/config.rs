@@ -153,6 +153,14 @@ pub struct Config {
     /// fsync latency; the caller then owns archived-file durability before
     /// relying on or deleting archived files.
     pub sync_on_archive: bool,
+    /// Realtime floor for a fresh chain, in microseconds since the epoch.
+    ///
+    /// `None` (the default) starts a fresh chain at the current wall-clock
+    /// time, so a caller-supplied realtime in the past is clamped forward.
+    /// `Some(seed)` starts it at `seed` instead, so event-time writers can keep
+    /// past, increasing timestamps verbatim. An existing chain tail always
+    /// wins. `u64::MAX` is rejected.
+    pub fresh_realtime_seed_usec: Option<u64>,
 }
 
 impl Config {
@@ -178,6 +186,7 @@ impl Config {
             field_name_policy: FieldNamePolicy::Journald,
             file_mode: DEFAULT_JOURNAL_FILE_MODE,
             sync_on_archive: true,
+            fresh_realtime_seed_usec: None,
         }
     }
 
@@ -235,6 +244,13 @@ impl Config {
 
     pub fn with_live_publish_every_entries(mut self, entries: u64) -> Self {
         self.live_publish_every_entries = entries;
+        self
+    }
+
+    /// Sets the realtime floor for a fresh chain; see
+    /// [`Config::fresh_realtime_seed_usec`].
+    pub fn with_fresh_realtime_seed_usec(mut self, seed: u64) -> Self {
+        self.fresh_realtime_seed_usec = Some(seed);
         self
     }
 

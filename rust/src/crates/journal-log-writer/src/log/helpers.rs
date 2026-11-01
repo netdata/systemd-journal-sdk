@@ -200,6 +200,11 @@ pub(super) fn validate_config(config: &Config) -> Result<()> {
                 .to_string(),
         ));
     }
+    if config.fresh_realtime_seed_usec == Some(u64::MAX) {
+        return Err(WriterError::InvalidConfig(
+            "fresh realtime seed must be less than u64::MAX".to_string(),
+        ));
+    }
     if config.rotation_policy.size_of_journal_file == Some(0) {
         return Err(WriterError::InvalidConfig(
             "rotation max file size must be greater than 0".to_string(),
