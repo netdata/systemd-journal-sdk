@@ -28,11 +28,14 @@ Facts:
   records only that binary's `--version` line in its report.
 - The same bare invocation appears in `run_matrix.py`, `run_binary_matrix.py`,
   `run_live_matrix.py`, `run_compression_matrix.py`, `run_compact_matrix.py`,
-  `run_lock_matrix.py`, `run_directory_matrix.py`,
-  `run_mixed_directory_matrix.py`, `run_journalctl_portable_smoke.py` and
-  `journalctl_v262_cases.py`.
+  `run_lock_matrix.py`, `run_directory_matrix.py` and
+  `run_mixed_directory_matrix.py` (nine scripts in total, counting
+  `run_verify_matrix.py`).
 - `run_reader_hardening.py` already requires `--journalctl PATH`, and
-  `run_journalctl_query_matrix.py` accepts one; these are the patterns to reuse.
+  `run_journalctl_query_matrix.py` accepts one and passes it to
+  `journalctl_v262_cases.py` as `tools["stock_journalctl"]`; these are the
+  patterns to reuse. `run_journalctl_portable_smoke.py` runs only the Go and
+  Rust binaries (its `"journalctl"` strings are expected command names).
 - The parser-parity helpers (`tests/parser-parity/`) compare against pinned
   systemd source, not a stock binary, so they are out of scope.
 
@@ -57,11 +60,13 @@ Unknowns:
 
 Sources checked:
 
-- The scripts listed above (`rg '\["journalctl"' tests/interoperability`).
+- The scripts listed above (`rg '\["journalctl"' tests/interoperability`,
+  with each hit checked for whether it launches a stock binary).
 
 Current state:
 
-- Bare host `journalctl` in eleven scripts; explicit oracle in two.
+- Bare host `journalctl` in nine scripts; explicit oracle in two plus the
+  shared v262 case module.
 
 Risks:
 

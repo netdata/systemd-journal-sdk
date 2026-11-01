@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-10-31
+Last updated: 2026-11-01
 
 ## Backlog Order
 
@@ -25,6 +25,8 @@ order; the user may reorder it.
 14. SOW-0163 - v0.11.0 release.
 15. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
 16. SOW-0066 - v1.0.0 API stability decision.
+17. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
+   (needs a decision at activation).
 
 ## Current
 
