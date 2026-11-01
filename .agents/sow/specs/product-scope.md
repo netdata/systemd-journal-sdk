@@ -907,10 +907,12 @@ Accepted reader API layers:
   and file and directory getters keep returning that entry. Directory readers
   report no current entry after a seek until the next successful move. Failed
   realtime-seek moves keep the seek location; unfiltered realtime search
-  returns ENTRY read errors. Live tail/EOF checks compare only the header entry
-  count and tail entry-array fields and run the full refresh only when they
-  differ: Rust and Go mmap readers read them from a header mapping without a
-  system call, Go ReadAt readers with one header `pread`.
+  returns ENTRY read errors. Live tail/EOF checks run the full refresh only
+  when the header changed: Go compares the entry count and the tail
+  entry-array fields, Rust compares the mapped entry count. Rust and Go mmap
+  readers read the header from a mapping without a system call, Go ReadAt
+  readers with one header `pread`. Directional cursor seeks run the same check
+  first, so they also see appended rows.
 - Go direct `Reader.TestCursor` and `DirectoryReader.TestCursor` return
   `false, ErrEndOfEntries` when no entry is current. The libsystemd-compatible facade returns
   `false, nil` instead; other errors remain errors. The Go facade cursor getter
