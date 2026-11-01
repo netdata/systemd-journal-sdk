@@ -7,13 +7,11 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- None. SOW-0045 and SOW-0071 completed on 2026-11-01.
+- SOW-0156 paused on user decisions. SOW-0045, SOW-0071, SOW-0123, SOW-0137
+  and SOW-0161 completed on 2026-11-01.
 
 ## Pending
 
-- SOW-0161 - File Indexer Source Posting Membership: open source-analysis
-  lead, not activated. Investigate inherited source-map target membership and
-  captured-tail handling before selecting any behavior/performance change.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Tracks
   unchanged decoder allocation measured during SOW-0108; no redesign is
   authorized and no dependency is added to the current execution chain.
