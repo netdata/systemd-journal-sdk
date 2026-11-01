@@ -89,7 +89,7 @@ Sources checked:
 
 - User request in this thread.
 - Existing release tagging project skill:
-  `.agents/skills/project-release-tagging/SKILL.md`.
+  `.agents/skills/project-release/SKILL.md`.
 - Existing product package roots: `rust/` and `go/`.
 - Existing project SOW/status dependency graph.
 

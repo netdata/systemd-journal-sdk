@@ -52,6 +52,8 @@ order; the user may reorder it.
   2026-10-31; supersedes SOW-0049 and SOW-0050.
 - SOW-0165 - Fresh-Chain Realtime Default Parity: new, 2026-11-01; needs a
   user decision on one unset-seed default for Rust and Go.
+- SOW-0169 - Pin The Stock journalctl Oracle In Interoperability Matrices: new,
+  2026-11-01; needs a decision at activation.
 
 ## Recently Closed Or Completed
 
