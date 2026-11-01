@@ -22,6 +22,8 @@ order; the user may reorder it.
 11. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
 12. SOW-0165 - Fresh-chain realtime default parity (needs a user decision).
 13. SOW-0066 - v1.0.0 API stability decision.
+14. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
+    (needs a decision at activation).
 
 ## Current
 
