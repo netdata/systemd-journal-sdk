@@ -227,11 +227,20 @@ pub(super) fn replaceable_active_open_error(err: &WriterError) -> bool {
     )
 }
 
+/// What to do with an existing active file the writer cannot extend.
+#[derive(Clone, Copy)]
+pub(super) enum UnsupportedActive {
+    /// Move it to a `*.journal~` name, as journald does.
+    Dispose,
+    /// Archive it under its archive name (root retention).
+    Archive { sync_on_archive: bool },
+}
+
 pub(super) fn open_existing_active_file(
     chain: &mut OwnedChain,
     repository_file: repository::File,
     boot_id: uuid::Uuid,
-    allow_disposal: bool,
+    unsupported: UnsupportedActive,
 ) -> Result<Option<ActiveFile>> {
     match ActiveFile::open(repository_file.clone(), boot_id) {
         Ok(opened) => {
@@ -247,8 +256,15 @@ pub(super) fn open_existing_active_file(
                 Ok(Some(opened))
             }
         }
-        Err(err) if allow_disposal && replaceable_active_open_error(&err) => {
-            chain.dispose_replaceable_active_file(&repository_file)?;
+        Err(err) if replaceable_active_open_error(&err) => {
+            match unsupported {
+                UnsupportedActive::Dispose => {
+                    chain.dispose_replaceable_active_file(&repository_file)?
+                }
+                UnsupportedActive::Archive { sync_on_archive } => {
+                    chain.archive_unsupported_active_file(&repository_file, sync_on_archive)?
+                }
+            }
             Ok(None)
         }
         Err(err) => Err(err),
@@ -278,8 +294,12 @@ pub(super) fn replace_strict_online_chain_file(
     let Some(repository_file) = chain.online_chain_file()? else {
         return Ok(());
     };
-    let Some(mut opened) =
-        open_existing_active_file(chain, repository_file.clone(), boot_id, true)?
+    let Some(mut opened) = open_existing_active_file(
+        chain,
+        repository_file.clone(),
+        boot_id,
+        UnsupportedActive::Dispose,
+    )?
     else {
         return Ok(());
     };
@@ -313,9 +333,17 @@ pub(super) fn open_existing_active_for_config(
     else {
         return Ok(None);
     };
-    // Never dispose an unsupported recovered active in root mode. Empty
-    // valid actives still follow the existing lazy startup lifecycle.
-    open_existing_active_file(chain, repository_file, boot_id, !config.root_retention)
+    // Root inventory refuses disposed files, so root mode archives an
+    // unsupported recovered active. Empty valid actives still follow the
+    // existing lazy startup lifecycle.
+    let unsupported = if config.root_retention {
+        UnsupportedActive::Archive {
+            sync_on_archive: config.sync_on_archive,
+        }
+    } else {
+        UnsupportedActive::Dispose
+    };
+    open_existing_active_file(chain, repository_file, boot_id, unsupported)
 }
 
 pub(super) fn adopt_active_file_identity(

@@ -617,12 +617,14 @@ Current shared high-level directory writer API slice:
   writer opens still return controlled unsupported errors.
 - Rust and Go append-open applies the systemd v260.1 writable-open header
   rules: it refuses header sizes other than 272, unknown compatible flags, a
-  missing tail-entry-boot-ID flag, archived state, invalid tail metadata
+  missing tail-entry-boot-ID flag, archived state, sealed files (sealing
+  state cannot be restored, so the tail would be unsealed), invalid tail metadata
   (head realtime outside `1..2^55-1`, tail realtime or monotonic at or above
   2^55, null tail boot ID) and regular files above 4 GiB, as unsupported and
   before mutation. Readers keep accepting these files. Log set-aside does not
-  use an out-of-range tail timestamp as a clock floor. Root-retention Logs do
-  not set files aside; root finalization of retired files uses an archive-only
+  use an out-of-range tail timestamp as a clock floor. Root-retention Logs
+  archive such a current active under its archive name instead of setting it
+  aside, and finalize retired files the same way, through an archive-only
   open that skips these refusals.
 - Rust and Go writers refuse entry timestamps with realtime outside
   `1..2^55-1` or monotonic at or above 2^55 before mutation (Go
