@@ -8,10 +8,11 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-1. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
+1. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155; D1-D6
+   decided 2026-11-03).
 2. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
-3. SOW-0160 - Go XZ reader dictionary allocation (analysis done; needs user
-   decision D1).
+3. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
+   declares 256 KiB).
 4. SOW-0122 - journalctl performance follow-ups.
 5. SOW-0097 - Go duplication debt.
 6. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
@@ -22,7 +23,8 @@ order; the user may reorder it.
     (decided 2026-11-03: required `--journalctl PATH`).
 11. SOW-0163 - v0.11.0 release.
 12. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-13. SOW-0165 - Fresh-chain realtime default parity (needs a user decision).
+13. SOW-0165 - Fresh-chain realtime default parity (decided 2026-11-03: Rust
+    adopts Go's zero floor after a Netdata caller check).
 14. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
     2026-11-03).
 15. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
@@ -30,8 +32,8 @@ order; the user may reorder it.
 
 ## Current
 
-- SOW-0156 - Fixed-Header Consistency Audit (paused): audit done, Rust parity
-  gaps fixed; waiting on user decisions D1-D6 recorded in the SOW.
+- SOW-0156 - Fixed-Header Consistency Audit (paused): D1-D6 decided
+  2026-11-03; implementation next.
 
 ## Pending
 
@@ -47,15 +49,15 @@ order; the user may reorder it.
   semantic decisions before implementation.
 - SOW-0153 - Consumer Documentation Release Clarity: stale `go/v0.3.0` text and
   Rust writer-state discoverability.
-- SOW-0160 - Go XZ Reader Dictionary Allocation: cost is the Go writer's 8 MiB
-  declared dictionary; decision D1 (writer dictionary size) pending.
+- SOW-0160 - Go XZ Reader Dictionary Allocation: decided 2026-11-03 (Go writer
+  declares 256 KiB).
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
 - SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal:
   supersedes SOW-0049 and SOW-0050. libsystemd stays where available; the SDK
   replaces the vendored reader, with verified feature parity (2026-11-03).
-- SOW-0165 - Fresh-Chain Realtime Default Parity: new, 2026-11-01; needs a
-  user decision on one unset-seed default for Rust and Go.
+- SOW-0165 - Fresh-Chain Realtime Default Parity: decided 2026-11-03 (Rust
+  adopts Go's zero floor after a Netdata caller check).
 - SOW-0169 - Pin The Stock journalctl Oracle In Interoperability Matrices:
   decided 2026-11-03 (required `--journalctl PATH`); runs before SOW-0163.
 - SOW-0170 - Rust systemd-journal.plugin Rewrite: tracked 2026-11-03; not now,
