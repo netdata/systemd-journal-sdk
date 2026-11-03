@@ -63,8 +63,8 @@ Do not use this skill for `documentation/` (internal notes, not published).
   `.github/workflows/docs-examples.yml` compiles and runs examples).
 - When validation tooling runs `cargo`, `go`, or Python test scripts locally,
   export cache redirection (`CARGO_HOME`, `CARGO_TARGET_DIR`, `GOMODCACHE`,
-  `GOCACHE` under repo-local `.local/` paths) per the orchestration skill
-  cache rules. Python is used only as repository tooling here.
+  `GOCACHE` under repo-local `.local/` paths) per the `AGENTS.md` repository
+  boundary cache rules. Python is used only as repository tooling here.
 - Wiki pages document marker syntax inside ```markdown fences
   (`docs/Wiki-Publishing.md`); the validator and harness are fence-aware and
   ignore marker text inside fenced blocks. Preserve that property when

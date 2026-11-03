@@ -2,10 +2,9 @@
 
 ## Status
 
-Status: open
+Status: closed
 
-Sub-state: created on 2026-05-28 as the Netdata reader component integration
-SOW, blocked by SOW-0026 inventory and reader performance gates.
+Sub-state: closed; superseded on 2026-10-31 by SOW-0164 (Netdata SDK-exclusive adoption and vendored journal removal), which the user approved as one SOW for removing the old implementation and adopting the SDK. The `otel-signal-viewer.plugin` target no longer exists in Netdata.
 
 ## Requirements
 
@@ -243,7 +242,7 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Closed without implementation; scope moved to SOW-0164. Current Netdata reader consumers of vendored code (`netdata/netdata @ eaeb95f5c4`): `systemd-journal.plugin` via `src/crates/jf` (`journal_reader_ffi`, `packaging/cmake/Modules/NetdataRust.cmake:61-63`; Docker/static builds with `--internal-systemd-journal`, `packaging/docker/Dockerfile:42` and `packaging/makeself/jobs/70-netdata-git.install.sh:40`) and `otel-legacy-logs` via `journal-function`/`journal-index` (`src/crates/otel-legacy-logs/Cargo.toml:19-20`). The SDK-side publishable C reader crate is SOW-0162.
 
 ## Lessons Extracted
 

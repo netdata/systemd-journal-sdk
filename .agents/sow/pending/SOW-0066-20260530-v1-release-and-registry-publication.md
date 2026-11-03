@@ -4,9 +4,15 @@
 
 Status: open
 
-Sub-state: pending final production release and Rust/Go publication
-after SDK compatibility, portability, corpus validation, and integration gates
-are complete.
+Sub-state: not scheduled. The user decided on 2026-11-03 not to release
+v1.0.0 now; activation needs a new user decision.
+
+2026-10-31: registry publication and Go module tags already exist through
+v0.10.0 and Netdata consumes them. The remaining deliverable is the v1.0.0 API
+freeze decision followed by publication of v1.0.0 through the existing
+release process (`RELEASING.md`, `project-release` skill). Its Netdata integration gate is SOW-0164 (SOW-0048 closed as obsolete;
+SOW-0049 and SOW-0050 superseded by SOW-0164). The compatibility, portability and
+corpus gates (SOW-0055, SOW-0063, SOW-0064, SOW-0065) are already done.
 
 ## Requirements
 
@@ -83,7 +89,7 @@ Sources checked:
 
 - User request in this thread.
 - Existing release tagging project skill:
-  `.agents/skills/project-release-tagging/SKILL.md`.
+  `.agents/skills/project-release/SKILL.md`.
 - Existing product package roots: `rust/` and `go/`.
 - Existing project SOW/status dependency graph.
 
@@ -91,9 +97,9 @@ Current state:
 
 - The project has previous pre-1.0 tags and Go module tags, but no final
   `v1.0.0` publication workflow recorded as a SOW.
-- Cross-platform portability and real-world corpus evaluation are pending.
-- Future language parity closure is now tracked by SOW-0065.
-- Netdata integration SOWs are pending and depend on SDK readiness.
+- Cross-platform portability (SOW-0063) and real-world corpus evaluation (SOW-0064) are completed.
+- SOW-0065 (language parity closure) was closed as superseded.
+- Netdata integration is tracked by SOW-0164 (supersedes SOW-0048/0049/0050).
 
 Risks:
 
@@ -119,9 +125,9 @@ Problem / root-cause model:
 Evidence reviewed:
 
 - User request for final `v1.0.0` and language registry publication.
-- Pending SOWs that still affect release readiness: SOW-0055, SOW-0063,
-  SOW-0064, SOW-0065, and Netdata integration SOWs.
-- Project release-tagging skill exists and should be used when this SOW starts.
+- Pending SOW that still affects release readiness: SOW-0164 (SOW-0055,
+  SOW-0063 and SOW-0064 are completed; SOW-0065 is closed).
+- The `project-release` skill and `RELEASING.md` define the release process for this SOW.
 
 Affected contracts and surfaces:
 
@@ -134,7 +140,7 @@ Affected contracts and surfaces:
 
 Existing patterns to reuse:
 
-- `project-release-tagging` skill for tags and Go module release tags.
+- `project-release` skill for tags and Go module release tags.
 - Existing language README files.
 - Existing tests and conformance matrices.
 - Existing SOW release/tagging history for `v0.2.0` and `v0.3.0` style
@@ -186,7 +192,7 @@ Artifact impact plan:
 
 - AGENTS.md: no update expected unless release workflow becomes a project-wide
   rule.
-- Runtime project skills: use and possibly update `project-release-tagging` if
+- Runtime project skills: use and possibly update `project-release` if
   gaps are found.
 - Specs: update product scope with `v1.0.0` support guarantees.
 - End-user/operator docs: update install, usage, platform support, compatibility
@@ -213,6 +219,11 @@ Open decisions:
   already reserved.
 
 ## Implications And Decisions
+
+0. 2026-11-03 scope and timing (user)
+   - Decision: no v1.0.0 release now. When activated, this SOW decides the
+     v1.0.0 API freeze and publishes v1.0.0 through the existing release
+     process; first-time registry setup is already done.
 
 1. 2026-05-30 final release goal
    - Decision: record a future `v1.0.0` release and registry publication SOW.
