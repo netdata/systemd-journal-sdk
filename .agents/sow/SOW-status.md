@@ -33,8 +33,9 @@ order; the user may reorder it.
 ## Current
 
 - SOW-0156 - Fixed-Header Consistency Audit (in-progress): D1-D6 decided
-  2026-11-03; implementing chunk 1 (append-open refusals, writer timestamp
-  validation, reader header checks, old large-file support).
+  2026-11-03; chunk 1 (append-open refusals, writer timestamp validation,
+  reader header checks, old large-file support) done; chunk 2 (4 GiB ceiling
+  for new files) next; findings N1 and N2 wait for the user.
 
 ## Pending
 

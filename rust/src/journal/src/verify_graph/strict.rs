@@ -57,7 +57,12 @@ impl GraphVerifier<'_> {
             self.header.entry_array_offset,
             self.header.n_entries,
             "global entry array",
-            if self.header.header_size >= 264 {
+            // The 32-bit hint truncates offsets at or above 4 GiB, as systemd's
+            // own writer does, so it is only exact below that size.
+            if self.header.header_size >= 264
+                && self.header.header_size <= 1 << 32
+                && self.header.arena_size <= (1 << 32) - self.header.header_size
+            {
                 Some((
                     u32_at(self.source, 256)? as u64,
                     u32_at(self.source, 260)? as u64,

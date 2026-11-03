@@ -63,6 +63,10 @@ type Options struct {
 	// FileMode controls permissions for newly created journal files on platforms
 	// that support POSIX file modes. Nil uses systemd journald's 0640 default.
 	FileMode *os.FileMode
+
+	// legacyUncheckedTimestamps lets tests write the out-of-range timestamps
+	// earlier releases accepted, so readers stay tested against such files.
+	legacyUncheckedTimestamps bool
 }
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
@@ -118,6 +122,7 @@ type Writer struct {
 	livePublishEveryEntries     uint64
 	entriesSinceLivePublication uint64
 	fieldNamePolicy             FieldNamePolicy
+	legacyUncheckedTimestamps   bool
 }
 
 // ErrWriterFailed marks an uncertain mutating failure. The writer cannot be
@@ -205,8 +210,9 @@ func Create(path string, opts Options) (*Writer, error) {
 	w := &Writer{
 		file: f, path: path, bootID: opts.BootID,
 		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes, compact: opts.Compact,
-		livePublishEveryEntries: livePublishEveryEntries(opts),
-		fieldNamePolicy:         opts.FieldNamePolicy,
+		livePublishEveryEntries:   livePublishEveryEntries(opts),
+		fieldNamePolicy:           opts.FieldNamePolicy,
+		legacyUncheckedTimestamps: opts.legacyUncheckedTimestamps,
 	}
 	if err := w.initialize(opts); err != nil {
 		return nil, errors.Join(w.fail(err), w.release())
@@ -239,7 +245,21 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	w, err := newAppendWriter(path, f, opts)
+	w, err := newAppendWriter(path, f, opts, false)
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return w, nil
+}
+
+// openForArchive opens an existing file only to close or archive it.
+func openForArchive(path string) (*Writer, error) {
+	opts := normalizeOpenOptions(Options{})
+	f, err := openWriterFile(path, false, 0)
+	if err != nil {
+		return nil, err
+	}
+	w, err := newAppendWriter(path, f, opts, true)
 	if err != nil {
 		return nil, errors.Join(err, f.Close())
 	}
@@ -259,7 +279,9 @@ func validateOpenOptions(opts Options) error {
 	return nil
 }
 
-func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
+// newAppendWriter opens an existing file for writing. archiveOnly opens are
+// internal: the writer is only closed or archived, never appended to.
+func newAppendWriter(path string, f *os.File, opts Options, archiveOnly bool) (*Writer, error) {
 	header, err := readAppendHeader(f)
 	if err != nil {
 		return nil, err
@@ -273,6 +295,15 @@ func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
 		return nil, err
 	}
 	fileSize := uint64(stat.Size())
+	// Like systemd, refuse unsupported targets before the arena checks, so Log
+	// can set them aside even when a newer layout fails our arena rules.
+	if archiveOnly {
+		if header.isCompact() && fileSize > journalCompactSizeMax {
+			return nil, fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
+		}
+	} else if err := validateEntryAppendTarget(header, fileSize); err != nil {
+		return nil, err
+	}
 	arenaEnd, err := header.validateDeclaredArena(fileSize)
 	if err != nil {
 		return nil, err
@@ -288,10 +319,6 @@ func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
 	if err := header.validateArenaObject(header.tailObjectOffset, tail.size, arenaEnd); err != nil {
 		return nil, err
 	}
-	if header.isCompact() && fileSize > journalCompactSizeMax {
-		return nil, fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
-	}
-
 	// Reject unsupported mapping sizes before entering the mutation boundary.
 	if err := checkArenaSize(fileSize); err != nil {
 		return nil, err
@@ -363,6 +390,32 @@ func validateAppendHeader(header journalHeader) error {
 	}
 	if header.dataHashTableOffset == 0 || header.fieldHashTableOffset == 0 || header.tailObjectOffset == 0 {
 		return errInvalidJournal
+	}
+	return nil
+}
+
+// validateEntryAppendTarget holds the refusals that apply only when entries
+// will be appended. systemd's writer refuses these files too (journal-file.c
+// journal_file_verify_header), then sets the file aside and continues the
+// sequence in a new one; ErrUnsupportedJournal lets Log do the same.
+// Archive-only opens skip them, so earlier releases' files stay retainable.
+func validateEntryAppendTarget(header journalHeader, fileSize uint64) error {
+	const knownCompatible = compatibleSealed | compatibleTailEntryBootID | compatibleSealedContinuous
+	if header.headerSize != headerSize || header.compatibleFlags&^knownCompatible != 0 ||
+		header.compatibleFlags&compatibleTailEntryBootID == 0 || header.state == stateArchived {
+		return errUnsupportedJournal
+	}
+	// Earlier releases accepted any caller timestamp; appending after such a
+	// tail would produce entries systemd refuses.
+	if (header.nEntries != 0 || header.tailEntryOffset != 0) &&
+		(isZeroUUID(header.tailEntryBootID) || !validRealtime(header.headEntryRealtime) ||
+			!validRealtime(header.tailEntryRealtime) || !validMonotonic(header.tailEntryMonotonic)) {
+		return errUnsupportedJournal
+	}
+	// Offsets past 4 GiB fit neither compact items nor the 32-bit tail entry
+	// array hint. Earlier releases could grow regular files past it.
+	if fileSize > journalCompactSizeMax {
+		return fmt.Errorf("%w: journal file exceeds 4 GiB", errUnsupportedJournal)
 	}
 	return nil
 }
@@ -496,6 +549,18 @@ var ErrMissingMonotonicUsec = fmt.Errorf("journal: monotonic usec is required")
 // at the maximum uint64 value.
 var ErrMonotonicUsecOverflow = fmt.Errorf("journal: monotonic usec overflow")
 
+// ErrTimestampOutOfRange is returned before any file mutation when an entry's
+// realtime is zero or at least 2^55, or its monotonic time is at least 2^55
+// (systemd's VALID_REALTIME and VALID_MONOTONIC); systemd refuses such files.
+var ErrTimestampOutOfRange = fmt.Errorf("journal: entry timestamp out of range")
+
+func validateEntryTimestamps(opts EntryOptions) error {
+	if !validRealtime(opts.RealtimeUsec) || !validMonotonic(opts.MonotonicUsec) {
+		return ErrTimestampOutOfRange
+	}
+	return nil
+}
+
 func validateEntryMonotonicOptions(opts EntryOptions) error {
 	if opts.MonotonicUsec == 0 && !opts.MonotonicUsecSet {
 		return ErrMissingMonotonicUsec
@@ -522,6 +587,9 @@ func (w *Writer) prepareEntryOptions(opts EntryOptions) (EntryOptions, uint64, e
 			return opts, 0, ErrMonotonicUsecOverflow
 		}
 		opts.MonotonicUsec = w.header.tailEntryMonotonic + 1
+	}
+	if err := validateEntryTimestamps(opts); err != nil && !w.legacyUncheckedTimestamps {
+		return opts, 0, err
 	}
 	entrySeqnum := w.nextSeqnum
 	if opts.Seqnum != 0 {

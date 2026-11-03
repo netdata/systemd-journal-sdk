@@ -31,7 +31,7 @@ func (h *journalHeader) validateDeclaredArena(fileSize uint64) (uint64, error) {
 	if err := h.validateArenaHashTables(end); err != nil {
 		return 0, err
 	}
-	if h.headerSize >= 264 && h.tailEntryArrayOffset != 0 {
+	if h.tailEntryArrayHintUsable() && h.tailEntryArrayOffset != 0 {
 		itemSize := uint64(regularOffsetArrayItemSize)
 		if h.isCompact() {
 			itemSize = compactOffsetArrayItemSize
@@ -79,7 +79,7 @@ func (h *journalHeader) validateArrayPopulation() error {
 	if h.headerSize >= 240 && h.nEntryArrays < h.minimumEntryArrays() {
 		return fmt.Errorf("%w: array count does not cover declared locations", errInvalidJournal)
 	}
-	if h.headerSize < 264 {
+	if !h.tailEntryArrayHintUsable() {
 		return nil
 	}
 	offset, count := uint64(h.tailEntryArrayOffset), uint64(h.tailEntryArrayNEntries)
@@ -98,7 +98,7 @@ func (h *journalHeader) minimumEntryArrays() uint64 {
 	if h.entryArrayOffset != 0 {
 		count++
 	}
-	if h.headerSize >= 264 && h.tailEntryArrayOffset != 0 && uint64(h.tailEntryArrayOffset) != h.entryArrayOffset {
+	if h.tailEntryArrayHintUsable() && h.tailEntryArrayOffset != 0 && uint64(h.tailEntryArrayOffset) != h.entryArrayOffset {
 		count++
 	}
 	return count
