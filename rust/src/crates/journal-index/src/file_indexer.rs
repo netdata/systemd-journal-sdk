@@ -189,7 +189,6 @@ impl FileIndexer {
             source_timestamp_field,
             bucket_duration,
             tail_object_offset,
-            was_online,
         )?;
 
         // Use the (timestamp, entry-offset) pairs to construct a vector that
@@ -252,7 +251,6 @@ impl FileIndexer {
                 journal_file,
                 field_name,
                 tail_object_offset,
-                was_online,
                 &mut entries_index,
                 &mut issues,
             )?;
@@ -267,7 +265,6 @@ impl FileIndexer {
         journal_file: &JournalFile<Mmap>,
         field_name: &'a FieldName,
         tail_object_offset: NonZeroU64,
-        live: bool,
         entries_index: &mut HashMap<FieldValuePair, Bitmap>,
         issues: &mut FieldIndexIssues<'a>,
     ) -> Result<()> {
@@ -321,12 +318,7 @@ impl FileIndexer {
                 warn!("Invalid field=value format: {}", data_payload);
                 continue;
             };
-            if self.collect_data_entry_indices(
-                journal_file,
-                inlined_cursor,
-                tail_object_offset,
-                live,
-            )? {
+            if self.collect_data_entry_indices(journal_file, inlined_cursor, tail_object_offset)? {
                 insert_field_bitmap(entries_index, field_name, pair.value(), &self.entry_indices);
                 state.unique_values_count += 1;
             }
@@ -341,7 +333,6 @@ impl FileIndexer {
         journal_file: &JournalFile<Mmap>,
         inlined_cursor: InlinedCursor,
         tail_object_offset: NonZeroU64,
-        live: bool,
     ) -> Result<bool> {
         self.entry_offsets.clear();
         inlined_cursor.collect_offsets(journal_file, &mut self.entry_offsets)?;
@@ -353,13 +344,12 @@ impl FileIndexer {
             .copied()
             .filter(|offset| *offset <= tail_object_offset)
         {
+            // A posting outside the global array is not an entry of this
+            // snapshot: a live writer links DATA before it counts the entry,
+            // and SDK writers before v0.9.0 could close a file with the
+            // links of a failed append.
             let Some(entry_index) = self.entry_offset_index.get(&entry_offset) else {
-                // A live writer links DATA postings before it counts the entry
-                // in the global array; only a stable file proves corruption.
-                if live {
-                    continue;
-                }
-                return Err(IndexError::MissingOffset);
+                continue;
             };
             self.entry_indices.push(*entry_index as u32);
         }
@@ -491,7 +481,6 @@ impl FileIndexer {
         source_timestamp_field_name: Option<&FieldName>,
         bucket_duration: Seconds,
         tail_object_offset: NonZeroU64,
-        live: bool,
     ) -> Result<Histogram> {
         // Collect information from the source timestamp field
         if let Some(source_field_name) = source_timestamp_field_name {
@@ -550,14 +539,10 @@ impl FileIndexer {
         // pairs of all the entries for which we had to use the journal file's
         // realtime timestamp.
 
-        // Every source posting must name an entry of the global array. Only a
-        // stable file proves corruption; a live writer links DATA postings
-        // before it counts the entry, so those postings are dropped instead.
+        // Source postings outside the global array are dropped for the same
+        // reasons as in `collect_data_entry_indices`.
         let pruned = source_members < self.entry_offset_index.len();
         if pruned {
-            if !live {
-                return Err(IndexError::MissingOffset);
-            }
             let members: HashSet<NonZeroU64> = self
                 .entry_offsets
                 .iter()

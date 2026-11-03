@@ -143,9 +143,6 @@ fn archived_indexes_reject_incomplete_requested_field_indexes() {
                 "missing-head",
                 "unindexed-inline",
             ] {
-                if source_timestamp && mutation == "unindexed-inline" {
-                    continue;
-                }
                 let mut damaged = source.clone();
                 match mutation {
                     "field-cycle" => {
@@ -164,6 +161,17 @@ fn archived_indexes_reject_incomplete_requested_field_indexes() {
                 }
                 std::fs::write(&path, damaged).unwrap();
                 let result = FileIndexer::default().index(&file, source_field, &fields, Seconds(1));
+                if mutation == "unindexed-inline" {
+                    // A posting outside the global array is dropped on every
+                    // file: SDK writers before v0.9.0 could close a file with
+                    // the DATA links of a failed append.
+                    assert_eq!(
+                        result.unwrap().total_entries(),
+                        14,
+                        "compact={compact}/source={source_timestamp}/{mutation}"
+                    );
+                    continue;
+                }
                 assert!(
                     result.is_err(),
                     "compact={compact}/source={source_timestamp}/{mutation}: incomplete index succeeded: {:?}",
