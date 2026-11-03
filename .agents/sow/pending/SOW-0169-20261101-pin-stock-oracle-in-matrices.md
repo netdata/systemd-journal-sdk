@@ -33,8 +33,8 @@ Facts:
   `run_verify_matrix.py`).
 - `run_reader_hardening.py` and `run_journalctl_query_matrix.py` already
   require `--journalctl PATH`; the query matrix passes it to
-  `journalctl_v262_cases.py` as `tools["stock_journalctl"]`; these are the
-  patterns to reuse. `run_journalctl_portable_smoke.py` runs only the Go and
+  `journalctl_v262_cases.py` and `journalctl_timestamp_cases.py` as
+  `tools["stock_journalctl"]`; these are the patterns to reuse. `run_journalctl_portable_smoke.py` runs only the Go and
   Rust binaries (its `"journalctl"` strings are expected command names).
 - The parser-parity helpers (`tests/parser-parity/`) compare against pinned
   systemd source, not a stock binary, so they are out of scope.
@@ -46,8 +46,8 @@ Inferences:
 
 Unknowns:
 
-- Whether every matrix should require the flag, or default to `PATH` and mark
-  the report as unpinned. This is decision 1 at activation.
+- None. The oracle policy is decision 1 (Implications And Decisions): the flag
+  is required, with no `PATH` fallback.
 
 ### Acceptance Criteria
 
@@ -66,7 +66,7 @@ Sources checked:
 Current state:
 
 - Bare host `journalctl` in nine scripts; explicit oracle in two plus the
-  shared v262 case module.
+  shared v262 and timestamp case modules.
 
 Risks:
 
@@ -95,7 +95,9 @@ Evidence reviewed (`netdata/systemd-journal-sdk @ 334a54a764ed29124f0a3e3a251ec6
 - Not launches (expected command names): `run_journalctl_portable_smoke.py:131`,
   `journalctl_v262_cases.py:385`.
 - Explicit oracle: `run_reader_hardening.py:177`,
-  `run_journalctl_query_matrix.py:2508`, `journalctl_v262_cases.py:40`.
+  `run_journalctl_query_matrix.py:2508`, `journalctl_v262_cases.py:40`, and
+  `journalctl_timestamp_cases.py:65` (assignment; launches at 68, 141, 203),
+  which the query matrix also feeds `tools["stock_journalctl"]`.
 
 Affected contracts and surfaces:
 
