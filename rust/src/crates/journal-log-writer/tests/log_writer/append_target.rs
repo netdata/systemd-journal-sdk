@@ -51,6 +51,11 @@ fn append_target_cases() -> Vec<(&'static str, fn(&Path))> {
             patch(path, 200, &LIMIT.to_le_bytes())
         }),
         ("null-tail-boot-id", |path| patch(path, 56, &[0; 16])),
+        // This writer cannot restore sealing state, so it does not continue
+        // sealed files.
+        ("sealed", |path| {
+            patch(path, 8, &(read_u32(path, 8) | 1).to_le_bytes())
+        }),
     ]
 }
 
@@ -113,6 +118,83 @@ fn log_sets_aside_active_file_it_cannot_extend() {
                 "{name}, strict={strict}"
             );
         }
+    }
+}
+
+// Paired with Go TestRootLogArchivesActiveFileItCannotExtend. Root inventory
+// refuses disposed files, so a root Log archives the file instead.
+#[test]
+fn root_log_archives_active_file_it_cannot_extend() {
+    let mut cases: Vec<(&'static str, fn(&Path))> = vec![("beyond-4gib", |path| {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_len((1 << 32) + 4096).unwrap();
+    })];
+    cases.extend(append_target_cases().into_iter().filter(|(name, _)| {
+        // Root inventory already refused head realtime above tail realtime.
+        matches!(
+            *name,
+            "archived"
+                | "zero-head-realtime"
+                | "tail-realtime-limit"
+                | "tail-monotonic-limit"
+                | "null-tail-boot-id"
+                | "sealed"
+        )
+    }));
+    for (name, mutate) in cases {
+        let dir = TempDir::new().unwrap();
+        let machine_id = test_machine_id();
+        let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+        fs::create_dir_all(&journal_dir).unwrap();
+        let seqnum_id = uuid::Uuid::from_u128(0x606162636465666768696a6b6c6d6e6f);
+        let path = journal_dir.join("system.journal");
+        write_online_test_journal(
+            &path,
+            machine_id,
+            test_boot_id(),
+            seqnum_id,
+            1_700_020_300_000_000,
+        );
+        mutate(&path);
+        let archive = journal_dir.join(format!(
+            "system@{}-{:016x}-{:016x}.journal",
+            seqnum_id.simple(),
+            1,
+            read_u64(&path, 184)
+        ));
+
+        let config = test_config()
+            .with_strict_systemd_naming(true)
+            .with_root_retention(true);
+        let mut log = Log::new(dir.path(), config).unwrap_or_else(|err| panic!("{name}: {err:?}"));
+        assert!(disposed_journal_paths(&journal_dir).is_empty(), "{name}");
+        assert!(!path.exists(), "{name}: active path still exists");
+        let file = File::from_path(&archive).expect("archive path");
+        let journal = JournalFile::<Mmap>::open(&file, 4096)
+            .unwrap_or_else(|err| panic!("{name}: open archive {err:?}"));
+        let header = journal.journal_header_ref();
+        assert_eq!(
+            (header.state, header.n_entries),
+            (JournalState::Archived as u8, 2),
+            "{name}"
+        );
+        drop(journal);
+
+        let realtime = Microseconds::now().get() + 10_000_000;
+        log.write_entry_with_timestamps(
+            &[b"MESSAGE=root set aside"],
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(realtime)
+                .with_entry_monotonic_usec(3),
+        )
+        .unwrap_or_else(|err| panic!("{name}: {err:?}"));
+        let journal = JournalFile::<Mmap>::open(&File::from_path(&path).unwrap(), 4096).unwrap();
+        let header = journal.journal_header_ref();
+        assert_eq!(
+            (header.head_entry_seqnum, header.tail_entry_seqnum),
+            (3, 3),
+            "{name}"
+        );
     }
 }
 
