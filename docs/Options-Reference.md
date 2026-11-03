@@ -32,7 +32,7 @@ and Go APIs use native names, shown in the relevant tables.
 | Option | Default | Effect | Production Guidance |
 |---|---:|---|---|
 | regular format | yes | Stock systemd-compatible layout. | Use unless compact is explicitly desired and validated. |
-| compact format | no | Smaller compact object layout with 32-bit offsets and 4 GiB ceiling. | Good for footprint-sensitive backends; validate target reader support. |
+| compact format | no | Smaller compact object layout with 32-bit offsets. Both formats stop below 4 GiB. | Good for footprint-sensitive backends; validate target reader support. |
 | keyed hash | yes | Uses the journal file ID for DATA/FIELD hashing. | Required for current writer baseline. |
 | unkeyed append | unsupported for writers | Historical files may be readable but not safely appendable. | Directory writers rotate/dispose incompatible active files. |
 

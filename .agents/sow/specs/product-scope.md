@@ -395,8 +395,7 @@ Current shared writer layout contract:
   from the on-disk header, rather than exposing bytes from the object arena as
   newer header fields.
 - Compact journal files use `HEADER_INCOMPATIBLE_COMPACT`, 32-bit ENTRY and
-  ENTRY_ARRAY item offsets, the compact DATA payload offset, and the compact
-  4 GiB offset ceiling. Regular output remains the default. Writer APIs and
+  ENTRY_ARRAY item offsets and the compact DATA payload offset. Regular output remains the default. Writer APIs and
   test ingesters expose an explicit compact option.
 - Compact interoperability is validated by
   `tests/interoperability/run_compact_matrix.py`, which checks structural
@@ -630,6 +629,16 @@ Current shared high-level directory writer API slice:
   `1..2^55-1` or monotonic at or above 2^55 before mutation (Go
   `ErrTimestampOutOfRange`, Rust `JournalError::TimestampOutOfRange`); the
   writer stays usable and Log clocks do not move.
+- Rust and Go writers keep regular and compact files below 4 GiB. Before an
+  entry mutates the file, a bound computed from payload lengths (DATA, FIELD
+  and minimum ENTRY_ARRAY per item, the ENTRY, a minimum global array and any
+  due TAGs) must fit below `2^32 - 8 MiB`; otherwise Go returns
+  `ErrJournalFileFull` and Rust `JournalError::JournalFileFull`, nothing is
+  written and the writer stays usable. Entry arrays that would cross that
+  ceiling shrink to 4 slots, and arena growth and creation refuse sizes above
+  `2^32 - 1`. Log rotates once on this error when the active file holds
+  entries and retries the same entry; otherwise it returns the error with its
+  clocks unchanged.
 - Readers refuse header state values above ARCHIVED and sealed headers too
   short to hold `n_entry_arrays`, and ignore the 32-bit tail entry array hint
   when the declared arena ends above 4 GiB.

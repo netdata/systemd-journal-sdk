@@ -8,8 +8,6 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-1. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155; D1-D6
-   decided 2026-11-03).
 2. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
 3. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
    declares 256 KiB).
@@ -31,13 +29,12 @@ order; the user may reorder it.
     now, by user decision 2026-11-03).
 16. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
     decision N1, 2026-11-03).
+17. SOW-0172 - Rust Log fails late on a relative directory (tracked 2026-11-03
+    from SOW-0156; needs a user decision).
 
 ## Current
 
-- SOW-0156 - Fixed-Header Consistency Audit (in-progress): D1-D6 decided
-  2026-11-03; chunk 1 (append-open refusals, writer timestamp validation,
-  reader header checks, old large-file support) done; chunk 2 (4 GiB ceiling
-  for new files) next; N1 and N2 decided and implemented.
+None.
 
 ## Pending
 
@@ -68,8 +65,17 @@ order; the user may reorder it.
   by user decision.
 - SOW-0171 - Continue Sealing When Reopening A Sealed File: tracked
   2026-11-03 (SOW-0156 decision N1); not scheduled.
+- SOW-0172 - Rust Log Fails Late On A Relative Directory: tracked
+  2026-11-03 from SOW-0156; needs a user decision (A/B/C in the SOW).
 
 ## Recently Closed Or Completed
+
+- SOW-0156 - Fixed-Header Consistency Audit: completed 2026-11-03. Both SDKs
+  apply systemd v260.1's writable-open header rules and timestamp ranges, keep
+  new files below 4 GiB (`Log` rotates on the new file-full error), refuse
+  sealed append targets, archive unextendable root-mode actives, and still
+  read and continue every file earlier releases wrote. Follow-ups: SOW-0171,
+  SOW-0172.
 
 - SOW-0161 - File Indexer Source Posting Membership: completed 2026-11-01;
   source histograms count the captured ENTRY population once per entry.

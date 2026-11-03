@@ -2,11 +2,13 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: D1-D6 decided by the user on 2026-11-03; implementing in two chunks
-(chunk 1: D1, D2, D4, D6 and old-large-file support; chunk 2: the 4 GiB
-ceiling for new files). A1, A4 and A5 were implemented earlier and approved.
+Sub-state: completed 2026-11-03. D1-D6, N1 and N2 decided by the user and
+implemented in two chunks (chunk 1: D1, D2, D4, D6 and old-large-file
+support; chunk 2: the 4 GiB ceiling for new files). A1, A4 and A5 were
+implemented earlier and approved. Error names stay agent-chosen, pending user
+review.
 
 2026-10-31: SOW-0155 (writer tail offset representability) merged into this SOW
 by user decision. Its scope, evidence and open questions in
@@ -318,6 +320,8 @@ leaves the file unchanged.
   SOW. The Rust `Log` has no sealing option, so its sealed case patches the
   flag; that parity gap is recorded in SOW-0171.
 - Created SOW-0171 for N1 option B.
+- Created SOW-0172 for the Rust relative-directory finding (chunk 2 real-use
+  run).
 - Same-path review: in Go, `replaceActiveFile` also serves the stale
   chain-named ONLINE path; in root mode it now archives where Rust's
   `replace_strict_online_chain_file` still sets aside. Neither runs in root
@@ -325,6 +329,45 @@ leaves the file unchanged.
   `NewLog`, Rust `build_startup_state`), and inventory already refuses a
   chain-named ONLINE file there ("archive name/state disagrees with
   header", confirmed by a probe test, not kept). No code was added for it.
+- Committed N1/N2 (5463664).
+- Chunk 2, Go: `writer.go` `ErrJournalFileFull`, `journalAppendCeiling`
+  (`2^32 - 8 MiB`: the arena grows in 8 MiB steps, so the last object must end
+  there for the file to stay at or below `2^32 - 1`), `boundEntryGrowth`,
+  `entryArrayCapacity` and the pre-check in `appendPayloads`; the three
+  array-doubling sites in `writer_arrays.go`; creation and `ensureArenaSize`
+  in `writer_init.go` refuse sizes above `2^32 - 1` for both layouts; `log.go`
+  rotates once on a full active file that holds entries and retries.
+- Chunk 2, Rust: `error.rs` `JournalFileFull`; `writer.rs`
+  `JOURNAL_APPEND_CEILING`, `bound_entry_growth`, `entry_array_capacity`,
+  the pre-check in `add_entry_fields_with_options` (fields buffered in a
+  64-slot stack array, heap only beyond that) and the growth refusal in
+  `object_added`; `writer_entry_arrays.rs` doubling sites; `file_mut.rs`
+  creation; `journal-log-writer` `mod.rs` rotate-and-retry in both write
+  paths. Rust `capture_dual_timestamp` advances the clocks before the write,
+  so a final `JournalFileFull` restores them, as Go never moves its clocks
+  on a failed append.
+- Refinements of plan items 6-8 found while implementing: the ceiling is
+  `2^32 - 8 MiB`, not 4 GiB, for the reason above; TAGs are bounded as the
+  epochs the entry crosses (Rust adds one when the first TAG is still
+  unwritten) rather than "up to two", since a late entry can cross many
+  epochs; `Log` retries only when the full file holds entries, so an entry
+  too large for an empty file is returned instead of rotating forever.
+- Existing test changes: Go `TestWriterSealingBoundaryRefusedBeforeMutation`
+  and Rust `compact_preflight` now expect the new error, an unchanged file and
+  a usable writer. Rust `live_readers_open_and_follow_during_arena_growth`
+  used to observe the writer through the field iterator; the pre-check now
+  drains the iterator first, so it uses the test-only `AFTER_ENTRY_ITEM`
+  hook instead.
+- New paired tests: Go `writer_file_full_test.go`
+  (`TestAppendRefusesEntryThatCouldReachFourGiB`,
+  `TestEntryArraysStopDoublingNearTheCeiling`,
+  `TestLogContinuesInNewFileWhenActiveFileIsFull`,
+  `TestLogRefusesEntryThatDoesNotFitAnEmptyFile`); Rust `file_tests.rs`
+  `append_refuses_entry_that_could_reach_four_gib`,
+  `entry_arrays_stop_doubling_near_the_ceiling`, and `journal-log-writer`
+  `log_continues_in_new_file_when_active_file_is_full`,
+  `log_refuses_entry_that_does_not_fit_an_empty_file` (also asserts the
+  clocks did not move).
 
 ## Validation
 
@@ -372,6 +415,76 @@ Chunk 1 (2026-11-03):
   Rust `object.rs`, `indexed_snapshot.rs`, `verify_graph/strict.rs`) goes
   through the 4 GiB guard; the writers' own use is chunk 2.
 
+Chunk 2 (2026-11-03):
+
+- `go test ./...` and `cargo test --workspace` pass; rustfmt and gofmt clean.
+- Real use (`.local/sow0156/fill*`, synthetic identities): a strict-naming
+  `Log` with no rotation limits, fed 1 MiB random entries.
+  - Go: 22 files, 87,457 rows. Every rotated file is exactly 4,286,578,688
+    bytes (`2^32 - 8 MiB`) with 4,082 rows; seqnums run 1..87,457 with no gap
+    across 21 rotations. The run was stopped by signal, leaving the active
+    file online.
+  - Rust: the first file is exactly 4,286,578,688 bytes with rows 1..4,082;
+    the next file continues at 4,083.
+  - Cross-read: Go and Rust readers each read every file of both runs with the
+    same row counts and seqnum ranges, and Go `VerifyIndex` and Rust
+    `verify_index` pass on all 24 files, including the interrupted active
+    file.
+- Benchmarks (writer-core, 200k rows, 32 fields, raw-payload and
+  structured-field, regular and compact, Rust and Go; base = HEAD before
+  chunk 2): six interleaved base/new pairs with live publication every 1,000
+  entries (`.local/sow0156/bench_paired.sh`). The host was loaded (load
+  average 40-54 from unrelated work), so wall-clock rows/sec swung up to
+  +/-30-100% within a pair and is inconclusive in both directions; a first
+  sequential run showed the baseline alone moving 22-30% between rounds.
+  Paired user-CPU medians stay within noise in every configuration (Go
+  -1.0% to +4.3%, Rust -8.1% to +3.9%, mixed signs). The largest adverse
+  wall-clock median, Rust raw-payload compact (-22.9%), comes from system
+  time, which follows minor page faults that are bimodal (about 0.5M or 1.1M
+  per run) in both trees; file size, mmap remap and map counts are identical
+  in every pair, so the writer did the same I/O. Review agrees: the
+  pre-check adds one pass of additions per field and, in Rust, a 64-slot
+  stack buffer per entry, against tens of microseconds per entry; the clamp
+  runs only when an array doubles. No regression is shown; none is claimed
+  absent beyond this noise floor.
+- Same-failure search: every array allocation that can grow capacity (Go
+  `writer_arrays.go` three sites, Rust `writer_entry_arrays.rs` three sites)
+  goes through the clamp; DATA, FIELD, ENTRY and TAG allocations are covered
+  by the pre-check bound; arena growth and creation refuse sizes above
+  `2^32 - 1` in both languages.
+- Finding outside scope: the Rust `Log` accepts a relative directory but
+  fails on the first write, where Go works. Pre-existing and user-visible, so
+  it is tracked in SOW-0172 for a decision.
+- Runtime purity: the chunk 2 diff adds no process launch or host-path
+  access.
+- Matrices: byte identity (`all_equal: true`), compression (24/24), compact
+  (20/20), live (18/18), verify (PASS) and root-retention parity (PASS); the
+  journalctl query matrix passes against the systemd v262 oracle build. Two
+  harness-environment notes: the dataset ingester builds Go with its own
+  `.local/gomodcache`, so offline runs need `GOPROXY` pointed at a populated
+  local module cache (`file://.../cache/download`); and the query matrix
+  needs `--journalctl PATH` since SOW-0169's decision.
+- `verify_examples.py` passes 35 of 35; `check_wiki_docs.py` validates 16
+  pages.
+- Clippy: two `type_complexity` warnings introduced by this SOW's tests
+  (`append_target.rs`) were fixed with a type alias; the remaining warnings
+  are outside the lines this SOW changed.
+- Self-review of chunk 2 (whole changed surface, both languages): pre-check
+  ordering after option preparation and before the first mutation; Go
+  resets the reservation by `defer`, Rust after the call returns on every
+  path; the clamp only shrinks capacity, never below the reserved minimum;
+  TAG counts match each writer's sealing loop (Go writes its first TAG at
+  creation, Rust may write it with the first entry); `Log` retries once, with
+  the same timestamps, and rotation errors return as from the existing
+  pre-append rotation. No blocking findings remain.
+- Artifacts, chunk 2: `docs/Writer-APIs.md` (the ceiling, the error, the
+  `Log` retry), `docs/Rust-API.md` (unreleased `JournalFileFull`),
+  `docs/Options-Reference.md` (both formats stop below 4 GiB) and
+  `product-scope.md` (writer rule; the compact-only ceiling wording
+  removed). The READMEs, `docs/Indexed-Snapshots.md` and the compatibility
+  skill stay accurate: they describe reading files above 4 GiB, which is
+  unchanged. `AGENTS.md` needs no change. `SOW-status.md` is updated.
+
 Partial (A1, A4, A5):
 
 - The three Rust tests fail with the production changes reverted (append-open
@@ -409,16 +522,33 @@ Sensitive data gate:
 
 ## Outcome
 
-In progress. Chunk 1, N1 = A and N2 = A are implemented and validated; chunk 2
-is next.
+Completed. Both SDKs now apply systemd v260.1's writable-open header rules,
+refuse timestamps systemd would not write, keep new regular and compact files
+below 4 GiB with a pre-mutation `ErrJournalFileFull` /
+`JournalError::JournalFileFull` that `Log` handles by rotating, and keep
+reading and continuing every file earlier SDK releases wrote. Sealed files are
+refused for append (continuation tracked in SOW-0171); root-mode `Log`s
+archive an active they cannot extend.
 
 ## Lessons Extracted
 
 Derive checks from format invariants, including relationships between fields.
 
+- Test earlier-release compatibility with files written by the released code,
+  not by patched headers: the v0.10.0 large file exposed the truncated-hint
+  behavior that no unit test had shown.
+- Benchmark on a loaded host with interleaved pairs and read user CPU and
+  deterministic counters (file size, remaps, faults) before trusting
+  wall-clock deltas.
+
 ## Followup
 
-No additional work item; this SOW is the agreed follow-up.
+- SOW-0171 (pending): continue sealing when reopening a sealed file (N1
+  option B) and the Rust `Log` sealing-option parity question.
+- SOW-0172 (pending): Rust `Log` fails late on a relative directory; needs a
+  user decision.
+- Error names `TimestampOutOfRange` and `JournalFileFull` are agent-chosen;
+  the user reviews them with the PR (no further work unless renamed).
 
 ## Regression Log
 
