@@ -40,7 +40,7 @@ func (w *Writer) appendToEntryArray(entryOffset uint64) error {
 		return w.appendToExistingEntryArrayTail(tailOffset, tailEntries, entryOffset)
 	}
 
-	newOffset, err := w.allocateOffsetArray(nextEntryArrayCapacity(w.header.nEntries, cap))
+	newOffset, err := w.allocateOffsetArray(w.entryArrayCapacity(nextEntryArrayCapacity(w.header.nEntries, cap)))
 	if err != nil {
 		return err
 	}
@@ -356,7 +356,7 @@ func (w *Writer) appendToExistingCompactDataTail(tailOffset, tailEntries, entryO
 }
 
 func (w *Writer) appendNewCompactDataTail(tailOffset, currentCount, cap, entryOffset uint64) (uint64, uint64, bool, error) {
-	newOffset, err := w.allocateOffsetArray(nextEntryArrayCapacity(currentCount, cap))
+	newOffset, err := w.allocateOffsetArray(w.entryArrayCapacity(nextEntryArrayCapacity(currentCount, cap)))
 	if err != nil {
 		return 0, 0, false, err
 	}
@@ -420,7 +420,7 @@ func (w *Writer) appendToDataEntryArray(arrayOffset, currentCount, entryOffset u
 		}
 		remaining -= cap
 		if header.nextArrayOffset == 0 {
-			newOffset, err := w.allocateOffsetArray(nextEntryArrayCapacity(currentCount, cap))
+			newOffset, err := w.allocateOffsetArray(w.entryArrayCapacity(nextEntryArrayCapacity(currentCount, cap)))
 			if err != nil {
 				return 0, 0, err
 			}

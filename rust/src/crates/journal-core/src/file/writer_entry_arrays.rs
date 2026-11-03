@@ -292,8 +292,11 @@ impl JournalWriter {
         tail_capacity: u64,
         entry_offset: NonZeroU64,
     ) -> Result<()> {
-        let new_capacity =
-            NonZeroU64::new(Self::next_entry_array_capacity(entry_count, tail_capacity)).unwrap();
+        let new_capacity = NonZeroU64::new(self.entry_array_capacity(
+            journal_file,
+            Self::next_entry_array_capacity(entry_count, tail_capacity),
+        ))
+        .unwrap();
         let new_array_offset =
             self.allocate_array_with_first(journal_file, new_capacity, entry_offset)?;
         {
@@ -365,9 +368,9 @@ impl JournalWriter {
             Ok((tail_offset, entries_in_tail + 1))
         } else {
             // Need to create a new array
-            let new_capacity = NonZeroU64::new(Self::next_entry_array_capacity(
-                current_count,
-                tail_capacity,
+            let new_capacity = NonZeroU64::new(self.entry_array_capacity(
+                journal_file,
+                Self::next_entry_array_capacity(current_count, tail_capacity),
             ))
             .unwrap();
             let new_array_offset =
@@ -424,9 +427,9 @@ impl JournalWriter {
         tail_capacity: u64,
         entry_offset: NonZeroU64,
     ) -> Result<Option<(NonZeroU64, u64)>> {
-        let new_capacity = NonZeroU64::new(Self::next_entry_array_capacity(
-            current_count,
-            tail_capacity,
+        let new_capacity = NonZeroU64::new(self.entry_array_capacity(
+            journal_file,
+            Self::next_entry_array_capacity(current_count, tail_capacity),
         ))
         .unwrap();
         let new_array_offset =
