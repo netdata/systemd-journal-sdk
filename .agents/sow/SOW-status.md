@@ -10,7 +10,8 @@ order; the user may reorder it.
 
 1. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
 2. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
-3. SOW-0160 - Go XZ reader dictionary allocation (analysis done; needs user decision D1).
+3. SOW-0160 - Go XZ reader dictionary allocation (analysis done; needs user
+   decision D1).
 4. SOW-0122 - journalctl performance follow-ups.
 5. SOW-0097 - Go duplication debt.
 6. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
