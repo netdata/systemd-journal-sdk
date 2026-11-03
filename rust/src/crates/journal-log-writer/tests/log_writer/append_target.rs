@@ -20,9 +20,12 @@ fn read_u64(path: &Path, offset: usize) -> u64 {
 
 const LIMIT: u64 = 1 << 55;
 
+/// A named patch that makes a valid file one the writer must not extend.
+type AppendTargetCase = (&'static str, fn(&Path));
+
 /// Files systemd's writer refuses to extend and that earlier SDK releases
 /// could leave behind.
-fn append_target_cases() -> Vec<(&'static str, fn(&Path))> {
+fn append_target_cases() -> Vec<AppendTargetCase> {
     vec![
         ("header-size-280", |path| {
             let arena = read_u64(path, 96);
@@ -125,7 +128,7 @@ fn log_sets_aside_active_file_it_cannot_extend() {
 // refuses disposed files, so a root Log archives the file instead.
 #[test]
 fn root_log_archives_active_file_it_cannot_extend() {
-    let mut cases: Vec<(&'static str, fn(&Path))> = vec![("beyond-4gib", |path| {
+    let mut cases: Vec<AppendTargetCase> = vec![("beyond-4gib", |path| {
         let file = fs::OpenOptions::new().write(true).open(path).unwrap();
         file.set_len((1 << 32) + 4096).unwrap();
     })];

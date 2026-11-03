@@ -711,7 +711,14 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 		return err
 	}
 	fields = appendLogMetadataFields(fields, l.entryBootIDForAppend(opts), opts.SourceRealtimeUsec)
-	if err := l.writer.Append(fields, opts); err != nil {
+	err = l.writer.Append(fields, opts)
+	if l.activeFileFull(err) {
+		if err := l.rotate(opts); err != nil {
+			return err
+		}
+		err = l.writer.Append(fields, opts)
+	}
+	if err != nil {
 		return l.recordFailure(err)
 	}
 	l.captureAppendState()
@@ -753,7 +760,14 @@ func (l *Log) AppendRaw(payloads [][]byte, opts EntryOptions) error {
 		return err
 	}
 	payloads = appendLogMetadataPayloads(payloads, l.entryBootIDForAppend(opts), opts.SourceRealtimeUsec)
-	if err := l.writer.AppendRaw(payloads, opts); err != nil {
+	err = l.writer.AppendRaw(payloads, opts)
+	if l.activeFileFull(err) {
+		if err := l.rotate(opts); err != nil {
+			return err
+		}
+		err = l.writer.AppendRaw(payloads, opts)
+	}
+	if err != nil {
 		return l.recordFailure(err)
 	}
 	l.captureAppendState()
@@ -993,6 +1007,12 @@ func (l *Log) rotate(entryOpts EntryOptions) error {
 	// policy's retry behavior after a cleanup error.
 	l.retentionWriter = l.writer
 	return l.enforceRetention(l.activePath())
+}
+
+// activeFileFull reports whether the entry should be retried once in a new
+// file. An entry that does not fit an empty file is refused.
+func (l *Log) activeFileFull(err error) bool {
+	return errors.Is(err, ErrJournalFileFull) && l.writer.header.nEntries > 0
 }
 
 func (l *Log) captureAppendState() {

@@ -21,6 +21,12 @@ pub enum JournalError {
     #[error("entry timestamp out of range")]
     TimestampOutOfRange,
 
+    /// The entry could grow the file to 4 GiB, the limit of compact offsets and
+    /// of the 32-bit tail entry array hint. Returned before any file mutation;
+    /// the writer stays usable. Continue in a new file; `Log` does that itself.
+    #[error("journal file full")]
+    JournalFileFull,
+
     #[error("invalid object type")]
     InvalidObjectType,
 

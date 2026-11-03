@@ -956,34 +956,51 @@ fn live_readers_open_and_follow_during_arena_growth() {
                 .add_entry(&mut file, &[b"MESSAGE=seed"], 1_700_000_000_000_001, 1)
                 .unwrap();
             let open = || JournalFile::<Mmap>::open_path_with_strategy(&path, 64 * 1024, strategy);
-            let existing = open().unwrap();
+            let existing = std::rc::Rc::new(open().unwrap());
             assert_live_growth_entries(&existing, 1);
             let mut payload = b"MESSAGE=".to_vec();
             payload.resize(9 * 1024 * 1024, b'x');
-            let mut observed_growth = false;
-            let mut during = None;
-            // The iterator resumes after DATA preparation, before ENTRY publication.
-            let fields =
-                std::iter::once(EntryField::raw(&payload)).chain(std::iter::from_fn(|| {
-                    let header = existing.journal_header_ref();
-                    assert_eq!(header.n_entries, 1);
-                    assert!(
-                        header.header_size + header.arena_size
-                            > std::fs::metadata(&path).unwrap().len()
-                    );
-                    observed_growth = true;
-                    assert_live_growth_entries(&existing, 1);
-                    let opened =
-                        open().expect("open while writer has prepared a larger DATA object");
-                    assert_live_growth_entries(&opened, 1);
-                    during = Some(opened);
-                    None
-                }));
-            writer
-                .add_entry_fields(&mut file, fields, 1_700_000_000_000_002, 2)
-                .unwrap();
-            assert!(observed_growth);
-            assert_live_growth_entries(during.as_ref().unwrap(), 2);
+            let observed_growth = std::rc::Rc::new(std::cell::Cell::new(false));
+            let during = std::rc::Rc::new(std::cell::RefCell::new(None));
+            // The hook runs after DATA preparation, before ENTRY publication.
+            {
+                let (existing, observed_growth, during, path) = (
+                    existing.clone(),
+                    observed_growth.clone(),
+                    during.clone(),
+                    path.clone(),
+                );
+                crate::file::writer::AFTER_ENTRY_ITEM.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        let header = existing.journal_header_ref();
+                        assert_eq!(header.n_entries, 1);
+                        assert!(
+                            header.header_size + header.arena_size
+                                > std::fs::metadata(&path).unwrap().len()
+                        );
+                        observed_growth.set(true);
+                        assert_live_growth_entries(&existing, 1);
+                        let opened = JournalFile::<Mmap>::open_path_with_strategy(
+                            &path,
+                            64 * 1024,
+                            strategy,
+                        )
+                        .expect("open while writer has prepared a larger DATA object");
+                        assert_live_growth_entries(&opened, 1);
+                        *during.borrow_mut() = Some(opened);
+                    }))
+                });
+            }
+            let result = writer.add_entry_fields(
+                &mut file,
+                [EntryField::raw(&payload)],
+                1_700_000_000_000_002,
+                2,
+            );
+            crate::file::writer::AFTER_ENTRY_ITEM.with(|hook| *hook.borrow_mut() = None);
+            result.unwrap();
+            assert!(observed_growth.get());
+            assert_live_growth_entries(during.borrow().as_ref().unwrap(), 2);
             assert_live_growth_entries(&existing, 2);
             assert_live_growth_entries(&open().unwrap(), 2);
         }
@@ -1408,4 +1425,68 @@ fn append_open_refuses_sealed_file() {
     );
     assert_eq!(std::fs::read(&path).expect("read after"), before);
     JournalFile::<crate::file::Mmap>::open(&repo_file, 4096).expect("reader open");
+}
+
+// Paired with Go TestAppendRefusesEntryThatCouldReachFourGiB. Moves the
+// in-memory append offset to the ceiling instead of writing 4 GiB.
+#[test]
+fn append_refuses_entry_that_could_reach_four_gib() {
+    use crate::file::writer::JOURNAL_APPEND_CEILING;
+    for compact in [false, true] {
+        let dir = TempDir::new().expect("create temp dir");
+        let (path, repo_file) = header_gate_journal(&dir, compact);
+        let mut journal_file =
+            JournalFile::<MmapMut>::open_for_append(&repo_file, 8 * 1024 * 1024).expect("open");
+        let mut writer = JournalWriter::new(&mut journal_file, 2, test_uuid(4)).expect("writer");
+        journal_file.sync().expect("sync");
+        let fields = [crate::file::EntryField::raw(b"MESSAGE=second")];
+        let bound = writer
+            .bound_entry_growth(&journal_file, &fields, 2_000_000)
+            .expect("bound");
+        let before = std::fs::read(&path).expect("read before");
+        let append_offset = writer.append_offset;
+        // One byte short of the room the entry may need.
+        writer.append_offset =
+            std::num::NonZeroU64::new(JOURNAL_APPEND_CEILING - bound + 8).unwrap();
+        let err = writer
+            .add_entry_fields(&mut journal_file, fields, 2_000_000, 200)
+            .expect_err("entry must not fit");
+        assert!(
+            matches!(err, JournalError::JournalFileFull),
+            "compact={compact}: {err:?}"
+        );
+        assert!(!writer.is_poisoned(), "compact={compact}");
+        journal_file.sync().expect("sync");
+        assert_eq!(
+            std::fs::read(&path).expect("read after"),
+            before,
+            "compact={compact}"
+        );
+        writer.append_offset = append_offset;
+        writer
+            .add_entry_fields(&mut journal_file, fields, 2_000_000, 200)
+            .unwrap_or_else(|err| panic!("compact={compact}: append after refusal {err:?}"));
+    }
+}
+
+// Paired with Go TestEntryArraysStopDoublingNearTheCeiling.
+#[test]
+fn entry_arrays_stop_doubling_near_the_ceiling() {
+    use crate::file::writer::JOURNAL_APPEND_CEILING;
+    let dir = TempDir::new().expect("create temp dir");
+    let (_, repo_file) = header_gate_journal(&dir, false);
+    let mut journal_file =
+        JournalFile::<MmapMut>::open_for_append(&repo_file, 8 * 1024 * 1024).expect("open");
+    let mut writer = JournalWriter::new(&mut journal_file, 2, test_uuid(4)).expect("writer");
+    writer.entry_growth_bound = 4096;
+    writer.append_offset = std::num::NonZeroU64::new(1 << 20).unwrap();
+    assert_eq!(writer.entry_array_capacity(&journal_file, 1024), 1024);
+    // Room for the reserved growth plus 1023 items, not 1024.
+    writer.append_offset =
+        std::num::NonZeroU64::new(JOURNAL_APPEND_CEILING - 4096 - (24 + 1023 * 8)).unwrap();
+    assert_eq!(writer.entry_array_capacity(&journal_file, 1023), 1023);
+    assert_eq!(writer.entry_array_capacity(&journal_file, 1024), 4);
+    // Outside an append no reservation applies.
+    writer.entry_growth_bound = 0;
+    assert_eq!(writer.entry_array_capacity(&journal_file, 1024), 1024);
 }

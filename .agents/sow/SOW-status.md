@@ -8,36 +8,33 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-1. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155; D1-D6
-   decided 2026-11-03).
-2. SOW-0161 - File indexer source posting membership.
-3. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
+1. SOW-0161 - File indexer source posting membership.
+2. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
    declares 256 KiB).
-4. SOW-0122 - journalctl performance follow-ups.
-5. SOW-0097 - Go duplication debt.
-6. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
-7. SOW-0153 - Consumer docs release clarity.
-8. SOW-0125 - Netdata filter operators (needs design decisions first).
-9. SOW-0162 - Publishable C reader crate.
-10. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
-    (decided 2026-11-03: required `--journalctl PATH`).
-11. SOW-0163 - v0.11.0 release.
-12. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-13. SOW-0165 - Fresh-chain realtime default parity (decided 2026-11-03: Rust
+3. SOW-0122 - journalctl performance follow-ups.
+4. SOW-0097 - Go duplication debt.
+5. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
+6. SOW-0153 - Consumer docs release clarity.
+7. SOW-0125 - Netdata filter operators (needs design decisions first).
+8. SOW-0162 - Publishable C reader crate.
+9. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
+   (decided 2026-11-03: required `--journalctl PATH`).
+10. SOW-0163 - v0.11.0 release.
+11. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
+12. SOW-0165 - Fresh-chain realtime default parity (decided 2026-11-03: Rust
     adopts Go's zero floor after a Netdata caller check).
-14. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
+13. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
     2026-11-03).
-15. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
+14. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
     now, by user decision 2026-11-03).
-16. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
+15. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
     decision N1, 2026-11-03).
+16. SOW-0172 - Rust Log fails late on a relative directory (tracked 2026-11-03
+    from SOW-0156; needs a user decision).
 
 ## Current
 
-- SOW-0156 - Fixed-Header Consistency Audit (in-progress): D1-D6 decided
-  2026-11-03; chunk 1 (append-open refusals, writer timestamp validation,
-  reader header checks, old large-file support) done; chunk 2 (4 GiB ceiling
-  for new files) next; N1 and N2 decided and implemented.
+None.
 
 ## Pending
 
@@ -69,8 +66,17 @@ order; the user may reorder it.
   by user decision.
 - SOW-0171 - Continue Sealing When Reopening A Sealed File: tracked
   2026-11-03 (SOW-0156 decision N1); not scheduled.
+- SOW-0172 - Rust Log Fails Late On A Relative Directory: tracked
+  2026-11-03 from SOW-0156; needs a user decision (A/B/C in the SOW).
 
 ## Recently Closed Or Completed
+
+- SOW-0156 - Fixed-Header Consistency Audit: completed 2026-11-03. Both SDKs
+  apply systemd v260.1's writable-open header rules and timestamp ranges, keep
+  new files below 4 GiB (`Log` rotates on the new file-full error), refuse
+  sealed append targets, archive unextendable root-mode actives, and still
+  read and continue every file earlier releases wrote. Follow-ups: SOW-0171,
+  SOW-0172.
 
 - SOW-0137 - Rust Writer Residual Array-Open Performance: completed 2026-11-01.
   One fewer offset-array open per entry and per regular DATA link; regular
