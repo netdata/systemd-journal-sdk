@@ -135,9 +135,33 @@ deterministic varied synthetic log text, not real journals):
   is about the declared dictionary (0.29 / 1.08 / 8.42 MB), and after the reader
   is released it returns to baseline (within 5 KB) for all three sizes. The SDK
   drops the reader after each DATA expansion, so the cost is per-decode
-  allocation and peak, not retained memory. The 8 MiB declaration also costs stock readers, since
-liblzma sizes its decoder from the same header. Reuse is not available:
-the library has no reset API for `xz.Reader` or `lzma.Reader2`.
+  allocation and peak, not retained memory. Reuse is not available: the
+  library has no reset API for `xz.Reader` or `lzma.Reader2`.
+- Other readers (not measured here; inference): liblzma (stock `journalctl`)
+  and the Rust reader (`lzma-rust2`) also size their LZMA2 dictionary from
+  the stream's declared value, so they would likely benefit too. D1 does not
+  depend on this: option A is justified by the Go measurements above and by
+  Go/Rust writer agreement. Validation under A measures the Rust reader
+  before and after.
+
+Reproduction (the scratch harness is not committed; its shape is recorded
+here so the numbers can be regenerated):
+
+- A standalone Go test package that depends only on
+  `github.com/ulikunitz/xz` (the SDK's own XZ dependency). It compresses with
+  `xz.WriterConfig{NoCheckSum: true, DictCap: D}` for D in 64 KiB, 256 KiB,
+  1 MiB and 8 MiB, and decodes with `xz.ReaderConfig{DictCap:
+  lzma.MinDictCap}.NewReader`, the reader configuration that `MinDictCap`
+  shows has no effect.
+- Payloads: one 600-byte log line for the first table; for the size table,
+  deterministic synthetic flow-log text from a fixed-seed xorshift generator,
+  truncated to 600 B, 4 KiB, 64 KiB, 256 KiB, 1 MiB and 4 MiB.
+- Per-decode cost: `go test -bench . -benchmem -count 3`; compressed sizes:
+  `len()` of each stream; retained memory: `runtime.MemStats.HeapAlloc`
+  after a GC, before the reader, after reading one byte, and after the reader
+  is released.
+- Under A, the implementation commits an equivalent decode benchmark beside
+  the Go XZ code, so the before/after numbers come from repository code.
 
 Decision D1 (decided 2026-11-03: A; changes Go writer output bytes):
 
@@ -201,6 +225,8 @@ Implementation plan:
 1. Set `DictCap` to 256 KiB in the Go writer's XZ configuration
    (`go/journal/writer_compression.go` `xzCompress`) and update any test or
    fixture that pins Go XZ bytes.
+2. Commit a Go decode benchmark beside the XZ code (declared 256 KiB against
+   8 MiB) and record the before/after numbers here.
 
 Validation plan:
 

@@ -80,6 +80,7 @@ Open decisions: none for D1-D6. New finding N1 (below) is parked for the user.
 Implementation plan 2026-11-03 (both languages, paired tests for every rule):
 
 Chunk 1:
+
 1. D1 append-open (Go `validateAppendHeader`/`newAppendWriter`, Rust
    `JournalFile::open_for_append`): refuse header_size != 272, unknown
    compatible flags, missing TAIL_ENTRY_BOOT_ID, ARCHIVED state, and (as the
@@ -110,6 +111,7 @@ Chunk 1:
    sealed headers smaller than 240 bytes (no n_entry_arrays).
 
 Chunk 2 (D3, decision 20.3A, regular and compact files):
+
 6. Before any write, the writer bounds the entry's growth from payload sizes
    alone: every item as a new DATA and FIELD object, the entry object, up to
    two TAG objects when sealing, and one minimum (4-slot) entry array per item
@@ -125,6 +127,7 @@ Chunk 2 (D3, decision 20.3A, regular and compact files):
 8. `Log` (both languages) rotates on that error and retries the entry once.
 
 Validation plan additions:
+
 - Release-compatibility fixtures written by the v0.10.0 writers (built from
   the tag into `.local/`, no worktree): regular, compact, compressed and
   sealed files, files with out-of-range caller timestamps, an ARCHIVED file
