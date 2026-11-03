@@ -34,7 +34,7 @@ order; the user may reorder it.
     cheap polling first).
 18. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
     now, by user decision 2026-11-03).
-16. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
+19. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
     decision N1, 2026-11-03).
 
 ## Current
