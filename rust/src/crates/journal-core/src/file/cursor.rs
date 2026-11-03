@@ -219,14 +219,32 @@ impl JournalCursor {
             .array_cursor
             .as_ref()
             .ok_or(JournalError::UnsetCursor)?;
-        let cursor = match direction {
+        let next = match direction {
             Direction::Forward => cursor.next(journal_file)?,
             Direction::Backward => cursor.previous(journal_file)?,
         };
-        let Some(cursor) = cursor else {
-            return Ok(None);
+        let Some(next) = next else {
+            return self.array_cursor_end(journal_file, direction);
         };
-        self.store_array_cursor_value(journal_file, cursor)
+        self.store_array_cursor_value(journal_file, next)
+    }
+
+    // The array cursor keeps the population it was resolved against; like
+    // libsystemd, continue into entries appended since then.
+    #[cold]
+    #[inline(never)]
+    fn array_cursor_end<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        direction: Direction,
+    ) -> Result<Option<Location>> {
+        let list_items = self.array_cursor.as_ref().map_or(0, |c| c.list_items());
+        if direction == Direction::Forward
+            && journal_file.reader_entry_count() as usize != list_items
+        {
+            return self.resolve_missing_array_cursor(journal_file, direction);
+        }
+        Ok(None)
     }
 
     #[cold]

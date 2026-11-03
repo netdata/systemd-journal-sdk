@@ -281,8 +281,10 @@ Use when changing ordinary traversal, compressed readers, recovery, cursors or f
   can exercise rollback but does not establish a production repair contract.
   Pending builders and installed expressions
   must retain retry state and known DATA identities, including empty lists.
-  A failed backward preparation must retain captured populations rather than
-  reread DATA counts after a later append. Check public expression composition
+  Installed filters must observe a healthy append, including a value absent at
+  install time and an append after a failed backward preparation, as libsystemd
+  does (SOW-0045); a raw Rust `FilterExpr` stays a resolved snapshot. Check
+  public expression composition
   where exposed. Clearing matches must rewind file/directory/facade readers
   without an explicit seek; test this after multiple sparse matches.
 - Filter position controls must cover installing at a resolved row, reversal

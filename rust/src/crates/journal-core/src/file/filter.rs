@@ -353,11 +353,20 @@ pub enum LogicalOp {
     Disjunction,
 }
 
+/// One committed match or operation, in the order a filter was built, so a
+/// reader can rebuild it against a grown entry population.
+#[derive(Clone, Debug)]
+pub(crate) enum FilterSource {
+    Match(Vec<u8>),
+    Operation(LogicalOp),
+}
+
 #[derive(Debug)]
 pub struct JournalFilter {
     level0: Vec<FilterExpr>,
     level1: Vec<FilterExpr>,
     current_matches: Vec<Vec<u8>>,
+    source: Vec<FilterSource>,
 }
 
 impl Default for JournalFilter {
@@ -366,6 +375,7 @@ impl Default for JournalFilter {
             level0: Vec::new(),
             level1: Vec::new(),
             current_matches: Vec::new(),
+            source: Vec::new(),
         }
     }
 }
@@ -447,7 +457,9 @@ impl JournalFilter {
             elements.push(self.convert_key_group(journal_file, start, i)?);
         }
 
-        self.current_matches.clear();
+        // Converted payloads move into the source instead of being dropped.
+        self.source
+            .extend(self.current_matches.drain(..).map(FilterSource::Match));
         Ok(Self::collapse_filter_elements(&mut elements))
     }
 
@@ -496,7 +508,13 @@ impl JournalFilter {
         if op == LogicalOp::Conjunction {
             self.commit_level1();
         }
+        self.source.push(FilterSource::Operation(op));
         Ok(())
+    }
+
+    /// Takes the committed matches and operations recorded so far.
+    pub(crate) fn take_source(&mut self) -> Vec<FilterSource> {
+        std::mem::take(&mut self.source)
     }
 
     pub fn build<M: MemoryMap>(&mut self, journal_file: &JournalFile<M>) -> Result<FilterExpr> {
