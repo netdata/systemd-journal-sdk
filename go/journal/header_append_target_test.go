@@ -188,6 +188,119 @@ func TestLogSetsAsideActiveFileItCannotExtend(t *testing.T) {
 	}
 }
 
+// Root inventory refuses disposed files, so a root Log archives an active file
+// it cannot extend instead. Covers the targets earlier releases could write.
+func TestRootLogArchivesActiveFileItCannotExtend(t *testing.T) {
+	cases := []appendTargetCase{{"beyond-4gib", func(t *testing.T, path string) {
+		if err := os.Truncate(path, int64(journalCompactSizeMax)+pageSize); err != nil {
+			t.Fatal(err)
+		}
+	}}}
+	for _, c := range appendTargetCases() {
+		switch c.name {
+		// Root inventory already refused head realtime above tail realtime.
+		case "archived", "zero-head-realtime", "tail-realtime-limit", "tail-monotonic-limit", "null-tail-boot-id":
+			cases = append(cases, c)
+		}
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			config := rootTestConfig()
+			first := mustNewLogForTest(t, root, config, "first")
+			appendLogRange(t, first, "root-set-aside", "", 0, 2, 1_700_002_274_000_000)
+			syncLogForTest(t, first, "first")
+			activePath := forceCloseActiveWriter(t, first, "first")
+			c.patch(t, activePath)
+			header := readJournalSnapshot(t, activePath).header
+			archivePath := first.archivePathFor(header)
+
+			second := mustNewLogForTest(t, root, config, "second")
+			assertDisposedJournalCount(t, second.JournalDirectory(), 0)
+			if _, err := os.Stat(activePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("active path still exists: %v", err)
+			}
+			archived := readJournalSnapshot(t, archivePath).header
+			if archived.state != stateArchived || archived.nEntries != 2 {
+				t.Fatalf("archive state=%d entries=%d, want archived with 2", archived.state, archived.nEntries)
+			}
+			const realtime = 1_700_002_274_000_002
+			appendLogEntry(t, second, "root-set-aside-2", "", realtime, 3)
+			assertJournalSeqnumRange(t, second.ActivePath(), "replacement", 3, 3)
+			closeLogForTest(t, second, "second")
+		})
+	}
+}
+
+// Paired with Rust append_open_refuses_sealed_file and
+// log_sets_aside_sealed_active_file.
+func TestAppendOpenRefusesSealedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sealed.journal")
+	w, err := Create(path, testOptionsWithSeal(testSealOpts()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append([]Field{StringField("MESSAGE", "sealed")}, EntryOptions{RealtimeUsec: 1_500_000, MonotonicUsec: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := readFileForTest(t, path)
+	if w, err := Open(path); !errors.Is(err, ErrUnsupportedJournal) {
+		if w != nil {
+			_ = w.Close()
+		}
+		t.Fatalf("Open() error = %v, want ErrUnsupportedJournal", err)
+	}
+	if !bytes.Equal(readFileForTest(t, path), before) {
+		t.Fatal("rejected append-open mutated the file")
+	}
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile() error = %v", err)
+	}
+	_ = r.Close()
+}
+
+func TestLogSetsAsideSealedActiveFile(t *testing.T) {
+	// Start sealing near the entries, so the writer seals few epochs.
+	seal := &SealOptions{Seed: make([]byte, 12), IntervalUsec: 1_000_000, StartUsec: 1_700_002_273_000_000}
+	for _, rootMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("root=%v", rootMode), func(t *testing.T) {
+			root := t.TempDir()
+			config := LogConfig{Options: testOptionsWithSeal(seal), Source: "system", StrictSystemdNaming: true}
+			if rootMode {
+				config = rootTestConfig()
+				config.Options.Seal = seal
+			}
+			first := mustNewLogForTest(t, root, config, "first")
+			appendLogRange(t, first, "sealed", "", 0, 2, 1_700_002_274_000_000)
+			syncLogForTest(t, first, "first")
+			activePath := forceCloseActiveWriter(t, first, "first")
+
+			second := mustNewLogForTest(t, root, config, "second")
+			want := 1
+			if rootMode {
+				want = 0
+			}
+			assertDisposedJournalCount(t, second.JournalDirectory(), want)
+			appendLogEntry(t, second, "sealed-2", "", 1_700_002_274_000_002, 3)
+			if second.ActivePath() != activePath {
+				t.Fatalf("active path = %q, want %q", second.ActivePath(), activePath)
+			}
+			header, err := readJournalHeader(activePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if header.headEntrySeqnum != 3 || header.compatibleFlags&compatibleSealed == 0 {
+				t.Fatalf("replacement head=%d flags=%#x, want a sealed file from seqnum 3", header.headEntrySeqnum, header.compatibleFlags)
+			}
+			closeLogForTest(t, second, "second")
+		})
+	}
+}
+
 func TestReaderOpenRefusesUnknownStateAndShortSealedHeader(t *testing.T) {
 	t.Run("state-3", func(t *testing.T) {
 		path := headerGateJournal(t, false)

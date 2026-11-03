@@ -34,13 +34,15 @@ order; the user may reorder it.
     cheap polling first).
 18. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
     now, by user decision 2026-11-03).
+19. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
+    decision N1, 2026-11-03).
 
 ## Current
 
 - SOW-0156 - Fixed-Header Consistency Audit (in-progress): D1-D6 decided
   2026-11-03; chunk 1 (append-open refusals, writer timestamp validation,
   reader header checks, old large-file support) done; chunk 2 (4 GiB ceiling
-  for new files) next; findings N1 and N2 wait for the user.
+  for new files) next; N1 and N2 decided and implemented.
 
 ## Pending
 
@@ -71,6 +73,8 @@ order; the user may reorder it.
   decided 2026-11-03 (required `--journalctl PATH`); runs before SOW-0163.
 - SOW-0170 - Rust systemd-journal.plugin Rewrite: tracked 2026-11-03; not now,
   by user decision.
+- SOW-0171 - Continue Sealing When Reopening A Sealed File: tracked
+  2026-11-03 (SOW-0156 decision N1); not scheduled.
 
 ## Recently Closed Or Completed
 

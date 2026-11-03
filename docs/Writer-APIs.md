@@ -64,6 +64,8 @@ with Go `ErrUnsupportedJournal` and Rust
 - a header size other than the current 272 bytes;
 - unknown compatible flags, or a missing tail-entry-boot-ID flag;
 - an archived file;
+- a sealed file, because the writer cannot restore its sealing state and would
+  otherwise append an unsealed tail;
 - a file with entries whose head realtime is zero or at least 2^55, whose tail
   realtime or tail monotonic is at least 2^55, or whose tail boot ID is null;
 - a regular file larger than 4 GiB, where the 32-bit tail entry array hint can
@@ -265,7 +267,9 @@ The shared policy:
   rotation limits, and recalculates derived allocation geometry.
 - Finalizes retired files through an archive-only open that skips the
   append-target refusals above, so old files written by earlier releases can
-  still be archived and pruned.
+  still be archived and pruned. At startup, a current active file that
+  append-open refuses is archived under its archive name the same way, instead
+  of being set aside, because inventory rejects set-aside files.
 - Reports safe cleanup failures independently from healthy appends; uncertain
   archive mutation remains a writer failure and stops pruning. Opening or
   validating a retired file before mutation may fail without poisoning the
