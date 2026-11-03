@@ -5,7 +5,7 @@ use crate::file::{
     Compression, DEFAULT_COMPRESS_THRESHOLD, DataObject, DataPayloadType, EntryObjectHeader,
     FieldObjectHeader, HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalHeader,
     ObjectFlags, ObjectType, PayloadParts, hash::jenkins_hash64_parts,
-    normalize_compress_threshold,
+    normalize_compress_threshold, valid_monotonic, valid_realtime,
 };
 use rustc_hash::FxHashMap;
 use std::io::Cursor;
@@ -527,6 +527,9 @@ impl JournalWriter {
         let entry_seqnum = self.entry_seqnum_for_options(options)?;
         let entry_boot_id = options.boot_id.unwrap_or(self.boot_id);
         let monotonic = self.clamp_same_boot_monotonic(journal_file, entry_boot_id, monotonic)?;
+        if !valid_realtime(realtime) || !valid_monotonic(monotonic) {
+            return Err(JournalError::TimestampOutOfRange);
+        }
         if let Some(seal) = &self.seal {
             seal.need_evolve(realtime)?;
         }

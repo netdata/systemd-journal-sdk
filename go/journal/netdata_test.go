@@ -145,6 +145,7 @@ func TestNetdataCollectBootFirstRealtimeSkipsUnneededAndKeepsZeroRealtime(t *tes
 	path := filepath.Join(t.TempDir(), "boot-edge.journal")
 	opts := testOptions()
 	opts.BootID = bootA
+	opts.legacyUncheckedTimestamps = true // realtime 0, as earlier releases accepted
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)

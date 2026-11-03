@@ -524,7 +524,7 @@ impl Log {
         // Mapping validates existing bytes without writing them. In particular,
         // a denied write-open must not poison the unrelated current writer.
         let journal_file =
-            JournalFile::<MmapMut>::open_for_append(&repository_file, 8 * 1024 * 1024)?;
+            JournalFile::<MmapMut>::open_for_archive(&repository_file, 8 * 1024 * 1024)?;
         self.poisoned = true;
         let mut active = ActiveFile::activate_opened(repository_file, journal_file, self.boot_id)?;
         if file.entries == 0 {

@@ -75,7 +75,8 @@ Artifact impact plan: update product scope, compatibility guidance, tests and
 SOW indexes as needed; user guides only if documented behavior needs clarification.
 Open-source reference evidence: systemd/systemd @
 c0a5a2516d28601fb3afc1a77d7b42fcfe38fced, docs/JOURNAL_FILE_FORMAT.md.
-Open decisions: none for D1-D6. New finding N1 (below) is parked for the user.
+Open decisions: none for D1-D6. New findings N1 and N2 (below) are parked for
+the user.
 
 Implementation plan 2026-11-03 (both languages, paired tests for every rule):
 
@@ -145,6 +146,14 @@ the SEALED flag; Rust `open_for_append` sets `seal_options: None`), so later
 entries are written unsealed. systemd refuses a writable open of a sealed file
 unless it loads the sealing key (journal-file.c:4230-4233). Not in the approved
 D1 list; not implemented.
+
+New finding N2 (2026-11-03, parked for the user): root-retention `Log`s never
+set files aside, so a current-name active file that chunk 1 now refuses for
+append (an out-of-range tail, ARCHIVED state at the active name, or a size over
+4 GiB, all writable by v0.10.0) makes root-mode `NewLog` fail instead of
+continuing (Go `log.go` `openActivePath`: `l.rootRetention ||
+!replaceableActiveOpenError(err)` returns the error; Rust is equivalent).
+Default-mode logs set such files aside. Root retention shipped in v0.10.0.
 
 Audit model (2026-11-01): systemd's header gate is `journal_file_verify_header`
 (systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced,
@@ -255,7 +264,83 @@ leaves the file unchanged.
   `append_open_rejects_compact_file_beyond_four_gib`.
 - Paused on D1-D6.
 
+### 2026-11-03
+
+- Recorded D1-D6 and the compatibility rule; built v0.10.0 from `git archive`
+  into `.local/sow0156/` and wrote release-compatibility fixtures with it.
+- Chunk 1, Go: `format.go` timestamp helpers and `tailEntryArrayHintUsable`;
+  `parseHeader` refuses state > ARCHIVED and sealed headers under 240 bytes;
+  `writer.go` `validateEntryAppendTarget` (called before arena checks, as
+  systemd orders them), `openForArchive`, `ErrTimestampOutOfRange` in
+  `prepareEntryOptions`; `log.go` ignores out-of-range inherited tails and
+  refuses out-of-range timestamps before retention or rotation;
+  `root_retention.go` finalizes retired files with `openForArchive`; the
+  tail-array hint checks in `header_validation.go`,
+  `indexed_snapshot_capture.go` and `verify_index.go` apply only at or below
+  4 GiB.
+- Chunk 1, Rust: the same rules in `journal-core` `object.rs`, `file.rs`,
+  `file_mut.rs` (`validate_entry_append_target`, `open_for_archive`),
+  `writer.rs` and `error.rs` (`TimestampOutOfRange`); `map_hash_table`
+  accepts one bucket (D4); `journal-log-writer` `chain.rs`, `mod.rs`
+  (timestamp check before `ensure_healthy`, since
+  `capture_dual_timestamp` advances the clocks) and `root_retention.rs`;
+  `journal` `indexed_snapshot.rs` and `verify_graph/strict.rs` hint guards.
+- Root-retention inventory keeps the old `validateAppendHeader` rules: the
+  first run broke root retention when it reused the new append-target checks,
+  so they were split out.
+- Paired tests: Go `header_append_target_test.go`; Rust `file_tests.rs`
+  (append-target cases, timestamp refusal, state/sealed-header refusal, hint
+  above 4 GiB, single-bucket tables), `journal-log-writer`
+  `tests/log_writer/append_target.rs`, `journal` `tests/indexed_snapshot.rs`.
+  Go tests that deliberately write out-of-range timestamps use the unexported
+  `legacyUncheckedTimestamps` option; Rust has no such bypass.
+- Docs and specs updated (see Artifacts below).
+
 ## Validation
+
+Chunk 1 (2026-11-03):
+
+- `go test ./...` and `cargo test --workspace` pass. Clippy reports only
+  warnings that predate this SOW.
+- `tests/docs/check_wiki_docs.py` validates 16 pages; `verify_examples.py`
+  passes 35 of 35.
+- Release-compatibility fixtures written by the v0.10.0 Go writer
+  (`.local/sow0156/`, synthetic identities), checked with current Go and Rust:
+
+| Fixture | Read (Go, Rust) | Append-open | `Log` |
+|---|---|---|---|
+| regular, compact, zstd, xz | yes | appends | - |
+| sealed | yes | appends unsealed (N1) | - |
+| zero realtime entry | yes | appends; Go `VerifyIndex` flags the entry, as systemd verify does | - |
+| tail realtime 2^60, monotonic 2^55 | yes | unsupported | - |
+| ARCHIVED state at the active name | yes | - | set aside to `.journal~`, sequence continues (4 rows) |
+| out-of-range tail at the active name | yes | - | set aside, sequence continues (4 rows) |
+| regular 9.9 GB, last array at 9.94 GB | yes (9,477 rows); snapshot opens | unsupported | set aside, continues (Go and Rust) |
+
+- A file above 4 GiB whose arrays all sit below 4 GiB was not kept as a
+  fixture. Its hint is exact, and the paired tests
+  `TestAppendOpenRefusesRegularFileBeyondFourGiB` and
+  `append_open_refuses_file_beyond_four_gib` cover its append-open refusal.
+- The 9.9 GB file shows how v0.10.0 behaves past 4 GiB. Both v0.10.0
+  writers reuse the truncated in-memory tail array hint (Go
+  `writer_arrays.go` `entryArrayTailOffset`, Rust `writer_entry_arrays.rs`
+  `entry_array_tail_offset`). Here, the first append after an array was
+  placed above 4 GiB read the truncated offset, landed inside a DATA payload
+  and failed the writer (`writer failed; verify before recovery`, invalid
+  journal file) after writing the entry's DATA and ENTRY objects. So the file
+  holds 9,478 ENTRY objects against a header count of 9,477, and current Go
+  `VerifyIndex` correctly reports `tail_entry_seqnum mismatch` for it, as
+  for any uncertain tail. The writers check the object type there, so a
+  silent mis-write needs the truncated offset to hit bytes that parse as an
+  entry array. The current writer keeps this behavior for live files that
+  grow past 4 GiB until chunk 2 caps growth.
+- Host stock journalctl (v255) drops the out-of-range rows; it is not the
+  v260.1 target and was not used as evidence.
+- Runtime purity: the diff adds no process launch or host-path access.
+- Same-failure search: every reader of the tail entry array hint
+  (`header_validation.go`, `indexed_snapshot_capture.go`, `verify_index.go`,
+  Rust `object.rs`, `indexed_snapshot.rs`, `verify_graph/strict.rs`) goes
+  through the 4 GiB guard; the writers' own use is chunk 2.
 
 Partial (A1, A4, A5):
 
@@ -276,7 +361,14 @@ Sensitive data gate:
 - Synthetic test journals only; no host journals, identities, credentials or
   customer data in the SOW, tests or PR text.
 
-- Artifacts: end-user docs describe append-open only in general terms
+- Artifacts, chunk 1: `docs/Writer-APIs.md` (append-open refusals, timestamp
+  range, root archive-only finalization), `docs/Rust-API.md` (unreleased
+  `TimestampOutOfRange`), `docs/Indexed-Snapshots.md` (hint above 4 GiB),
+  `go/README.md` and `rust/README.md` (what unsupported covers, root mode),
+  `.agents/sow/specs/product-scope.md` (writer, reader and snapshot rules) and
+  the journal-compatibility skill (the earlier-release rule and the hint).
+  `docs/Reader-APIs.md` stays accurate. `AGENTS.md` needs no change.
+- Artifacts, A1/A4/A5: end-user docs describe append-open only in general terms
   (`docs/Writer-APIs.md:56-68` "validates supported format metadata",
   `docs/Indexed-Snapshots.md:171`, `docs/Reader-APIs.md:164`) and the
   compatibility skill covers stable-file checks
@@ -287,7 +379,8 @@ Sensitive data gate:
 
 ## Outcome
 
-Paused. Parity gaps are fixed; D1-D6 wait for the user.
+In progress. Chunk 1 is implemented and validated; chunk 2 is next. N1 and N2
+wait for the user.
 
 ## Lessons Extracted
 

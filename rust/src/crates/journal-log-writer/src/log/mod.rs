@@ -146,6 +146,24 @@ impl Log {
         }
     }
 
+    /// Refuses timestamps systemd rejects before rotation can create files or
+    /// the clocks advance, so a bad input never becomes a floor.
+    fn check_entry_timestamps(&self, realtime: u64, timestamps: &EntryTimestamps) -> Result<()> {
+        let desired = timestamps.entry_monotonic_usec.unwrap_or(0);
+        let monotonic = if desired > self.last_monotonic_usec {
+            desired
+        } else {
+            self.last_monotonic_usec.saturating_add(1)
+        };
+        if journal_core::file::valid_realtime(realtime)
+            && journal_core::file::valid_monotonic(monotonic)
+        {
+            Ok(())
+        } else {
+            Err(JournalError::TimestampOutOfRange.into())
+        }
+    }
+
     fn should_rotate_for_realtime(&self, realtime: u64) -> bool {
         let Some(active_file) = &self.active_file else {
             return true;
@@ -432,6 +450,7 @@ impl Log {
         Self::require_entry_monotonic(&timestamps)?;
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
+        self.check_entry_timestamps(entry_realtime, &timestamps)?;
         self.ensure_healthy()?;
         let filtered_items = self.raw_items_for_policy(items)?;
         self.prepare_append_for_realtime(entry_realtime)?;
@@ -510,6 +529,7 @@ impl Log {
         Self::require_entry_monotonic(&timestamps)?;
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
+        self.check_entry_timestamps(entry_realtime, &timestamps)?;
         self.ensure_healthy()?;
         let filtered_fields = self.structured_fields_for_policy(fields)?;
         self.prepare_append_for_realtime(entry_realtime)?;
