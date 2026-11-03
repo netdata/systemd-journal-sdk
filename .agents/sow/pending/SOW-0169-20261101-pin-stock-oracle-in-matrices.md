@@ -4,7 +4,7 @@
 
 Status: open
 
-Sub-state: new, 2026-11-01; raised by a PR #13 review thread; not activated.
+Sub-state: decided 2026-11-03 (required `--journalctl PATH`); not activated.
 
 ## Requirements
 
@@ -75,7 +75,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: ready
 
 Problem / root-cause model:
 
@@ -139,11 +139,13 @@ Open-source reference evidence:
 
 Open decisions:
 
-1. Required flag versus `PATH` default with an "unpinned" report marker.
+- None. Decision 1 resolved 2026-11-03 (see Implications And Decisions).
 
 ## Implications And Decisions
 
-Pending activation.
+1. 2026-11-03 (user): every stock-invoking matrix requires `--journalctl PATH`;
+   there is no `PATH` fallback. Run before SOW-0163 (v0.11.0 release), so the
+   release gates use the pinned oracle.
 
 ## Plan
 
