@@ -6,13 +6,33 @@ use crate::file::JournalFile;
 use std::num::NonZeroU64;
 
 impl JournalWriter {
+    #[cfg(test)]
     pub(super) fn allocate_new_array(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
         capacity: NonZeroU64,
     ) -> Result<NonZeroU64> {
-        // let new_capacity = previous_capacity.saturating_mul(NonZeroU64::new(2).unwrap());
+        self.allocate_array(journal_file, capacity, None)
+    }
 
+    /// Allocates an array whose first slot holds `first`, written through the
+    /// allocation guard. The slot is filled before the array is linked, and
+    /// entry-array HMACs cover only the object header.
+    pub(super) fn allocate_array_with_first(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        capacity: NonZeroU64,
+        first: NonZeroU64,
+    ) -> Result<NonZeroU64> {
+        self.allocate_array(journal_file, capacity, Some(first))
+    }
+
+    fn allocate_array(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        capacity: NonZeroU64,
+        first: Option<NonZeroU64>,
+    ) -> Result<NonZeroU64> {
         let array_offset = self.append_offset;
         let is_compact = Self::is_compact(journal_file);
         Self::ensure_compact_object_fits(
@@ -22,8 +42,10 @@ impl JournalWriter {
                 + capacity.get() * Self::offset_array_item_size(is_compact),
         )?;
         let array_size = {
-            let array_guard = journal_file.offset_array_mut(array_offset, Some(capacity))?;
-
+            let mut array_guard = journal_file.offset_array_mut(array_offset, Some(capacity))?;
+            if let Some(first) = first {
+                array_guard.set(0, first)?;
+            }
             array_guard.header.object_header.aligned_size()
         };
         self.hmac_put_object(journal_file, array_offset.get(), ObjectType::EntryArray)?;
@@ -111,7 +133,6 @@ impl JournalWriter {
         let entry_count = journal_file.journal_header_ref().n_entries;
         let tail_offset =
             self.entry_array_tail_offset(journal_file, entry_array_offset, entry_count)?;
-        let tail_capacity = self.offset_array_capacity(journal_file, tail_offset)?;
         let tail_entries = self.entry_array_tail_entries(
             journal_file,
             entry_array_offset,
@@ -119,14 +140,19 @@ impl JournalWriter {
             entry_count,
         )?;
 
+        // One mutable open reads the capacity and, when there is room, writes
+        // the slot; it validates the object exactly as a read-only open does.
+        let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
+        let tail_capacity = tail_guard.capacity() as u64;
         if tail_entries < tail_capacity {
-            return self.append_to_entry_array_tail(
-                journal_file,
-                tail_offset,
-                tail_entries,
-                entry_offset,
-            );
+            tail_guard.set(tail_entries as usize, entry_offset)?;
+            drop(tail_guard);
+            let header = journal_file.journal_header_mut();
+            header.tail_entry_array_offset = tail_offset.get() as u32;
+            header.tail_entry_array_n_entries = (tail_entries + 1) as u32;
+            return Ok(());
         }
+        drop(tail_guard);
         self.grow_entry_array_tail(
             journal_file,
             tail_offset,
@@ -141,11 +167,11 @@ impl JournalWriter {
         journal_file: &mut JournalFile<MmapMut>,
         entry_offset: NonZeroU64,
     ) -> Result<()> {
-        let array_offset = self.allocate_new_array(journal_file, NonZeroU64::new(4).unwrap())?;
-        {
-            let mut array_guard = journal_file.offset_array_mut(array_offset, None)?;
-            array_guard.set(0, entry_offset)?;
-        }
+        let array_offset = self.allocate_array_with_first(
+            journal_file,
+            NonZeroU64::new(4).unwrap(),
+            entry_offset,
+        )?;
         let header = journal_file.journal_header_mut();
         header.entry_array_offset = Some(array_offset);
         header.tail_entry_array_offset = array_offset.get() as u32;
@@ -204,15 +230,6 @@ impl JournalWriter {
         }
     }
 
-    pub(super) fn offset_array_capacity(
-        &self,
-        journal_file: &JournalFile<MmapMut>,
-        offset: NonZeroU64,
-    ) -> Result<u64> {
-        let array_guard = journal_file.offset_array_ref(offset)?;
-        Ok(array_guard.capacity() as u64)
-    }
-
     pub(super) fn entry_array_tail_entries(
         &self,
         journal_file: &JournalFile<MmapMut>,
@@ -267,22 +284,6 @@ impl JournalWriter {
         Ok(entries)
     }
 
-    pub(super) fn append_to_entry_array_tail(
-        &self,
-        journal_file: &mut JournalFile<MmapMut>,
-        tail_offset: NonZeroU64,
-        tail_entries: u64,
-        entry_offset: NonZeroU64,
-    ) -> Result<()> {
-        let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
-        tail_guard.set(tail_entries as usize, entry_offset)?;
-        drop(tail_guard);
-        let header = journal_file.journal_header_mut();
-        header.tail_entry_array_offset = tail_offset.get() as u32;
-        header.tail_entry_array_n_entries = (tail_entries + 1) as u32;
-        Ok(())
-    }
-
     pub(super) fn grow_entry_array_tail(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
@@ -293,14 +294,11 @@ impl JournalWriter {
     ) -> Result<()> {
         let new_capacity =
             NonZeroU64::new(Self::next_entry_array_capacity(entry_count, tail_capacity)).unwrap();
-        let new_array_offset = self.allocate_new_array(journal_file, new_capacity)?;
+        let new_array_offset =
+            self.allocate_array_with_first(journal_file, new_capacity, entry_offset)?;
         {
             let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
             tail_guard.header.next_offset_array = Some(new_array_offset);
-        }
-        {
-            let mut new_array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
-            new_array_guard.set(0, entry_offset)?;
         }
         let header = journal_file.journal_header_mut();
         header.tail_entry_array_offset = new_array_offset.get() as u32;
@@ -321,8 +319,8 @@ impl JournalWriter {
 
         // Navigate to the tail of the array chain
         let mut current_index = 0u64;
-        #[allow(unused_assignments)]
-        let mut tail_offset = array_offset;
+        let tail_offset;
+        let tail_capacity;
         let head = array_offset;
         let mut highest = array_offset;
 
@@ -334,8 +332,9 @@ impl JournalWriter {
             }
 
             if current_index + capacity >= current_count {
-                // This is the tail array
+                // This is the tail array; the walk already validated it.
                 tail_offset = array_offset;
+                tail_capacity = capacity;
                 break;
             }
 
@@ -357,12 +356,6 @@ impl JournalWriter {
             array_offset = next_offset;
         }
 
-        // Try to add to the tail array
-        let tail_capacity = {
-            let tail_guard = journal_file.offset_array_ref(tail_offset)?;
-            tail_guard.capacity() as u64
-        };
-
         let entries_in_tail = current_count - current_index;
 
         if entries_in_tail < tail_capacity {
@@ -377,16 +370,12 @@ impl JournalWriter {
                 tail_capacity,
             ))
             .unwrap();
-            let new_array_offset = self.allocate_new_array(journal_file, new_capacity)?;
+            let new_array_offset =
+                self.allocate_array_with_first(journal_file, new_capacity, entry_offset)?;
 
             // Link the old tail to the new array
             let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
             tail_guard.header.next_offset_array = Some(new_array_offset);
-            drop(tail_guard);
-
-            // Add entry to the new array
-            let mut new_array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
-            new_array_guard.set(0, entry_offset)?;
             Ok((new_array_offset, 1))
         }
     }
@@ -440,15 +429,12 @@ impl JournalWriter {
             tail_capacity,
         ))
         .unwrap();
-        let new_array_offset = self.allocate_new_array(journal_file, new_capacity)?;
+        let new_array_offset =
+            self.allocate_array_with_first(journal_file, new_capacity, entry_offset)?;
 
         {
             let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
             tail_guard.header.next_offset_array = Some(new_array_offset);
-        }
-        {
-            let mut new_array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
-            new_array_guard.set(0, entry_offset)?;
         }
 
         Ok(Some((new_array_offset, 1)))
@@ -553,11 +539,11 @@ impl JournalWriter {
         data_offset: NonZeroU64,
         entry_offset: NonZeroU64,
     ) -> Result<()> {
-        let array_offset = self.allocate_new_array(journal_file, NonZeroU64::new(4).unwrap())?;
-        {
-            let mut array_guard = journal_file.offset_array_mut(array_offset, None)?;
-            array_guard.set(0, entry_offset)?;
-        }
+        let array_offset = self.allocate_array_with_first(
+            journal_file,
+            NonZeroU64::new(4).unwrap(),
+            entry_offset,
+        )?;
         let is_compact = Self::is_compact(journal_file);
         let mut data_guard = journal_file.data_mut(data_offset, None)?;
         data_guard.header.entry_array_offset = Some(array_offset);

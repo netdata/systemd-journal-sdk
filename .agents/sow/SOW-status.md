@@ -8,27 +8,26 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-1. SOW-0137 - Rust writer residual array-open performance.
-2. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155; D1-D6
+1. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155; D1-D6
    decided 2026-11-03).
-3. SOW-0161 - File indexer source posting membership.
-4. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
+2. SOW-0161 - File indexer source posting membership.
+3. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
    declares 256 KiB).
-5. SOW-0122 - journalctl performance follow-ups.
-6. SOW-0097 - Go duplication debt.
-7. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
-8. SOW-0153 - Consumer docs release clarity.
-9. SOW-0125 - Netdata filter operators (needs design decisions first).
-10. SOW-0162 - Publishable C reader crate.
-11. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
+4. SOW-0122 - journalctl performance follow-ups.
+5. SOW-0097 - Go duplication debt.
+6. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
+7. SOW-0153 - Consumer docs release clarity.
+8. SOW-0125 - Netdata filter operators (needs design decisions first).
+9. SOW-0162 - Publishable C reader crate.
+10. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
     (decided 2026-11-03: required `--journalctl PATH`).
-12. SOW-0163 - v0.11.0 release.
-13. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-14. SOW-0165 - Fresh-chain realtime default parity (decided 2026-11-03: Rust
+11. SOW-0163 - v0.11.0 release.
+12. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
+13. SOW-0165 - Fresh-chain realtime default parity (decided 2026-11-03: Rust
     adopts Go's zero floor after a Netdata caller check).
-15. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
+14. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
     2026-11-03).
-16. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
+15. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
     now, by user decision 2026-11-03).
 
 ## Current
@@ -47,8 +46,6 @@ order; the user may reorder it.
   `--follow` scalability work for the CLIs.
 - SOW-0125 - Netdata Filter Operators Gap Analysis: feature analysis; needs
   semantic decisions before implementation.
-- SOW-0137 - Rust Writer Residual Array-Open Performance: unmeasured double
-  array open per append.
 - SOW-0153 - Consumer Documentation Release Clarity: stale `go/v0.3.0` text and
   Rust writer-state discoverability.
 - SOW-0156 - Fixed-Header Consistency Audit: now includes SOW-0155 tail-offset
@@ -69,6 +66,10 @@ order; the user may reorder it.
   by user decision.
 
 ## Recently Closed Or Completed
+
+- SOW-0137 - Rust Writer Residual Array-Open Performance: completed 2026-11-01.
+  One fewer offset-array open per entry and per regular DATA link; regular
+  writes run 3.9-5.1% fewer instructions with byte-identical output.
 
 - SOW-0123 - Event-Time Lane Fresh Clock Seed: completed 2026-11-01. Rust
   `Config::with_fresh_realtime_seed_usec` and Go `LogConfig.FreshRealtimeSeedUsec`
