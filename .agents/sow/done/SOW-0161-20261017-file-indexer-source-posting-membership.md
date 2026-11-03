@@ -5,7 +5,7 @@
 Status: completed
 
 Sub-state: reproduced and fixed 2026-11-01 in the autonomous backlog run;
-scope choices are agent-chosen, pending user review (listed in the PR).
+scope choices reviewed by the user 2026-11-03 (decision 5 revises decision 2).
 
 ## Requirements
 
@@ -180,6 +180,16 @@ not affected.
    change to what the indexer computes. An earlier draft of this SOW skipped
    the bump; PR review pointed to the spec rule. Impact: every cached file
    reindexes once after upgrade; the spec records generation 5.
+5. 2026-11-03 (user): decisions 3 and 4 approved. Decision 2 is revised: a
+   posting at or below the captured tail that the global array does not
+   contain is dropped on every file, stable or live, in both the source and
+   the requested-field paths. Reason: files written by earlier SDK releases
+   must stay readable, and writers before v0.9.0 had no poisoning, so a
+   failed append followed by a clean close could leave an archived file with
+   DATA links to an uncounted entry (v0.8.0 `writer_entry_arrays.rs` linked
+   DATA before `n_entries` advanced). Rejecting such files would make them
+   unindexable. Generation 5 stays: it is unreleased, and the change only
+   turns former failures into indexes, which are never cached as failures.
 
 Cost: the healthy path adds one comparison per source posting, one counter
 per global entry and no extra lookups (the deduplicating insert replaces the
@@ -232,10 +242,21 @@ Failure handling:
   `build_histogram`, `collect_data_entry_indices`).
 - Added `rust/src/crates/journal-index/tests/source_postings.rs` (5 tests).
 
+### 2026-11-03
+
+- Applied decision 5: `collect_data_entry_indices` and `build_histogram` drop
+  non-member postings on every file; the now-unused `live` parameters are
+  removed. `source_postings.rs` covers the bogus-inline and linked-but-uncounted
+  cases on both live and stable files; the `array_integrity.rs`
+  `unindexed-inline` mutation now expects a 14-entry index on archived files,
+  for both the source and requested-field paths.
+
 ## Validation
 
-- All 5 new tests fail on the original indexer (16, 15, 5 records, accepted
-  corruption, extra live entry) and pass after the fix.
+- All 5 new tests failed on the original indexer (16, 15, 5 records, accepted
+  corruption, extra live entry) and passed after the fix. After decision 5
+  (2026-11-03) the suite has 4 tests (live and stable cases merged into
+  loops); `cargo test --workspace` passes again, all suites ok.
 - `cargo test --workspace`: 46 suites pass, including `journal-engine`
   `index_integrity` and the existing `array_integrity` source cases.
 - Clippy: no warning in the changed files.
@@ -263,8 +284,9 @@ Artifact maintenance gate:
 ## Outcome
 
 Completed. Source-timestamp histograms now count exactly the captured ENTRY
-population once per entry; stable files with bogus postings fail indexing, and
-live files tolerate the writer's link-before-count window.
+population once per entry. Postings outside that population are dropped on
+every file, so live files tolerate the writer's link-before-count window and
+files left by pre-v0.9.0 writers stay indexable.
 
 ## Lessons Extracted
 

@@ -866,8 +866,11 @@ Accepted reader API layers:
   cache eviction. Cache-hit algorithms and consumer namespaces are unchanged.
   Generation 5 (SOW-0161) limits source-timestamp postings to the captured
   ENTRY population and counts each entry once. Generation-4 entries miss, so
-  every cached file reindexes once after upgrade. Stable files whose source
-  postings name no entry now fail indexing; live files drop such postings.
+  every cached file reindexes once after upgrade. Source and requested-field
+  postings that name no entry of the global array are dropped on every file
+  (user decision 2026-11-03): a live writer links DATA before it counts the
+  entry, and SDK writers before v0.9.0 could close a file with the DATA links
+  of a failed append.
 - Rust and Go also expose explicit Explorer execution
   strategy controls through their idiomatic APIs. `ExplorerStrategy::Traversal`
   is the default and remains the behavior of each product language's ordinary

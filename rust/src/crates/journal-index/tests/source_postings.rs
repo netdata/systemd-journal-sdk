@@ -139,45 +139,44 @@ fn point_source_inline_at_itself(fixture: &Fixture, compact: bool) {
 }
 
 #[test]
-fn stable_source_posting_outside_the_entry_population_is_rejected() {
+fn source_posting_outside_the_entry_population_is_dropped() {
     for compact in [false, true] {
-        let fixture = Fixture::archived(compact, 14).close();
-        assert_eq!(fixture.index().unwrap(), 14, "compact={compact}");
-        point_source_inline_at_itself(&fixture, compact);
-
-        let result = fixture.index();
-        assert!(
-            matches!(result, Err(journal_index::IndexError::MissingOffset)),
-            "compact={compact}: {result:?}"
-        );
+        for stable in [false, true] {
+            let fixture = if stable {
+                Fixture::archived(compact, 14).close()
+            } else {
+                Fixture::new(compact, 14).close()
+            };
+            point_source_inline_at_itself(&fixture, compact);
+            // Entry 1 falls back to its ENTRY realtime; the bogus posting is gone.
+            assert_eq!(
+                fixture.index().unwrap(),
+                14,
+                "compact={compact} stable={stable}"
+            );
+        }
     }
 }
 
+/// The last entry is linked into its DATA arrays but not counted: the live
+/// writer's publication window, or a closed file left by an SDK writer before
+/// v0.9.0 after a failed append.
 #[test]
-fn live_source_posting_outside_the_entry_population_is_dropped() {
+fn entry_linked_but_not_counted_is_not_an_error() {
     for compact in [false, true] {
-        let fixture = Fixture::new(compact, 14).close();
-        point_source_inline_at_itself(&fixture, compact);
-        // Entry 1 falls back to its ENTRY realtime; the bogus posting is gone.
-        assert_eq!(fixture.index().unwrap(), 14, "compact={compact}");
-    }
-}
+        for stable in [false, true] {
+            let fixture = if stable {
+                Fixture::archived(compact, 14).close()
+            } else {
+                Fixture::new(compact, 14).close()
+            };
+            let n_entries = read_u64(&fixture.bytes(), 152);
+            fixture.patch(152, n_entries - 1);
 
-#[test]
-fn live_entry_linked_before_it_is_counted_is_not_an_error() {
-    for compact in [false, true] {
-        let fixture = Fixture::new(compact, 14).close();
-        // A reader that captured the tail after the last entry was linked into
-        // its DATA arrays, but read n_entries before the writer counted it.
-        let n_entries = read_u64(&fixture.bytes(), 152);
-        fixture.patch(152, n_entries - 1);
-
-        assert_eq!(fixture.index().unwrap(), 13, "compact={compact}");
-        assert_eq!(
-            fixture.index_message_bitmap().unwrap(),
-            13,
-            "compact={compact}"
-        );
+            let label = format!("compact={compact} stable={stable}");
+            assert_eq!(fixture.index().unwrap(), 13, "{label}");
+            assert_eq!(fixture.index_message_bitmap().unwrap(), 13, "{label}");
+        }
     }
 }
 
