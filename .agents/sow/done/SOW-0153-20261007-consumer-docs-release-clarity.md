@@ -219,7 +219,8 @@ Acceptance criteria evidence:
 
 - `go/API.md` no longer names a version; it states the `go/vX.Y.Z` tag form
   and links to `go/README.md`, which carries the install command
-  (`go/README.md:9`) and is checked by `tests/release/release.py`.
+  (`go/README.md:9`); `tests/release/release.py` `validate_install_examples`
+  fails a release when that reference names another version.
 - `docs/Writer-APIs.md` names Rust `JournalError::WriterPoisoned`,
   `JournalWriter::is_poisoned()` and `Log::is_poisoned()` beside Go
   `ErrWriterFailed`; verified against `journal-core` `writer.rs:281,439,524`
@@ -228,8 +229,10 @@ Acceptance criteria evidence:
 Tests or equivalent validation:
 
 - `python3 tests/docs/check_wiki_docs.py`: 16 files validated.
-- `git diff --check`: clean. No code examples changed, so
-  `verify_examples.py` has nothing new to compile.
+- `git diff --check`: clean.
+- `python3 tests/docs/verify_examples.py` (2026-11-03, caches under
+  `.local/`): all 35 examples pass (19 Go, 16 Rust). No example changed in
+  this SOW; the run confirms the edited pages still build.
 
 Real-use evidence:
 
@@ -242,8 +245,10 @@ Reviewer findings (self-review; tests are the gate, no external reviewers):
    Disposition: fixed in both pages (raised in PR review, confirmed against
    the code above).
 2. `go/API.md` now depends on `go/README.md` staying current. Disposition:
-   accepted; `tests/release/release.py` checks the README install command at
-   release time.
+   accepted. `tests/release/release.py` (`validate_install_examples`) fails a
+   release when a versioned module reference in `go/README.md` names a
+   different version; it does not require the install command to exist, so
+   removing that command would not be caught.
 
 Same-failure scan:
 
