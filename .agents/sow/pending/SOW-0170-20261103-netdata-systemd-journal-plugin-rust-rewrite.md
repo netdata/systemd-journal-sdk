@@ -11,8 +11,9 @@ user decision and explicit authorization to change the Netdata repository.
 
 ### Purpose
 
-Netdata's `systemd-journal.plugin` uses the SDK natively, without FFI, so the
-SDK's reader, index and facet paths serve the system logs viewer directly.
+Planned: rewrite Netdata's `systemd-journal.plugin` in Rust so it uses the
+SDK natively, without FFI, and the SDK's reader, index and facet paths serve
+the system logs viewer directly.
 
 ### User Request
 
@@ -28,8 +29,9 @@ Facts:
   through vendored `jf` (`journal_reader_ffi`) in Docker and static builds
   (`netdata/netdata @ eaeb95f5c4`, `packaging/docker/Dockerfile:42`,
   `packaging/makeself/jobs/70-netdata-git.install.sh:40`).
-- SOW-0164 keeps libsystemd where available and replaces vendored `jf` with
-  the SDK's published C reader crate (SOW-0162); that is the transition step.
+- SOW-0164 keeps libsystemd where available and, once the planned C reader
+  crate (SOW-0162, not yet activated) is published, replaces vendored `jf`
+  with it; that is the transition step.
 
 Inferences:
 
@@ -134,6 +136,29 @@ Reviewers:
 
 - Whole-SOW self-review after local validation; tests are the gate. External
   reviewers are not used.
+
+Repository boundary block for every external-agent prompt:
+
+```text
+CRITICAL REPOSITORY BOUNDARY:
+- Do not make changes outside this repository for any reason.
+- Repository path: current repository root.
+- You may inspect external references read-only when the task requires it.
+- Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
+- The only write exception outside the repository is /tmp.
+- Prefer .local/ inside this repository for scratch work, generated temporary files, cloned references, logs, and working notes.
+```
+
+Netdata repository changes need explicit user authorization recorded here at
+activation; until then the boundary above applies unchanged.
+
+Failure handling:
+
+- Activation without both a scheduling decision and Netdata write
+  authorization stops and is reported to the user.
+- Validation or audit failures are recorded in the Execution Log with
+  evidence; the SOW does not advance until they are fixed or a user decision
+  is recorded.
 
 ## Execution Log
 
