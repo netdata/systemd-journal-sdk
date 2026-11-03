@@ -8,28 +8,28 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-2. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
-3. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
+1. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
+2. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
    declares 256 KiB).
-4. SOW-0122 - journalctl performance follow-ups.
-5. SOW-0097 - Go duplication debt.
-6. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
-7. SOW-0153 - Consumer docs release clarity.
-8. SOW-0125 - Netdata filter operators (needs design decisions first).
-9. SOW-0162 - Publishable C reader crate.
-10. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
-    (decided 2026-11-03: required `--journalctl PATH`).
-11. SOW-0163 - v0.11.0 release.
-12. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-13. SOW-0165 - Fresh-chain realtime default parity (decided 2026-11-03: Rust
+3. SOW-0122 - journalctl performance follow-ups.
+4. SOW-0097 - Go duplication debt.
+5. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
+6. SOW-0153 - Consumer docs release clarity.
+7. SOW-0125 - Netdata filter operators (needs design decisions first).
+8. SOW-0162 - Publishable C reader crate.
+9. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
+   (decided 2026-11-03: required `--journalctl PATH`).
+10. SOW-0163 - v0.11.0 release.
+11. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
+12. SOW-0165 - Fresh-chain realtime default parity (decided 2026-11-03: Rust
     adopts Go's zero floor after a Netdata caller check).
-14. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
+13. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
     2026-11-03).
-15. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
+14. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
     now, by user decision 2026-11-03).
-16. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
+15. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
     decision N1, 2026-11-03).
-17. SOW-0172 - Rust Log fails late on a relative directory (tracked 2026-11-03
+16. SOW-0172 - Rust Log fails late on a relative directory (tracked 2026-11-03
     from SOW-0156; needs a user decision).
 
 ## Current
