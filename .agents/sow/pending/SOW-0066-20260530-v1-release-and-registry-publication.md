@@ -4,13 +4,13 @@
 
 Status: open
 
-Sub-state: pending final production release and Rust/Go publication
-after SDK compatibility, portability, corpus validation, and integration gates
-are complete.
+Sub-state: not scheduled. The user decided on 2026-11-03 not to release
+v1.0.0 now; activation needs a new user decision.
 
 2026-10-31: registry publication and Go module tags already exist through
-v0.10.0 and Netdata consumes them, so this SOW is now the v1.0.0 API stability
-decision. Its Netdata integration gate is SOW-0164 (SOW-0048 closed as obsolete;
+v0.10.0 and Netdata consumes them. The remaining deliverable is the v1.0.0 API
+freeze decision followed by publication of v1.0.0 through the existing
+release process (`RELEASING.md`, `project-release` skill). Its Netdata integration gate is SOW-0164 (SOW-0048 closed as obsolete;
 SOW-0049 and SOW-0050 superseded by SOW-0164). The compatibility, portability and
 corpus gates (SOW-0055, SOW-0063, SOW-0064, SOW-0065) are already done.
 
@@ -219,6 +219,11 @@ Open decisions:
   already reserved.
 
 ## Implications And Decisions
+
+0. 2026-11-03 scope and timing (user)
+   - Decision: no v1.0.0 release now. When activated, this SOW decides the
+     v1.0.0 API freeze and publishes v1.0.0 through the existing release
+     process; first-time registry setup is already done.
 
 1. 2026-05-30 final release goal
    - Decision: record a future `v1.0.0` release and registry publication SOW.
