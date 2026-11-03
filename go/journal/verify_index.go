@@ -162,7 +162,7 @@ func (v *graphVerifier) validateIndex() error {
 	}
 	// Header counts, strict ordering, and membership together prove the global
 	// array contains every ENTRY object exactly once.
-	if err := v.indexArrayFinish(global, uint64(v.header.tailEntryArrayOffset), uint64(v.header.tailEntryArrayNEntries), v.header.headerSize >= 264); err != nil {
+	if err := v.indexArrayFinish(global, uint64(v.header.tailEntryArrayOffset), uint64(v.header.tailEntryArrayNEntries), v.header.tailEntryArrayHintUsable()); err != nil {
 		return fmt.Errorf("global index: %w", err)
 	}
 	for off, data := range v.dataObjects {

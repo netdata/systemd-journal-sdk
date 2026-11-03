@@ -188,7 +188,7 @@ impl IndexedSnapshot {
         if header.header_size >= 272 && header.tail_entry_offset != self.entry_tail {
             return Err(corrupt("tail entry hint disagrees with committed count"));
         }
-        if header.header_size >= 264
+        if header.tail_entry_array_hint_usable()
             && (header.tail_entry_array_offset as u64 != number(last_array)
                 || header.tail_entry_array_n_entries as u64 != last_count)
         {

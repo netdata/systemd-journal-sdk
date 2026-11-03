@@ -100,11 +100,11 @@ func TestAppendOpenRejectsCompactFileBeyondFourGiB(t *testing.T) {
 	if err := os.Truncate(path, int64(journalCompactSizeMax)+pageSize); err != nil {
 		t.Fatal(err)
 	}
-	if w, err := Open(path); !errors.Is(err, errInvalidJournal) {
+	if w, err := Open(path); !errors.Is(err, errUnsupportedJournal) {
 		if w != nil {
 			_ = w.Close()
 		}
-		t.Fatalf("Open() error = %v, want errInvalidJournal", err)
+		t.Fatalf("Open() error = %v, want errUnsupportedJournal", err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {

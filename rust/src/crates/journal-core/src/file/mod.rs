@@ -58,6 +58,8 @@ pub use filter::{FilterExpr, JournalFilter, LogicalOp};
 // For FFI compatibility and advanced object manipulation
 pub use object::{EntryItemsType, HashableObject, HeaderIncompatibleFlags, JournalState};
 #[doc(hidden)]
+pub use object::{TIMESTAMP_LIMIT_USEC, valid_monotonic, valid_realtime};
+#[doc(hidden)]
 // Hidden row-view types cross the journal-core/journal crate boundary; keep
 // them reachable without making them part of the documented SDK surface.
 pub use row_view::{CurrentRowMetadata, CurrentRowPayload, CurrentRowView};

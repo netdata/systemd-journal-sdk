@@ -170,6 +170,9 @@ names, and no external mutation. A schema marker alone is not proof of index
 integrity. Always verify an uncertain active file, regardless of its header state.
 Append-open performs bounded header and tail checks before mutation; those checks
 do not replace strict verification of an uncertain file's complete graph.
+Strict verification and snapshot capture check the 32-bit tail entry array
+hint only when the declared arena ends at or below 4 GiB; larger files written
+by earlier releases store it truncated.
 
 After an uncertain mutating failure, writers reject further mutation and close
 only resources, without publishing clean metadata or deleting an empty-looking

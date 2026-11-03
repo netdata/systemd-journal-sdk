@@ -57,6 +57,27 @@ Direct append-open is not a promise to mutate arbitrary historical or
 systemd-created files. Unsupported append targets must fail before entry
 mutation.
 
+Append-open applies systemd v260.1's writable-open header rules and refuses,
+with Go `ErrUnsupportedJournal` and Rust
+`JournalError::UnsupportedJournalFile`, files that systemd would not extend:
+
+- a header size other than the current 272 bytes;
+- unknown compatible flags, or a missing tail-entry-boot-ID flag;
+- an archived file;
+- a file with entries whose head realtime is zero or at least 2^55, whose tail
+  realtime or tail monotonic is at least 2^55, or whose tail boot ID is null;
+- a regular file larger than 4 GiB, where the 32-bit tail entry array hint can
+  no longer locate the tail array.
+
+These files stay readable. Readers ignore the tail entry array hint when the
+declared arena ends above 4 GiB, because earlier writers stored it truncated.
+
+Entries must carry a realtime in `1..2^55-1` microseconds and a monotonic below
+2^55 microseconds. Go returns `ErrTimestampOutOfRange` and Rust returns
+`JournalError::TimestampOutOfRange` before any file mutation; the writer stays
+usable. The directory writer raises a zero realtime to its clock floor and
+refuses other out-of-range values without moving its clocks.
+
 ## Uncertain Failures And Reopen
 
 A mutating append, sync or archive failure poisons the writer. Further mutation
@@ -242,6 +263,9 @@ The shared policy:
   Empty-file disposal is not an archive event.
 - Installs valid replacement policies before enforcement, preserves explicit
   rotation limits, and recalculates derived allocation geometry.
+- Finalizes retired files through an archive-only open that skips the
+  append-target refusals above, so old files written by earlier releases can
+  still be archived and pruned.
 - Reports safe cleanup failures independently from healthy appends; uncertain
   archive mutation remains a writer failure and stops pruning. Opening or
   validating a retired file before mutation may fail without poisoning the

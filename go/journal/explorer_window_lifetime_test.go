@@ -273,7 +273,10 @@ func TestExplorerIndexedWindowSingletonBounds(t *testing.T) {
 	for _, compact := range []bool{false, true} {
 		for _, c := range cases {
 			t.Run(fmt.Sprintf("compact=%v/%s", compact, c.name), func(t *testing.T) {
-				path := createExplorerRawJournalWithOptions(t, []explorerTestEntry{{realtime: c.realtime, payloads: [][]byte{[]byte("VALUE=" + value), []byte("PADDING=" + strings.Repeat("x", 8192))}}}, func(opts *Options) { opts.Compact = compact })
+				path := createExplorerRawJournalWithOptions(t, []explorerTestEntry{{realtime: c.realtime, payloads: [][]byte{[]byte("VALUE=" + value), []byte("PADDING=" + strings.Repeat("x", 8192))}}}, func(opts *Options) {
+					opts.Compact = compact
+					opts.legacyUncheckedTimestamps = true // out-of-range realtime, as earlier releases accepted
+				})
 				r, err := OpenFileWithOptions(path, DefaultReaderOptions().WithAccessMode(ReaderAccessReadAt).WithWindowSize(64).WithMaxWindows(1))
 				if err != nil {
 					t.Fatal(err)

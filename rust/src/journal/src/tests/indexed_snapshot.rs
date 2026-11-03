@@ -1033,3 +1033,38 @@ fn rejected_reuse_preserves_truncated_tail_bytes() {
         }
     }
 }
+
+// SDK writers before this check, like systemd's, stored a truncated 32-bit
+// tail entry array hint once a regular file grew past 4 GiB. Paired with Go
+// TestReadersIgnoreTailArrayHintAboveFourGiB.
+#[test]
+fn indexed_snapshot_ignores_tail_array_hint_above_four_gib() {
+    use std::os::unix::fs::FileExt;
+    for large in [false, true] {
+        let (_dir, path, mut journal, mut writer) = fixture(false, Compression::None);
+        for index in 1..=3 {
+            append(&mut journal, &mut writer, index);
+        }
+        journal.sync().unwrap();
+        drop(writer);
+        drop(journal);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        if large {
+            let size = u64::from(u32::MAX) + 1 + 4096;
+            file.set_len(size).unwrap();
+            file.write_all_at(&(size - 272).to_le_bytes(), 96).unwrap();
+        }
+        // A truncated hint names an offset below the first entry array.
+        file.write_all_at(&8u32.to_le_bytes(), 256).unwrap();
+        drop(file);
+        let result = IndexedSnapshot::open(
+            &path,
+            IndexedSnapshotOptions::default(),
+            &SnapshotControl::default(),
+        );
+        assert_eq!(result.is_ok(), large, "large={large}: {:?}", result.err());
+        if large {
+            verify_index(&path, &SnapshotControl::default()).unwrap();
+        }
+    }
+}
