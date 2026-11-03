@@ -7,7 +7,7 @@ Status: completed
 Sub-state: completed 2026-11-01 in the autonomous backlog run. Measured the
 envelope, fixed the `--list-invocations` cost and IDX alignment parity in both
 CLIs; the three other measured gaps are tracked by SOW-0166, SOW-0167 and
-SOW-0168. Scope choices are agent-chosen, pending user review (PR body).
+SOW-0168. Scope choices approved by the user 2026-11-03.
 
 ## Requirements
 
@@ -169,7 +169,7 @@ Open decisions:
 
 - Resolved 2026-11-01 (user backlog order): activated as item 8. Envelope
   used: claim only gaps of 5x or more against stock, given host load. The fix
-  decisions below are agent-chosen and pending user review.
+  decisions below were approved by the user on 2026-11-03.
 
 ## Implications And Decisions
 
@@ -238,7 +238,7 @@ Results before the fix (wall s / CPU s / max RSS MB):
   indexes reach three digits plus sign. Fixed here for invocations and boots.
   The `Error:` stderr prefix difference is tracked by SOW-0168.
 
-Decisions (agent-chosen, pending user review):
+Decisions (agent-chosen 2026-11-01, approved by the user 2026-11-03):
 
 1. Root cause of gap 1: SOW-0121 added a valid-ID eligibility prefilter (an
    OR of every invocation ID value) to keep sparse-ID journals cheap. Each
@@ -403,7 +403,7 @@ Follow-up mapping:
 - Directory `--since` seek gap: tracked by SOW-0166.
 - Go eager entry-array load: tracked by SOW-0167.
 - `--follow` polling/reopen cost and the `Error:` prefix: tracked by SOW-0168
-  (needs a user decision).
+  (decided 2026-11-03: cheap portable polling first).
 - Runtime purity: CLI-only changes; no new native code. Nothing else remains.
 
 ## Outcome
