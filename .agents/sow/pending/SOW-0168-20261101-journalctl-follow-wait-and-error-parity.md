@@ -4,7 +4,8 @@
 
 Status: open
 
-Sub-state: measured gap from SOW-0122; needs a user decision before design.
+Sub-state: measured gap from SOW-0122; decided 2026-11-03 (B: cheap portable
+polling first). Not activated.
 
 ## Requirements
 
@@ -34,14 +35,14 @@ Facts (SOW-0122, `.local/sow0122/report.md`):
 
 - Follow reuses open readers and positions instead of reopening; the initial
   tail uses tail seeks.
-- Event-driven waiting where the platform allows it, per the user decision;
-  portable polling stays the fallback.
+- Idle polls check only header counters and back off, with no reopen
+  (decision 1); event-driven waiting is out of scope.
 - Error output wording matches stock where the parser-parity manifest covers
   it.
 
 ## Analysis
 
-Decision needed (user):
+Decision (user, 2026-11-03: B):
 
 - A. Linux inotify with polling elsewhere. This needs an explicit policy
   decision: the CLI-only native code exception names PCRE2, Unix globbing,
@@ -53,11 +54,16 @@ Decision needed (user):
 
 ## Pre-Implementation Gate
 
-Not started: user decision first.
+Not started; the wait design is decided (B). Activation follows the backlog
+order.
 
 ## Implications And Decisions
 
-Pending user decision.
+1. 2026-11-03 (user): B. Both CLIs make portable polling cheap: reuse open
+   readers and positions, check header `n_entries`/`tail_entry_seqnum` per
+   poll, and back off while idle. Linux inotify (A) is not approved; it would
+   need a separate policy decision on the CLI-only native code exception if
+   measured latency after B must still reach stock.
 
 ## Plan
 
