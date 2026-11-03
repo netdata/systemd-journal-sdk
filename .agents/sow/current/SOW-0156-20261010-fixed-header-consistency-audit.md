@@ -2,11 +2,11 @@
 
 ## Status
 
-Status: paused
+Status: in-progress
 
-Sub-state: audit done; the Go/Rust parity gaps (A1, A4, A5) are implemented
-and tested on branch `sow-0156/header-audit`. Paused on user decisions D1-D6
-below; nothing else in this SOW can proceed without them.
+Sub-state: D1-D6 decided by the user on 2026-11-03; implementing in two chunks
+(chunk 1: D1, D2, D4, D6 and old-large-file support; chunk 2: the 4 GiB
+ceiling for new files). A1, A4 and A5 were implemented earlier and approved.
 
 2026-10-31: SOW-0155 (writer tail offset representability) merged into this SOW
 by user decision. Its scope, evidence and open questions in
@@ -51,7 +51,8 @@ expanding header validation into object traversal without a product decision.
 
 ## Pre-Implementation Gate
 
-Status: passed for A1, A4 and A5 (2026-11-01); D1-D6 are open decisions.
+Status: passed for A1, A4 and A5 (2026-11-01); passed for D1-D6 (2026-11-03,
+plan under "Implementation plan 2026-11-03").
 
 Problem / root-cause model: successive reviews found relationships missing from
 an incomplete header consistency model. This is a hypothesis to audit systematically.
@@ -74,7 +75,73 @@ Artifact impact plan: update product scope, compatibility guidance, tests and
 SOW indexes as needed; user guides only if documented behavior needs clarification.
 Open-source reference evidence: systemd/systemd @
 c0a5a2516d28601fb3afc1a77d7b42fcfe38fced, docs/JOURNAL_FILE_FORMAT.md.
-Open decisions: D1-D6 under Implications And Decisions.
+Open decisions: none for D1-D6. New finding N1 (below) is parked for the user.
+
+Implementation plan 2026-11-03 (both languages, paired tests for every rule):
+
+Chunk 1:
+1. D1 append-open (Go `validateAppendHeader`/`newAppendWriter`, Rust
+   `JournalFile::open_for_append`): refuse header_size != 272, unknown
+   compatible flags, missing TAIL_ENTRY_BOOT_ID, ARCHIVED state, and (as the
+   consequence of D2) non-empty files whose header head/tail realtime, tail
+   monotonic or tail boot ID break systemd's rules (journal-file.c:641-661).
+   All return the "unsupported" kind (Go `errUnsupportedJournal`, Rust
+   `JournalError::UnsupportedJournalFile`), so `Log` moves the file to
+   `.journal~` and continues (Go `log.go` `replaceableActiveOpenError`, Rust
+   `startup.rs` `replaceable_active_open_error`).
+2. Old large files (decision 19A): append-open refuses any file whose size is
+   above 4 GiB with the same "unsupported" kind (this also replaces the A4
+   compact-only error, so `Log` rotates instead of failing to start). Readers
+   ignore the 32-bit tail entry array hint and its count when the declared
+   arena ends above 4 GiB: Go `header_validation.go` and
+   `indexed_snapshot_capture.go`, Rust `object.rs` header validators and
+   `indexed_snapshot.rs`.
+3. D2 writers (Go `prepareEntryOptions`, Rust `add_entry_fields_with_options`):
+   after defaulting and same-boot clamping, refuse realtime outside
+   0 < t < 2^55 and monotonic >= 2^55 with a new pre-mutation error (Go
+   `ErrTimestampOutOfRange`, Rust `JournalError::TimestampOutOfRange`); the
+   writer stays usable. `Log` ignores out-of-range tail values when it
+   inherits a floor from an existing file (Go `replaceActiveFile` and active
+   reopen, Rust `initial_log_clock`/`initial_last_monotonic`). Readers are
+   unchanged.
+4. D4: Rust `map_hash_table` accepts a single 16-byte bucket, as Go and
+   systemd do.
+5. D6: open-time header validation in both readers refuses state >= 3 and
+   sealed headers smaller than 240 bytes (no n_entry_arrays).
+
+Chunk 2 (D3, decision 20.3A, regular and compact files):
+6. Before any write, the writer bounds the entry's growth from payload sizes
+   alone: every item as a new DATA and FIELD object, the entry object, up to
+   two TAG objects when sealing, and one minimum (4-slot) entry array per item
+   plus one for the global array. If the bound passes 4 GiB it returns a new
+   pre-mutation error (Go `ErrJournalFileFull`, Rust
+   `JournalError::JournalFileFull`); nothing is written and the writer stays
+   usable. Rust buffers the field iterator on the stack for this pass (no heap
+   allocation for typical entries).
+7. During the write, an entry array that would normally double is shrunk to
+   the 4-slot minimum when the doubled size would not leave the reserved
+   minimum arrays below 4 GiB. Array capacity is a writer heuristic; readers
+   and verifiers use the size each array object declares.
+8. `Log` (both languages) rotates on that error and retries the entry once.
+
+Validation plan additions:
+- Release-compatibility fixtures written by the v0.10.0 writers (built from
+  the tag into `.local/`, no worktree): regular, compact, compressed and
+  sealed files, files with out-of-range caller timestamps, an ARCHIVED file
+  under the active name, and regular files over 4 GiB. Current Go and Rust
+  readers must read all of them; current `Log` must continue after them.
+- Byte identity, compression, compact, live, verify and query matrices rerun;
+  writer benchmarks before and after chunk 2 (hot append path).
+- Error names (`TimestampOutOfRange`, `JournalFileFull`) are agent-chosen,
+  pending user review; Rust variants join the unreleased variants already
+  listed in `docs/Rust-API.md`.
+
+New finding N1 (2026-11-03, parked for the user): neither SDK can continue
+sealing when it reopens a sealed file for append (Go `newAppendWriter` ignores
+the SEALED flag; Rust `open_for_append` sets `seal_options: None`), so later
+entries are written unsealed. systemd refuses a writable open of a sealed file
+unless it loads the sealing key (journal-file.c:4230-4233). Not in the approved
+D1 list; not implemented.
 
 Audit model (2026-11-01): systemd's header gate is `journal_file_verify_header`
 (systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced,
@@ -112,7 +179,14 @@ languages through the SOW-0152 validators. The differences:
    `ObjectExceedsFileBounds` and `InvalidObjectLocation`, matching the nearest
    existing Rust errors for the same conditions.
 
-Open decisions (parked for the user; each changes user-visible behavior):
+Decisions (user, 2026-11-03). The compatibility rule: stricter rules may
+reject files systemd also rejects, but files written by earlier SDK releases
+(v0.2.0-v0.10.0) must stay supported. Every release wrote 272-byte headers
+with TAIL_ENTRY_BOOT_ID and only known flags (verified at each tag). A1, A4
+and A5 approved. D1 = A; D2 = writers refuse, readers unchanged (option B,
+because old writers accepted any caller timestamp); D3 = A with old large
+files supported (decisions 19A and 20.3A); D4 = A; D5 = A; D6 = A. The
+original options follow for the record.
 
 - D1 (A2): should append-open refuse what systemd refuses for writing?
   A: refuse all of them (header_size != 272, unknown compatible flags, no
