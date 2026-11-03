@@ -4,8 +4,9 @@
 
 Status: open
 
-Sub-state: analysis done 2026-11-01 (autonomous backlog run); waiting on user
-decision D1 below. No production code changed.
+Sub-state: analysis done 2026-11-01 (autonomous backlog run); D1 decided by
+the user 2026-11-03 (A: Go writer declares 256 KiB). Not activated; no
+production code changed.
 
 ## Requirements
 
@@ -138,7 +139,7 @@ deterministic varied synthetic log text, not real journals):
 liblzma sizes its decoder from the same header. Reuse is not available:
 the library has no reset API for `xz.Reader` or `lzma.Reader2`.
 
-Decision D1 (parked; changes Go writer output bytes):
+Decision D1 (decided 2026-11-03: A; changes Go writer output bytes):
 
 - A: Go writer declares 256 KiB, the Rust writer's value. Pros: Go/Rust
   writers agree; Go reads of new Go-written files about 9x faster with 28x
@@ -159,7 +160,7 @@ existing XZ fixtures, and a payload over 256 KiB round trip.
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision (D1 in Analysis Result)
+Status: ready (D1 = A, user decision 2026-11-03)
 
 Problem / root-cause model:
 
@@ -197,10 +198,9 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. The user decides D1. No implementation is authorized before that.
-2. Under A or B, set `DictCap` in the Go writer's XZ configuration and update
-   any test or fixture that pins Go XZ bytes. Under C, close this SOW with the
-   measurements as evidence.
+1. Set `DictCap` to 256 KiB in the Go writer's XZ configuration
+   (`go/journal/writer_compression.go` `xzCompress`) and update any test or
+   fixture that pins Go XZ bytes.
 
 Validation plan:
 
@@ -230,13 +230,16 @@ Open-source reference evidence:
 
 Open decisions:
 
-- D1 (Analysis Result) needs a user answer. Activation and implementation are
-  not authorized until it is decided.
+- None. D1 = A (user decision 2026-11-03).
 
 ## Implications And Decisions
 
 1. Track independently instead of expanding the approved lifetime/header repair.
    No pooling, decoder replacement, new dependency or public option is approved.
+2. 2026-11-03 (user): D1 = A. The Go writer declares a 256 KiB XZ dictionary,
+   the Rust writer's value. Existing files keep their declared size; every
+   reader already decodes any declared dictionary, so files from earlier SDK
+   releases are unaffected.
 
 ## Plan
 
