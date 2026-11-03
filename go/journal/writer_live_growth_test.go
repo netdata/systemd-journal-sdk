@@ -37,7 +37,12 @@ func TestLiveReadersDuringWriterArenaGrowth(t *testing.T) {
 			var during *Reader
 			// Append and AppendRaw use this lazy payload path. Observe immediately
 			// after the large DATA object, before the next ENTRY is published.
-			err = w.appendPayloads(2, func(i int) []byte {
+			err = w.appendPayloads(2, func(i int) uint64 {
+				if i == 0 {
+					return uint64(len(payload))
+				}
+				return uint64(len("ACTION=growth"))
+			}, func(i int) []byte {
 				if i == 0 {
 					return payload
 				}

@@ -242,7 +242,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
     pub fn create(file: &crate::repository::File, options: JournalFileOptions) -> Result<Self> {
         let fd = Self::open_new_file(file, options.file_mode)?;
         let layout = Self::create_layout(&options)?;
-        if options.compact && layout.file_size > JOURNAL_COMPACT_SIZE_MAX {
+        if layout.file_size > JOURNAL_COMPACT_SIZE_MAX {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
         fd.set_len(layout.file_size)?;

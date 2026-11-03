@@ -123,6 +123,9 @@ type Writer struct {
 	entriesSinceLivePublication uint64
 	fieldNamePolicy             FieldNamePolicy
 	legacyUncheckedTimestamps   bool
+	// entryGrowthBound is the reserved growth of the entry being appended;
+	// entry arrays stop doubling when doubling would eat into it.
+	entryGrowthBound uint64
 }
 
 // ErrWriterFailed marks an uncertain mutating failure. The writer cannot be
@@ -475,7 +478,9 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		return err
 	}
 	fields = preparedFields
-	return w.appendPayloads(len(fields), func(i int) []byte {
+	return w.appendPayloads(len(fields), func(i int) uint64 {
+		return uint64(len(fields[i].Name) + 1 + len(fields[i].Value))
+	}, func(i int) []byte {
 		field := fields[i]
 		w.payloadScratch = append(w.payloadScratch[:0], field.Name...)
 		w.payloadScratch = append(w.payloadScratch, '=')
@@ -496,12 +501,14 @@ func (w *Writer) AppendRaw(payloads [][]byte, opts EntryOptions) error {
 		return err
 	}
 	payloads = preparedPayloads
-	return w.appendPayloads(len(payloads), func(i int) []byte {
+	return w.appendPayloads(len(payloads), func(i int) uint64 {
+		return uint64(len(payloads[i]))
+	}, func(i int) []byte {
 		return payloads[i]
 	}, opts)
 }
 
-func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts EntryOptions) (err error) {
+func (w *Writer) appendPayloads(count int, payloadLen func(int) uint64, payloadAt func(int) []byte, opts EntryOptions) (err error) {
 	if count == 0 {
 		return errEntryEmpty
 	}
@@ -510,6 +517,12 @@ func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts Entr
 	if err != nil {
 		return err
 	}
+	bound := w.boundEntryGrowth(count, payloadLen, opts.RealtimeUsec)
+	if w.appendOffset > journalAppendCeiling || bound > journalAppendCeiling-w.appendOffset {
+		return ErrJournalFileFull
+	}
+	w.entryGrowthBound = bound
+	defer func() { w.entryGrowthBound = 0 }()
 
 	// Storage and sealing primitives mark the first possible mutation. Read-only
 	// lookup and capacity failures leave the writer reusable.
@@ -557,6 +570,67 @@ var ErrMissingMonotonicUsec = fmt.Errorf("journal: monotonic usec is required")
 // same-boot monotonic timestamp because the existing tail timestamp is already
 // at the maximum uint64 value.
 var ErrMonotonicUsecOverflow = fmt.Errorf("journal: monotonic usec overflow")
+
+// ErrJournalFileFull is returned before any file mutation when an entry could
+// grow the file to 4 GiB, the limit of compact offsets and of the 32-bit tail
+// entry array hint. The writer stays usable; continue in a new file. Log does
+// that itself.
+var ErrJournalFileFull = errors.New("journal: journal file full")
+
+// journalAppendCeiling is the highest object end an append may reach: the
+// arena grows in 8 MiB steps and the file must stay below 4 GiB.
+const journalAppendCeiling = journalCompactSizeMax &^ (fileSizeIncrease - 1)
+
+// boundEntryGrowth bounds the bytes one entry can append from payload sizes
+// alone, without lookups: every item as a new DATA and FIELD object (a field
+// name is shorter than its payload) with a minimum entry array, the ENTRY
+// object, a minimum global entry array, and the TAGs of the epochs crossed.
+// The result saturates above journalAppendCeiling.
+func (w *Writer) boundEntryGrowth(count int, payloadLen func(int) uint64, realtime uint64) uint64 {
+	itemSize := uint64(regularEntryItemSize)
+	if w.compact {
+		itemSize = compactEntryItemSize
+	}
+	minArray := align8(offsetArrayObjectHeaderSize + 4*w.offsetArrayItemSize())
+	dataHeader := w.dataPayloadOffset()
+	bound := align8(entryObjectHeaderSize+uint64(count)*itemSize) + minArray
+	for i := 0; i < count; i++ {
+		n := payloadLen(i)
+		if n > journalAppendCeiling || bound > journalAppendCeiling {
+			return journalAppendCeiling + 1
+		}
+		bound += align8(dataHeader+n) + align8(fieldObjectHeaderSize+n) + minArray
+	}
+	if w.seal != nil {
+		// prepareEntryOptions validated the epoch, so this cannot fail.
+		goal, _ := w.seal.getGoalEpoch(realtime)
+		tags := goal - w.seal.getEpoch()
+		if tags > journalAppendCeiling/align8(tagObjectSize()) {
+			return journalAppendCeiling + 1
+		}
+		bound += tags * align8(tagObjectSize())
+	}
+	return bound
+}
+
+// entryArrayCapacity returns the doubled capacity, or the 4-slot minimum the
+// growth bound reserved when doubling could leave the rest of the entry
+// without room below the ceiling. Readers use each array's own size.
+func (w *Writer) entryArrayCapacity(capacity uint64) uint64 {
+	if capacity <= 4 || w.entryGrowthBound == 0 {
+		return capacity
+	}
+	reserve := align8(w.appendOffset) + w.entryGrowthBound
+	if reserve > journalAppendCeiling {
+		return 4
+	}
+	room := journalAppendCeiling - reserve
+	if capacity > room/w.offsetArrayItemSize() ||
+		align8(offsetArrayObjectHeaderSize+capacity*w.offsetArrayItemSize()) > room {
+		return 4
+	}
+	return capacity
+}
 
 // ErrTimestampOutOfRange is returned before any file mutation when an entry's
 // realtime is zero or at least 2^55, or its monotonic time is at least 2^55

@@ -117,8 +117,8 @@ func (w *Writer) initialize(opts Options) error {
 	if !ok {
 		return fmt.Errorf("journal initial arena too large")
 	}
-	if opts.Compact && fileSize > journalCompactSizeMax {
-		return fmt.Errorf("compact journal cannot exceed 4 GiB")
+	if fileSize > journalCompactSizeMax {
+		return fmt.Errorf("journal cannot exceed 4 GiB")
 	}
 
 	incFlags := initialIncompatibleFlags(opts)
@@ -475,8 +475,10 @@ func (w *Writer) ensureArenaSize(requiredSize uint64) error {
 	if !ok {
 		return fmt.Errorf("%w: object exceeds file bounds", errInvalidJournal)
 	}
-	if w.compact && newSize > journalCompactSizeMax {
-		return fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
+	// The append pre-check keeps entries below this; a file at 4 GiB would
+	// truncate the tail entry array hint and compact offsets.
+	if newSize > journalCompactSizeMax {
+		return fmt.Errorf("%w: journal cannot exceed 4 GiB", errInvalidJournal)
 	}
 	if err := checkArenaSize(newSize); err != nil {
 		return err
