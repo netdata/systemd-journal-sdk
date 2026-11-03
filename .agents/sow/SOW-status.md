@@ -32,8 +32,9 @@ order; the user may reorder it.
 
 ## Current
 
-- SOW-0156 - Fixed-Header Consistency Audit (paused): D1-D6 decided
-  2026-11-03; implementation next.
+- SOW-0156 - Fixed-Header Consistency Audit (in-progress): D1-D6 decided
+  2026-11-03; implementing chunk 1 (append-open refusals, writer timestamp
+  validation, reader header checks, old large-file support).
 
 ## Pending
 
