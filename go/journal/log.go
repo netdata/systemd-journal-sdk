@@ -467,10 +467,26 @@ func (l *Log) applyChainTailState(state chainState, explicitHeadSeqnum, explicit
 	if !explicitSeqnumID {
 		l.options.SeqnumID = state.seqnumID
 	}
-	l.lastRealtime = state.tailRealtime
+	l.lastRealtime = inheritedRealtime(state.tailRealtime)
 	if state.tailBootID == l.options.BootID {
-		l.lastMonotonic = state.tailMonotonic
+		l.lastMonotonic = inheritedMonotonic(state.tailMonotonic)
 	}
+}
+
+// Tails outside systemd's timestamp range, which earlier releases could
+// write, are not clock floors: they would push every new entry out of range.
+func inheritedRealtime(usec uint64) uint64 {
+	if validRealtime(usec) {
+		return usec
+	}
+	return 0
+}
+
+func inheritedMonotonic(usec uint64) uint64 {
+	if validMonotonic(usec) {
+		return usec
+	}
+	return 0
 }
 
 func (l *Log) openStrictChainActive(state chainState) error {
@@ -556,8 +572,8 @@ func (l *Log) replaceActiveFile(path string) error {
 		if !isZeroUUID(header.tailEntryBootID) {
 			l.options.BootID = header.tailEntryBootID
 		}
-		l.lastRealtime = header.tailEntryRealtime
-		l.lastMonotonic = header.tailEntryMonotonic
+		l.lastRealtime = inheritedRealtime(header.tailEntryRealtime)
+		l.lastMonotonic = inheritedMonotonic(header.tailEntryMonotonic)
 	}
 
 	return l.disposeActiveFile(path)
@@ -640,6 +656,10 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	}
 	fields = preparedFields
 	opts = l.entryOptionsForAppend(opts)
+	// Refuse before rotation can create or archive files.
+	if err := validateEntryTimestamps(opts); err != nil {
+		return err
+	}
 	if err := l.enforceRetentionOnOpen(); err != nil {
 		return err
 	}
@@ -678,6 +698,10 @@ func (l *Log) AppendRaw(payloads [][]byte, opts EntryOptions) error {
 	}
 	payloads = preparedPayloads
 	opts = l.entryOptionsForAppend(opts)
+	// Refuse before rotation can create or archive files.
+	if err := validateEntryTimestamps(opts); err != nil {
+		return err
+	}
 	if err := l.enforceRetentionOnOpen(); err != nil {
 		return err
 	}

@@ -229,8 +229,10 @@ impl OwnedChain {
         let Some(tail) = self.tail_state(include_active)? else {
             return Ok(None);
         };
+        // Tails outside systemd's range, which earlier releases could write,
+        // are not clock floors: they would push every new entry out of range.
         let realtime = tail.tail_realtime;
-        if realtime == 0 {
+        if !journal_core::file::valid_realtime(realtime) {
             Ok(None)
         } else {
             Ok(Some(Microseconds::new(realtime)))
@@ -251,7 +253,7 @@ impl OwnedChain {
         }
 
         let monotonic = tail.tail_monotonic;
-        if monotonic == 0 {
+        if monotonic == 0 || !journal_core::file::valid_monotonic(monotonic) {
             Ok(None)
         } else {
             Ok(Some(monotonic))

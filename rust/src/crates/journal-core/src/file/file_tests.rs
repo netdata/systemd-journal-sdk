@@ -1129,29 +1129,249 @@ fn append_open_requires_both_hash_tables() {
 }
 
 #[test]
-fn append_open_rejects_compact_file_beyond_four_gib() {
+fn append_open_refuses_file_beyond_four_gib() {
+    for compact in [false, true] {
+        let dir = TempDir::new().expect("create temp dir");
+        let (path, repo_file) = header_gate_journal(&dir, compact);
+        let original = std::fs::read(&path).expect("read journal");
+        let size = crate::file::writer::JOURNAL_COMPACT_SIZE_MAX + 4096;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open journal")
+            .set_len(size)
+            .expect("extend journal");
+        let err = append_open_error(&repo_file);
+        assert!(
+            matches!(err, JournalError::UnsupportedJournalFile),
+            "compact={compact}: {err:?}"
+        );
+        assert_eq!(std::fs::metadata(&path).expect("stat journal").len(), size);
+        // The sparse tail is zero by construction; compare the written prefix.
+        use std::os::unix::fs::FileExt;
+        let mut prefix = vec![0; original.len()];
+        std::fs::File::open(&path)
+            .expect("open journal")
+            .read_exact_at(&mut prefix, 0)
+            .expect("read prefix");
+        assert_eq!(prefix, original, "compact={compact}");
+    }
+}
+
+fn read_u64_at(path: &std::path::Path, offset: usize) -> u64 {
+    let bytes = std::fs::read(path).expect("read journal");
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+
+fn patch_u32(path: &std::path::Path, offset: usize, update: impl Fn(u32) -> u32) {
+    let bytes = std::fs::read(path).expect("read journal");
+    let value = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    patch_header(path, offset as u64, &update(value).to_le_bytes());
+}
+
+type HeaderPatch = fn(&std::path::Path);
+
+// Paired with Go journal/header_append_target_test.go appendTargetCases:
+// files systemd's writer refuses to extend and that earlier SDK releases could
+// leave behind.
+fn append_target_cases() -> Vec<(&'static str, HeaderPatch)> {
+    vec![
+        ("header-size-280", |path| {
+            let arena = read_u64_at(path, 96);
+            patch_header(path, 88, &280u64.to_le_bytes());
+            patch_header(path, 96, &(arena - 8).to_le_bytes());
+        }),
+        ("unknown-compatible-flag", |path| {
+            patch_u32(path, 8, |v| v | 1 << 3)
+        }),
+        ("no-tail-entry-boot-id-flag", |path| {
+            patch_u32(path, 8, |v| {
+                v & !(HeaderCompatibleFlags::TailEntryBootId as u32)
+            })
+        }),
+        ("archived", |path| {
+            patch_header(path, 16, &[JournalState::Archived as u8])
+        }),
+        ("zero-head-realtime", |path| {
+            patch_header(path, 184, &0u64.to_le_bytes())
+        }),
+        ("head-realtime-limit", |path| {
+            patch_header(path, 184, &TIMESTAMP_LIMIT_USEC.to_le_bytes())
+        }),
+        ("tail-realtime-limit", |path| {
+            patch_header(path, 192, &TIMESTAMP_LIMIT_USEC.to_le_bytes())
+        }),
+        ("tail-monotonic-limit", |path| {
+            patch_header(path, 200, &TIMESTAMP_LIMIT_USEC.to_le_bytes())
+        }),
+        ("null-tail-boot-id", |path| patch_header(path, 56, &[0; 16])),
+    ]
+}
+
+#[test]
+fn append_open_refuses_targets_systemd_will_not_extend() {
+    for compact in [false, true] {
+        for (name, patch) in append_target_cases() {
+            let dir = TempDir::new().expect("create temp dir");
+            let (path, repo_file) = header_gate_journal(&dir, compact);
+            patch(&path);
+            let before = std::fs::read(&path).expect("read journal before open");
+            let err = append_open_error(&repo_file);
+            assert!(
+                matches!(err, JournalError::UnsupportedJournalFile),
+                "{name}, compact={compact}: {err:?}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("read journal after open"),
+                before,
+                "{name}"
+            );
+            // The patched 280-byte header is not a real newer layout: its
+            // objects still start at 272, which other checks refuse.
+            if name == "header-size-280" {
+                continue;
+            }
+            // Readers keep accepting these files.
+            JournalFile::<crate::file::Mmap>::open(&repo_file, 4096)
+                .unwrap_or_else(|err| panic!("{name}, compact={compact}: reader open {err:?}"));
+            // Archive-only opens keep earlier releases' files retainable.
+            JournalFile::<MmapMut>::open_for_archive(&repo_file, 8 * 1024 * 1024)
+                .unwrap_or_else(|err| panic!("{name}, compact={compact}: archive open {err:?}"));
+        }
+    }
+}
+
+#[test]
+fn append_refuses_out_of_range_timestamps_without_mutation() {
+    for (name, realtime, monotonic) in [
+        ("zero-realtime", 0, 1),
+        ("realtime-limit", TIMESTAMP_LIMIT_USEC, 1),
+        (
+            "monotonic-limit",
+            1_700_000_000_000_000,
+            TIMESTAMP_LIMIT_USEC,
+        ),
+    ] {
+        let dir = TempDir::new().expect("create temp dir");
+        let (path, repo_file) = header_gate_journal(&dir, false);
+        let mut journal_file =
+            JournalFile::<MmapMut>::open_for_append(&repo_file, 8 * 1024 * 1024).expect("open");
+        let mut writer = JournalWriter::new(&mut journal_file, 2, test_uuid(9)).expect("writer");
+        journal_file.sync().expect("sync");
+        let before = std::fs::read(&path).expect("read before");
+        let err = writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=out".as_slice()],
+                realtime,
+                monotonic,
+            )
+            .expect_err(name);
+        assert!(
+            matches!(err, JournalError::TimestampOutOfRange),
+            "{name}: {err:?}"
+        );
+        assert!(!writer.is_poisoned(), "{name}");
+        journal_file.sync().expect("sync");
+        assert_eq!(std::fs::read(&path).expect("read after"), before, "{name}");
+        // The writer stays usable.
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=valid".as_slice()],
+                2_000_000,
+                200,
+            )
+            .unwrap_or_else(|err| panic!("{name}: valid append {err:?}"));
+    }
+}
+
+#[test]
+fn reader_open_refuses_unknown_state_and_short_sealed_header() {
     let dir = TempDir::new().expect("create temp dir");
-    let (path, repo_file) = header_gate_journal(&dir, true);
-    let original = std::fs::read(&path).expect("read journal");
-    let size = crate::file::writer::JOURNAL_COMPACT_SIZE_MAX + 4096;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .expect("open journal")
-        .set_len(size)
-        .expect("extend journal");
-    let err = append_open_error(&repo_file);
+    let (path, repo_file) = header_gate_journal(&dir, false);
+    patch_header(&path, 16, &[3]);
+    let err = JournalFile::<crate::file::Mmap>::open(&repo_file, 4096)
+        .err()
+        .expect("state 3 must be refused");
     assert!(
-        matches!(err, JournalError::ObjectExceedsFileBounds),
+        matches!(err, JournalError::InvalidJournalFileState),
         "{err:?}"
     );
-    assert_eq!(std::fs::metadata(&path).expect("stat journal").len(), size);
-    // The sparse tail is zero by construction; compare the written prefix.
-    use std::os::unix::fs::FileExt;
-    let mut prefix = vec![0; original.len()];
-    std::fs::File::open(&path)
-        .expect("open journal")
-        .read_exact_at(&mut prefix, 0)
-        .expect("read prefix");
-    assert_eq!(prefix, original);
+
+    let dir = TempDir::new().expect("create temp dir");
+    let (path, repo_file) = header_gate_journal(&dir, false);
+    patch_u32(&path, 8, |v| v | HeaderCompatibleFlags::Sealed as u32);
+    let arena = read_u64_at(&path, 96);
+    patch_header(&path, 88, &232u64.to_le_bytes());
+    patch_header(&path, 96, &(arena + 40).to_le_bytes());
+    let err = JournalFile::<crate::file::Mmap>::open(&repo_file, 4096)
+        .err()
+        .expect("short sealed header must be refused");
+    assert!(
+        matches!(err, JournalError::InvalidObjectLocation),
+        "{err:?}"
+    );
+}
+
+// SDK writers before this check, like systemd's, stored a truncated 32-bit
+// tail entry array hint once a regular file grew past 4 GiB. Paired with Go
+// TestReadersIgnoreTailArrayHintAboveFourGiB.
+#[test]
+fn committed_arena_ignores_tail_array_hint_above_four_gib() {
+    for large in [false, true] {
+        let dir = TempDir::new().expect("create temp dir");
+        let (path, repo_file) = header_gate_journal(&dir, false);
+        if large {
+            let size = crate::file::writer::JOURNAL_COMPACT_SIZE_MAX + 1 + 4096;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("open journal")
+                .set_len(size)
+                .expect("extend journal");
+            patch_header(&path, 96, &(size - 272).to_le_bytes());
+        }
+        // A truncated hint names an offset below the first entry array.
+        patch_header(&path, 256, &8u32.to_le_bytes());
+        let journal = JournalFile::<crate::file::Mmap>::open(&repo_file, 4096).expect("open");
+        let result = journal.validate_committed_arena();
+        assert_eq!(result.is_ok(), large, "large={large}: {result:?}");
+    }
+}
+
+// One-bucket tables are valid in systemd and the Go reader.
+#[test]
+fn reader_accepts_single_bucket_hash_tables() {
+    let dir = TempDir::new().expect("create temp dir");
+    let path = dir.path().join("system.journal");
+    let repo_file =
+        crate::repository::File::from_path(&path).expect("test journal path should parse");
+    let mut journal_file: JournalFile<MmapMut> = JournalFile::create(
+        &repo_file,
+        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+            .with_data_hash_table_buckets(1)
+            .with_field_hash_table_buckets(1),
+    )
+    .expect("create journal");
+    let mut writer = JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("writer");
+    for i in 0..3u64 {
+        let payload = format!("MESSAGE=row-{i}");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[payload.as_bytes()],
+                1_000_000 + i,
+                100 + i,
+            )
+            .expect("write entry");
+    }
+    journal_file.sync().expect("sync journal");
+    drop(journal_file);
+    let bytes = std::fs::read(&path).expect("read journal");
+    assert_eq!(u64::from_le_bytes(bytes[112..120].try_into().unwrap()), 16);
+    let journal = JournalFile::<crate::file::Mmap>::open(&repo_file, 4096).expect("open");
+    let mut offsets = Vec::new();
+    journal.entry_offsets(&mut offsets).expect("entry offsets");
+    assert_eq!(offsets.len(), 3);
 }

@@ -615,6 +615,22 @@ Current shared high-level directory writer API slice:
   header can still be read, move the old active file to a collision-safe
   disposed `*.journal~` name, and create a fresh active file. Low-level direct
   writer opens still return controlled unsupported errors.
+- Rust and Go append-open applies the systemd v260.1 writable-open header
+  rules: it refuses header sizes other than 272, unknown compatible flags, a
+  missing tail-entry-boot-ID flag, archived state, invalid tail metadata
+  (head realtime outside `1..2^55-1`, tail realtime or monotonic at or above
+  2^55, null tail boot ID) and regular files above 4 GiB, as unsupported and
+  before mutation. Readers keep accepting these files. Log set-aside does not
+  use an out-of-range tail timestamp as a clock floor. Root-retention Logs do
+  not set files aside; root finalization of retired files uses an archive-only
+  open that skips these refusals.
+- Rust and Go writers refuse entry timestamps with realtime outside
+  `1..2^55-1` or monotonic at or above 2^55 before mutation (Go
+  `ErrTimestampOutOfRange`, Rust `JournalError::TimestampOutOfRange`); the
+  writer stays usable and Log clocks do not move.
+- Readers refuse header state values above ARCHIVED and sealed headers too
+  short to hold `n_entry_arrays`, and ignore the 32-bit tail entry array hint
+  when the declared arena ends above 4 GiB.
 - Rust and Go require explicit machine ID, boot ID, and generated-entry
   monotonic timestamps for normal writer/log appends. Optional host helpers may
   produce local-host values, but callers still pass those values explicitly to
@@ -1484,6 +1500,8 @@ declared extents that exclude their required objects before variable index
 mapping or writer mutation. Empty populations MAY inherit tail sequence state;
 current-file entry pointers, head sequence and timestamps MUST be empty. Tail
 boot metadata MUST follow historical header field presence and compatible flags.
+Tail entry array hint checks MUST apply only when the declared arena ends at or
+below 4 GiB; above it the 32-bit hint is truncated and is ignored.
 These shared header checks MUST NOT turn compatibility readers into full graph
 certifiers or reject the historical damaged-tail fixtures they already support. Ordinary live readers MUST permit declared capacity to exceed physical size
 during normal append preparation while validating header arithmetic and the

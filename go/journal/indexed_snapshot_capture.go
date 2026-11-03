@@ -43,7 +43,7 @@ func (s *IndexedSnapshot) captureBoundary(ctx context.Context) error {
 	if h.headerSize >= 272 && h.tailEntryOffset != entry {
 		return snapshotCorrupt("tail entry hint disagrees with committed entry count")
 	}
-	if h.headerSize >= 264 && (uint64(h.tailEntryArrayOffset) != array || uint64(h.tailEntryArrayNEntries) != used) {
+	if h.tailEntryArrayHintUsable() && (uint64(h.tailEntryArrayOffset) != array || uint64(h.tailEntryArrayNEntries) != used) {
 		return snapshotCorrupt("tail array hint disagrees with committed entry count")
 	}
 	return nil
