@@ -184,7 +184,7 @@ func TestAppendOpenMutationFailureClass(t *testing.T) {
 	defer f.Close()
 	// The read-only descriptor passes header validation but cannot enter the
 	// writable mapping stage, which can resize a file before failing.
-	if w, err := newAppendWriter(path, f, Options{}); !errors.Is(err, ErrWriterFailed) {
+	if w, err := newAppendWriter(path, f, Options{}, false); !errors.Is(err, ErrWriterFailed) {
 		if w != nil {
 			w.Close()
 		}

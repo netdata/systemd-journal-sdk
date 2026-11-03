@@ -301,6 +301,10 @@ unsupported, `Log` follows journald's reliable-open behavior: it uses readable
 header metadata to continue sequence identity where possible, moves the old
 active file to a collision-safe `*.journal~` disposed name, and creates a fresh
 active file. Direct low-level append-open still returns an unsupported error.
+Unsupported includes the systemd writable-open refusals
+listed in the [Writer APIs wiki page](../docs/Writer-APIs.md); an out-of-range
+tail timestamp in the old file is not used as a clock floor. Root-retention
+logs do not set files aside and return the error.
 Unset rotation and retention limits are disabled. Retention counts the tracked
 active/current file in file-count and committed-byte limits, but deletion only
 selects older unprotected files owned by the configured source; the tracked
