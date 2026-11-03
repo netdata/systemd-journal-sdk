@@ -14,6 +14,20 @@ use std::num::NonZeroU64;
 pub(super) const OBJECT_ALIGNMENT: u64 = 8;
 pub(super) const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
 const FILE_SIZE_INCREASE: u64 = 8 * 1024 * 1024;
+/// The highest object end an append may reach: the arena grows in 8 MiB steps
+/// and the file must stay below 4 GiB.
+pub(super) const JOURNAL_APPEND_CEILING: u64 = JOURNAL_COMPACT_SIZE_MAX & !(FILE_SIZE_INCREASE - 1);
+/// Entries with up to this many fields are buffered on the stack for the
+/// growth pre-check.
+const STACK_ENTRY_FIELDS: usize = 64;
+#[cfg(test)]
+thread_local! {
+    /// Runs after each entry item is prepared, before the ENTRY object, so
+    /// tests can observe a writer mid-append.
+    pub(super) static AFTER_ENTRY_ITEM: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 const FIELD_CACHE_MAX_ENTRIES: usize = 1024;
 const FIELD_CACHE_MAX_PAYLOAD_LEN: usize = 128;
 pub(super) fn round_up_to_file_size_increment(value: u64) -> Result<u64> {
@@ -63,6 +77,14 @@ impl<'a> EntryField<'a> {
     /// Creates a structured entry item from a name and binary-safe value.
     pub fn structured(name: &'a [u8], value: &'a [u8]) -> Self {
         Self::Structured(StructuredField::new(name, value))
+    }
+
+    /// Length of the full `KEY=value` payload.
+    fn payload_len(self) -> usize {
+        match self {
+            Self::Raw(payload) => payload.len(),
+            Self::Structured(field) => field.name.len() + 1 + field.value.len(),
+        }
     }
 
     fn payload_parts(self) -> PayloadParts<'a> {
@@ -274,6 +296,9 @@ pub struct JournalWriter {
     live_publish_every_entries: u64,
     entries_since_live_publication: u64,
     pub(super) seal: Option<crate::seal::SealState>,
+    /// Reserved growth of the entry being appended; entry arrays stop doubling
+    /// when doubling would eat into it.
+    pub(super) entry_growth_bound: u64,
 }
 
 impl JournalWriter {
@@ -418,6 +443,7 @@ impl JournalWriter {
             live_publish_every_entries: 1,
             entries_since_live_publication: 0,
             seal,
+            entry_growth_bound: 0,
         };
 
         if writer.seal.is_some() && journal_file.journal_header_ref().n_tags == 0 {
@@ -533,7 +559,140 @@ impl JournalWriter {
         if let Some(seal) = &self.seal {
             seal.need_evolve(realtime)?;
         }
-        let xor_hash = self.prepare_entry_items(journal_file, fields, realtime, options)?;
+        // The growth pre-check needs every field before the first write.
+        let mut stack = [EntryField::Raw(&[]); STACK_ENTRY_FIELDS];
+        let mut heap = Vec::new();
+        let mut count = 0;
+        for field in fields {
+            if count < STACK_ENTRY_FIELDS {
+                stack[count] = field;
+            } else {
+                if heap.is_empty() {
+                    heap.extend_from_slice(&stack);
+                }
+                heap.push(field);
+            }
+            count += 1;
+        }
+        let fields = if heap.is_empty() {
+            &stack[..count]
+        } else {
+            &heap[..]
+        };
+        let bound = self.bound_entry_growth(journal_file, fields, realtime)?;
+        let append_offset = self.append_offset.get();
+        if append_offset > JOURNAL_APPEND_CEILING || bound > JOURNAL_APPEND_CEILING - append_offset
+        {
+            return Err(JournalError::JournalFileFull);
+        }
+        self.entry_growth_bound = bound;
+        let result = self.add_bounded_entry(
+            journal_file,
+            fields,
+            entry_seqnum,
+            entry_boot_id,
+            realtime,
+            monotonic,
+            options,
+        );
+        self.entry_growth_bound = 0;
+        result
+    }
+
+    /// Bounds the bytes one entry can append from payload sizes alone, without
+    /// lookups: every field as a new DATA and FIELD object (a field name is
+    /// shorter than its payload) with a minimum entry array, the ENTRY object, a
+    /// minimum global entry array, and the TAGs it may write. Saturates above
+    /// `JOURNAL_APPEND_CEILING`.
+    pub(super) fn bound_entry_growth(
+        &self,
+        journal_file: &JournalFile<MmapMut>,
+        fields: &[EntryField<'_>],
+        realtime: u64,
+    ) -> Result<u64> {
+        const OVER: u64 = JOURNAL_APPEND_CEILING + 1;
+        let align = |n: u64| (n + (OBJECT_ALIGNMENT - 1)) & !(OBJECT_ALIGNMENT - 1);
+        let is_compact = journal_file
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+        let (entry_item, array_item) = if is_compact { (4, 4) } else { (16, 8) };
+        let min_array = align(
+            std::mem::size_of::<super::object::OffsetArrayObjectHeader>() as u64 + 4 * array_item,
+        );
+        let field_header = std::mem::size_of::<FieldObjectHeader>() as u64;
+        let mut bound = align(
+            std::mem::size_of::<EntryObjectHeader>() as u64 + fields.len() as u64 * entry_item,
+        ) + min_array;
+        for field in fields {
+            let n = field.payload_len() as u64;
+            if n > JOURNAL_APPEND_CEILING || bound > JOURNAL_APPEND_CEILING {
+                return Ok(OVER);
+            }
+            bound +=
+                align(Self::data_object_size(is_compact, n)) + align(field_header + n) + min_array;
+        }
+        if let Some(seal) = &self.seal {
+            // add_entry_fields_with_options validated the epoch.
+            let mut tags = seal.goal_epoch(realtime)? - seal.epoch();
+            if !self.first_tag_written {
+                tags += 1;
+            }
+            let tag = align(
+                (std::mem::size_of::<super::object::ObjectHeader>() + 16 + crate::seal::TAG_LENGTH)
+                    as u64,
+            );
+            if tags > JOURNAL_APPEND_CEILING / tag {
+                return Ok(OVER);
+            }
+            bound += tags * tag;
+        }
+        Ok(bound)
+    }
+
+    /// Returns the doubled capacity, or the 4-slot minimum the growth bound
+    /// reserved when doubling could leave the rest of the entry without room
+    /// below the ceiling. Readers use each array's own size.
+    pub(super) fn entry_array_capacity(
+        &self,
+        journal_file: &JournalFile<MmapMut>,
+        capacity: u64,
+    ) -> u64 {
+        if capacity <= 4 || self.entry_growth_bound == 0 {
+            return capacity;
+        }
+        let is_compact = journal_file
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+        let align = |n: u64| (n + (OBJECT_ALIGNMENT - 1)) & !(OBJECT_ALIGNMENT - 1);
+        let reserve = align(self.append_offset.get()) + self.entry_growth_bound;
+        let Some(room) = JOURNAL_APPEND_CEILING.checked_sub(reserve) else {
+            return 4;
+        };
+        let item = if is_compact { 4 } else { 8 };
+        if capacity > room / item
+            || align(
+                std::mem::size_of::<super::object::OffsetArrayObjectHeader>() as u64
+                    + capacity * item,
+            ) > room
+        {
+            return 4;
+        }
+        capacity
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_bounded_entry(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        fields: &[EntryField<'_>],
+        entry_seqnum: u64,
+        entry_boot_id: uuid::Uuid,
+        realtime: u64,
+        monotonic: u64,
+        options: EntryWriteOptions,
+    ) -> Result<()> {
+        let xor_hash =
+            self.prepare_entry_items(journal_file, fields.iter().copied(), realtime, options)?;
         #[cfg(test)]
         self.fail_append_at(1)?;
         let entry_offset = self.write_entry_object(
@@ -615,6 +774,12 @@ impl JournalWriter {
             }
             self.ensure_entry_publication_ready(journal_file, realtime, &mut publication_ready)?;
             xor_hash ^= self.add_entry_field_item(journal_file, field)?;
+            #[cfg(test)]
+            AFTER_ENTRY_ITEM.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook();
+                }
+            });
         }
         self.finish_entry_items(options.trusted_unique_payloads)?;
         Ok(xor_hash)
@@ -767,6 +932,11 @@ impl JournalWriter {
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
         if self.append_offset.get() > old_size {
             let new_size = round_up_to_file_size_increment(self.append_offset.get())?;
+            // The append pre-check keeps entries below this; a file at 4 GiB
+            // would truncate the tail entry array hint and compact offsets.
+            if new_size > JOURNAL_COMPACT_SIZE_MAX {
+                return Err(JournalError::ObjectExceedsFileBounds);
+            }
             header.arena_size = new_size
                 .checked_sub(header.header_size)
                 .ok_or(JournalError::ObjectExceedsFileBounds)?;

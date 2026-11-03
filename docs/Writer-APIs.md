@@ -80,6 +80,17 @@ Entries must carry a realtime in `1..2^55-1` microseconds and a monotonic below
 usable. The directory writer raises a zero realtime to its clock floor and
 refuses other out-of-range values without moving its clocks.
 
+Regular and compact files both stop below 4 GiB, as systemd's do: the
+header's 32-bit tail entry array hint cannot address anything higher. Before
+writing an entry, the writer bounds the space the entry could need from its
+payload sizes and refuses it with Go `ErrJournalFileFull` or Rust
+`JournalError::JournalFileFull` when the file might cross 4 GiB minus one
+8 MiB growth step. Nothing is written and the writer stays usable, so the
+caller can rotate. Entry arrays stop doubling when the next one would not fit.
+The directory writer rotates once on this error and writes the entry to the new
+file; an entry that does not fit an empty file is refused and its clocks do not
+move.
+
 ## Uncertain Failures And Reopen
 
 A mutating append, sync or archive failure poisons the writer. Further mutation
@@ -154,7 +165,7 @@ calling the writer.
 | xz or lz4 compression | no | compatibility or measured workload fit |
 | FSS | no | tamper evidence is required |
 
-Compact format has a 4 GiB offset ceiling. Compression stores the whole
+Both formats stop below 4 GiB (see above). Compression stores the whole
 `FIELD=value` payload compressed, so the field name is not visible without
 decompression.
 
