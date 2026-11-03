@@ -8,35 +8,31 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-1. SOW-0071 - Runtime purity guard misses Go process-launch variants.
-2. SOW-0123 - Rust fresh-journal realtime clock seed (event-time lanes).
-3. SOW-0137 - Rust writer residual array-open performance.
-4. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155; D1-D6
+1. SOW-0123 - Rust fresh-journal realtime clock seed (event-time lanes).
+2. SOW-0137 - Rust writer residual array-open performance.
+3. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155; D1-D6
    decided 2026-11-03).
-5. SOW-0161 - File indexer source posting membership.
-6. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
+4. SOW-0161 - File indexer source posting membership.
+5. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
    declares 256 KiB).
-7. SOW-0122 - journalctl performance follow-ups.
-8. SOW-0097 - Go duplication debt.
-9. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
-10. SOW-0153 - Consumer docs release clarity.
-11. SOW-0125 - Netdata filter operators (needs design decisions first).
-12. SOW-0162 - Publishable C reader crate.
-13. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
+6. SOW-0122 - journalctl performance follow-ups.
+7. SOW-0097 - Go duplication debt.
+8. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
+9. SOW-0153 - Consumer docs release clarity.
+10. SOW-0125 - Netdata filter operators (needs design decisions first).
+11. SOW-0162 - Publishable C reader crate.
+12. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
     (decided 2026-11-03: required `--journalctl PATH`).
-14. SOW-0163 - v0.11.0 release.
-15. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-16. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
+13. SOW-0163 - v0.11.0 release.
+14. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
+15. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
     2026-11-03).
-17. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
+16. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
     now, by user decision 2026-11-03).
 
 ## Current
 
-- SOW-0071 - Runtime Purity And Optional Platform Services: regression
-  reopened, paused. The static guard misses `exec.CommandContext`,
-  `os.StartProcess` and `syscall.ForkExec`; no SDK runtime process launch
-  exists. Former blockers are done.
+- None.
 
 ## Pending
 
@@ -72,6 +68,12 @@ order; the user may reorder it.
   by user decision.
 
 ## Recently Closed Or Completed
+
+- SOW-0071 - Runtime Purity And Optional Platform Services: regression
+  resolved 2026-11-01. By user decision the partial static purity scan was
+  removed; `AGENTS.md` now makes review the enforcement, with the forms to
+  search for and the in-package writer-lock helper files. The SDK core was
+  verified clean.
 
 - SOW-0045 - Go Reader Alignment Optimization: regression repair completed
   2026-11-01. Go and Rust file, directory and facade readers follow the
@@ -707,8 +709,8 @@ order; the user may reorder it.
   Node.js; FreeBSD no-stock single-file and directory matrices passed; files
   generated on macOS, Windows, and FreeBSD passed Linux stock
   `journalctl --verify --file`; SOW-0071/SOW-0072 runtime dependencies were
-  resolved for that validation. SOW-0071 now separately tracks a paused
-  guard-coverage regression, with no demonstrated SDK runtime launch.
+  resolved for that validation. SOW-0071's later guard-coverage regression was
+  resolved on 2026-11-01 by removing the static scan.
 - SOW-0067 - Go Cross Platform Portability: completed. Go SDK portability
   implementation, whole-SOW reviews, Linux/Windows tests, FreeBSD/macOS compile
   checks, and parent native macOS/Windows generated-file validation passed.
