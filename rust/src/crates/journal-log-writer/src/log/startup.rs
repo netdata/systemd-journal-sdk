@@ -344,12 +344,11 @@ pub(super) fn rotation_state_for_active(
     rotation_state
 }
 
-pub(super) fn initial_log_clock(
-    chain: &OwnedChain,
-    strict_systemd_naming: bool,
-) -> Result<RealtimeClock> {
-    if let Some(tail_realtime) = chain.tail_realtime(strict_systemd_naming)? {
+pub(super) fn initial_log_clock(chain: &OwnedChain, config: &Config) -> Result<RealtimeClock> {
+    if let Some(tail_realtime) = chain.tail_realtime(config.strict_systemd_naming)? {
         Ok(RealtimeClock::with_initial(tail_realtime))
+    } else if let Some(seed) = config.fresh_realtime_seed_usec {
+        Ok(RealtimeClock::with_initial(Microseconds::new(seed)))
     } else {
         Ok(RealtimeClock::new())
     }
@@ -441,7 +440,7 @@ pub(super) fn build_startup_state(path: &Path, config: Config) -> Result<Startup
         rotation_state_for_active(&config.rotation_policy, startup_active.active_file.as_ref());
     let last_monotonic_usec =
         initial_last_monotonic(&chain, startup_active.boot_id, config.strict_systemd_naming)?;
-    let clock = initial_log_clock(&chain, config.strict_systemd_naming)?;
+    let clock = initial_log_clock(&chain, &config)?;
 
     Ok(StartupState {
         chain,

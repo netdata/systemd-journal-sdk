@@ -2,10 +2,9 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: Project-manager diagnosis and implementation plan updated. External read-only reviewer
-verification completed for both the gap analysis and the plan; reviewer refinements are incorporated.
+Sub-state: implemented and validated in Rust and Go on 2026-11-01, following the reviewed plan.
 
 Python/Node were retired in SOW-0116, so only Rust + Go are in scope. The consumer is the Netdata
 netflow plugin's cloud VPC flow-log "vpc ingestion" event-time lane, specified in the Netdata repo
@@ -386,21 +385,89 @@ Consensus: all usable reviewer verdicts confirmed the Rust fresh-lazy gap, confi
 already adopts positive caller-supplied realtime from zero, found no security issues, and judged the
 plan source-compatible after the refinements above.
 
+### 2026-11-01 - Implementation
+
+Activated after SOW-0071 under the user's autonomous-run instruction. The plan above was
+implemented without deviation:
+
+- Rust: `Config::fresh_realtime_seed_usec: Option<u64>` (default `None` in `Config::new`),
+  `Config::with_fresh_realtime_seed_usec`, `u64::MAX` rejected in `validate_config`, and
+  `initial_log_clock(&chain, &config)` (tail first, then the seed, then `RealtimeClock::new()`).
+- Go: `LogConfig.FreshRealtimeSeedUsec *uint64`, the `FreshRealtimeSeed(uint64)` pointer helper
+  (the same pattern as `PublishEveryEntries` and `SyncOnArchive`), `math.MaxUint64` rejected in
+  `validateNewLogConfig`, and the seed applied to `lastRealtime` before `openExistingChain`, so
+  `applyChainTailState` overwrites it when a tail exists. `attachOpenedWriter` runs only for
+  non-empty active files, so an empty reopened file cannot reset the seed.
+- Agent-chosen details (pending user review in the PR): the Go helper name `FreshRealtimeSeed`;
+  the Rust field and builder names follow the reviewed plan.
+
+Construction-site search: no `journal_log_writer::Config { ... }` struct literal exists in the
+repository (all sites use `Config::new`); in-repo Go `LogConfig` literals are keyed. The public
+`systemd-journal-sdk` crate re-exports `journal_log_writer::Config`, so the option reaches it.
+
 ## Validation
 
-Pre-implementation reviewer verification is complete. Implementation validation remains pending.
+Acceptance criteria:
+
+- AC1: Rust `fresh_seed_zero_keeps_past_event_times` (past, increasing realtime kept verbatim).
+- AC2: Rust `fresh_default_clamps_past_event_time_to_wall_clock`; the existing suite stays green.
+- AC3: Rust `existing_tail_wins_over_fresh_seed`, Go `TestLogExistingTailWinsOverFreshSeed`.
+- AC4: Rust `fresh_seed_keeps_duplicate_and_out_of_order_clamping`, Go
+  `TestLogFreshSeedKeepsDuplicateAndOutOfOrderClamping`.
+- AC5/AC6: the new public options in both languages; Go
+  `TestLogFreshSeedZeroMatchesUnsetForPastEventTimes` (explicit zero equals unset) and
+  `TestLogFreshSeedIsAFloor` (non-zero floor clamps a lower first event to seed `+ 1`); Rust
+  `fresh_seed_is_a_floor`. Omitted realtime still uses the wall clock with seed `0` in both
+  (`fresh_seed_zero_keeps_wall_clock_for_omitted_realtime`,
+  `TestLogFreshSeedZeroKeepsWallClockForOmittedRealtime`).
+- AC7: low-level direct-file writers are unchanged; the lazy-open requirement for event-time
+  filenames is documented.
+- AC8: Rust `fresh_seed_outside_systemd_realtime_range_is_rejected`, Go
+  `TestLogFreshSeedOutsideSystemdRealtimeRangeIsRejected`. PR review tightened the bound from
+  the maximum `u64` to `2^55 - 1`: systemd accepts realtime only in `(0, 2^55)`
+  (`systemd/systemd @ c0a5a2516d28 src/libsystemd/sd-journal/journal-file.h:164`), and a seed
+  just below the `u64` limit let a later clamp wrap (Go) or saturate (Rust). Writers that accept
+  caller realtime at or above `2^55` are a separate gap, tracked in SOW-0156.
+
+Tests: Rust `cargo test --workspace` (45 suites, 0 failures); Go `CGO_ENABLED=0 go test ./...`;
+`python3 tests/docs/check_wiki_docs.py` and `tests/docs/verify_examples.py` pass; `gofmt`,
+`rustfmt` and `git diff --check` are clean; clippy on the log-writer crate shows only the
+pre-existing `rotate` argument-count warning. The new tests read realtime from journal headers
+and do not need host journalctl.
+
+Interoperability: no shared conformance or interoperability test writes fresh-chain past
+realtime through the high-level writers (search of `tests/`), and the default paths are
+unchanged, so none needed updating.
+
+Self-review: behavior changes only when the option is set; the seed never overrides a chain tail;
+the maximum seed cannot overflow `+ 1`; omitted realtime keeps the wall clock. Same-failure
+search: both languages' clamp paths (`RealtimeClock::observe`/`now`, Go `entryOptionsForAppend`)
+and all `lastRealtime` assignments were checked. One finding: with the option unset, fresh Rust
+chains clamp past realtime and fresh Go chains keep it. That default difference predates this
+SOW, which keeps both defaults unchanged by plan; it is documented and tracked as SOW-0165 for a
+user decision.
+
+Sensitive data: synthetic timestamps and identities only.
+
+Artifacts: spec `product-scope.md` (realtime floor sources), `docs/Rust-API.md`,
+`docs/Go-API.md`, `docs/Options-Reference.md`. `AGENTS.md` and project skills need no change: no
+workflow rule changed.
 
 ## Outcome
 
-Pending.
+Completed. Event-time writers in both languages can set a fresh-chain realtime floor (seed `0`
+keeps past, increasing event times verbatim); defaults and restart behavior are unchanged.
 
 ## Lessons Extracted
 
-Pending.
+- A shared option can still leave different defaults behind; check unset behavior in both
+  languages, not only the new knob.
 
 ## Followup
 
-- Netdata netflow VPC event-time lane wiring (Netdata repo SOW-20260624-netflow-vpc-flow-logs).
+- Netdata netflow VPC event-time lane wiring stays in the Netdata repository SOW
+  (SOW-20260624-netflow-vpc-flow-logs); it needs no further SDK work.
+- SOW-0165: decide one fresh-chain default for both languages.
 
 ## Regression Log
 

@@ -151,6 +151,12 @@ func PublishEveryEntries(entries uint64) *uint64 {
 	return &entries
 }
 
+// FreshRealtimeSeed returns a pointer suitable for
+// LogConfig.FreshRealtimeSeedUsec.
+func FreshRealtimeSeed(usec uint64) *uint64 {
+	return &usec
+}
+
 // SyncOnArchive returns a pointer suitable for LogConfig.SyncOnArchive.
 func SyncOnArchive(enabled bool) *bool {
 	return &enabled

@@ -203,6 +203,14 @@ type LogConfig struct {
 	// caller owns archived-file durability before relying on or deleting
 	// archived files. The journal directory sync after rename still runs.
 	SyncOnArchive *bool
+	// FreshRealtimeSeedUsec is the realtime floor, in microseconds since the
+	// epoch, for a chain with no existing tail. Appends clamp realtime to
+	// stay strictly above it. Nil keeps the default: caller-supplied realtime
+	// starts unclamped and omitted realtime uses the wall clock. An existing
+	// chain tail always wins. Seeds at or above 2^55-1 are rejected, so
+	// seed+1 stays a valid systemd realtime. Use FreshRealtimeSeed to build
+	// the pointer.
+	FreshRealtimeSeedUsec *uint64
 }
 
 // Log writes journal entries to a systemd-compatible journal directory. Log is
@@ -322,6 +330,10 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		l.retention = cloneRetentionPolicy(config.RetentionPolicy)
 		l.rotation = deriveRotationPolicy(l.rootRotation, l.retention, l.options.Compact)
 	}
+	if config.FreshRealtimeSeedUsec != nil {
+		// An existing chain tail overwrites this in openExistingChain.
+		l.lastRealtime = *config.FreshRealtimeSeedUsec
+	}
 	if err := l.openExistingChain(prepared.explicitHeadSeqnum, prepared.explicitSeqnumID); err != nil {
 		return nil, err
 	}
@@ -408,6 +420,10 @@ func validateNewLogConfig(dir string, config LogConfig) error {
 	}
 	if err := validateRetentionPolicy(config.RetentionPolicy); err != nil {
 		return err
+	}
+	// systemd accepts realtime in (0, 2^55); seed + 1 must stay in that range.
+	if config.FreshRealtimeSeedUsec != nil && *config.FreshRealtimeSeedUsec >= 1<<55-1 {
+		return fmt.Errorf("%w: fresh realtime seed must be below 2^55 - 1", errInvalidJournal)
 	}
 	return validateStrictLogIdentity(config)
 }

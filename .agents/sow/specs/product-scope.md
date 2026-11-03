@@ -426,6 +426,15 @@ Current shared writer layout contract:
   stock-verifiable. On reopen, high-level writers seed the monotonic clamp
   floor from the persisted chain tail only when the tail entry boot ID matches
   the current writer boot ID.
+  The realtime clamp floor comes from the persisted chain tail when one
+  exists; otherwise from the optional fresh-chain seed (Rust
+  `Config::fresh_realtime_seed_usec`, Go `LogConfig.FreshRealtimeSeedUsec`,
+  SOW-0123). Unset, a fresh Rust chain starts at wall-clock time, so past
+  caller realtime is clamped forward, while a fresh Go chain starts at zero.
+  Seeds at or above `2^55 - 1` are rejected so `seed + 1` stays inside
+  systemd's valid realtime range `(0, 2^55)`. The writers do not yet reject
+  caller-supplied realtime at or above `2^55`; that gap is tracked in SOW-0156. Eager open names the active file before
+  any event, so event-time filenames need lazy open.
 
 Current writer performance certification status:
 

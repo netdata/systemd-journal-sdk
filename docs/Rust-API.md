@@ -341,6 +341,17 @@ callers may set `Config::with_sync_on_archive(false)` to skip that archive-file
 sync. With the opt-out, the caller owns archived-file durability before relying
 on side indexes or allowing retention to delete archived files.
 
+`Log` keeps `__REALTIME_TIMESTAMP` strictly increasing: a realtime that is not
+above the previous one becomes previous `+ 1` microsecond. Without a seed, a
+fresh chain starts that floor at the current wall-clock time, so past event
+times are clamped forward. Event-time writers that append past, increasing
+timestamps set `Config::with_fresh_realtime_seed_usec(0)`, or any floor
+strictly below their first event time, to keep them verbatim. An existing chain
+tail always wins over the seed. Seeds at or above `2^55 - 1` are rejected;
+systemd accepts only realtime values below `2^55`, so callers keep their
+timestamps in that range. Use lazy open when the active filename must carry the first event
+time; eager open names the file before any event exists.
+
 Rust `0.8.2` adds `Log::close_without_retention()` for closing before a
 retention-policy change. It follows `close()`'s archive and sync path while
 skipping retention. Both methods consume the writer; construct a new writer
