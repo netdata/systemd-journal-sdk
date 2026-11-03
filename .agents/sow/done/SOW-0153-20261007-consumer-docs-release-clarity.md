@@ -4,8 +4,8 @@
 
 Status: completed
 
-Sub-state: completed 2026-11-01 in the autonomous backlog run; decision 1A is
-agent-chosen, pending user review (PR body).
+Sub-state: completed 2026-11-01 in the autonomous backlog run; decision 1A
+approved by the user 2026-11-03.
 
 ## Requirements
 
@@ -77,8 +77,8 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: passed 2026-11-01 with decision 1A (agent-chosen, see Implications And
-Decisions).
+Status: passed 2026-11-01 with decision 1A (approved by the user 2026-11-03,
+see Implications And Decisions).
 
 Problem / root-cause model:
 
@@ -150,7 +150,7 @@ Open decisions:
 - Decision 1: B, surgical: update the explicit Go version and document the
   existing writer-state APIs. This changes little prose but retains a version
   statement that future releases must update.
-- Neither option is approved or implemented by creating this tracking record.
+- Resolved: 1A, approved by the user 2026-11-03.
 
 ## Implications And Decisions
 
@@ -161,6 +161,7 @@ Open decisions:
 - 2026-11-01: decision 1A applied as agent-chosen, pending user review (the
   user authorized autonomous low-risk choices flagged in PRs): `go/API.md`
   links to `go/README.md` for the current release instead of naming a tag.
+- 2026-11-03 (user): decision 1A approved.
 
 ## Plan
 
@@ -172,8 +173,8 @@ Open decisions:
 
 Implementation:
 
-- The project manager implemented decision 1A (agent-chosen, pending user
-  review) on 2026-11-01; see Validation.
+- The project manager implemented decision 1A (agent-chosen, approved by the
+  user 2026-11-03) on 2026-11-01; see Validation.
 
 Reviewers:
 
