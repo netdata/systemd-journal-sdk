@@ -10,9 +10,11 @@ order; the user may reorder it.
 
 1. SOW-0123 - Rust fresh-journal realtime clock seed (event-time lanes).
 2. SOW-0137 - Rust writer residual array-open performance.
-3. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155).
+3. SOW-0156 - Fixed-header consistency audit (includes merged SOW-0155; D1-D6
+   decided 2026-11-03).
 4. SOW-0161 - File indexer source posting membership.
-5. SOW-0160 - Go XZ reader dictionary allocation.
+5. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
+   declares 256 KiB).
 6. SOW-0122 - journalctl performance follow-ups.
 7. SOW-0097 - Go duplication debt.
 8. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
@@ -52,7 +54,8 @@ order; the user may reorder it.
   Rust writer-state discoverability.
 - SOW-0156 - Fixed-Header Consistency Audit: now includes SOW-0155 tail-offset
   representability.
-- SOW-0160 - Go XZ Reader Dictionary Allocation: per-DATA decoder allocation.
+- SOW-0160 - Go XZ Reader Dictionary Allocation: decided 2026-11-03 (Go writer
+  declares 256 KiB).
 - SOW-0161 - File Indexer Source Posting Membership: unproven indexer lead.
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
