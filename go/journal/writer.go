@@ -341,8 +341,11 @@ func newAppendWriter(path string, f *os.File, opts Options, archiveOnly bool) (*
 		livePublishEveryEntries: livePublishEveryEntries(opts),
 		fieldNamePolicy:         opts.FieldNamePolicy,
 	}
-	if err := w.applyAppendBootID(opts); err != nil {
-		return nil, err
+	// An archive-only writer never appends, so it needs no boot ID.
+	if !archiveOnly {
+		if err := w.applyAppendBootID(opts); err != nil {
+			return nil, err
+		}
 	}
 	// Writable mapping can resize the file. From this boundary onward a failed
 	// open requires verification, just like a failed append or archive mutation.
@@ -404,6 +407,12 @@ func validateEntryAppendTarget(header journalHeader, fileSize uint64) error {
 	if header.headerSize != headerSize || header.compatibleFlags&^knownCompatible != 0 ||
 		header.compatibleFlags&compatibleTailEntryBootID == 0 || header.state == stateArchived {
 		return errUnsupportedJournal
+	}
+	// Continuing a sealed file needs its sealing state, which this writer
+	// cannot restore; systemd also refuses it without the key. Appending
+	// unsealed would leave a tail that is not tamper-evident.
+	if header.compatibleFlags&compatibleSealed != 0 {
+		return fmt.Errorf("%w: cannot continue sealing an existing file", errUnsupportedJournal)
 	}
 	// Earlier releases accepted any caller timestamp; appending after such a
 	// tail would produce entries systemd refuses.

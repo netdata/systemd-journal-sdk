@@ -517,7 +517,7 @@ func (l *Log) openDefaultChainActive(state chainState) error {
 func (l *Log) openActivePath(path string) error {
 	w, err := OpenWithOptions(path, l.options)
 	if err != nil {
-		if l.rootRetention || !replaceableActiveOpenError(err) {
+		if !replaceableActiveOpenError(err) {
 			return err
 		}
 		return l.replaceActiveFile(path)
@@ -560,6 +560,9 @@ func replaceableActiveOpenError(err error) bool {
 func (l *Log) replaceActiveFile(path string) error {
 	header, err := readJournalHeader(path)
 	if err != nil {
+		if l.rootRetention {
+			return err
+		}
 		return l.disposeActiveFile(path)
 	}
 	currentTail := uint64(0)
@@ -575,8 +578,41 @@ func (l *Log) replaceActiveFile(path string) error {
 		l.lastRealtime = inheritedRealtime(header.tailEntryRealtime)
 		l.lastMonotonic = inheritedMonotonic(header.tailEntryMonotonic)
 	}
-
+	if l.rootRetention {
+		return l.archiveUnsupportedRootActive(path)
+	}
 	return l.disposeActiveFile(path)
+}
+
+// archiveUnsupportedRootActive keeps an active file this Log cannot extend as
+// history under its archive name. Root inventory refuses disposed files, and
+// the archive-only open skips the append-target rules, so files earlier
+// releases wrote stay retainable.
+func (l *Log) archiveUnsupportedRootActive(path string) error {
+	w, err := openForArchive(path)
+	if err != nil {
+		return err
+	}
+	if l.active == path {
+		l.active = ""
+	}
+	if w.header.nEntries == 0 {
+		if err := w.Close(); err != nil {
+			return l.recordFailure(err)
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return syncJournalDirectory(path)
+	}
+	target := l.archivePathFor(w.header)
+	if err := requireRootPathAbsent(target); err != nil {
+		return errors.Join(err, w.release())
+	}
+	if err := w.archiveTo(target, l.syncOnArchive); err != nil {
+		return l.recordFailure(errors.Join(err, w.Close()))
+	}
+	return nil
 }
 
 func (l *Log) disposeActiveFile(path string) error {

@@ -1375,3 +1375,37 @@ fn reader_accepts_single_bucket_hash_tables() {
     journal.entry_offsets(&mut offsets).expect("entry offsets");
     assert_eq!(offsets.len(), 3);
 }
+
+// Paired with Go TestAppendOpenRefusesSealedFile.
+#[test]
+fn append_open_refuses_sealed_file() {
+    let dir = TempDir::new().expect("create temp dir");
+    let path = dir.path().join("system.journal");
+    let repo_file = crate::repository::File::from_path(&path).expect("test journal path");
+    let mut journal_file: JournalFile<MmapMut> = JournalFile::create(
+        &repo_file,
+        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+            .with_seal(crate::seal::SealOptions::new([0; 12], 1_000_000, 1_000_000)),
+    )
+    .expect("create sealed journal");
+    let mut writer = JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("writer");
+    writer
+        .add_entry(
+            &mut journal_file,
+            &[b"MESSAGE=sealed".as_slice()],
+            1_500_000,
+            1,
+        )
+        .expect("write entry");
+    journal_file.sync().expect("sync journal");
+    drop(writer);
+    drop(journal_file);
+    let before = std::fs::read(&path).expect("read before");
+    let err = append_open_error(&repo_file);
+    assert!(
+        matches!(err, JournalError::UnsupportedJournalFile),
+        "{err:?}"
+    );
+    assert_eq!(std::fs::read(&path).expect("read after"), before);
+    JournalFile::<crate::file::Mmap>::open(&repo_file, 4096).expect("reader open");
+}

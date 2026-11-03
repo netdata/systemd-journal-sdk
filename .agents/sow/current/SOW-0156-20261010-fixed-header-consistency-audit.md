@@ -75,8 +75,8 @@ Artifact impact plan: update product scope, compatibility guidance, tests and
 SOW indexes as needed; user guides only if documented behavior needs clarification.
 Open-source reference evidence: systemd/systemd @
 c0a5a2516d28601fb3afc1a77d7b42fcfe38fced, docs/JOURNAL_FILE_FORMAT.md.
-Open decisions: none for D1-D6. New findings N1 and N2 (below) are parked for
-the user.
+Open decisions: none. N1 = A and N2 = A (user, 2026-11-03); N1 option B is
+tracked in SOW-0171.
 
 Implementation plan 2026-11-03 (both languages, paired tests for every rule):
 
@@ -145,7 +145,9 @@ sealing when it reopens a sealed file for append (Go `newAppendWriter` ignores
 the SEALED flag; Rust `open_for_append` sets `seal_options: None`), so later
 entries are written unsealed. systemd refuses a writable open of a sealed file
 unless it loads the sealing key (journal-file.c:4230-4233). Not in the approved
-D1 list; not implemented.
+D1 list. Decided N1 = A (user, 2026-11-03): append-open refuses sealed files
+as unsupported, so `Log` sets them aside and starts a new sealed file;
+continuing sealing with the key (option B) is SOW-0171.
 
 New finding N2 (2026-11-03, parked for the user): root-retention `Log`s never
 set files aside, so a current-name active file that chunk 1 now refuses for
@@ -154,6 +156,9 @@ append (an out-of-range tail, ARCHIVED state at the active name, or a size over
 continuing (Go `log.go` `openActivePath`: `l.rootRetention ||
 !replaceableActiveOpenError(err)` returns the error; Rust is equivalent).
 Default-mode logs set such files aside. Root retention shipped in v0.10.0.
+Decided N2 = A (user, 2026-11-03): root mode archives such a file under its
+archive name through the archive-only open and starts a new active. A file
+with a far-future tail realtime then expires only under size pressure.
 
 Audit model (2026-11-01): systemd's header gate is `journal_file_verify_header`
 (systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced,
@@ -295,6 +300,31 @@ leaves the file unchanged.
   Go tests that deliberately write out-of-range timestamps use the unexported
   `legacyUncheckedTimestamps` option; Rust has no such bypass.
 - Docs and specs updated (see Artifacts below).
+- Committed chunk 1 (4cd0b7c) and merged it up the stack.
+- N1 = A: Go `validateEntryAppendTarget` and Rust
+  `validate_entry_append_target` refuse sealed files. N2 = A: Go
+  `replaceActiveFile` calls `archiveUnsupportedRootActive` in root mode; Rust
+  `open_existing_active_file` takes `UnsupportedActive::{Dispose, Archive}` and
+  root mode uses `OwnedChain::archive_unsupported_active_file`. Go archive-only
+  opens no longer require a boot ID, since they never append (Rust already
+  fell back to the configured one).
+- Tests: Go `TestAppendOpenRefusesSealedFile`,
+  `TestLogSetsAsideSealedActiveFile` (default and root mode),
+  `TestRootLogArchivesActiveFileItCannotExtend`; Rust
+  `append_open_refuses_sealed_file`, a `sealed` case in
+  `log_sets_aside_active_file_it_cannot_extend`, and
+  `root_log_archives_active_file_it_cannot_extend`. Root cases leave out
+  head realtime above tail realtime, which root inventory refused before this
+  SOW. The Rust `Log` has no sealing option, so its sealed case patches the
+  flag; that parity gap is recorded in SOW-0171.
+- Created SOW-0171 for N1 option B.
+- Same-path review: in Go, `replaceActiveFile` also serves the stale
+  chain-named ONLINE path; in root mode it now archives where Rust's
+  `replace_strict_online_chain_file` still sets aside. Neither runs in root
+  mode: both languages inventory the root before opening (Go `log.go`
+  `NewLog`, Rust `build_startup_state`), and inventory already refuses a
+  chain-named ONLINE file there ("archive name/state disagrees with
+  header", confirmed by a probe test, not kept). No code was added for it.
 
 ## Validation
 
@@ -310,7 +340,7 @@ Chunk 1 (2026-11-03):
 | Fixture | Read (Go, Rust) | Append-open | `Log` |
 |---|---|---|---|
 | regular, compact, zstd, xz | yes | appends | - |
-| sealed | yes | appends unsealed (N1) | - |
+| sealed | yes | unsupported (N1 = A) | - |
 | zero realtime entry | yes | appends; Go `VerifyIndex` flags the entry, as systemd verify does | - |
 | tail realtime 2^60, monotonic 2^55 | yes | unsupported | - |
 | ARCHIVED state at the active name | yes | - | set aside to `.journal~`, sequence continues (4 rows) |
@@ -379,8 +409,8 @@ Sensitive data gate:
 
 ## Outcome
 
-In progress. Chunk 1 is implemented and validated; chunk 2 is next. N1 and N2
-wait for the user.
+In progress. Chunk 1, N1 = A and N2 = A are implemented and validated; chunk 2
+is next.
 
 ## Lessons Extracted
 

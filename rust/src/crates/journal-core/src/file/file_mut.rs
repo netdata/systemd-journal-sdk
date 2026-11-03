@@ -46,6 +46,12 @@ fn validate_entry_append_target(header: &JournalHeader, file_size: u64) -> Resul
     {
         return Err(JournalError::UnsupportedJournalFile);
     }
+    // Continuing a sealed file needs its sealing state, which this writer
+    // cannot restore; systemd also refuses it without the key. Appending
+    // unsealed would leave a tail that is not tamper-evident.
+    if header.has_compatible_flag(HeaderCompatibleFlags::Sealed) {
+        return Err(JournalError::UnsupportedJournalFile);
+    }
     // Earlier releases accepted any caller timestamp; appending after such a
     // tail would produce entries systemd refuses.
     if (header.n_entries != 0 || header.tail_entry_offset != 0)
