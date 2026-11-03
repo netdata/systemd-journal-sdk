@@ -15,8 +15,10 @@ authorization of that target at activation.
 
 ### Purpose
 
-Netdata uses this SDK exclusively for journal files; every vendored or local
-journal implementation in Netdata is removed.
+Netdata uses this SDK for journal files wherever it does not use libsystemd,
+and every vendored or local journal implementation in Netdata is removed.
+Builds that have libsystemd keep using it during a transition period (user
+decision, 2026-11-03).
 
 ### User Request
 
@@ -54,7 +56,18 @@ Unknowns:
 
 ### Acceptance Criteria
 
-- `systemd-journal.plugin` uses the SDK's published C reader crate (SOW-0162).
+- `systemd-journal.plugin` keeps libsystemd in builds where libsystemd is
+  available, and uses the SDK's published C reader crate (SOW-0162) instead of
+  vendored `jf` in builds without it (today Docker and static builds,
+  `packaging/docker/Dockerfile:42`,
+  `packaging/makeself/jobs/70-netdata-git.install.sh:40`).
+- Feature parity between the libsystemd and SDK reader paths is verified on
+  the same journal inputs (queries, facets, histograms, boots, cursors and
+  directory reading), with every difference fixed or recorded with a user
+  decision.
+- A mixed-format journal directory (regular, compact and compressed files,
+  carried over from superseded SOW-0049) is read correctly through the SDK
+  reader path, including ordered directory reading.
 - `otel-legacy-logs` / `journal-function` and `ng-ingest` use SDK crates.
 - `netflow-plugin` and Go consumers move to the new release.
 - Netdata's `src/crates/{jf,journal-common,journal-core,journal-index,journal-engine,journal-registry,journal-log-writer}`
@@ -137,6 +150,13 @@ Open decisions:
 
 - 2026-10-31: user chose one SOW for adoption plus removal, a published C
   reader crate (SOW-0162), and porting the legacy logs viewer to the SDK.
+- 2026-11-03 (user): keep libsystemd where it is available; this may be a
+  transition period. The SDK replaces only the vendored reader. Feature parity
+  must be verified. Rewriting `systemd-journal.plugin` in Rust, so it uses the
+  SDK without FFI, is the right long-term solution but not now; it is tracked
+  by pending SOW-0170.
+- 2026-11-03 (user): carry SOW-0049's mixed-format directory gate forward as
+  an acceptance criterion.
 
 ## Plan
 

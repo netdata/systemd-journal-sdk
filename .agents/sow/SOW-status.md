@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-11-01
+Last updated: 2026-11-03
 
 ## Backlog Order
 
@@ -17,12 +17,15 @@ order; the user may reorder it.
 7. SOW-0153 - Consumer docs release clarity.
 8. SOW-0125 - Netdata filter operators (needs design decisions first).
 9. SOW-0162 - Publishable C reader crate.
-10. SOW-0163 - v0.11.0 release.
-11. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
-12. SOW-0165 - Fresh-chain realtime default parity (needs a user decision).
-13. SOW-0066 - v1.0.0 API stability decision.
-14. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
-    (needs a decision at activation).
+10. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
+    (decided 2026-11-03: required `--journalctl PATH`).
+11. SOW-0163 - v0.11.0 release.
+12. SOW-0164 - Netdata SDK-exclusive adoption and vendored journal removal.
+13. SOW-0165 - Fresh-chain realtime default parity (needs a user decision).
+14. SOW-0066 - v1.0.0 API freeze and release (not scheduled; user decision
+    2026-11-03).
+15. SOW-0170 - Rust rewrite of Netdata systemd-journal.plugin (tracked; not
+    now, by user decision 2026-11-03).
 
 ## Current
 
@@ -31,8 +34,8 @@ order; the user may reorder it.
 
 ## Pending
 
-- SOW-0066 - V1 Release: now the v1.0.0 API stability decision; Netdata gate
-  is SOW-0164.
+- SOW-0066 - V1 Release: v1.0.0 API freeze and release; not scheduled (user
+  decision 2026-11-03). Netdata gate is SOW-0164.
 - SOW-0097 - Go Codacy Metric Debt Refactor: real duplicated helpers; cited
   line numbers need refreshing at activation.
 - SOW-0098 - Rust Legacy Core Duplication Debt: real `jf` duplication; feeds
@@ -46,12 +49,15 @@ order; the user may reorder it.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: per-DATA decoder allocation.
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
-- SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal: new,
-  2026-10-31; supersedes SOW-0049 and SOW-0050.
+- SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal:
+  supersedes SOW-0049 and SOW-0050. libsystemd stays where available; the SDK
+  replaces the vendored reader, with verified feature parity (2026-11-03).
 - SOW-0165 - Fresh-Chain Realtime Default Parity: new, 2026-11-01; needs a
   user decision on one unset-seed default for Rust and Go.
-- SOW-0169 - Pin The Stock journalctl Oracle In Interoperability Matrices: new,
-  2026-11-01; needs a decision at activation.
+- SOW-0169 - Pin The Stock journalctl Oracle In Interoperability Matrices:
+  decided 2026-11-03 (required `--journalctl PATH`); runs before SOW-0163.
+- SOW-0170 - Rust systemd-journal.plugin Rewrite: tracked 2026-11-03; not now,
+  by user decision.
 
 ## Recently Closed Or Completed
 
