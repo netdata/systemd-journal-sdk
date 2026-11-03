@@ -4,7 +4,8 @@
 
 Status: open
 
-Sub-state: needs a user decision; found while implementing SOW-0123.
+Sub-state: decided 2026-11-03 (option A); not activated. Found while
+implementing SOW-0123.
 
 ## Requirements
 
@@ -57,11 +58,17 @@ Options for the user:
 
 ## Pre-Implementation Gate
 
-Not started: the user decision above comes first.
+Not started. Decision A is recorded; at activation, first check every Netdata
+Rust `Log` caller for reliance on the wall-clock floor.
 
 ## Implications And Decisions
 
-Pending user decision.
+1. 2026-11-03 (user): option A. With no fresh-chain seed and no existing tail,
+   Rust adopts Go's behavior (zero floor), so a past caller realtime is kept
+   instead of being moved to now. Reason: silently rewriting a caller's
+   timestamp loses information. Condition: before changing the default, check
+   Netdata's Rust `Log` callers (`netdata/netdata`, `src/crates/netflow-plugin`)
+   for reliance on the current clamp, and record the result here.
 
 ## Plan
 
