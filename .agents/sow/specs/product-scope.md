@@ -514,7 +514,10 @@ Current Go writer feature slice:
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold using the shared systemd threshold policy, including
   zstd frame content-size metadata retained for the v260.1 writer compatibility
-  target and readback of large compressed payloads;
+  target and readback of large compressed payloads. XZ streams declare a
+  256 KiB LZMA2 dictionary, the Rust writer's value; readers allocate the
+  declared dictionary per DATA decode, and files written before SOW-0160
+  declare 8 MiB;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
 - high-level directory writing with Netdata-compatible chain active naming by

@@ -2,11 +2,10 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: analysis done 2026-11-01 (autonomous backlog run); D1 decided by
-the user 2026-11-03 (A: Go writer declares 256 KiB). Not activated; no
-production code changed.
+Sub-state: completed 2026-11-04 with D1 = A (user decision 2026-11-03): the Go
+writer declares a 256 KiB XZ dictionary.
 
 ## Requirements
 
@@ -269,8 +268,9 @@ Open decisions:
 
 ## Plan
 
-1. Retain the measured opportunity and source pointers in this pending SOW.
-2. Await activation, then complete analysis and present design options before code.
+1. Implement D1 = A per the gate's implementation plan.
+2. Validate per the gate's validation plan, including the Rust and stock
+   reader before/after measurement.
 
 ## Implementation And Review Plan
 
@@ -281,8 +281,8 @@ Implementation:
 
 Reviewers:
 
-- No external review is authorized. Follow the system-wide external-reviewers
-  skill after complete local validation if this SOW is later activated.
+- Whole-SOW self-review after local validation; tests are the gate. External
+  reviewers are not used.
 
 Repository boundary block for every external-reviewer prompt:
 
@@ -308,84 +308,145 @@ Failure handling:
 - Created from the project SOW template as SOW-0108's concrete follow-up mapping.
   No runtime code, dependency or current execution order changes.
 
+### 2026-11-04
+
+- Activated by the user after SOW-0172.
+- `go/journal/writer_compression.go`: `xzDictCap = 256 << 10`, passed as
+  `xz.WriterConfig.DictCap` in `xzCompress`.
+- `go/journal/writer_compression_xz_test.go` (new):
+  - `TestXZCompressDeclaresWriterDictionary` parses the LZMA2 property byte
+    from the stream's block header and checks 256 KiB for 600 B, 320 KiB and
+    4 MiB payloads, with round trips (two payloads exceed the dictionary).
+  - `BenchmarkXZDecompressByDeclaredDictionary` is the committed decode
+    benchmark (256 KiB, 1 MiB, 8 MiB declared; 600 B and 64 KiB payloads).
+- No test or fixture pinned Go XZ bytes; nothing else needed updating.
+- Measurement refuted one analysis inference: stock `journalctl` (liblzma)
+  costs the same on 8 MiB and 256 KiB files, so it does not benefit. The Go
+  and Rust readers do.
+
 ## Validation
 
 Acceptance criteria evidence:
 
-- This is an open tracking record; optimization acceptance is not claimed.
+- Allocation sources reproduced and separated from retained memory in the
+  Analysis Result (2026-11-01); the user approved D1 = A before coding.
+- Go/Rust observable behavior: both writers now declare 256 KiB (parsed from
+  the compression matrix's Go and Rust XZ files); decoded output is
+  unchanged, and both readers decode any declared dictionary.
+- Pure SDK runtime, dependency and compiler constraints unchanged: one
+  constant in an existing dependency's config, no new dependency.
+- Affected paths improve; non-XZ paths are untouched (only `xzCompress`
+  changed).
 
 Tests or equivalent validation:
 
-- Source/ownership search and existing matched codec measurements establish
-  the lead. New implementation tests are neither required nor run for this record.
+- `go test ./... -count=1` passes; `go vet ./journal` clean.
+- `cargo test --workspace` passes.
+- `run_compression_matrix.py --compression xz zstd lz4`: 72/72 pass (Go and
+  Rust writers; Go, Rust and stock readers).
+- `run_byte_identity.py`: exit 0, all three writers verify.
+- A first Go suite run failed one seal test only because the oracle
+  `journalctl` (built without FSS) was put on `PATH`; rerun without it
+  passed.
 
 Real-use evidence:
 
-- Existing Explorer XZ queries reproduce the cumulative allocation cost with
-  synthetic on-disk journal files; consumer prevalence remains to be measured.
+- Committed benchmark, `-benchtime 200x -count 3`, 2026-11-04 (load average
+  14-25), time and allocation per decode:
+
+  | Payload | 256 KiB | 1 MiB | 8 MiB |
+  |---|---|---|---|
+  | 600 B | 0.24-0.28 ms, 0.30 MB | 0.55-0.66 ms, 1.08 MB | 1.61-2.02 ms, 8.42 MB |
+  | 64 KiB | 3.4-4.7 ms, 0.56 MB | 4.4 ms, 1.35 MB | 4.6-5.8 ms, 8.69 MB |
+
+- A 5,000-row Go-written XZ file (unique ~1 KiB `MESSAGE` values), built
+  against the previous tree (`.local/bench-base`, 8 MiB) and this tree
+  (256 KiB); every one of the 5,000 XZ streams declares the expected size.
+  `journalctl --file F -o export`, 3 interleaved runs each:
+
+  | Reader | 8 MiB file | 256 KiB file |
+  |---|---|---|
+  | Rust journalctl | user 0.64-0.77 s, RSS 13.1 MB | user 0.06 s, RSS 4.6-5.5 MB |
+  | Go journalctl (PR #12 build; same XZ decoder) | user 22.5-27.2 s, RSS 40-50 MB | user 4.6-4.8 s, RSS 13-17 MB |
+  | stock journalctl v262 | user 0.11-0.12 s, RSS 5.6-6.5 MB | user 0.12 s, RSS 6.5 MB |
+
+- Export output is byte-identical between the two files for each reader;
+  stock and Rust `--verify` pass on both.
 
 Reviewer findings:
 
-- Read-only ownership analysis found no existing specific follow-up SOW.
-  No final implementation review has occurred.
+- Self-review of the diff and SOW. Finding: the analysis inferred stock
+  readers would benefit; measurement shows they do not. The SOW text keeps
+  the inference and the Execution Log and this section record the refutation.
+  The PR #12 Go CLI is far slower per row than the SDK decoder alone; that
+  is that old build's per-row cost, not part of this change, and the ratio
+  still shows the dictionary effect.
 
 Same-failure scan:
 
-- The shared decoder serves multiple SDK callers; their actual blast radius
-  must be enumerated before selecting or implementing a design.
+- `xz.WriterConfig` / `xz.NewWriter` appear only in `xzCompress`; no other
+  Go writer path creates XZ streams. Rust already declares 256 KiB.
 
 Sensitive data gate:
 
-- This record contains only synthetic aggregate measurements and source paths.
+- Synthetic payloads and identities only; aggregate timings and source paths.
 
 Artifact maintenance gate:
 
-- AGENTS.md: unchanged; no workflow rule changes.
-- Runtime project skills: unchanged for this tracking-only record.
-- Specs: unchanged; no product behavior or guarantee changes.
-- End-user/operator docs: unchanged; no new user behavior exists.
-- End-user/operator skills: none currently exist.
-- SOW lifecycle: open under pending; not an implementation prerequisite.
-- SOW-status.md: canonical and root indexes include this opportunity.
+- AGENTS.md: unaffected; no workflow change.
+- Runtime project skills: `project-journal-compatibility` has no XZ
+  dictionary guidance to update; matrices it lists still apply.
+- Specs: `.agents/sow/specs/product-scope.md` Go writer compression bullet
+  records the declared dictionary and that older files declare 8 MiB.
+- End-user/operator docs: `docs/Options-Reference.md` xz row notes per-decode
+  dictionary cost.
+- End-user/operator skills: none exist.
+- SOW lifecycle: completed, moved to `done/` with the work in one commit.
+- SOW-status.md: updated.
 
 Specs update:
 
-- No implementation or shipped contract changes exist yet.
+- See the artifact gate.
 
 Project skills update:
 
-- Existing compression/performance workflow already governs later analysis.
+- None needed; see the artifact gate.
 
 End-user/operator docs update:
 
-- No usage or memory policy is changed by tracking an opportunity.
+- `docs/Options-Reference.md`.
 
 End-user/operator skills update:
 
-- No output/reference skills are present or affected.
+- None exist.
 
 Lessons:
 
-- Separate cumulative allocated bytes from peak or retained memory, and do not
-  mix an unchanged decoder opportunity into a lifetime regression's acceptance.
+- See Lessons Extracted.
 
 Follow-up mapping:
 
-- SOW-0108's XZ dictionary-allocation opportunity is tracked here. Required
-  SDK/CLI regression-prevention work stays in SOW-0159/SOW-0121.
+- None. Existing 8 MiB files keep their cost by design (D1 analysis).
 
 ## Outcome
 
-Open; no optimization has been authorized or implemented.
+New Go-written XZ files declare a 256 KiB dictionary, matching the Rust
+writer. Reading them costs the Go reader about 6x less time and 28x less
+allocation per small DATA decode, and the Rust journalctl about 10x less CPU
+on a 5,000-row file. Stock journalctl is unaffected. Decoded content is
+unchanged.
 
 ## Lessons Extracted
 
-The allocation-accounting distinction above is retained for future analysis.
+- Separate cumulative allocated bytes from peak or retained memory, and do not
+  mix an unchanged decoder opportunity into a lifetime regression's acceptance.
+- Measure every reader a benefit is claimed for: liblzma did not show the
+  cost the two SDK decoders pay.
 
 ## Followup
 
-This SOW is the concrete tracking destination; it creates no further workstream.
+None.
 
 ## Regression Log
 
-No completed outcome exists; this record tracks an unchanged baseline opportunity.
+No completed outcome has regressed.

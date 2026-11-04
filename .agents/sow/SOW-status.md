@@ -9,8 +9,8 @@ valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
 1. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
-2. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
-   declares 256 KiB).
+2. SOW-0160 - Go XZ reader dictionary allocation (completed 2026-11-04: Go
+   writer declares 256 KiB).
 3. SOW-0122 - journalctl performance follow-ups (completed 2026-11-01; gaps
    tracked by SOW-0166, SOW-0167, SOW-0168).
 4. SOW-0097 - Go duplication debt.
@@ -61,8 +61,6 @@ None.
   (cheap polling first).
 - SOW-0125 - Netdata Filter Operators Gap Analysis: feature analysis; needs
   semantic decisions before implementation.
-- SOW-0160 - Go XZ Reader Dictionary Allocation: decided 2026-11-03 (Go writer
-  declares 256 KiB).
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
 - SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal:
@@ -79,10 +77,6 @@ None.
 
 ## Recently Closed Or Completed
 
-- SOW-0172 - Rust Log Fails Late On A Relative Directory: completed
-  2026-11-04. Rust `Log` resolves a relative directory once at construction,
-  in default and root modes, and refuses an empty one, matching Go.
-  Follow-up: SOW-0173.
 
 - SOW-0156 - Fixed-Header Consistency Audit: completed 2026-11-03. Both SDKs
   apply systemd v260.1's writable-open header rules and timestamp ranges, keep
