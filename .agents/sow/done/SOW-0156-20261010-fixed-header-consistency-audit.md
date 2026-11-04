@@ -7,8 +7,8 @@ Status: completed
 Sub-state: completed 2026-11-03. D1-D6, N1 and N2 decided by the user and
 implemented in two chunks (chunk 1: D1, D2, D4, D6 and old-large-file
 support; chunk 2: the 4 GiB ceiling for new files). A1, A4 and A5 were
-implemented earlier and approved. Error names stay agent-chosen, pending user
-review.
+implemented earlier and approved. The user kept the error names on
+2026-11-04.
 
 2026-10-31: SOW-0155 (writer tail offset representability) merged into this SOW
 by user decision. Its scope, evidence and open questions in
@@ -138,8 +138,8 @@ Validation plan additions:
   readers must read all of them; current `Log` must continue after them.
 - Byte identity, compression, compact, live, verify and query matrices rerun;
   writer benchmarks before and after chunk 2 (hot append path).
-- Error names (`TimestampOutOfRange`, `JournalFileFull`) are agent-chosen,
-  pending user review; Rust variants join the unreleased variants already
+- Error names (`TimestampOutOfRange`, `JournalFileFull`) were agent-chosen;
+  the user kept them on 2026-11-04. Rust variants join the unreleased variants already
   listed in `docs/Rust-API.md`.
 
 New finding N1 (2026-11-03, parked for the user): neither SDK can continue
@@ -545,10 +545,10 @@ Derive checks from format invariants, including relationships between fields.
 
 - SOW-0171 (pending): continue sealing when reopening a sealed file (N1
   option B) and the Rust `Log` sealing-option parity question.
-- SOW-0172 (pending): Rust `Log` fails late on a relative directory; needs a
-  user decision.
-- Error names `TimestampOutOfRange` and `JournalFileFull` are agent-chosen;
-  the user reviews them with the PR (no further work unless renamed).
+- SOW-0172: Rust `Log` fails late on a relative directory; the user chose
+  option A (make the directory absolute) on 2026-11-04.
+- Error names `TimestampOutOfRange` and `JournalFileFull`: the user kept them
+  on 2026-11-04; no further work.
 
 ## Regression Log
 
