@@ -15,6 +15,18 @@ pub enum JournalError {
     #[error("unsupported journal file")]
     UnsupportedJournalFile,
 
+    /// An entry realtime of zero or at least 2^55, or a monotonic time of at
+    /// least 2^55 (systemd's `VALID_REALTIME`/`VALID_MONOTONIC`). Returned
+    /// before any file mutation; the writer stays usable.
+    #[error("entry timestamp out of range")]
+    TimestampOutOfRange,
+
+    /// The entry could grow the file to 4 GiB, the limit of compact offsets and
+    /// of the 32-bit tail entry array hint. Returned before any file mutation;
+    /// the writer stays usable. Continue in a new file; `Log` does that itself.
+    #[error("journal file full")]
+    JournalFileFull,
+
     #[error("invalid object type")]
     InvalidObjectType,
 

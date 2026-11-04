@@ -63,6 +63,10 @@ type Options struct {
 	// FileMode controls permissions for newly created journal files on platforms
 	// that support POSIX file modes. Nil uses systemd journald's 0640 default.
 	FileMode *os.FileMode
+
+	// legacyUncheckedTimestamps lets tests write the out-of-range timestamps
+	// earlier releases accepted, so readers stay tested against such files.
+	legacyUncheckedTimestamps bool
 }
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
@@ -118,6 +122,10 @@ type Writer struct {
 	livePublishEveryEntries     uint64
 	entriesSinceLivePublication uint64
 	fieldNamePolicy             FieldNamePolicy
+	legacyUncheckedTimestamps   bool
+	// entryGrowthBound is the reserved growth of the entry being appended;
+	// entry arrays stop doubling when doubling would eat into it.
+	entryGrowthBound uint64
 }
 
 // ErrWriterFailed marks an uncertain mutating failure. The writer cannot be
@@ -205,8 +213,9 @@ func Create(path string, opts Options) (*Writer, error) {
 	w := &Writer{
 		file: f, path: path, bootID: opts.BootID,
 		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes, compact: opts.Compact,
-		livePublishEveryEntries: livePublishEveryEntries(opts),
-		fieldNamePolicy:         opts.FieldNamePolicy,
+		livePublishEveryEntries:   livePublishEveryEntries(opts),
+		fieldNamePolicy:           opts.FieldNamePolicy,
+		legacyUncheckedTimestamps: opts.legacyUncheckedTimestamps,
 	}
 	if err := w.initialize(opts); err != nil {
 		return nil, errors.Join(w.fail(err), w.release())
@@ -239,7 +248,21 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	w, err := newAppendWriter(path, f, opts)
+	w, err := newAppendWriter(path, f, opts, false)
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return w, nil
+}
+
+// openForArchive opens an existing file only to close or archive it.
+func openForArchive(path string) (*Writer, error) {
+	opts := normalizeOpenOptions(Options{})
+	f, err := openWriterFile(path, false, 0)
+	if err != nil {
+		return nil, err
+	}
+	w, err := newAppendWriter(path, f, opts, true)
 	if err != nil {
 		return nil, errors.Join(err, f.Close())
 	}
@@ -259,7 +282,9 @@ func validateOpenOptions(opts Options) error {
 	return nil
 }
 
-func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
+// newAppendWriter opens an existing file for writing. archiveOnly opens are
+// internal: the writer is only closed or archived, never appended to.
+func newAppendWriter(path string, f *os.File, opts Options, archiveOnly bool) (*Writer, error) {
 	header, err := readAppendHeader(f)
 	if err != nil {
 		return nil, err
@@ -273,6 +298,15 @@ func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
 		return nil, err
 	}
 	fileSize := uint64(stat.Size())
+	// Like systemd, refuse unsupported targets before the arena checks, so Log
+	// can set them aside even when a newer layout fails our arena rules.
+	if archiveOnly {
+		if header.isCompact() && fileSize > journalCompactSizeMax {
+			return nil, fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
+		}
+	} else if err := validateEntryAppendTarget(header, fileSize); err != nil {
+		return nil, err
+	}
 	arenaEnd, err := header.validateDeclaredArena(fileSize)
 	if err != nil {
 		return nil, err
@@ -288,10 +322,6 @@ func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
 	if err := header.validateArenaObject(header.tailObjectOffset, tail.size, arenaEnd); err != nil {
 		return nil, err
 	}
-	if header.isCompact() && fileSize > journalCompactSizeMax {
-		return nil, fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
-	}
-
 	// Reject unsupported mapping sizes before entering the mutation boundary.
 	if err := checkArenaSize(fileSize); err != nil {
 		return nil, err
@@ -314,8 +344,11 @@ func newAppendWriter(path string, f *os.File, opts Options) (*Writer, error) {
 		livePublishEveryEntries: livePublishEveryEntries(opts),
 		fieldNamePolicy:         opts.FieldNamePolicy,
 	}
-	if err := w.applyAppendBootID(opts); err != nil {
-		return nil, err
+	// An archive-only writer never appends, so it needs no boot ID.
+	if !archiveOnly {
+		if err := w.applyAppendBootID(opts); err != nil {
+			return nil, err
+		}
 	}
 	// Writable mapping can resize the file. From this boundary onward a failed
 	// open requires verification, just like a failed append or archive mutation.
@@ -367,6 +400,38 @@ func validateAppendHeader(header journalHeader) error {
 	return nil
 }
 
+// validateEntryAppendTarget holds the refusals that apply only when entries
+// will be appended. systemd's writer refuses these files too (journal-file.c
+// journal_file_verify_header), then sets the file aside and continues the
+// sequence in a new one; ErrUnsupportedJournal lets Log do the same.
+// Archive-only opens skip them, so earlier releases' files stay retainable.
+func validateEntryAppendTarget(header journalHeader, fileSize uint64) error {
+	const knownCompatible = compatibleSealed | compatibleTailEntryBootID | compatibleSealedContinuous
+	if header.headerSize != headerSize || header.compatibleFlags&^knownCompatible != 0 ||
+		header.compatibleFlags&compatibleTailEntryBootID == 0 || header.state == stateArchived {
+		return errUnsupportedJournal
+	}
+	// Continuing a sealed file needs its sealing state, which this writer
+	// cannot restore; systemd also refuses it without the key. Appending
+	// unsealed would leave a tail that is not tamper-evident.
+	if header.compatibleFlags&compatibleSealed != 0 {
+		return fmt.Errorf("%w: cannot continue sealing an existing file", errUnsupportedJournal)
+	}
+	// Earlier releases accepted any caller timestamp; appending after such a
+	// tail would produce entries systemd refuses.
+	if (header.nEntries != 0 || header.tailEntryOffset != 0) &&
+		(isZeroUUID(header.tailEntryBootID) || !validRealtime(header.headEntryRealtime) ||
+			!validRealtime(header.tailEntryRealtime) || !validMonotonic(header.tailEntryMonotonic)) {
+		return errUnsupportedJournal
+	}
+	// Offsets past 4 GiB fit neither compact items nor the 32-bit tail entry
+	// array hint. Earlier releases could grow regular files past it.
+	if fileSize > journalCompactSizeMax {
+		return fmt.Errorf("%w: journal file exceeds 4 GiB", errUnsupportedJournal)
+	}
+	return nil
+}
+
 func appendHeaderCompression(header journalHeader) int {
 	switch {
 	case header.incompatibleFlags&incompatibleCompressedZSTD != 0:
@@ -413,7 +478,9 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		return err
 	}
 	fields = preparedFields
-	return w.appendPayloads(len(fields), func(i int) []byte {
+	return w.appendPayloads(len(fields), func(i int) uint64 {
+		return uint64(len(fields[i].Name) + 1 + len(fields[i].Value))
+	}, func(i int) []byte {
 		field := fields[i]
 		w.payloadScratch = append(w.payloadScratch[:0], field.Name...)
 		w.payloadScratch = append(w.payloadScratch, '=')
@@ -434,12 +501,14 @@ func (w *Writer) AppendRaw(payloads [][]byte, opts EntryOptions) error {
 		return err
 	}
 	payloads = preparedPayloads
-	return w.appendPayloads(len(payloads), func(i int) []byte {
+	return w.appendPayloads(len(payloads), func(i int) uint64 {
+		return uint64(len(payloads[i]))
+	}, func(i int) []byte {
 		return payloads[i]
 	}, opts)
 }
 
-func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts EntryOptions) (err error) {
+func (w *Writer) appendPayloads(count int, payloadLen func(int) uint64, payloadAt func(int) []byte, opts EntryOptions) (err error) {
 	if count == 0 {
 		return errEntryEmpty
 	}
@@ -448,6 +517,12 @@ func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts Entr
 	if err != nil {
 		return err
 	}
+	bound := w.boundEntryGrowth(count, payloadLen, opts.RealtimeUsec)
+	if w.appendOffset > journalAppendCeiling || bound > journalAppendCeiling-w.appendOffset {
+		return ErrJournalFileFull
+	}
+	w.entryGrowthBound = bound
+	defer func() { w.entryGrowthBound = 0 }()
 
 	// Storage and sealing primitives mark the first possible mutation. Read-only
 	// lookup and capacity failures leave the writer reusable.
@@ -496,6 +571,79 @@ var ErrMissingMonotonicUsec = fmt.Errorf("journal: monotonic usec is required")
 // at the maximum uint64 value.
 var ErrMonotonicUsecOverflow = fmt.Errorf("journal: monotonic usec overflow")
 
+// ErrJournalFileFull is returned before any file mutation when an entry could
+// grow the file to 4 GiB, the limit of compact offsets and of the 32-bit tail
+// entry array hint. The writer stays usable; continue in a new file. Log does
+// that itself.
+var ErrJournalFileFull = errors.New("journal: journal file full")
+
+// journalAppendCeiling is the highest object end an append may reach: the
+// arena grows in 8 MiB steps and the file must stay below 4 GiB.
+const journalAppendCeiling = journalCompactSizeMax &^ (fileSizeIncrease - 1)
+
+// boundEntryGrowth bounds the bytes one entry can append from payload sizes
+// alone, without lookups: every item as a new DATA and FIELD object (a field
+// name is shorter than its payload) with a minimum entry array, the ENTRY
+// object, a minimum global entry array, and the TAGs of the epochs crossed.
+// The result saturates above journalAppendCeiling.
+func (w *Writer) boundEntryGrowth(count int, payloadLen func(int) uint64, realtime uint64) uint64 {
+	itemSize := uint64(regularEntryItemSize)
+	if w.compact {
+		itemSize = compactEntryItemSize
+	}
+	minArray := align8(offsetArrayObjectHeaderSize + 4*w.offsetArrayItemSize())
+	dataHeader := w.dataPayloadOffset()
+	bound := align8(entryObjectHeaderSize+uint64(count)*itemSize) + minArray
+	for i := 0; i < count; i++ {
+		n := payloadLen(i)
+		if n > journalAppendCeiling || bound > journalAppendCeiling {
+			return journalAppendCeiling + 1
+		}
+		bound += align8(dataHeader+n) + align8(fieldObjectHeaderSize+n) + minArray
+	}
+	if w.seal != nil {
+		// prepareEntryOptions validated the epoch, so this cannot fail.
+		goal, _ := w.seal.getGoalEpoch(realtime)
+		tags := goal - w.seal.getEpoch()
+		if tags > journalAppendCeiling/align8(tagObjectSize()) {
+			return journalAppendCeiling + 1
+		}
+		bound += tags * align8(tagObjectSize())
+	}
+	return bound
+}
+
+// entryArrayCapacity returns the doubled capacity, or the 4-slot minimum the
+// growth bound reserved when doubling could leave the rest of the entry
+// without room below the ceiling. Readers use each array's own size.
+func (w *Writer) entryArrayCapacity(capacity uint64) uint64 {
+	if capacity <= 4 || w.entryGrowthBound == 0 {
+		return capacity
+	}
+	reserve := align8(w.appendOffset) + w.entryGrowthBound
+	if reserve > journalAppendCeiling {
+		return 4
+	}
+	room := journalAppendCeiling - reserve
+	if capacity > room/w.offsetArrayItemSize() ||
+		align8(offsetArrayObjectHeaderSize+capacity*w.offsetArrayItemSize()) > room {
+		return 4
+	}
+	return capacity
+}
+
+// ErrTimestampOutOfRange is returned before any file mutation when an entry's
+// realtime is zero or at least 2^55, or its monotonic time is at least 2^55
+// (systemd's VALID_REALTIME and VALID_MONOTONIC); systemd refuses such files.
+var ErrTimestampOutOfRange = fmt.Errorf("journal: entry timestamp out of range")
+
+func validateEntryTimestamps(opts EntryOptions) error {
+	if !validRealtime(opts.RealtimeUsec) || !validMonotonic(opts.MonotonicUsec) {
+		return ErrTimestampOutOfRange
+	}
+	return nil
+}
+
 func validateEntryMonotonicOptions(opts EntryOptions) error {
 	if opts.MonotonicUsec == 0 && !opts.MonotonicUsecSet {
 		return ErrMissingMonotonicUsec
@@ -522,6 +670,9 @@ func (w *Writer) prepareEntryOptions(opts EntryOptions) (EntryOptions, uint64, e
 			return opts, 0, ErrMonotonicUsecOverflow
 		}
 		opts.MonotonicUsec = w.header.tailEntryMonotonic + 1
+	}
+	if err := validateEntryTimestamps(opts); err != nil && !w.legacyUncheckedTimestamps {
+		return opts, 0, err
 	}
 	entrySeqnum := w.nextSeqnum
 	if opts.Seqnum != 0 {

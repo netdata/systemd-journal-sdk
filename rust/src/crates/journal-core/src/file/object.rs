@@ -36,10 +36,32 @@ pub enum HeaderIncompatibleFlags {
     Compact = 1 << 4,
 }
 
+/// Every incompatible flag this SDK can read and append to; systemd refuses
+/// files carrying any other incompatible flag in both modes.
+pub(crate) const SUPPORTED_INCOMPATIBLE_FLAGS: u32 = HeaderIncompatibleFlags::CompressedXz as u32
+    | HeaderIncompatibleFlags::CompressedLz4 as u32
+    | HeaderIncompatibleFlags::KeyedHash as u32
+    | HeaderIncompatibleFlags::CompressedZstd as u32
+    | HeaderIncompatibleFlags::Compact as u32;
+
 pub enum HeaderCompatibleFlags {
     Sealed = 1 << 0,
     TailEntryBootId = 1 << 1,
     SealedContinuous = 1 << 2,
+}
+
+/// systemd's `VALID_REALTIME` and `VALID_MONOTONIC` bound (journal-file.h).
+#[doc(hidden)]
+pub const TIMESTAMP_LIMIT_USEC: u64 = 1 << 55;
+
+#[doc(hidden)]
+pub fn valid_realtime(usec: u64) -> bool {
+    usec > 0 && usec < TIMESTAMP_LIMIT_USEC
+}
+
+#[doc(hidden)]
+pub fn valid_monotonic(usec: u64) -> bool {
+    usec < TIMESTAMP_LIMIT_USEC
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +211,7 @@ impl JournalHeader {
                 return Err(JournalError::ObjectExceedsFileBounds);
             }
         }
-        if self.header_size >= 264 && self.tail_entry_array_offset != 0 {
+        if self.tail_entry_array_hint_usable() && self.tail_entry_array_offset != 0 {
             let item_size = if self.has_incompatible_flag(HeaderIncompatibleFlags::Compact) {
                 size_of::<u32>()
             } else {
@@ -241,7 +263,7 @@ impl JournalHeader {
         if self.header_size >= 240 && self.n_entry_arrays < self.minimum_entry_arrays() {
             return Err(JournalError::InvalidObjectLocation);
         }
-        if self.header_size < 264 {
+        if !self.tail_entry_array_hint_usable() {
             return Ok(());
         }
         let first = self.entry_array_offset.map_or(0, NonZeroU64::get);
@@ -259,7 +281,7 @@ impl JournalHeader {
     // The first and cached tail may name the same array; DATA arrays can add more.
     fn minimum_entry_arrays(&self) -> u64 {
         let first = self.entry_array_offset.map_or(0, NonZeroU64::get);
-        let tail = if self.header_size >= 264 {
+        let tail = if self.tail_entry_array_hint_usable() {
             u64::from(self.tail_entry_array_offset)
         } else {
             0
@@ -301,6 +323,17 @@ impl JournalHeader {
         }
         Ok(())
     }
+    /// Whether the 32-bit tail entry array hint can name every array. Writers,
+    /// systemd's included, truncate offsets at or above 4 GiB, so regular files
+    /// written past that size carry a wrong hint.
+    #[doc(hidden)]
+    pub fn tail_entry_array_hint_usable(&self) -> bool {
+        const LIMIT: u64 = 1 << 32;
+        self.header_size >= 264
+            && self.header_size <= LIMIT
+            && self.arena_size <= LIMIT - self.header_size
+    }
+
     pub fn has_incompatible_flag(&self, flag: HeaderIncompatibleFlags) -> bool {
         (self.incompatible_flags & flag as u32) != 0
     }

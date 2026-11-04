@@ -30,8 +30,62 @@ struct MutableObjectContext {
     arena_end: u64,
 }
 
+/// The refusals that apply only when entries will be appended. systemd's
+/// writer refuses these files too (journal-file.c journal_file_verify_header),
+/// then sets the file aside and continues the sequence in a new one;
+/// `UnsupportedJournalFile` lets `Log` do the same. Archive-only opens skip
+/// them, so earlier releases' files stay retainable.
+fn validate_entry_append_target(header: &JournalHeader, file_size: u64) -> Result<()> {
+    const KNOWN_COMPATIBLE: u32 = HeaderCompatibleFlags::Sealed as u32
+        | HeaderCompatibleFlags::TailEntryBootId as u32
+        | HeaderCompatibleFlags::SealedContinuous as u32;
+    if header.header_size != std::mem::size_of::<JournalHeader>() as u64
+        || header.compatible_flags & !KNOWN_COMPATIBLE != 0
+        || !header.has_compatible_flag(HeaderCompatibleFlags::TailEntryBootId)
+        || header.state == JournalState::Archived as u8
+    {
+        return Err(JournalError::UnsupportedJournalFile);
+    }
+    // Continuing a sealed file needs its sealing state, which this writer
+    // cannot restore; systemd also refuses it without the key. Appending
+    // unsealed would leave a tail that is not tamper-evident.
+    if header.has_compatible_flag(HeaderCompatibleFlags::Sealed) {
+        return Err(JournalError::UnsupportedJournalFile);
+    }
+    // Earlier releases accepted any caller timestamp; appending after such a
+    // tail would produce entries systemd refuses.
+    if (header.n_entries != 0 || header.tail_entry_offset != 0)
+        && (header.tail_entry_boot_id == [0; 16]
+            || !valid_realtime(header.head_entry_realtime)
+            || !valid_realtime(header.tail_entry_realtime)
+            || !valid_monotonic(header.tail_entry_monotonic))
+    {
+        return Err(JournalError::UnsupportedJournalFile);
+    }
+    // Offsets past 4 GiB fit neither compact items nor the 32-bit tail entry
+    // array hint. Earlier releases could grow regular files past it.
+    if file_size > JOURNAL_COMPACT_SIZE_MAX {
+        return Err(JournalError::UnsupportedJournalFile);
+    }
+    Ok(())
+}
+
 impl JournalFile<super::mmap::MmapMut> {
     pub fn open_for_append(file: &crate::repository::File, window_size: u64) -> Result<Self> {
+        Self::open_writable(file, window_size, false)
+    }
+
+    /// Opens an existing file only to close or archive it, never to append.
+    #[doc(hidden)]
+    pub fn open_for_archive(file: &crate::repository::File, window_size: u64) -> Result<Self> {
+        Self::open_writable(file, window_size, true)
+    }
+
+    fn open_writable(
+        file: &crate::repository::File,
+        window_size: u64,
+        archive_only: bool,
+    ) -> Result<Self> {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
 
         let fd = OpenOptions::new()
@@ -53,8 +107,24 @@ impl JournalFile<super::mmap::MmapMut> {
         if header.header_size < header_size {
             return Err(JournalError::UnsupportedJournalFile);
         }
-        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
+        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
+            || header.incompatible_flags & !SUPPORTED_INCOMPATIBLE_FLAGS != 0
+        {
             return Err(JournalError::UnsupportedJournalFile);
+        }
+        // Appends index every object, so both tables must exist before mutation.
+        if header.data_hash_table_offset.is_none()
+            || header.field_hash_table_offset.is_none()
+            || header.tail_object_offset.is_none()
+        {
+            return Err(JournalError::InvalidObjectLocation);
+        }
+        if !archive_only {
+            validate_entry_append_target(&header, file_size)?;
+        } else if header.has_incompatible_flag(HeaderIncompatibleFlags::Compact)
+            && file_size > JOURNAL_COMPACT_SIZE_MAX
+        {
+            return Err(JournalError::ObjectExceedsFileBounds);
         }
 
         header.validate_empty_entry_metadata()?;
@@ -172,7 +242,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
     pub fn create(file: &crate::repository::File, options: JournalFileOptions) -> Result<Self> {
         let fd = Self::open_new_file(file, options.file_mode)?;
         let layout = Self::create_layout(&options)?;
-        if options.compact && layout.file_size > JOURNAL_COMPACT_SIZE_MAX {
+        if layout.file_size > JOURNAL_COMPACT_SIZE_MAX {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
         fd.set_len(layout.file_size)?;

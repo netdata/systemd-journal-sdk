@@ -346,6 +346,8 @@ fn parse_u64_field(row: &serde_json::Value, key: &str) -> Option<u64> {
     row.get(key)?.as_str()?.parse::<u64>().ok()
 }
 
+#[path = "log_writer/append_target.rs"]
+mod append_target;
 #[path = "log_writer/close_without_retention.rs"]
 mod close_without_retention;
 #[path = "log_writer/entries_policy.rs"]

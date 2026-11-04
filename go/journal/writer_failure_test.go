@@ -381,7 +381,7 @@ func TestWriterInitialHashTableCapacity(t *testing.T) {
 	}
 }
 
-func TestWriterSealingFailureBlocksMutation(t *testing.T) {
+func TestWriterSealingBoundaryRefusedBeforeMutation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sealed.journal")
 	opts := testOptionsWithSeal(testSealOpts())
 	opts.Compact = true
@@ -397,20 +397,24 @@ func TestWriterSealingFailureBlocksMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Advancing the epoch mutates HMAC state before TAG capacity is checked.
-	// Model the compact boundary without mapping a multi-gigabyte fixture.
+	// Advancing the epoch would mutate HMAC state, so the growth pre-check,
+	// which counts the epoch's TAG, must refuse before it. Model the compact
+	// boundary without mapping a multi-gigabyte fixture.
+	appendOffset := w.appendOffset
 	w.appendOffset = journalCompactSizeMax - 32
-	if err := w.Append([]Field{StringField("MESSAGE", "existing")}, EntryOptions{RealtimeUsec: 2500000, MonotonicUsec: 2}); !errors.Is(err, ErrWriterFailed) {
-		t.Fatalf("sealing failure = %v", err)
-	}
-	if err := w.CloseOffline(); !errors.Is(err, ErrWriterFailed) {
-		t.Fatalf("CloseOffline = %v", err)
+	err = w.Append([]Field{StringField("MESSAGE", "existing")}, EntryOptions{RealtimeUsec: 2500000, MonotonicUsec: 2})
+	if !errors.Is(err, ErrJournalFileFull) || errors.Is(err, ErrWriterFailed) {
+		t.Fatalf("boundary append = %v, want ErrJournalFileFull only", err)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(before, after) {
-		t.Fatal("cleanup rewrote journal after sealing failure")
+		t.Fatal("refused append mutated the journal")
+	}
+	w.appendOffset = appendOffset
+	if err := w.Append([]Field{StringField("MESSAGE", "after")}, EntryOptions{RealtimeUsec: 2500000, MonotonicUsec: 2}); err != nil {
+		t.Fatalf("append after refusal = %v", err)
 	}
 }

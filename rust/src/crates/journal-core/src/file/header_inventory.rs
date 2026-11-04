@@ -1,6 +1,6 @@
 //! Fixed-header inspection for excluded-writer ownership inventories.
 use super::mmap::read_file_exact_at;
-use super::{HeaderIncompatibleFlags, JournalHeader, JournalState};
+use super::{HeaderIncompatibleFlags, JournalHeader, JournalState, SUPPORTED_INCOMPATIBLE_FLAGS};
 use crate::error::{JournalError, Result};
 use std::path::Path;
 use zerocopy::FromBytes;
@@ -27,7 +27,7 @@ fn validate_writer_compatibility(header: &JournalHeader) -> Result<()> {
         return Err(JournalError::InvalidMagicNumber);
     }
     if header.header_size < std::mem::size_of::<JournalHeader>() as u64
-        || header.incompatible_flags & !0x1f != 0
+        || header.incompatible_flags & !SUPPORTED_INCOMPATIBLE_FLAGS != 0
         || !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
     {
         return Err(JournalError::UnsupportedJournalFile);

@@ -94,6 +94,19 @@ const (
 	compatibleTailEntryBootID = 1 << 1
 )
 
+// systemd's VALID_REALTIME and VALID_MONOTONIC bound (journal-file.h).
+const timestampLimitUsec = 1 << 55
+
+func validRealtime(usec uint64) bool  { return usec > 0 && usec < timestampLimitUsec }
+func validMonotonic(usec uint64) bool { return usec < timestampLimitUsec }
+
+// tailEntryArrayHintUsable reports whether the 32-bit tail entry array hint
+// can name every array. Writers, systemd's included, truncate offsets at or
+// above 4 GiB, so regular files written past that size carry a wrong hint.
+func (h *journalHeader) tailEntryArrayHintUsable() bool {
+	return h.headerSize >= 264 && h.headerSize <= 1<<32 && h.arenaSize <= 1<<32-h.headerSize
+}
+
 const (
 	objectCompressedXZ   = 1 << 0
 	objectCompressedLZ4  = 1 << 1
@@ -320,6 +333,12 @@ func parseHeader(src []byte) (journalHeader, error) {
 
 	if h.headerSize < headerMinSize {
 		return journalHeader{}, errUnsupportedJournal
+	}
+	// systemd refuses these on every open (journal-file.c
+	// journal_file_verify_header): an unknown state, or a sealed file whose
+	// header has no n_entry_arrays.
+	if h.state > stateArchived || (h.compatibleFlags&compatibleSealed != 0 && h.headerSize < 240) {
+		return journalHeader{}, errInvalidJournal
 	}
 	return h, nil
 }

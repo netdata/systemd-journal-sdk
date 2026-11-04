@@ -460,7 +460,7 @@ func (l *Log) finalizeRootActives(inv RootRetentionInventory, now time.Time, exp
 }
 
 func (l *Log) finalizeRetiredActive(file RootRetentionFile, result *RootRetentionResult) error {
-	w, err := OpenWithOptions(file.Path, Options{})
+	w, err := openForArchive(file.Path)
 	if err != nil {
 		return l.recordFailure(err)
 	}
