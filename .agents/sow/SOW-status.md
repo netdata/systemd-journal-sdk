@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-11-03
+Last updated: 2026-11-04
 
 ## Backlog Order
 
@@ -34,8 +34,10 @@ order; the user may reorder it.
     now, by user decision 2026-11-03).
 18. SOW-0171 - Continue sealing when reopening a sealed file (tracked; SOW-0156
     decision N1, 2026-11-03).
-19. SOW-0172 - Rust Log fails late on a relative directory (tracked 2026-11-03
-    from SOW-0156; needs a user decision).
+19. SOW-0172 - Rust Log fails late on a relative directory (completed
+    2026-11-04, option A).
+20. SOW-0173 - Rust Registry skips files under a relative directory (tracked
+    2026-11-04 from SOW-0172; needs a user decision).
 
 ## Current
 
@@ -43,6 +45,8 @@ None.
 
 ## Pending
 
+- SOW-0173 - Rust Registry Skips Files Under A Relative Directory: tracked
+  2026-11-04 from SOW-0172; needs a user decision (A/B/C in the SOW).
 - SOW-0066 - V1 Release: v1.0.0 API freeze and release; not scheduled (user
   decision 2026-11-03). Netdata gate is SOW-0164.
 - SOW-0097 - Go Codacy Metric Debt Refactor: real duplicated helpers; cited
@@ -72,10 +76,13 @@ None.
   by user decision.
 - SOW-0171 - Continue Sealing When Reopening A Sealed File: tracked
   2026-11-03 (SOW-0156 decision N1); not scheduled.
-- SOW-0172 - Rust Log Fails Late On A Relative Directory: tracked
-  2026-11-03 from SOW-0156; needs a user decision (A/B/C in the SOW).
 
 ## Recently Closed Or Completed
+
+- SOW-0172 - Rust Log Fails Late On A Relative Directory: completed
+  2026-11-04. Rust `Log` resolves a relative directory once at construction,
+  in default and root modes, and refuses an empty one, matching Go.
+  Follow-up: SOW-0173.
 
 - SOW-0156 - Fixed-Header Consistency Audit: completed 2026-11-03. Both SDKs
   apply systemd v260.1's writable-open header rules and timestamp ranges, keep
