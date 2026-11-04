@@ -8,7 +8,7 @@ The user decided on 2026-10-31 to fix all open SOWs rather than close
 valid-but-low-impact leads. Execution is one SOW at a time in this proposed
 order; the user may reorder it.
 
-1. SOW-0161 - File indexer source posting membership.
+1. SOW-0161 - File indexer source posting membership (completed 2026-11-01).
 2. SOW-0160 - Go XZ reader dictionary allocation (decided 2026-11-03: Go writer
    declares 256 KiB).
 3. SOW-0122 - journalctl performance follow-ups.
@@ -52,7 +52,6 @@ None.
   Rust writer-state discoverability.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: decided 2026-11-03 (Go writer
   declares 256 KiB).
-- SOW-0161 - File Indexer Source Posting Membership: unproven indexer lead.
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
 - SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal:
@@ -78,6 +77,8 @@ None.
   read and continue every file earlier releases wrote. Follow-ups: SOW-0171,
   SOW-0172.
 
+- SOW-0161 - File Indexer Source Posting Membership: completed 2026-11-01;
+  source histograms count the captured ENTRY population once per entry.
 - SOW-0137 - Rust Writer Residual Array-Open Performance: completed 2026-11-01.
   One fewer offset-array open per entry and per regular DATA link; regular
   writes run 3.9-5.1% fewer instructions with byte-identical output.

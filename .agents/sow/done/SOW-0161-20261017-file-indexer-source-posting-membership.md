@@ -2,9 +2,10 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: inherited source-analysis lead; not activated or implemented.
+Sub-state: reproduced and fixed 2026-11-01 in the autonomous backlog run;
+scope choices reviewed by the user 2026-11-03 (decision 5 revises decision 2).
 
 ## Requirements
 
@@ -71,7 +72,8 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: blocked
+Status: passed 2026-11-01 (reproduction below; the original text is kept as
+the activation record).
 
 Problem / root-cause model:
 
@@ -140,9 +142,62 @@ Open decisions:
    rather than another suppressed traversal error. Track it here without
    introducing additional indexing passes into the current repair.
 
+Reproduction (2026-11-01, `journal-index/tests/source_postings.rs`, regular
+and compact, before the fix):
+
+- Captured tail: 14 rows indexed, 2 rows published after the captured tail;
+  the histogram counted 16. The global pass already ignores them; the source
+  pass did not.
+- Membership: the source DATA inline target replaced by the DATA object's own
+  offset (the predicted case); the file indexed successfully with 15
+  records.
+- Repeated field: an entry carrying the source field twice was counted twice
+  (5 records for 4 entries).
+- Live race: the Rust writer advances the tail when it allocates an ENTRY,
+  links it into the global and DATA arrays, and increments `n_entries` last
+  (`journal-core` `writer.rs` `publish_entry_links` then `entry_added`). A
+  reader that reads the global array in that window sees DATA postings for an
+  entry the global array does not yet count. Simulated by lowering
+  `n_entries` by one: the source index counted the extra entry.
+
+Go: no equivalent surface. `journal-index` and `journal-engine` are Rust-only;
+the Go explorer reads `_SOURCE_REALTIME_TIMESTAMP` per row
+(`go/journal/explorer.go`) and builds no posting-based histogram. Parity is
+not affected.
+
+2. Agent-chosen, pending user review: the contract implemented is the one the
+   field-bitmap path already uses in the same file. Postings past the
+   captured tail are ignored. A posting at or below the tail that the global
+   array does not contain is `IndexError::MissingOffset` on a stable file and
+   is dropped on a live (online or active-name) file, because the live race
+   above makes it legitimate there. The bitmap path
+   (`collect_data_entry_indices`) previously returned `MissingOffset` on live
+   files too, so the same live race could fail indexing of a requested field;
+   it now drops the posting on live files, matching the source path.
+3. Agent-chosen: an entry with the source field more than once keeps its
+   earliest source timestamp, so every entry is counted once.
+4. `CACHE_VERSION` bumps from 4 to 5, as `product-scope.md` requires for any
+   change to what the indexer computes. An earlier draft of this SOW skipped
+   the bump; PR review pointed to the spec rule. Impact: every cached file
+   reindexes once after upgrade; the spec records generation 5.
+5. 2026-11-03 (user): decisions 3 and 4 approved. Decision 2 is revised: a
+   posting at or below the captured tail that the global array does not
+   contain is dropped on every file, stable or live, in both the source and
+   the requested-field paths. Reason: files written by earlier SDK releases
+   must stay readable, and writers before v0.9.0 had no poisoning, so a
+   failed append followed by a clean close could leave an archived file with
+   DATA links to an uncounted entry (v0.8.0 `writer_entry_arrays.rs` linked
+   DATA before `n_entries` advanced). Rejecting such files would make them
+   unindexable. Generation 5 stays: it is unreleased, and the change only
+   turns former failures into indexes, which are never cached as failures.
+
+Cost: the healthy path adds one comparison per source posting, one counter
+per global entry and no extra lookups (the deduplicating insert replaces the
+previous insert). The member set is built only when a mismatch is found.
+
 ## Plan
 
-1. Investigate only after explicit activation; retain the approved current order.
+Done; see the execution log.
 
 ## Implementation And Review Plan
 
@@ -178,21 +233,67 @@ Failure handling:
 
 - Recorded the source-analysis lead discovered during SOW-0159's consumer audit.
 
+### 2026-11-01
+
+- Activated in the autonomous backlog run; reproduced all predictions plus the
+  repeated-field and live-race cases.
+- Fixed `rust/src/crates/journal-index/src/file_indexer.rs`
+  (`collect_source_field_info`, new `rebuild_entry_offset_index`,
+  `build_histogram`, `collect_data_entry_indices`).
+- Added `rust/src/crates/journal-index/tests/source_postings.rs` (5 tests).
+
+### 2026-11-03
+
+- Applied decision 5: `collect_data_entry_indices` and `build_histogram` drop
+  non-member postings on every file; the now-unused `live` parameters are
+  removed. `source_postings.rs` covers the bogus-inline and linked-but-uncounted
+  cases on both live and stable files; the `array_integrity.rs`
+  `unindexed-inline` mutation now expects a 14-entry index on archived files,
+  for both the source and requested-field paths.
+
 ## Validation
 
-- Source trace only. Runtime, same-failure and parity validation are not yet run.
-- Artifact maintenance: this pending SOW and both status indexes are added;
-  product contracts, skills and runtime code remain unchanged by this record.
-- Follow-up mapping: source-map membership and captured-tail investigation
-  belongs here; encountered native traversal errors remain SOW-0159.
+- All 5 new tests failed on the original indexer (16, 15, 5 records, accepted
+  corruption, extra live entry) and passed after the fix. After decision 5
+  (2026-11-03) the suite has 4 tests (live and stable cases merged into
+  loops); `cargo test --workspace` passes again, all suites ok.
+- `cargo test --workspace`: 46 suites pass, including `journal-engine`
+  `index_integrity` and the existing `array_integrity` source cases.
+- Clippy: no warning in the changed files.
+- Same-failure search: the only other consumer of DATA postings in the
+  indexer is `collect_data_entry_indices`, fixed the same way. The engine
+  consumes `FileIndex` only.
+- Real-use path: the indexer is exercised end to end by the engine tests; no
+  Netdata run was made (Netdata is out of scope without authorization).
+- Runtime purity: no process launch or host access added.
+
+Sensitive data gate:
+
+- Synthetic journals and payloads only.
+
+Artifact maintenance gate:
+
+- AGENTS.md and project skills: no new rule; the cache-version rule in the
+  compatibility skill and product scope was applied (decision 4).
+- Specs: `product-scope.md` records cache generation 5 and its reindex
+  impact.
+- End-user docs: the indexer is internal to the engine; no doc describes it.
+- SOW-status.md: both indexes updated.
+- Follow-up mapping: none; native traversal errors remain SOW-0159.
 
 ## Outcome
 
-Investigation is pending; no behavior change or successful repair is claimed.
+Completed. Source-timestamp histograms now count exactly the captured ENTRY
+population once per entry. Postings outside that population are dropped on
+every file, so live files tolerate the writer's link-before-count window and
+files left by pre-v0.9.0 writers stay indexable.
 
 ## Lessons Extracted
 
-Chain completion and cross-index membership are distinct guarantees.
+Chain completion and cross-index membership are distinct guarantees. Writer
+publication order decides which membership checks are valid on live files.
+Read the spec rules for the changed surface before choosing a default: the
+cache-version rule was a spec requirement, not a judgment call.
 
 ## Followup
 
@@ -200,4 +301,4 @@ No additional follow-up is identified before investigation.
 
 ## Regression Log
 
-No completed outcome has been reopened; origin and contract remain to establish.
+No completed outcome has been reopened.
