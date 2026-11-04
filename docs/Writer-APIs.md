@@ -97,7 +97,12 @@ A mutating append, sync or archive failure poisons the writer. Further mutation
 is rejected. Close/drop releases resources without rewriting metadata, applying
 retention or deleting an uncertain file, including a failed first append whose
 cached entry count is zero. Pre-mutation input validation errors remain reusable.
-Go exposes `ErrWriterFailed` and preserves the original cause.
+Go exposes `ErrWriterFailed` and preserves the original cause. In Rust the
+failing call returns its own error; keep it, because later mutation attempts
+return only `JournalError::WriterPoisoned`. The low-level `JournalWriter`
+returns that variant directly, and `Log` wraps it as
+`WriterError::Journal(JournalError::WriterPoisoned)`. `JournalWriter::is_poisoned()`
+and `Log::is_poisoned()` report the state without attempting a mutation.
 
 Append-open validates supported format metadata; it does not certify the full
 native index graph. Before a `Writer` or `Log` can reuse uncertain files, exclude

@@ -6,8 +6,8 @@ This module is imported as:
 import "github.com/netdata/systemd-journal-sdk/go/journal"
 ```
 
-The current consumable tag for this subdirectory module is expected to be
-`go/v0.3.0`.
+Tags for this subdirectory module use the `go/vX.Y.Z` form; the current release
+and installation command are in [`README.md`](README.md).
 
 ## Stability Contract
 
