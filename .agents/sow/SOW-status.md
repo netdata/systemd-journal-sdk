@@ -77,6 +77,9 @@ None.
 
 ## Recently Closed Or Completed
 
+- SOW-0160 - Go XZ Reader Dictionary Allocation: completed 2026-11-04. The Go
+  writer declares a 256 KiB XZ dictionary like Rust; Go and Rust reads of new
+  Go-written XZ files cost 5-10x less CPU. Stock journalctl is unaffected.
 
 - SOW-0156 - Fixed-Header Consistency Audit: completed 2026-11-03. Both SDKs
   apply systemd v260.1's writable-open header rules and timestamp ranges, keep
