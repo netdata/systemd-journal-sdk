@@ -609,3 +609,64 @@ fn test_custom_source_naming_is_honored_in_default_and_strict_modes() {
         .unwrap();
     assert_eq!(name, "custom-source.journal");
 }
+
+/// A relative path to `target` that resolves through the current directory,
+/// so tests need not change the process-wide working directory.
+fn relative_to_cwd(target: &Path) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap();
+    let mut rel = PathBuf::new();
+    for _ in cwd.components().skip(1) {
+        rel.push("..");
+    }
+    rel.join(target.strip_prefix("/").unwrap())
+}
+
+#[test]
+fn relative_directory_writes_rotates_and_reopens() {
+    let dir = TempDir::new().unwrap();
+    let rel = relative_to_cwd(dir.path());
+    assert!(rel.is_relative());
+    let config = || {
+        test_config()
+            .with_rotation_policy(RotationPolicy::default().with_number_of_entries(2))
+            .with_strict_systemd_naming(true)
+    };
+
+    let mut log = Log::new(&rel, config()).unwrap();
+    for i in 0..3 {
+        write_test_entry(&mut log, &[format!("MESSAGE=relative {i}").as_bytes()]).unwrap();
+    }
+    assert_eq!(
+        log.configured_directory(),
+        std::path::absolute(&rel).unwrap()
+    );
+    assert!(log.journal_directory().is_absolute());
+    assert!(log.active_path().unwrap().is_absolute());
+    drop(log);
+
+    let mut log = Log::new(&rel, config()).unwrap();
+    write_test_entry(&mut log, &[b"MESSAGE=relative reopened"]).unwrap();
+    drop(log);
+
+    let journal_dir = dir.path().join(test_machine_id().as_simple().to_string());
+    let mut entries = 0;
+    let mut files = 0;
+    for path in fs::read_dir(&journal_dir).unwrap() {
+        let path = path.unwrap().path();
+        let file = File::from_path(&path).unwrap();
+        let journal = JournalFile::<Mmap>::open(&file, 8 * 1024 * 1024).unwrap();
+        entries += journal.journal_header_ref().n_entries;
+        files += 1;
+    }
+    assert_eq!(entries, 4);
+    assert!(files >= 2, "expected a rotation, got {files} files");
+}
+
+#[test]
+fn empty_directory_is_refused_before_creating_anything() {
+    let err = match Log::new(Path::new(""), test_config()) {
+        Ok(_) => panic!("expected an empty directory to be refused"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, WriterError::InvalidPath(_)), "{err:?}");
+}

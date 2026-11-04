@@ -1044,3 +1044,61 @@ func TestLogRotationRejectsRetryAfterArchiveCleanupFailure(t *testing.T) {
 		t.Fatalf("first file seqnum range = [%d,%d], want [1,1]", first.headEntrySeqnum, first.tailEntrySeqnum)
 	}
 }
+
+// relativeToCwd returns a relative path to target that resolves through the
+// current directory, so the test need not change the working directory.
+func relativeToCwd(t *testing.T, target string) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	rel, err := filepath.Rel(cwd, target)
+	if err != nil {
+		t.Fatalf("Rel() error = %v", err)
+	}
+	return rel
+}
+
+func TestLogRelativeDirectoryWritesRotatesAndReopens(t *testing.T) {
+	root := t.TempDir()
+	rel := relativeToCwd(t, root)
+	if filepath.IsAbs(rel) {
+		t.Fatalf("relative path %q is absolute", rel)
+	}
+	config := LogConfig{
+		Options:             testOptions(),
+		Source:              "system",
+		RotationPolicy:      RotationPolicy{}.WithMaxEntries(2),
+		StrictSystemdNaming: true,
+	}
+	for round, count := range []int{3, 1} {
+		log, err := NewLog(rel, config)
+		if err != nil {
+			t.Fatalf("NewLog(round %d) error = %v", round, err)
+		}
+		for i := 0; i < count; i++ {
+			if err := log.Append([]Field{StringField("MESSAGE", fmt.Sprintf("relative %d-%d", round, i))},
+				EntryOptions{RealtimeUsec: 1_700_002_000_000_000 + uint64(round*10+i), MonotonicUsec: uint64(round*10 + i + 1)}); err != nil {
+				t.Fatalf("Append(round %d, %d) error = %v", round, i, err)
+			}
+		}
+		if err := log.Close(); err != nil {
+			t.Fatalf("Close(round %d) error = %v", round, err)
+		}
+	}
+	files := journalFiles(t, filepath.Join(root, config.Options.MachineID.String()))
+	var entries uint64
+	for _, path := range files {
+		entries += readJournalSnapshot(t, path).header.nEntries
+	}
+	if entries != 4 || len(files) < 2 {
+		t.Fatalf("entries = %d in %d files, want 4 in at least 2", entries, len(files))
+	}
+}
+
+func TestLogRefusesEmptyDirectory(t *testing.T) {
+	if _, err := NewLog("", LogConfig{Options: testOptions(), Source: "system"}); err == nil {
+		t.Fatal("NewLog(\"\") succeeded, want an error")
+	}
+}

@@ -976,3 +976,26 @@ fn root_sub_microsecond_age_retains_exact_tail_and_expires_one_microsecond_later
     assert!(expired.inventory.files.is_empty());
     log.close_without_retention().unwrap();
 }
+
+#[test]
+fn root_retention_with_relative_root_prunes() {
+    let dir = TempDir::new().unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let mut rel = PathBuf::new();
+    for _ in cwd.components().skip(1) {
+        rel.push("..");
+    }
+    let rel = rel.join(dir.path().strip_prefix("/").unwrap());
+    let t = micros(SystemTime::now());
+    let a = fixture(dir.path(), 21, &[t], false);
+    let b = fixture(dir.path(), 22, &[t], false);
+    let mut log = Log::new(&rel, config()).unwrap();
+    append(&mut log, SystemTime::now(), true);
+    log.set_root_retention_policy(RetentionPolicy::default().with_number_of_journal_files(2))
+        .unwrap();
+    log.maintain_root_retention(SystemTime::now()).unwrap();
+    assert!(!a.exists());
+    assert!(b.exists());
+    assert_eq!(inspect(dir.path()).files.len(), 2);
+    log.close_without_retention().unwrap();
+}

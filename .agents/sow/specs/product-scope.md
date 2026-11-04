@@ -548,6 +548,10 @@ Current Go writer feature slice:
 - high-level Go path accessors expose the configured root, effective
   machine-id journal directory, exact active path after file creation, machine
   ID, boot ID, and source prefix;
+- both directory writers accept a relative directory and refuse an empty one.
+  Rust resolves it lexically once at construction (no symlink resolution) and
+  its path accessors return absolute paths; Go keeps it as given, so the OS
+  resolves it against the working directory at each file operation;
 - high-level Go lifecycle callbacks report created, rotated, and
   retention-deleted journal paths; artifact-size callbacks include
   consumer-owned sidecar bytes in size-based retention decisions;
