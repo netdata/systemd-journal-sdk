@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-11-04
+Last updated: 2026-11-05
 
 ## Backlog Order
 
@@ -36,8 +36,8 @@ order; the user may reorder it.
     decision N1, 2026-11-03).
 19. SOW-0172 - Rust Log fails late on a relative directory (completed
     2026-11-04, option A).
-20. SOW-0173 - Rust Registry skips files under a relative directory
-    (completed 2026-11-05, option A).
+20. SOW-0173 - Rust Registry skips files under a relative directory (completed
+    2026-11-05, option A).
 21. SOW-0174 - Rust Registry unwatch leaves files when the directory key
     differs (tracked 2026-11-05 from SOW-0173; needs a user decision).
 
