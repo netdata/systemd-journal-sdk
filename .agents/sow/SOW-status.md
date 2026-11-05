@@ -36,8 +36,10 @@ order; the user may reorder it.
     decision N1, 2026-11-03).
 19. SOW-0172 - Rust Log fails late on a relative directory (completed
     2026-11-04, option A).
-20. SOW-0173 - Rust Registry skips files under a relative directory (tracked
-    2026-11-04 from SOW-0172; needs a user decision).
+20. SOW-0173 - Rust Registry skips files under a relative directory
+    (completed 2026-11-05, option A).
+21. SOW-0174 - Rust Registry unwatch leaves files when the directory key
+    differs (tracked 2026-11-05 from SOW-0173; needs a user decision).
 
 ## Current
 
@@ -45,8 +47,9 @@ None.
 
 ## Pending
 
-- SOW-0173 - Rust Registry Skips Files Under A Relative Directory: tracked
-  2026-11-04 from SOW-0172; needs a user decision (A/B/C in the SOW).
+- SOW-0174 - Rust Registry Unwatch Leaves Files When The Directory Key
+  Differs: tracked 2026-11-05 from SOW-0173; needs a user decision (A/B/C in
+  the SOW).
 - SOW-0066 - V1 Release: v1.0.0 API freeze and release; not scheduled (user
   decision 2026-11-03). Netdata gate is SOW-0164.
 - SOW-0097 - Go Codacy Metric Debt Refactor: real duplicated helpers; cited
@@ -76,6 +79,10 @@ None.
   2026-11-03 (SOW-0156 decision N1); not scheduled.
 
 ## Recently Closed Or Completed
+
+- SOW-0173 - Rust Registry Skips Files Under A Relative Directory: completed
+  2026-11-05. `watch_directory` and `unwatch_directory` resolve a relative
+  directory once at call time. Follow-up: SOW-0174.
 
 - SOW-0160 - Go XZ Reader Dictionary Allocation: completed 2026-11-04. The Go
   writer declares a 256 KiB XZ dictionary like Rust; Go and Rust reads of new
