@@ -65,11 +65,10 @@ impl Repository {
         Ok(())
     }
 
-    /// Remove all files from a directory
-    fn remove_directory(&mut self, path: &str) {
-        self.base.remove_directory(path);
-        self.file_metadata
-            .retain(|file, _| file.dir().ok().map(|dir| dir != path).unwrap_or(true));
+    /// Keep only the files for which `keep` returns true
+    fn retain_files(&mut self, mut keep: impl FnMut(&File) -> bool) {
+        self.base.retain_files(&mut keep);
+        self.file_metadata.retain(|file, _| keep(file));
     }
 
     /// Find files in a time range
@@ -140,10 +139,12 @@ impl Default for Repository {
 // ============================================================================
 
 /// Journal file parsing needs absolute paths, and notify reports paths in the
-/// form they were watched. Resolve once, lexically, so relative directories work
-/// and absolute ones are kept exactly as given.
+/// form they were watched. Resolve once, lexically, and drop trailing and
+/// repeated separators so each directory has a single key.
 fn absolute_directory(path: &str) -> Result<String> {
     std::path::absolute(path)?
+        .components()
+        .collect::<PathBuf>()
         .into_os_string()
         .into_string()
         .map_err(|_| {
@@ -155,11 +156,138 @@ fn absolute_directory(path: &str) -> Result<String> {
         })
 }
 
+/// Watched directories that need a notify watch: those not inside another
+/// watched directory, whose recursive watch already covers them.
+fn outermost(watched: &HashSet<String>) -> HashSet<String> {
+    watched
+        .iter()
+        .filter(|dir| {
+            !watched
+                .iter()
+                .any(|other| other != *dir && Path::new(dir.as_str()).starts_with(other))
+        })
+        .cloned()
+        .collect()
+}
+
 /// Internal state for Registry
 struct RegistryInner {
     repository: Repository,
+    /// Directories callers asked to watch, as normalized absolute paths
     watched_directories: HashSet<String>,
+    /// The watched directories that hold a notify watch. notify keys watches
+    /// by path and drops every watch below a removed one, so overlapping
+    /// watches are never handed to it.
+    armed_directories: HashSet<String>,
     monitor: Monitor,
+}
+
+impl RegistryInner {
+    /// Move notify watches to `target`, returning the directories newly armed.
+    ///
+    /// Removes before adding, so a nested watch is gone before its parent's
+    /// recursive watch is added. A failed removal means notify's state is
+    /// unreliable, so the watcher is rebuilt. On failure the previous watches
+    /// are restored.
+    fn rearm(&mut self, target: HashSet<String>) -> Result<Vec<String>> {
+        let to_remove: Vec<String> = self
+            .armed_directories
+            .difference(&target)
+            .cloned()
+            .collect();
+        let to_add: Vec<String> = target
+            .difference(&self.armed_directories)
+            .cloned()
+            .collect();
+
+        let previous = self.armed_directories.clone();
+
+        for dir in &to_remove {
+            if let Err(e) = self.disarm(dir) {
+                warn!(
+                    "removing notify watch for {} failed ({}); rebuilding the watcher",
+                    dir, e
+                );
+                return match self.rebuild(&target) {
+                    Ok(()) => Ok(target.into_iter().collect()),
+                    Err(e) => {
+                        self.restore(&previous);
+                        Err(e)
+                    }
+                };
+            }
+        }
+        for dir in &to_add {
+            if let Err(e) = self.monitor.watch_directory(dir) {
+                self.restore(&previous);
+                return Err(e);
+            }
+        }
+
+        self.armed_directories = target;
+        Ok(to_add)
+    }
+
+    /// Replace all notify watches with a fresh watcher armed for `target`.
+    /// Every directory in it must then be reconciled.
+    fn rebuild(&mut self, target: &HashSet<String>) -> Result<()> {
+        self.armed_directories.clear();
+        self.monitor.reset()?;
+        for dir in target {
+            self.monitor.watch_directory(dir)?;
+            self.armed_directories.insert(dir.clone());
+        }
+        Ok(())
+    }
+
+    /// Return to the `previous` notify watches after a failed `rearm`, and
+    /// rescan them for events lost meanwhile. Best effort: the error being
+    /// returned matters more.
+    fn restore(&mut self, previous: &HashSet<String>) {
+        if let Err(e) = self.rebuild(previous) {
+            error!("failed to restore notify watches: {}", e);
+        }
+        for dir in self.armed_directories.clone() {
+            self.reconcile_logged(&dir);
+        }
+    }
+
+    /// Remove a notify watch; one notify already dropped counts as removed.
+    fn disarm(&mut self, dir: &str) -> Result<()> {
+        match self.monitor.unwatch_directory(dir) {
+            Err(RegistryError::Notify(e)) if matches!(e.kind, notify::ErrorKind::WatchNotFound) => {
+                warn!("notify watch for {} was already gone", dir);
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
+    /// Make the registered files under `dir` match the disk. Needed wherever a
+    /// notify watch changed hands, because events in between are lost.
+    fn reconcile(&mut self, dir: &str) -> Result<()> {
+        let files = scan_journal_files(dir)?;
+        info!("found {} journal files in {}", files.len(), dir);
+
+        let found: HashSet<&str> = files.iter().map(File::path).collect();
+        self.repository
+            .retain_files(|file| !file.as_path().starts_with(dir) || found.contains(file.path()));
+        drop(found);
+
+        for file in files {
+            trace!("adding file to repository: {:?}", file.path());
+            if let Err(e) = self.repository.insert(file) {
+                error!("failed to insert file into repository: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    fn reconcile_logged(&mut self, dir: &str) {
+        if let Err(e) = self.reconcile(dir) {
+            error!("failed to rescan {}: {}", dir, e);
+        }
+    }
 }
 
 /// Coordinates file monitoring and repository management (thread-safe)
@@ -174,6 +302,7 @@ impl Registry {
         let inner = RegistryInner {
             repository: Repository::new(),
             watched_directories: HashSet::default(),
+            armed_directories: HashSet::default(),
             monitor,
         };
 
@@ -184,60 +313,76 @@ impl Registry {
 
     /// Watch a directory for journal files
     ///
-    /// Performs an initial scan to discover existing files, then monitors for changes.
-    /// A relative directory is resolved against the working directory at call time;
-    /// an empty one is refused.
+    /// Starts monitoring, then scans the directory to discover existing files.
+    /// A relative directory is resolved against the working directory at call
+    /// time, lexically (symlinks and `..` are kept); an empty one is refused.
+    /// Trailing separators are ignored. Directories may overlap: a directory
+    /// inside or around one already watched is supported. On error the
+    /// registry is left unchanged.
     pub fn watch_directory(&self, path: &str) -> Result<()> {
-        let path = &absolute_directory(path)?;
+        let dir = absolute_directory(path)?;
         let mut inner = self.inner.write();
 
-        if inner.watched_directories.contains(path) {
-            warn!("Directory {} is already being watched", path);
+        if inner.watched_directories.contains(&dir) {
+            warn!("Directory {} is already being watched", dir);
             return Ok(());
         }
 
-        info!("scanning directory: {}", path);
-        let files = scan_journal_files(path)?;
-        info!("found {} journal files in {}", files.len(), path);
+        let mut watched = inner.watched_directories.clone();
+        watched.insert(dir.clone());
+        let previous = inner.armed_directories.clone();
+        let armed = inner.rearm(outermost(&watched))?;
 
-        // Start watching with notify
-        inner.monitor.watch_directory(path)?;
-        inner.watched_directories.insert(String::from(path));
-
-        // Insert all discovered files into repository (automatically initializes metadata)
-        for file in files {
-            trace!("adding file to repository: {:?}", file.path());
-
-            if let Err(e) = inner.repository.insert(file) {
-                error!("failed to insert file into repository: {}", e);
+        info!("scanning directory: {}", dir);
+        if let Err(e) = inner.reconcile(&dir) {
+            if inner.armed_directories != previous {
+                inner.restore(&previous);
             }
+            return Err(e);
+        }
+        inner.watched_directories = watched;
+        // A rebuilt watcher re-armed other directories as well.
+        for other in armed.iter().filter(|other| **other != dir) {
+            inner.reconcile_logged(other);
         }
 
         info!(
             "now watching directory: {} (total directories: {})",
-            path,
+            dir,
             inner.watched_directories.len()
         );
         Ok(())
     }
 
-    /// Stop watching a directory and remove its files from the repository
+    /// Stop watching a directory and forget its files
     ///
-    /// The directory is resolved the same way as in [`Registry::watch_directory`].
+    /// The directory is resolved as in [`Registry::watch_directory`]. Every
+    /// registered file under it is forgotten unless another watched directory
+    /// still covers it; files on disk are never touched. On error the registry
+    /// is left unchanged.
     pub fn unwatch_directory(&self, path: &str) -> Result<()> {
-        let path = &absolute_directory(path)?;
+        let dir = absolute_directory(path)?;
         let mut inner = self.inner.write();
 
-        if !inner.watched_directories.contains(path) {
-            warn!("directory {} is not being watched", path);
+        if !inner.watched_directories.contains(&dir) {
+            warn!("directory {} is not being watched", dir);
             return Ok(());
         }
 
-        inner.monitor.unwatch_directory(path)?;
-        inner.repository.remove_directory(path); // Handles both repository and metadata cleanup
-        inner.watched_directories.remove(path);
+        let mut watched = inner.watched_directories.clone();
+        watched.remove(&dir);
+        let rearmed = inner.rearm(outermost(&watched))?;
 
-        info!("stopped watching directory: {}", path);
+        inner.repository.retain_files(|file| {
+            let path = file.as_path();
+            !path.starts_with(&dir) || watched.iter().any(|other| path.starts_with(other))
+        });
+        inner.watched_directories = watched;
+        for nested in &rearmed {
+            inner.reconcile_logged(nested);
+        }
+
+        info!("stopped watching directory: {}", dir);
         Ok(())
     }
 
@@ -274,7 +419,22 @@ impl Registry {
         Ok(())
     }
 
+    /// Events queued before an unwatch must not bring its files back.
+    fn is_watched(inner: &RegistryInner, path: &Path) -> bool {
+        let watched = inner
+            .watched_directories
+            .iter()
+            .any(|dir| path.starts_with(dir));
+        if !watched {
+            trace!("ignoring event outside watched directories: {:?}", path);
+        }
+        watched
+    }
+
     fn insert_event_path(inner: &mut RegistryInner, path: &Path) {
+        if !Self::is_watched(inner, path) {
+            return;
+        }
         trace!("adding file to repository: {:?}", path);
         let Some(file) = File::from_path(path) else {
             warn!("path is not a valid journal file: {:?}", path);
@@ -317,6 +477,9 @@ impl Registry {
     }
 
     fn insert_renamed_new_path(inner: &mut RegistryInner, new_path: &Path) {
+        if !Self::is_watched(inner, new_path) {
+            return;
+        }
         let Some(new_file) = File::from_path(new_path) else {
             return;
         };
