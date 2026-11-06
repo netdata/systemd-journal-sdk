@@ -255,6 +255,18 @@ impl Repository {
         self.directories.remove(path);
     }
 
+    /// Keep only the files for which `keep` returns true, dropping chains and
+    /// directories left empty
+    pub fn retain_files(&mut self, mut keep: impl FnMut(&File) -> bool) {
+        self.directories.retain(|_, directory| {
+            directory.chains.retain(|_, chain| {
+                chain.files.retain(|file| keep(file));
+                !chain.is_empty()
+            });
+            !directory.chains.is_empty()
+        });
+    }
+
     /// Collect all files in the given time range
     pub fn find_files_in_range<C>(&self, start: Seconds, end: Seconds) -> C
     where
