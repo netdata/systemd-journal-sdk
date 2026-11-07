@@ -918,7 +918,7 @@ func (i cliInput) journalFiles(context string) ([]string, bool, error) {
 	if i.directory == "" {
 		return append([]string(nil), i.files...), false, nil
 	}
-	files, err := collectJournalFilesForVerify(i.directory)
+	files, err := journal.DirectoryFiles(i.directory)
 	if err != nil {
 		return nil, true, fmt.Errorf("%s: read directory: %w", context, err)
 	}
@@ -3937,98 +3937,6 @@ func isFileSealed(path string) (bool, error) {
 	}
 	defer r.Close()
 	return r.Header().CompatibleFlags()&compatibleSealed != 0, nil
-}
-
-func isJournalFileName(name string) bool {
-	return strings.HasSuffix(name, ".journal") ||
-		strings.HasSuffix(name, ".journal~") ||
-		strings.HasSuffix(name, ".journal.zst") ||
-		strings.HasSuffix(name, ".journal~.zst")
-}
-
-func collectJournalFilesForVerify(path string) ([]string, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var files []string
-	for _, entry := range entries {
-		candidate := filepath.Join(path, entry.Name())
-		if isRegularFile(candidate) && isJournalFileName(entry.Name()) {
-			files = append(files, candidate)
-		}
-	}
-
-	for _, entry := range entries {
-		if !isJournalSubdirName(entry.Name()) {
-			continue
-		}
-		childPath := filepath.Join(path, entry.Name())
-		if !isDirectory(childPath) {
-			continue
-		}
-		children, err := os.ReadDir(childPath)
-		if err != nil {
-			continue
-		}
-		for _, child := range children {
-			candidate := filepath.Join(childPath, child.Name())
-			if isRegularFile(candidate) && isJournalFileName(child.Name()) {
-				files = append(files, candidate)
-			}
-		}
-	}
-
-	sort.Strings(files)
-	return files, nil
-}
-
-func isRegularFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
-}
-
-func isDirectory(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-func isJournalSubdirName(name string) bool {
-	if strings.Contains(name, ".") {
-		return false
-	}
-	return id128StringValid(name)
-}
-
-func id128StringValid(s string) bool {
-	if len(s) == 32 {
-		for _, ch := range s {
-			if !isASCIIHex(ch) {
-				return false
-			}
-		}
-		return true
-	}
-	if len(s) == 36 {
-		for i, ch := range s {
-			if i == 8 || i == 13 || i == 18 || i == 23 {
-				if ch != '-' {
-					return false
-				}
-				continue
-			}
-			if !isASCIIHex(ch) {
-				return false
-			}
-		}
-		return true
-	}
-	return false
-}
-
-func isASCIIHex(ch rune) bool {
-	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
 func hasStringFlag(args []string, name string) bool {

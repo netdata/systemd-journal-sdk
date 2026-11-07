@@ -194,6 +194,15 @@ type directoryUniqueState struct {
 	index int
 }
 
+// DirectoryFiles lists the journal files a directory read opens, sorted: files
+// directly in path plus files one level down in machine-id subdirectories, the
+// layout systemd uses under /var/log/journal. Symlinks are followed; deeper
+// directories and names without a journal suffix are ignored. Use it to act on
+// exactly the files OpenDirectory would read.
+func DirectoryFiles(path string) ([]string, error) {
+	return collectJournalFiles(path)
+}
+
 func isJournalFileName(name string) bool {
 	return strings.HasSuffix(name, ".journal") ||
 		strings.HasSuffix(name, ".journal~") ||

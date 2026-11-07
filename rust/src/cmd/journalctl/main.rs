@@ -781,7 +781,7 @@ impl CliInput {
     fn journal_files(&self, context: &str) -> Result<(Vec<PathBuf>, bool)> {
         match self {
             Self::Files(paths) => Ok((paths.clone(), false)),
-            Self::Directory(path) => collect_journal_files_for_verify(path)
+            Self::Directory(path) => journal::directory_files(path)
                 .map(|files| (files, true))
                 .map_err(|err| anyhow!("{}: read directory {}: {}", context, path.display(), err)),
         }
@@ -1361,61 +1361,6 @@ fn run_verify_input(input: &CliInput, verify_key: Option<&str>, quiet: bool) -> 
 fn is_file_sealed(path: &Path) -> Result<bool> {
     let reader = FileReader::open(path).map_err(|err| anyhow!("open: {err}"))?;
     Ok(reader.header().compatible_flags & COMPATIBLE_SEALED != 0)
-}
-
-fn is_journal_file_name(path: &Path) -> bool {
-    path.file_name()
-        .map(|name| name.as_encoded_bytes())
-        .is_some_and(|name| {
-            name.ends_with(b".journal")
-                || name.ends_with(b".journal~")
-                || name.ends_with(b".journal.zst")
-                || name.ends_with(b".journal~.zst")
-        })
-}
-
-fn collect_journal_files_for_verify(path: &Path) -> Result<Vec<PathBuf>> {
-    let entries: Vec<_> = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-    let mut files = Vec::new();
-
-    for entry in &entries {
-        let file_path = entry.path();
-        if file_path.is_file() && is_journal_file_name(&file_path) {
-            files.push(file_path);
-        }
-    }
-
-    for entry in &entries {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if !is_journal_subdir_name(&name) {
-            continue;
-        }
-        let child_path = entry.path();
-        if !child_path.is_dir() {
-            continue;
-        }
-        let Ok(children) = std::fs::read_dir(&child_path) else {
-            continue;
-        };
-        for child in children.flatten() {
-            let file_path = child.path();
-            if file_path.is_file() && is_journal_file_name(&file_path) {
-                files.push(file_path);
-            }
-        }
-    }
-
-    files.sort();
-    Ok(files)
-}
-
-fn is_journal_subdir_name(name: &str) -> bool {
-    if name.contains('.') {
-        return false;
-    }
-    id128_string_valid(name)
 }
 
 fn print_new_id128() {
@@ -2222,20 +2167,6 @@ fn format_journal_bytes(bytes: u64) -> String {
     }
 
     format!("{bytes}B")
-}
-
-fn id128_string_valid(s: &str) -> bool {
-    match s.len() {
-        32 => s.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        36 => s.bytes().enumerate().all(|(idx, byte)| {
-            if matches!(idx, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        }),
-        _ => false,
-    }
 }
 
 fn valid_verification_key(key: &str) -> bool {

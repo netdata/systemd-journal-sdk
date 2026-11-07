@@ -170,3 +170,55 @@ fn boot_merge_conflict_enforced() {
         "expected boot/merge conflict, got: {stderr}"
     );
 }
+
+/// `--verify --directory` checks exactly the files a directory read sees:
+/// top-level journals plus one level of machine-id subdirectories.
+#[test]
+fn verify_directory_uses_systemd_layout() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../fixtures/systemd/test-data/no-rtc/system.journal.zst");
+    let root = tempfile::tempdir().expect("create temp dir");
+    let plain_id = "00112233445566778899aabbccddeeff";
+    let dashed_id = "00112233-4455-6677-8899-aabbccddeeff";
+    for dir in [
+        plain_id,
+        dashed_id,
+        "not-an-id",
+        &format!("{plain_id}/nested"),
+    ] {
+        std::fs::create_dir_all(root.path().join(dir)).expect("create layout directory");
+    }
+    let mut want = Vec::new();
+    for rel in [
+        "system.journal.zst".to_string(),
+        "system@archived.journal~.zst".to_string(),
+        format!("{plain_id}/user-1000.journal.zst"),
+        format!("{dashed_id}/system.journal.zst"),
+    ] {
+        let path = root.path().join(rel);
+        std::fs::copy(&fixture, &path).expect("copy fixture");
+        want.push(path.display().to_string());
+    }
+    for rel in [
+        "not-an-id/ignored.journal.zst".to_string(),
+        format!("{plain_id}/nested/too-deep.journal.zst"),
+    ] {
+        std::fs::copy(&fixture, root.path().join(rel)).expect("copy ignored fixture");
+    }
+    std::fs::write(root.path().join("notes.log"), b"not a journal").expect("write notes");
+
+    let out = run_cli(&["--verify", "--directory", root.path().to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "verify failed: {stderr}");
+    let mut got: Vec<String> = stderr
+        .lines()
+        .map(|line| {
+            line.strip_prefix("PASS: ")
+                .unwrap_or_else(|| panic!("unexpected stderr line {line:?}"))
+                .to_string()
+        })
+        .collect();
+    got.sort();
+    want.sort();
+    assert_eq!(got, want);
+}

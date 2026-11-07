@@ -1128,7 +1128,16 @@ pub(super) fn is_journal_file_name(path: &Path) -> bool {
         })
 }
 
-fn collect_journal_files(path: &Path) -> Result<Vec<PathBuf>> {
+/// Lists the journal files a directory read opens, sorted: files directly in
+/// `path` plus files one level down in machine-id subdirectories, the layout
+/// systemd uses under `/var/log/journal`. Symlinks are followed; deeper
+/// directories and names without a journal suffix are ignored. Use it to act
+/// on exactly the files [`DirectoryReader::open`] would read.
+pub fn directory_files(path: impl AsRef<Path>) -> std::io::Result<Vec<PathBuf>> {
+    collect_journal_files(path.as_ref())
+}
+
+fn collect_journal_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     let entries: Vec<_> = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
     let mut files = Vec::new();
 
