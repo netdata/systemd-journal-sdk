@@ -1256,8 +1256,10 @@ fn assert_lossy_raw_name_is_not_invented(entry: &Entry, lossy_name: &str) {
 
 fn assert_export_preserves_raw_byte_name(entry: &Entry, invalid_utf8_name: &[u8]) {
     let export = export_entry_bytes(&entry);
+    // A non-UTF-8 name makes the payload non-text, so it uses the binary form.
     let mut expected_export = invalid_utf8_name.to_vec();
-    expected_export.push(b'=');
+    expected_export.push(b'\n');
+    expected_export.extend_from_slice(&(b"invalid utf8".len() as u64).to_le_bytes());
     expected_export.extend_from_slice(b"invalid utf8\n");
     assert!(
         export

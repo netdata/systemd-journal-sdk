@@ -28,7 +28,10 @@ pub use explorer::{
     ExplorerQuery, ExplorerResult, ExplorerRow, ExplorerSampling, ExplorerStats,
     ExplorerStopReason, ExplorerStrategy,
 };
-pub use export::{export_entry, export_entry_bytes, format_entry_text, json_entry};
+pub use export::{
+    EntryEncoder, EntryOutputOptions, export_entry, export_entry_bytes, format_entry_text,
+    is_printable_text, json_entry,
+};
 pub use parse::{ParseError, ParsedCursor, parse_cursor, parse_match_bytes, parse_match_string};
 pub use sealed_verify::{verify_file, verify_file_with_key, verify_index};
 

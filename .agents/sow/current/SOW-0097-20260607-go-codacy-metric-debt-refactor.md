@@ -256,6 +256,26 @@ User decisions on 2026-11-07:
 6. Duplication gate: yes.
 7. CLI file split: separate pending SOW (SOW-0175).
 
+Implementation choices made during F1 (agent-chosen, pending user review):
+
+- F1 API: `EntryEncoder` (Go `NewEntryEncoder(EntryOutputOptions)` with
+  `AppendExport`, `AppendJSON`, `AppendJSONPretty`; Rust `EntryEncoder::new`
+  with `append_export`, `append_json`, `append_json_pretty`) plus the public
+  printable rule `IsPrintableText` / `is_printable_text`. The encoder follows
+  systemd v262 `output_export`/`output_json` exactly; both journalctl rewrites
+  render through it. JSON keys are sorted (systemd's order is hash-random).
+- Legacy `ExportEntry` / `export_entry_bytes` keep the SOW-0043 contract
+  (fields with invalid or non-UTF-8 names stay in the output) through an
+  internal flag, because systemd-exact export would drop them and that is a
+  user-visible change to a recorded contract. `JSONEntry` / `json_entry` and
+  the facade JSON keep full values (no 4096-byte null). Open user decision 8.
+
+Open user decisions:
+
+8. Should legacy `ExportEntry` / `export_entry_bytes` become systemd-exact
+   (stop at the first invalid field name, as `EntryEncoder` does) or keep the
+   SOW-0043 lossless contract? Current state: lossless kept.
+
 ## Plan
 
 See Implementation plan.
@@ -278,6 +298,26 @@ behavior, stop and ask the user.
 - Duplication scan and two read-only inventories; spot checks recorded in
   Assistant Understanding.
 - User decisions recorded; SOW activated.
+- R, G, I1-I6, F3, F6, F7, F5, F4 committed (see git log of the branch).
+- I7 not done: the CLIs follow systemd 255 verify-key handling, v262 parses
+  per file with different messages, and the v262 oracle lacks FSS; the SDK
+  parser matches neither, so the CLIs keep their own (decision 5 condition).
+- F1 + F8: shared fixture `tests/output/entry-output.journal.zst` with goldens
+  from the v262 oracle. Old Go and Rust journalctl differed from systemd in
+  all six golden cases (order, metadata, invalid-name stop, noncharacters,
+  null threshold); new SDK encoder and both CLIs match (export byte-exact,
+  JSON by value). The short/cat/verbose printable rule also moved to the SDK
+  owner: v262 prints noncharacter messages as blob data, the old Go CLI did
+  not; both now match.
+- F1 benchmark (100k-entry, 32-field synthetic file, best of 3, this host;
+  output byte-identical before/after): Go CLI export 5.18 s -> 4.56 s, json
+  7.93 s -> 6.38 s, json-pretty 9.19 s -> 6.78 s; Rust CLI export 2.01 s ->
+  1.65 s, json 2.66 s -> 2.09 s, json-pretty 2.63 s -> 2.11 s; systemd 255
+  export 1.42 s.
+- Query matrix vs v262 with `--skip-follow`: PASS (3514 cases). Two full runs
+  each failed one different follow case on timing (Rust SIGTERM exit with
+  correct output; Go live fixture writer not ready); rerun at final
+  validation.
 
 ## Validation
 

@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,7 +30,6 @@ type outputOptions struct {
 
 const (
 	printCharThreshold = 300
-	jsonThreshold      = 4096
 	defaultColumns     = 80
 )
 
@@ -68,6 +66,8 @@ type outputRenderer struct {
 	catFieldsValidated bool
 	columns            int
 	highlight          matchRange
+	encoder            *journal.EntryEncoder
+	buf                []byte
 }
 
 type deltaState struct {
@@ -85,7 +85,16 @@ func newOutputRenderer(options outputOptions) *outputRenderer {
 			columns = n
 		}
 	}
-	return &outputRenderer{options: options, catFieldsValidated: !options.outputFieldsSet, columns: columns}
+	encoderOptions := journal.EntryOutputOptions{ShowAll: options.showAll}
+	if options.outputFieldsSet {
+		encoderOptions.Fields = options.outputFields
+	}
+	return &outputRenderer{
+		options:            options,
+		catFieldsValidated: !options.outputFieldsSet,
+		columns:            columns,
+		encoder:            journal.NewEntryEncoder(encoderOptions),
+	}
 }
 
 func (r *outputRenderer) render(entry *journal.Entry) (string, error) {
@@ -274,7 +283,7 @@ func (r *outputRenderer) renderVerbose(entry *journal.Entry) (string, error) {
 		}
 		value := displayVerboseValue(field.name, field.value, r.options)
 		// Native resets after a printable multiline field's terminating newline.
-		printable := r.options.showAll || (r.options.fullWidth || len(field.name)+1+len(field.value) < printCharThreshold) && journalTextPrintable(field.value)
+		printable := r.options.showAll || (r.options.fullWidth || len(field.name)+1+len(field.value) < printCharThreshold) && journal.IsPrintableText(field.value, true)
 		if field.name == "CONFIG_FILE" && printable {
 			if linked := fileLink(field.value, r.options.urlify); linked != nil {
 				value = string(fullMessageWithNUL(linked, 4+len(field.name)+1))
@@ -290,15 +299,8 @@ func (r *outputRenderer) renderVerbose(entry *journal.Entry) (string, error) {
 }
 
 func (r *outputRenderer) renderExport(entry *journal.Entry) string {
-	var buf bytes.Buffer
-	for _, field := range metadataFields(entry) {
-		writeExportField(&buf, []byte(field.name), field.value)
-	}
-	for _, field := range selectedOutputFields(entry, r.options) {
-		writeExportField(&buf, []byte(field.name), field.value)
-	}
-	buf.WriteByte('\n')
-	return buf.String()
+	r.buf = r.encoder.AppendExport(r.buf[:0], entry)
+	return string(r.buf)
 }
 
 type jsonFrame int
@@ -311,17 +313,12 @@ const (
 )
 
 func (r *outputRenderer) renderJSON(entry *journal.Entry, frame jsonFrame) (string, error) {
-	object := jsonObject(entry, r.options)
-	var encoded []byte
-	var err error
 	if frame == jsonFramePretty {
-		encoded, err = marshalSystemdPrettyJSON(object)
+		r.buf = r.encoder.AppendJSONPretty(r.buf[:0], entry)
 	} else {
-		encoded, err = json.Marshal(object)
+		r.buf = r.encoder.AppendJSON(r.buf[:0], entry)
 	}
-	if err != nil {
-		return "", err
-	}
+	encoded := r.buf[:len(r.buf)-1]
 	if r.options.colors.level != 0 {
 		encoded = colorJSON(encoded)
 	}
@@ -429,7 +426,7 @@ func lastEntryValue(entry *journal.Entry, name string) ([]byte, bool) {
 
 func shortField(entry *journal.Entry, name string, options outputOptions) ([]byte, bool) {
 	value, ok := lastEntryValue(entry, name)
-	return value, ok && (options.showAll || len(value) < printCharThreshold && journalTextPrintable(value))
+	return value, ok && (options.showAll || len(value) < printCharThreshold && journal.IsPrintableText(value, true))
 }
 
 func shortHeader(entry *journal.Entry, options outputOptions, withUnit bool) (string, int) {
@@ -525,26 +522,19 @@ func displayMessage(entry *journal.Entry, options outputOptions, prefixColumns, 
 }
 
 func prepareShortMessage(value []byte, truncate bool) ([]byte, bool) {
-	printable := true
-	for i, ch := range string(value) {
+	for i, ch := range value {
 		if ch == '\x1b' || ch == '\t' || ch == '\r' {
 			value = stripShortControls(value, i)
 			if truncate {
 				value = truncateAtNewline(value)
 			}
-			return value, journalTextPrintable(value)
+			return value, journal.IsPrintableText(value, true)
 		}
 		if truncate && (ch == '\n' || ch == 0) {
-			return value[:i], printable
-		}
-		if ch < 0x20 && ch != '\n' || ch >= 0x7f && ch <= 0x9f {
-			printable = false
-		} else if ch == utf8.RuneError {
-			_, size := utf8.DecodeRune(value[i:])
-			printable = printable && size != 1
+			return value[:i], journal.IsPrintableText(value[:i], true)
 		}
 	}
-	return value, printable
+	return value, journal.IsPrintableText(value, true)
 }
 
 func stripShortControls(value []byte, start int) []byte {
@@ -684,7 +674,7 @@ func displayValue(value []byte, truncateNewline bool) string {
 }
 
 func displayVerboseValue(name string, value []byte, options outputOptions) string {
-	if !options.showAll && (!journalTextPrintable(value) || (!options.fullWidth && len(name)+1+len(value) >= printCharThreshold)) {
+	if !options.showAll && (!journal.IsPrintableText(value, true) || (!options.fullWidth && len(name)+1+len(value) >= printCharThreshold)) {
 		return blobData(len(value))
 	}
 	if bytes.ContainsAny(value, "\n\x00") {
@@ -872,20 +862,6 @@ func journalRuneWidth(ch rune) int {
 	return 1
 }
 
-func journalTextPrintable(value []byte) bool {
-	text := string(value)
-	if !utf8.ValidString(text) {
-		return false
-	}
-	for _, ch := range text {
-		cp := uint32(ch)
-		if (cp < 0x20 && ch != '\t' && ch != '\n') || (cp >= 0x7f && cp <= 0x9f) {
-			return false
-		}
-	}
-	return true
-}
-
 func blobData(size int) string {
 	return fmt.Sprintf("[%s blob data]", formatJournalBytes(uint64(size)))
 }
@@ -893,23 +869,6 @@ func blobData(size int) string {
 type outputField struct {
 	name  string
 	value []byte
-}
-
-func metadataFields(entry *journal.Entry) []outputField {
-	fields := []outputField{}
-	if entry.Cursor != "" {
-		fields = append(fields, outputField{"__CURSOR", []byte(entry.Cursor)})
-	}
-	fields = append(fields,
-		outputField{"__REALTIME_TIMESTAMP", []byte(fmt.Sprintf("%d", entry.Realtime))},
-		outputField{"__MONOTONIC_TIMESTAMP", []byte(fmt.Sprintf("%d", entry.Monotonic))},
-		outputField{"__SEQNUM", []byte(fmt.Sprintf("%d", entry.Seqnum))},
-	)
-	if seqnumID, _, _, _, err := journal.ParseCursor(entry.Cursor); err == nil && seqnumID != "" {
-		fields = append(fields, outputField{"__SEQNUM_ID", []byte(seqnumID)})
-	}
-	fields = append(fields, outputField{"_BOOT_ID", []byte(entry.BootID.String())})
-	return fields
 }
 
 func verboseFields(entry *journal.Entry, options outputOptions) []outputField {
@@ -923,36 +882,6 @@ func verboseFields(entry *journal.Entry, options outputOptions) []outputField {
 	return fields
 }
 
-func selectedOutputFields(entry *journal.Entry, options outputOptions) []outputField {
-	if options.outputFieldsSet {
-		fields := selectedNamedFields(entry, options.outputFields)
-		filtered := fields[:0]
-		for _, field := range fields {
-			if !isMetadataField(field.name) {
-				filtered = append(filtered, field)
-			}
-		}
-		return filtered
-	}
-	fields := make([]outputField, 0, len(entry.RawFields))
-	for _, field := range entry.RawFields {
-		if string(field.Name) == "_BOOT_ID" {
-			continue
-		}
-		fields = append(fields, outputField{name: string(field.Name), value: field.Value})
-	}
-	return fields
-}
-
-func isMetadataField(name string) bool {
-	switch name {
-	case "__CURSOR", "__REALTIME_TIMESTAMP", "__MONOTONIC_TIMESTAMP", "__SEQNUM", "__SEQNUM_ID", "_BOOT_ID":
-		return true
-	default:
-		return false
-	}
-}
-
 func selectedNamedFields(entry *journal.Entry, names []string) []outputField {
 	var fields []outputField
 	for _, name := range names {
@@ -961,66 +890,6 @@ func selectedNamedFields(entry *journal.Entry, names []string) []outputField {
 		}
 	}
 	return fields
-}
-
-func jsonObject(entry *journal.Entry, options outputOptions) map[string]any {
-	object := make(map[string]any)
-	for _, field := range metadataFields(entry) {
-		addJSONValue(object, field.name, field.value, options.showAll)
-	}
-	for _, field := range selectedOutputFields(entry, options) {
-		addJSONValue(object, field.name, field.value, options.showAll)
-	}
-	return object
-}
-
-func addJSONValue(object map[string]any, name string, value []byte, showAll bool) {
-	encoded := jsonValueForBytes(name, value, showAll)
-	if existing, ok := object[name]; ok {
-		if values, ok := existing.([]any); ok && len(values) > 0 {
-			// A scalar binary value is a number array, not repeated field values.
-			if _, binary := values[0].(int); !binary {
-				object[name] = append(values, encoded)
-				return
-			}
-		}
-		object[name] = []any{existing, encoded}
-		return
-	}
-	object[name] = encoded
-}
-
-func jsonValueForBytes(name string, value []byte, showAll bool) any {
-	if !showAll && len(name)+1+len(value) >= jsonThreshold {
-		return nil
-	}
-	if utf8.Valid(value) {
-		text := string(value)
-		printable := true
-		for _, ch := range text {
-			cp := uint32(ch)
-			if (cp < 0x20 && ch != '\t' && ch != '\n') || (cp >= 0x7f && cp <= 0x9f) {
-				printable = false
-				break
-			}
-		}
-		if printable {
-			return text
-		}
-	}
-	values := make([]any, 0, len(value))
-	for _, b := range value {
-		values = append(values, int(b))
-	}
-	return values
-}
-
-func marshalSystemdPrettyJSON(object map[string]any) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := writeSystemdPrettyJSONValue(&buf, object, 0); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
 
 func writeSystemdPrettyJSONValue(buf *bytes.Buffer, value any, depth int) error {
@@ -1088,36 +957,4 @@ func writeJSONTabs(buf *bytes.Buffer, depth int) {
 	for i := 0; i < depth; i++ {
 		buf.WriteByte('\t')
 	}
-}
-
-func writeExportField(buf *bytes.Buffer, name []byte, value []byte) {
-	text := make([]byte, 0, len(name)+1+len(value))
-	text = append(text, name...)
-	text = append(text, '=')
-	text = append(text, value...)
-	if journalBytesPrintable(text) {
-		buf.Write(text)
-		buf.WriteByte('\n')
-		return
-	}
-	buf.Write(name)
-	buf.WriteByte('\n')
-	var size [8]byte
-	binary.LittleEndian.PutUint64(size[:], uint64(len(value)))
-	buf.Write(size[:])
-	buf.Write(value)
-	buf.WriteByte('\n')
-}
-
-func journalBytesPrintable(value []byte) bool {
-	if !utf8.Valid(value) {
-		return false
-	}
-	for _, ch := range string(value) {
-		cp := uint32(ch)
-		if (cp < 0x20 && ch != '\t') || (cp >= 0x7f && cp <= 0x9f) {
-			return false
-		}
-	}
-	return true
 }

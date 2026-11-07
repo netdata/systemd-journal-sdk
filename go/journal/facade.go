@@ -1,7 +1,6 @@
 package journal
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"sort"
@@ -598,15 +597,9 @@ func SdJournalProcessOutput(j *sdJournal, entry *Entry) (string, error) {
 	case "export":
 		return ExportEntry(entry), nil
 	case "json":
-		result, err := JSONEntry(entry)
-		if err != nil {
-			return "", err
-		}
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			return "", err
-		}
-		return string(encoded) + "\n", nil
+		// Full values, as before; the SDK facade never truncates to null.
+		encoder := NewEntryEncoder(EntryOutputOptions{ShowAll: true})
+		return string(encoder.AppendJSON(nil, entry)), nil
 	default:
 		return formatEntryText(entry), nil
 	}

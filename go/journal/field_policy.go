@@ -86,21 +86,31 @@ func validateJournaldFieldNameBytes(name []byte, allowProtected bool) error {
 	if len(name) == 0 {
 		return errFieldName
 	}
-	if len(name) > 64 {
+	if !journaldFieldNameValid(name, allowProtected) {
 		return fmt.Errorf("%w: %q", errFieldName, string(name))
+	}
+	return nil
+}
+
+// journaldFieldNameValid is systemd's journal_field_valid: 1-64 bytes of
+// A-Z, 0-9 and '_', not starting with a digit, and starting with '_' only
+// when allowProtected.
+func journaldFieldNameValid(name []byte, allowProtected bool) bool {
+	if len(name) == 0 || len(name) > 64 {
+		return false
 	}
 	if name[0] == '_' && !allowProtected {
-		return fmt.Errorf("%w: %q", errFieldName, string(name))
+		return false
 	}
 	if name[0] >= '0' && name[0] <= '9' {
-		return fmt.Errorf("%w: %q", errFieldName, string(name))
+		return false
 	}
 	for i := 0; i < len(name); i++ {
 		if !validJournaldFieldNameByte(name[i]) {
-			return fmt.Errorf("%w: %q", errFieldName, string(name))
+			return false
 		}
 	}
-	return nil
+	return true
 }
 
 func validJournaldFieldNameByte(c byte) bool {

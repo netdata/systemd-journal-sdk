@@ -260,3 +260,45 @@ fn export_seqnum_id_matches_cursor() {
     }
     assert_eq!(checked, 3);
 }
+
+/// Export and JSON render as systemd v262 does (goldens in tests/output).
+#[test]
+fn entry_output_matches_systemd() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../tests/output");
+    let file = dir.join("entry-output.journal.zst");
+    let fields = "--output-fields=MESSAGE,MULTI,BIN,__CURSOR,_BOOT_ID,AFTER,LAST";
+    for (golden, args, json) in [
+        ("export.golden", vec!["-o", "export"], false),
+        ("export-fields.golden", vec!["-o", "export", fields], false),
+        ("json.golden", vec!["-o", "json"], true),
+        ("json-all.golden", vec!["-o", "json", "--all"], true),
+        ("json-fields.golden", vec!["-o", "json", fields], true),
+        ("json-pretty.golden", vec!["-o", "json-pretty"], true),
+    ] {
+        let mut cli_args = vec!["--file", file.to_str().unwrap()];
+        cli_args.extend(&args);
+        let out = run_cli(&cli_args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let want = std::fs::read(dir.join(golden)).expect("read golden");
+        if !json {
+            assert!(out.stdout == want, "{args:?}: output differs from {golden}");
+            continue;
+        }
+        // systemd orders keys by hash table iteration, so compare values.
+        let decode = |data: &[u8]| -> Vec<serde_json::Value> {
+            serde_json::Deserializer::from_slice(data)
+                .into_iter::<serde_json::Value>()
+                .map(|value| value.expect("decode JSON"))
+                .collect()
+        };
+        assert_eq!(
+            decode(&out.stdout),
+            decode(&want),
+            "{args:?}: JSON differs from {golden}"
+        );
+    }
+}

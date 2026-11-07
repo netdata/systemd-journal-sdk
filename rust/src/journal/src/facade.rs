@@ -1,8 +1,8 @@
 #![allow(non_snake_case)]
 
 use crate::{
-    BootInfo, DirectoryReader, Entry, FileReader, ReaderOptions, SdkError, export_entry_bytes,
-    format_entry_text, json_entry,
+    BootInfo, DirectoryReader, Entry, EntryEncoder, EntryOutputOptions, FileReader, ReaderOptions,
+    SdkError, export_entry_bytes, format_entry_text,
 };
 use std::fmt;
 use std::path::Path;
@@ -521,9 +521,13 @@ impl SdJournal {
             OutputMode::Default => Ok(format_entry_text(entry)),
             OutputMode::Export => Ok(export_entry_bytes(entry)),
             OutputMode::Json => {
-                let mut out = serde_json::to_vec(&json_entry(entry))
-                    .map_err(|err| Error::Other(err.to_string()))?;
-                out.push(b'\n');
+                // Full values, as before; the SDK facade never truncates to null.
+                let mut out = Vec::new();
+                EntryEncoder::new(EntryOutputOptions {
+                    fields: None,
+                    show_all: true,
+                })
+                .append_json(&mut out, entry);
                 Ok(out)
             }
         }
