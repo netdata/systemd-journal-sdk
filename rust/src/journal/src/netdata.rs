@@ -1,3 +1,4 @@
+use crate::directory::is_journal_file_name;
 use crate::explorer::{
     ExplorerSamplingState, empty_histogram_for_query, histogram_bucket_count_for_query,
 };
@@ -3421,19 +3422,21 @@ fn source_type_for_name(value: &str) -> Option<u64> {
 
 fn journal_file_source_type(path: &Path) -> u64 {
     let text = path.to_string_lossy();
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_OTHER;
-    };
+    // Names are bytes; classify them as bytes so non-UTF-8 names match Go.
+    let name = path
+        .file_name()
+        .map(|name| name.as_encoded_bytes())
+        .unwrap_or_default();
     if text.contains("/remote/") {
         return SOURCE_TYPE_ALL | SOURCE_TYPE_REMOTE_ALL;
     }
     if local_namespace_source_name(path).is_some() {
         return SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_NAMESPACE;
     }
-    if name.starts_with("system") {
+    if name.starts_with(b"system") {
         return SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_SYSTEM;
     }
-    if name.starts_with("user") {
+    if name.starts_with(b"user") {
         return SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_USER;
     }
     SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_OTHER
@@ -3448,7 +3451,8 @@ fn local_namespace_source_name(path: &Path) -> Option<String> {
 fn journal_file_exact_source_name(path: &Path) -> Option<String> {
     let text = path.to_string_lossy();
     if text.contains("/remote/") {
-        let name = path.file_name()?.to_str()?;
+        let name = path.file_name()?.to_string_lossy();
+        let name = name.as_ref();
         let source = name
             .split_once('@')
             .map(|(prefix, _)| prefix)
@@ -3980,17 +3984,6 @@ fn compare_journal_file_order(
         Direction::Backward => backward,
         Direction::Forward => backward.reverse(),
     }
-}
-
-fn is_journal_file_name(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name.ends_with(".journal")
-                || name.ends_with(".journal~")
-                || name.ends_with(".journal.zst")
-                || name.ends_with(".journal~.zst")
-        })
 }
 
 fn push_unique_many(target: &mut Vec<String>, values: &[String]) {
@@ -6798,6 +6791,34 @@ mod tests {
             ))
             .as_deref(),
             Some("remote-host-b")
+        );
+    }
+
+    /// File names are bytes on Unix; Go's Netdata layer lists and classifies
+    /// non-UTF-8 names, so this one must too.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_journal_names_are_listed_and_classified() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = TempDir::new().expect("tempdir");
+        // The temp directory name has a dot, which marks a namespace parent.
+        let machine = dir.path().join("machine");
+        std::fs::create_dir(&machine).expect("create machine dir");
+        let name = std::ffi::OsStr::from_bytes(b"system\xff.journal");
+        std::fs::write(machine.join(name), b"").expect("write file");
+
+        let collection = collect_journal_files(dir.path()).expect("collect files");
+        assert_eq!(collection.files, vec![machine.join(name)]);
+        assert_eq!(
+            journal_file_source_type(&collection.files[0]),
+            SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_SYSTEM
+        );
+
+        let remote = Path::new("/var/log/journal/remote")
+            .join(std::ffi::OsStr::from_bytes(b"remote-h\xffst@x.journal"));
+        assert_eq!(
+            journal_file_exact_source_name(&remote).as_deref(),
+            Some("remote-h\u{fffd}st")
         );
     }
 
