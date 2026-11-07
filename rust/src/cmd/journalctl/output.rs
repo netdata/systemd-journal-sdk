@@ -1180,7 +1180,9 @@ fn metadata_fields(entry: &Entry) -> Vec<(String, Vec<u8>)> {
         "__SEQNUM".to_string(),
         entry.seqnum.to_string().into_bytes(),
     ));
-    if let Some(seqnum_id) = cursor_component(&entry.cursor, "s") {
+    if let Ok((seqnum_id, ..)) = journal::parse_cursor(&entry.cursor)
+        && !seqnum_id.is_empty()
+    {
         out.push(("__SEQNUM_ID".to_string(), seqnum_id.into_bytes()));
     }
     out.push((
@@ -1188,13 +1190,6 @@ fn metadata_fields(entry: &Entry) -> Vec<(String, Vec<u8>)> {
         hex::encode(entry.boot_id).into_bytes(),
     ));
     out
-}
-
-fn cursor_component(cursor: &str, name: &str) -> Option<String> {
-    cursor.split(';').find_map(|part| {
-        let (key, value) = part.split_once('=')?;
-        (key == name).then(|| value.to_string())
-    })
 }
 
 fn verbose_fields<'a>(entry: &'a Entry, options: &OutputOptions) -> Vec<(String, &'a [u8])> {

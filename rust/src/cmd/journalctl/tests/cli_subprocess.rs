@@ -222,3 +222,41 @@ fn verify_directory_uses_systemd_layout() {
     want.sort();
     assert_eq!(got, want);
 }
+
+/// Export output carries `__SEQNUM_ID`, the seqnum ID component of the cursor.
+#[test]
+fn export_seqnum_id_matches_cursor() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../fixtures/systemd/test-data/no-rtc/system.journal.zst");
+    let out = run_cli(&[
+        "--file",
+        fixture.to_str().unwrap(),
+        "-o",
+        "export",
+        "-n",
+        "3",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut checked = 0;
+    for entry in text.split("\n\n").filter(|e| !e.trim().is_empty()) {
+        let field = |name: &str| {
+            entry
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{name}=")))
+                .map(str::to_string)
+        };
+        let cursor = field("__CURSOR").expect("cursor");
+        let from_cursor = cursor
+            .split(';')
+            .find_map(|part| part.strip_prefix("s="))
+            .expect("cursor seqnum id");
+        assert_eq!(field("__SEQNUM_ID").as_deref(), Some(from_cursor));
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}
