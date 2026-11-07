@@ -1,0 +1,34 @@
+name: Duplication gate
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  duplication:
+    name: No new production duplication
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+
+      - name: Gate unit tests
+        run: python3 -m unittest discover -s tests/duplication -p 'test_*.py' -v
+
+      - name: Check production duplication against the baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          export npm_config_cache="${RUNNER_TEMP}/npm-cache"
+          python3 tests/duplication/check_duplication.py \
+            --jscpd "npm exec --yes --package jscpd@5.3.1 -- jscpd"
