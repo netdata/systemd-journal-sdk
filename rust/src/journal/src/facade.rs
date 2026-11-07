@@ -4,9 +4,8 @@ use crate::{
     BootInfo, DirectoryReader, Entry, FileReader, ReaderOptions, SdkError, export_entry_bytes,
     format_entry_text, json_entry,
 };
-use std::collections::HashSet;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
@@ -186,30 +185,13 @@ pub fn SdJournalOpenFilePathsWithOptions<P: AsRef<Path>>(
     if paths.len() == 1 {
         return SdJournalOpenFilePathWithOptions(paths[0].as_ref(), flags, options);
     }
-    let paths = dedupe_open_file_paths(paths);
+    let paths = crate::unique_files(paths);
     if paths.len() == 1 {
         return SdJournalOpenFilePathWithOptions(&paths[0], flags, options);
     }
     Ok(SdJournal::new(ReaderKind::Directory(
         DirectoryReader::open_files_with_options(&paths, options).map_err(map_error)?,
     )))
-}
-
-fn dedupe_open_file_paths<P: AsRef<Path>>(paths: &[P]) -> Vec<PathBuf> {
-    let mut out = Vec::with_capacity(paths.len());
-    let mut seen = HashSet::with_capacity(paths.len());
-    for path in paths {
-        let path = path.as_ref();
-        let key = canonical_open_file_key(path);
-        if seen.insert(key) {
-            out.push(path.to_path_buf());
-        }
-    }
-    out
-}
-
-fn canonical_open_file_key(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub fn SdJournalClose(j: SdJournal) {

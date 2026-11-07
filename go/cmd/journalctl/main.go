@@ -935,7 +935,6 @@ func (f *cliFlags) input() (cliInput, error) {
 
 func resolveFileInputs(values []string) ([]string, error) {
 	var files []string
-	seen := make(map[string]struct{})
 	for _, value := range values {
 		if value == "-" {
 			return nil, portableUnsupported(
@@ -948,34 +947,12 @@ func resolveFileInputs(values []string) ([]string, error) {
 			return nil, fmt.Errorf("failed to add paths: %w", err)
 		}
 		if len(matches) == 0 {
-			files = appendUniqueFile(files, seen, value)
+			files = append(files, value)
 			continue
 		}
-		for _, match := range matches {
-			files = appendUniqueFile(files, seen, match)
-		}
+		files = append(files, matches...)
 	}
-	return files, nil
-}
-
-func appendUniqueFile(files []string, seen map[string]struct{}, path string) []string {
-	key := canonicalFileKey(path)
-	if _, ok := seen[key]; ok {
-		return files
-	}
-	seen[key] = struct{}{}
-	return append(files, path)
-}
-
-func canonicalFileKey(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
-	}
-	return abs
+	return journal.UniqueFiles(files), nil
 }
 
 func (f *cliFlags) timeBounds() (*uint64, *uint64, error) {

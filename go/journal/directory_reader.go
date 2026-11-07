@@ -95,6 +95,14 @@ func OpenFilesWithOptions(paths []string, opts ReaderOptions) (*DirectoryReader,
 	return newDirectoryReader(readers, false)
 }
 
+// UniqueFiles returns paths without the entries that name a file already
+// listed, keeping the first spelling. Two paths name the same file when they
+// resolve to the same absolute path after following symlinks; this is the rule
+// OpenFiles applies.
+func UniqueFiles(paths []string) []string {
+	return dedupeOpenFilePaths(paths)
+}
+
 func dedupeOpenFilePaths(paths []string) []string {
 	out := make([]string, 0, len(paths))
 	seen := make(map[string]struct{}, len(paths))

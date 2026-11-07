@@ -789,7 +789,6 @@ impl CliInput {
 
 fn resolve_file_inputs(values: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    let mut seen = HashSet::new();
     for value in values {
         if value == Path::new("-") {
             return Err(portable_unsupported(
@@ -799,21 +798,12 @@ fn resolve_file_inputs(values: &[PathBuf]) -> Result<Vec<PathBuf>> {
         }
         let matches = file_glob::expand(value)?;
         if matches.is_empty() {
-            push_unique_file(&mut files, &mut seen, value.clone());
+            files.push(value.clone());
         } else {
-            for path in matches {
-                push_unique_file(&mut files, &mut seen, path);
-            }
+            files.extend(matches);
         }
     }
-    Ok(files)
-}
-
-fn push_unique_file(files: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path: PathBuf) {
-    let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-    if seen.insert(key) {
-        files.push(path);
-    }
+    Ok(journal::unique_files(&files))
 }
 
 fn effective_quiet(args: &Args) -> bool {
@@ -4645,6 +4635,24 @@ mod tests {
 
         let resolved = resolve_file_inputs(&[path.clone(), path.clone()]).expect("resolve files");
         assert_eq!(resolved, vec![path]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_file_inputs_deduplicates_aliases() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("real.journal");
+        let other = dir.path().join("other.journal");
+        fs::write(&path, b"not-a-real-journal").expect("write fixture");
+        fs::write(&other, b"not-a-real-journal").expect("write fixture");
+        let link = dir.path().join("link.journal");
+        std::os::unix::fs::symlink(&path, &link).expect("symlink");
+        let dotted = dir.path().join(".").join("real.journal");
+
+        let resolved =
+            resolve_file_inputs(&[link.clone(), path.clone(), dotted, other.clone(), path])
+                .expect("resolve files");
+        assert_eq!(resolved, vec![link, other]);
     }
 
     #[test]

@@ -66,3 +66,27 @@ fn directory_files_missing_directory_fails() {
     let err = directory_files(dir.path().join("missing")).expect_err("missing directory");
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 }
+
+#[cfg(unix)]
+#[test]
+fn unique_files_keeps_first_spelling_of_each_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("real.journal");
+    let other = dir.path().join("other.journal");
+    std::fs::write(&path, b"").expect("write");
+    std::fs::write(&other, b"").expect("write");
+    let link = dir.path().join("link.journal");
+    std::os::unix::fs::symlink(&path, &link).expect("symlink");
+    let dotted = dir.path().join(".").join("real.journal");
+    let missing = dir.path().join("missing.journal");
+
+    let got = crate::unique_files(&[
+        link.clone(),
+        path,
+        dotted,
+        other.clone(),
+        missing.clone(),
+        missing.clone(),
+    ]);
+    assert_eq!(got, vec![link, other, missing]);
+}

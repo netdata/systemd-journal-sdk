@@ -1137,6 +1137,23 @@ pub fn directory_files(path: impl AsRef<Path>) -> std::io::Result<Vec<PathBuf>> 
     collect_journal_files(path.as_ref())
 }
 
+/// Returns `paths` without the entries that name a file already listed,
+/// keeping the first spelling. Two paths name the same file when they
+/// canonicalize to the same path; paths that cannot be canonicalized compare
+/// as written. This is the rule `SdJournalOpenFilePaths` applies.
+pub fn unique_files<P: AsRef<Path>>(paths: &[P]) -> Vec<PathBuf> {
+    let mut out = Vec::with_capacity(paths.len());
+    let mut seen = HashSet::with_capacity(paths.len());
+    for path in paths {
+        let path = path.as_ref();
+        let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if seen.insert(key) {
+            out.push(path.to_path_buf());
+        }
+    }
+    out
+}
+
 fn collect_journal_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     let entries: Vec<_> = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
     let mut files = Vec::new();

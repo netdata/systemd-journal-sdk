@@ -21,7 +21,7 @@ mod reader_helpers;
 mod sealed_verify;
 mod verify_graph;
 
-pub use directory::{DirectoryReader, directory_files};
+pub use directory::{DirectoryReader, directory_files, unique_files};
 pub use explorer::{
     ExplorerAnchor, ExplorerComparison, ExplorerControl, ExplorerFieldMode, ExplorerFilter,
     ExplorerFtsPattern, ExplorerHistogram, ExplorerHistogramBucket, ExplorerProgress,

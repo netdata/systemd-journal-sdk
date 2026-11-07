@@ -77,3 +77,26 @@ func TestDirectoryFilesMissingDirectoryFails(t *testing.T) {
 		t.Fatal("expected an error for a missing directory")
 	}
 }
+
+func TestUniqueFilesKeepsFirstSpellingOfEachFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "real.journal")
+	other := filepath.Join(dir, "other.journal")
+	for _, p := range []string{path, other} {
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(dir, "link.journal")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	dotted := filepath.Join(dir, ".") + string(filepath.Separator) + "real.journal"
+	missing := filepath.Join(dir, "missing.journal")
+
+	got := UniqueFiles([]string{link, path, dotted, other, missing, missing})
+	want := []string{link, other, missing}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("UniqueFiles = %q, want %q", got, want)
+	}
+}
