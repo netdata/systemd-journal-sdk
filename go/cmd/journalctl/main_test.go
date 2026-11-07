@@ -265,8 +265,6 @@ func (j *trackingCLIJournal) GetEntry() (*journal.Entry, error) {
 	j.getEntryCalls++
 	return nil, nil
 }
-func (j *trackingCLIJournal) SetOutputMode(string)                         {}
-func (j *trackingCLIJournal) ProcessOutput(*journal.Entry) (string, error) { return "", nil }
 func (j *trackingCLIJournal) ListBoots() ([]journal.BootInfo, error)       { return nil, nil }
 func (j *trackingCLIJournal) EnumerateFields() ([]string, error)           { return nil, nil }
 func (j *trackingCLIJournal) VisitUnique(string, func([]byte) error) error { return nil }

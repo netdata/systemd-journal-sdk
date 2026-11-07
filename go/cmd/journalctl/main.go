@@ -113,8 +113,6 @@ type cliJournal interface {
 	Next() (int, error)
 	Previous() (int, error)
 	GetEntry() (*journal.Entry, error)
-	SetOutputMode(string)
-	ProcessOutput(*journal.Entry) (string, error)
 	ListBoots() ([]journal.BootInfo, error)
 	EnumerateFields() ([]string, error)
 	VisitUnique(string, func([]byte) error) error
@@ -390,10 +388,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			}
 		}
 		all = all || *flags.noTail
-		return runFollow(input, operands, flags, *flags.output, sinceUsec, untilUsec, tail, all, stdout, postFilters, cursorControl, outputOptions)
+		return runFollow(input, operands, flags, sinceUsec, untilUsec, tail, all, stdout, postFilters, cursorControl, outputOptions)
 	}
 
-	j, err := openFilteredJournal(input, operands, flags, *flags.output, optionalStringFlag{})
+	j, err := openFilteredJournal(input, operands, flags, optionalStringFlag{})
 	if err != nil {
 		return err
 	}
@@ -1832,7 +1830,7 @@ func (f *cliFlags) effectiveQuiet() bool {
 	}
 }
 
-func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outputMode string, bootOverride optionalStringFlag) (cliJournal, error) {
+func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, bootOverride optionalStringFlag) (cliJournal, error) {
 	j, err := input.openJournalWithCursor(*flags.showCursorFlag || *flags.cursorFileFlag != "" || flags.seen["cursor-file"] || *flags.cursorFlag != "" || *flags.afterCursorFlag != "" || flags.seen["cursor"] || flags.seen["after-cursor"])
 	if err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)
@@ -1880,7 +1878,6 @@ func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outp
 		}
 	}
 
-	j.SetOutputMode(outputMode)
 	ok = true
 	return j, nil
 }
@@ -2937,8 +2934,8 @@ func resolveFollowBootFlag(input cliInput, flags *cliFlags) (optionalStringFlag,
 	return optionalStringFlag{set: true, value: bootID}, nil
 }
 
-func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, outputMode string, bootOverride optionalStringFlag, sinceUsec, untilUsec *uint64, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
-	j, err := openFilteredJournal(input, matches, flags, outputMode, bootOverride)
+func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, bootOverride optionalStringFlag, sinceUsec, untilUsec *uint64, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
+	j, err := openFilteredJournal(input, matches, flags, bootOverride)
 	if err != nil {
 		return err
 	}
@@ -2946,7 +2943,7 @@ func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, outpu
 	return nextEntries(j, sinceUsec, untilUsec, cursorSeek, nil, fn)
 }
 
-func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
+func runFollow(input cliInput, matches []string, flags *cliFlags, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
 	var lastSeenCursor string
 	var lastVisitedCursor string
 	renderer := newOutputRenderer(outputOptions)
@@ -2956,7 +2953,7 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 		return err
 	}
 	if noTail || cursorControl.seek != nil {
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
+		if err := forEachFollowEntry(input, matches, flags, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
 			lastVisitedCursor = entry.Cursor
 			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
 			if err != nil {
@@ -2976,7 +2973,7 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 	} else {
 		var selected []*journal.Entry
 		start := 0
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
+		if err := forEachFollowEntry(input, matches, flags, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
 			if entry.Cursor != "" {
 				lastVisitedCursor = entry.Cursor
 			}
@@ -3025,7 +3022,7 @@ func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode str
 			seek = &cursorSeek{cursor: lastVisitedCursor, after: true}
 		}
 		emitted := 0
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, seek, func(entry *journal.Entry) error {
+		if err := forEachFollowEntry(input, matches, flags, bootOverride, sinceUsec, untilUsec, seek, func(entry *journal.Entry) error {
 			lastVisitedCursor = entry.Cursor
 			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
 			if err != nil {

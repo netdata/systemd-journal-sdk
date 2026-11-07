@@ -19,12 +19,12 @@ use clap::builder::TypedValueParser;
 use clap::{Parser, ValueEnum};
 use journal::{
     Entry, FacadeError, FileHeader, FileReader, HeaderCompatibleFlags, HeaderIncompatibleFlags,
-    OutputMode, SdJournal, SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch,
+    SdJournal, SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch,
     SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor, SdJournalGetEntry,
     SdJournalNext, SdJournalOpenDirectoryPath, SdJournalOpenFilePaths, SdJournalPrevious,
     SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
-    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_bytes,
-    parse_match_string, verify_file, verify_file_with_key,
+    SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_bytes, parse_match_string,
+    verify_file, verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
 use regex::Regex;
@@ -436,30 +436,6 @@ enum OutputModeArg {
     WithUnit,
     /// Print the official output mode list and exit.
     Help,
-}
-
-impl From<OutputModeArg> for OutputMode {
-    fn from(value: OutputModeArg) -> Self {
-        match value {
-            OutputModeArg::Short
-            | OutputModeArg::ShortFull
-            | OutputModeArg::ShortIso
-            | OutputModeArg::ShortIsoPrecise
-            | OutputModeArg::ShortPrecise
-            | OutputModeArg::ShortMonotonic
-            | OutputModeArg::ShortDelta
-            | OutputModeArg::ShortUnix
-            | OutputModeArg::Verbose
-            | OutputModeArg::Cat
-            | OutputModeArg::WithUnit => Self::Default,
-            OutputModeArg::Export => Self::Export,
-            OutputModeArg::Json
-            | OutputModeArg::JsonPretty
-            | OutputModeArg::JsonSse
-            | OutputModeArg::JsonSeq => Self::Json,
-            OutputModeArg::Help => Self::Default,
-        }
-    }
 }
 
 fn main() {
@@ -1252,7 +1228,6 @@ fn open_filtered_journal(
         apply_cli_matches(&mut journal, args)?;
     }
     apply_matches(&mut journal, &args.matches)?;
-    SdJournalSetOutputMode(&mut journal, args.output.clone().into());
     Ok(journal)
 }
 
