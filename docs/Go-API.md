@@ -197,6 +197,60 @@ for {
 Directory reading discovers root journal files plus one machine-ID subdirectory
 level and merges files in journal order.
 
+## Render Entries As Export Or JSON
+
+`EntryEncoder` renders entries exactly as `journalctl -o export`, `-o json`
+and `-o json-pretty` do in systemd v262, including `--output-fields` and
+`--all`. It appends to a caller buffer, so one buffer serves many entries.
+
+<!-- verify-example: lang=go id=go-entry-encoder prelude=open-reader -->
+```go
+encoder := journal.NewEntryEncoder(journal.EntryOutputOptions{Fields: []string{"MESSAGE"}})
+var out []byte
+for {
+    ok, err := r.Step()
+    if err != nil {
+        return err
+    }
+    if !ok {
+        break
+    }
+    entry, err := r.GetEntry()
+    if err != nil {
+        return err
+    }
+    out = encoder.AppendJSON(out[:0], entry)
+    os.Stdout.Write(out)
+}
+```
+
+The metadata fields (`__CURSOR`, timestamps, `__SEQNUM`, `__SEQNUM_ID`,
+`_BOOT_ID`) are always printed. JSON keys are sorted; systemd's order is hash
+order. `IsPrintableText` is systemd's text-versus-binary rule used by these
+formats. `ExportEntry` and `JSONEntry` keep their older, lossless contract.
+
+## List Boots
+
+`ListBoots` lists every boot as `journalctl --list-boots` does, from the
+`_BOOT_ID` indexes, without changing matches or the read position.
+
+<!-- verify-example: lang=go id=go-list-boots -->
+```go
+dr, err := journal.OpenDirectory("/var/log/journal")
+if err != nil {
+    return err
+}
+defer dr.Close()
+
+boots, err := dr.ListBoots()
+if err != nil {
+    return err
+}
+for _, boot := range boots {
+    fmt.Println(boot.Index, boot.BootID, boot.FirstEntry, boot.LastEntry)
+}
+```
+
 ## Use Snapshot Bounds For Query Workloads
 
 The default Go reader uses mmap-backed live bounds on supported Unix-family and

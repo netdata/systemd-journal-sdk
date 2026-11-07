@@ -244,6 +244,19 @@ Platform behavior:
   still pass Linux stock `journalctl --verify --file` and repository
   interoperability checks before production compatibility is claimed.
 
+Journal behavior helpers, also used by the journalctl rewrites instead of
+their own copies:
+
+- `directory_files(path)` lists the journal files of a directory as systemd
+  does; `unique_files(paths)` removes repeated spellings of the same file,
+  keeping the first.
+- `EntryEncoder` renders systemd export and JSON output;
+  `is_printable_text` is systemd's text-versus-binary rule.
+- `FileReader::list_boots` / `DirectoryReader::list_boots` list boots as
+  `journalctl --list-boots` does.
+- `HeaderCompatibleFlags` / `HeaderIncompatibleFlags` name the header flag
+  bits.
+
 Reader limitations:
 
 - `FileReader::list_boots`, `DirectoryReader::list_boots` and

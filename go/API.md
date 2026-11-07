@@ -147,6 +147,21 @@ refreshes/remaps the file, or closes. Callback payload slices passed to
 guarantee. Use `CollectEntryPayloads`, `GetEntryPayload`, `GetRaw`,
 `GetRawValues`, or an explicit copy when longer ownership is required.
 
+## Journal Behavior Helpers
+
+The journalctl rewrites use these SDK functions instead of their own copies;
+other callers may use them too:
+
+- `DirectoryFiles(path)` lists the journal files of a directory as systemd
+  does (root plus one machine-ID subdirectory level); `UniqueFiles(paths)`
+  removes repeated spellings of the same file, keeping the first.
+- `NewEntryEncoder` renders systemd export and JSON output; `IsPrintableText`
+  is systemd's text-versus-binary rule.
+- `Reader.ListBoots` / `DirectoryReader.ListBoots` list boots as
+  `journalctl --list-boots` does.
+- `HeaderCompatible*` / `HeaderIncompatible*` name the header flag bits.
+- `SipHash24` is the SipHash-2-4 systemd uses for keyed hashes.
+
 ## Explorer And Netdata Function APIs
 
 `Reader.Explore`, `Reader.ExploreWithStrategy`, and

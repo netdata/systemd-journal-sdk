@@ -1059,6 +1059,19 @@ Current Go reader feature slice:
 - systemd-compatible export output for binary fields using size-prefixed field
   values and blank-line entry separators;
 - systemd-compatible JSON output for duplicate fields and binary values;
+- `EntryEncoder` renders systemd v262 `output_export`/`output_json` exactly
+  (metadata first, DATA in on-disk order, export stops at a payload without
+  `=` or with an invalid field name, JSON skips such fields, 4096-byte JSON
+  `null` threshold unless `ShowAll`, systemd's printable rule); JSON keys are
+  sorted because systemd's order is hash order. Both journalctl rewrites
+  render through it. `ExportEntry` and `JSONEntry` keep the older lossless
+  contract (invalid and non-UTF-8 names kept, full JSON values);
+- boot listing (`Reader.ListBoots`, `DirectoryReader.ListBoots`,
+  `SdJournalListBoots`) reports every boot from the `_BOOT_ID` DATA entry
+  arrays, merged across files in directory order and ordered by last entry,
+  first entry and ID, with an entry-header scan for files without `_BOOT_ID`
+  DATA; only canonical lowercase `_BOOT_ID` values name a boot; it does not
+  change matches or position. Both journalctl rewrites use it;
 - file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
@@ -1197,9 +1210,16 @@ Current Rust reader feature slice:
   `Entry::get_raw()`, and `Entry::get_raw_values()`. `Entry.fields` and
   `Entry.field_values` remain UTF-8 string-keyed convenience maps and do not
   synthesize lossy names for non-UTF8 RAW field names;
-- export byte output preserves non-UTF8 RAW field names; JSON output, field
+- `export_entry_bytes` preserves non-UTF8 RAW field names; JSON output, field
   enumeration, unique queries, and `get_data` facade helpers remain UTF-8
   field-name surfaces;
+- `EntryEncoder` renders systemd v262 export and JSON exactly, with the same
+  contract as the Go `EntryEncoder`; both journalctl rewrites render through
+  it. `export_entry_bytes` and `json_entry` keep the older lossless contract;
+- boot listing (`FileReader::list_boots`, `DirectoryReader::list_boots`,
+  `SdJournalListBoots`) follows the Go boot-listing contract;
+  `DirectoryReader::list_boots` and `SdJournal::list_boots` cannot return an
+  error and fall back to one boot per file header when files cannot be read;
 - file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
