@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -3086,12 +3085,10 @@ func runVerify(input cliInput, verifyKey string, hasVerifyKey, quiet bool, stdou
 }
 
 func printNewID128(stdout io.Writer) error {
-	var id [16]byte
-	if _, err := rand.Read(id[:]); err != nil {
+	id, err := journal.NewUUID()
+	if err != nil {
 		return fmt.Errorf("generate ID128: %w", err)
 	}
-	id[6] = (id[6] & 0x0f) | 0x40
-	id[8] = (id[8] & 0x3f) | 0x80
 
 	simple := hex.EncodeToString(id[:])
 	uuidText := fmt.Sprintf("%s-%s-%s-%s-%s", simple[0:8], simple[8:12], simple[12:16], simple[16:20], simple[20:32])
