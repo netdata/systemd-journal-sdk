@@ -402,7 +402,7 @@ impl OwnedChain {
 
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
+            .map(|duration| duration.as_micros())
             .unwrap_or(0);
         let source_text = file.path();
         let stem = source_text.strip_suffix(".journal").unwrap_or(source_text);

@@ -1,5 +1,5 @@
-use crate::repository::error::Result;
 use crate::repository::RepositoryError;
+use crate::repository::error::Result;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
@@ -84,6 +84,9 @@ impl PartialOrd for Status {
     }
 }
 
+/// systemd's `VALID_REALTIME` bound (journal-file.h).
+const DISPOSED_MICROS_LIMIT: u64 = 1 << 55;
+
 impl Status {
     /// Parse the journal file status from the end of the path, returning the status and the remaining path
     pub(super) fn parse(path: &str) -> Option<(Self, &str)> {
@@ -123,7 +126,12 @@ impl Status {
     fn parse_disposed_stem(stem: &str) -> Option<(Self, &str)> {
         let (prefix, suffix) = stem.rsplit_once('@')?;
         let (timestamp, number) = suffix.rsplit_once('-')?;
-        let timestamp = u64::from_str_radix(timestamp, 16).ok()?;
+        let mut timestamp = u64::from_str_radix(timestamp, 16).ok()?;
+        // Earlier SDK releases wrote nanoseconds. No valid realtime reaches
+        // systemd's 2^55 microsecond limit, so larger values are nanoseconds.
+        if timestamp >= DISPOSED_MICROS_LIMIT {
+            timestamp /= 1000;
+        }
         let number = u64::from_str_radix(number, 16).ok()?;
         Some((Status::Disposed { timestamp, number }, prefix))
     }
@@ -542,6 +550,37 @@ mod tests {
         );
         assert_eq!(file.origin().source, Source::System);
         assert_eq!(file.status(), &Status::Active);
+    }
+
+    #[test]
+    fn disposed_timestamps_are_microseconds() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // systemd names disposed files with CLOCK_REALTIME microseconds.
+        let micros = dir
+            .path()
+            .join("system@00060a1b2c3d4e5f-0000000000000001.journal~");
+        let file = File::from_path(&micros).expect("disposed path parses");
+        assert_eq!(
+            file.status(),
+            &Status::Disposed {
+                timestamp: 0x0006_0a1b_2c3d_4e5f,
+                number: 1
+            }
+        );
+
+        // Earlier SDK releases wrote nanoseconds; read them as microseconds so
+        // age retention and ordering treat old and new files alike.
+        let nanos = dir
+            .path()
+            .join("system@178a1b2c3d4e5f60-0000000000000002.journal~");
+        let file = File::from_path(&nanos).expect("legacy disposed path parses");
+        assert_eq!(
+            file.status(),
+            &Status::Disposed {
+                timestamp: 0x178a_1b2c_3d4e_5f60 / 1000,
+                number: 2
+            }
+        );
     }
 
     #[test]
