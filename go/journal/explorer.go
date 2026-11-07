@@ -2909,6 +2909,10 @@ func parseSourceRealtime(value []byte) *uint64 {
 	return &parsed
 }
 
+// effectiveRealtimeFromScan applies the Netdata systemd-journal plugin rule: a
+// non-zero _SOURCE_REALTIME_TIMESTAMP earlier than the commit time wins. The
+// journalctl rewrites follow systemd's display rule instead; the two contracts
+// differ on purpose, so do not merge them.
 func effectiveRealtimeFromScan(sourceRealtime *uint64, commitRealtime uint64) uint64 {
 	if sourceRealtime != nil && *sourceRealtime != 0 && *sourceRealtime < commitRealtime {
 		return *sourceRealtime
