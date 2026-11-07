@@ -408,8 +408,8 @@ fn directory_reader_uses_sequential_path_for_non_overlapping_files() {
     assert!(!reader.previous().expect("start"));
 }
 
-mod facade;
 mod directory_files;
+mod facade;
 mod verification;
 
 mod indexed_snapshot;
