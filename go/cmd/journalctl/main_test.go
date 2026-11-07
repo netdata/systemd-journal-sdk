@@ -442,7 +442,7 @@ func TestRunVerifyKeyEmptySeed(t *testing.T) {
 
 func TestRunVerifySealedWithoutKeyRequiresKey(t *testing.T) {
 	path := writeCLIJournal(t, []cliEntry{{message: "sealed-without-key", priority: "6"}})
-	patchCompatibleFlags(t, path, compatibleSealed)
+	patchCompatibleFlags(t, path, journal.HeaderCompatibleSealed)
 
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"--verify", "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {

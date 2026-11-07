@@ -32,15 +32,6 @@ func noDataError(quiet bool, message string) error {
 	return errors.New(message)
 }
 
-// HEADER_COMPATIBLE_SEALED from systemd journal-def.h
-const compatibleSealed = 1
-const compatibleTailEntryBootID = 1 << 1
-const compatibleSealedContinuous = 1 << 2
-const incompatibleCompressedXZ = 1 << 0
-const incompatibleCompressedLZ4 = 1 << 1
-const incompatibleKeyedHash = 1 << 2
-const incompatibleCompressedZSTD = 1 << 3
-const incompatibleCompact = 1 << 4
 const hashItemSizeBytes = 16
 const journalHeaderSize = 272
 const journalHeaderNEntriesOffset = 152
@@ -3691,16 +3682,16 @@ func headerStateName(state uint8) string {
 
 func compatibleFlagText(flags uint32) string {
 	var parts []string
-	if flags&compatibleSealed != 0 {
+	if flags&journal.HeaderCompatibleSealed != 0 {
 		parts = append(parts, "SEALED")
 	}
-	if flags&compatibleSealedContinuous != 0 {
+	if flags&journal.HeaderCompatibleSealedContinuous != 0 {
 		parts = append(parts, "SEALED_CONTINUOUS")
 	}
-	if flags&compatibleTailEntryBootID != 0 {
+	if flags&journal.HeaderCompatibleTailEntryBootID != 0 {
 		parts = append(parts, "TAIL_ENTRY_BOOT_ID")
 	}
-	if flags&^(compatibleSealed|compatibleSealedContinuous|compatibleTailEntryBootID) != 0 {
+	if flags&^(journal.HeaderCompatibleSealed|journal.HeaderCompatibleSealedContinuous|journal.HeaderCompatibleTailEntryBootID) != 0 {
 		parts = append(parts, "???")
 	}
 	if len(parts) == 0 {
@@ -3711,22 +3702,22 @@ func compatibleFlagText(flags uint32) string {
 
 func incompatibleFlagText(flags uint32) string {
 	var parts []string
-	if flags&incompatibleCompressedXZ != 0 {
+	if flags&journal.HeaderIncompatibleCompressedXZ != 0 {
 		parts = append(parts, "COMPRESSED-XZ")
 	}
-	if flags&incompatibleCompressedLZ4 != 0 {
+	if flags&journal.HeaderIncompatibleCompressedLZ4 != 0 {
 		parts = append(parts, "COMPRESSED-LZ4")
 	}
-	if flags&incompatibleCompressedZSTD != 0 {
+	if flags&journal.HeaderIncompatibleCompressedZSTD != 0 {
 		parts = append(parts, "COMPRESSED-ZSTD")
 	}
-	if flags&incompatibleKeyedHash != 0 {
+	if flags&journal.HeaderIncompatibleKeyedHash != 0 {
 		parts = append(parts, "KEYED-HASH")
 	}
-	if flags&incompatibleCompact != 0 {
+	if flags&journal.HeaderIncompatibleCompact != 0 {
 		parts = append(parts, "COMPACT")
 	}
-	if flags&^(incompatibleCompressedXZ|incompatibleCompressedLZ4|incompatibleCompressedZSTD|incompatibleKeyedHash|incompatibleCompact) != 0 {
+	if flags&^(journal.HeaderIncompatibleCompressedXZ|journal.HeaderIncompatibleCompressedLZ4|journal.HeaderIncompatibleCompressedZSTD|journal.HeaderIncompatibleKeyedHash|journal.HeaderIncompatibleCompact) != 0 {
 		parts = append(parts, "???")
 	}
 	if len(parts) == 0 {
@@ -3936,7 +3927,7 @@ func isFileSealed(path string) (bool, error) {
 		return false, err
 	}
 	defer r.Close()
-	return r.Header().CompatibleFlags()&compatibleSealed != 0, nil
+	return r.Header().CompatibleFlags()&journal.HeaderCompatibleSealed != 0, nil
 }
 
 func hasStringFlag(args []string, name string) bool {

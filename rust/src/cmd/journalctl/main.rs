@@ -18,13 +18,13 @@ use anyhow::{Result, anyhow};
 use clap::builder::TypedValueParser;
 use clap::{Parser, ValueEnum};
 use journal::{
-    Entry, FacadeError, FileHeader, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
-    SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalFlushMatches,
-    SdJournalGetCursor, SdJournalGetEntry, SdJournalNext, SdJournalOpenDirectoryPath,
-    SdJournalOpenFilePaths, SdJournalPrevious, SdJournalSeekCursorDirection, SdJournalSeekHead,
-    SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
-    SdJournalVisitUniqueValues, parse_match_bytes, parse_match_string, verify_file,
-    verify_file_with_key,
+    Entry, FacadeError, FileHeader, FileReader, HeaderCompatibleFlags, HeaderIncompatibleFlags,
+    OutputMode, SdJournal, SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch,
+    SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor, SdJournalGetEntry,
+    SdJournalNext, SdJournalOpenDirectoryPath, SdJournalOpenFilePaths, SdJournalPrevious,
+    SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
+    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_bytes,
+    parse_match_string, verify_file, verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
 use regex::Regex;
@@ -38,15 +38,14 @@ use std::process::exit;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// HEADER_COMPATIBLE_SEALED from systemd journal-def.h
-const COMPATIBLE_SEALED: u32 = 1;
-const COMPATIBLE_TAIL_ENTRY_BOOT_ID: u32 = 1 << 1;
-const COMPATIBLE_SEALED_CONTINUOUS: u32 = 1 << 2;
-const INCOMPATIBLE_COMPRESSED_XZ: u32 = 1 << 0;
-const INCOMPATIBLE_COMPRESSED_LZ4: u32 = 1 << 1;
-const INCOMPATIBLE_KEYED_HASH: u32 = 1 << 2;
-const INCOMPATIBLE_COMPRESSED_ZSTD: u32 = 1 << 3;
-const INCOMPATIBLE_COMPACT: u32 = 1 << 4;
+const COMPATIBLE_SEALED: u32 = HeaderCompatibleFlags::Sealed as u32;
+const COMPATIBLE_TAIL_ENTRY_BOOT_ID: u32 = HeaderCompatibleFlags::TailEntryBootId as u32;
+const COMPATIBLE_SEALED_CONTINUOUS: u32 = HeaderCompatibleFlags::SealedContinuous as u32;
+const INCOMPATIBLE_COMPRESSED_XZ: u32 = HeaderIncompatibleFlags::CompressedXz as u32;
+const INCOMPATIBLE_COMPRESSED_LZ4: u32 = HeaderIncompatibleFlags::CompressedLz4 as u32;
+const INCOMPATIBLE_KEYED_HASH: u32 = HeaderIncompatibleFlags::KeyedHash as u32;
+const INCOMPATIBLE_COMPRESSED_ZSTD: u32 = HeaderIncompatibleFlags::CompressedZstd as u32;
+const INCOMPATIBLE_COMPACT: u32 = HeaderIncompatibleFlags::Compact as u32;
 const HASH_ITEM_SIZE: u64 = 16;
 const JOURNAL_HEADER_SIZE: u64 = 272;
 const JOURNAL_HEADER_N_ENTRIES_OFFSET: u64 = 152;

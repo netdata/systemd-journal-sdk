@@ -79,6 +79,21 @@ const (
 	objectTypeEntryArray     = 6
 )
 
+// Header flags, as defined by systemd journal-def.h. Compatible flags are
+// returned by the reader header's CompatibleFlags, incompatible flags by
+// IncompatibleFlags.
+const (
+	HeaderCompatibleSealed           = compatibleSealed
+	HeaderCompatibleTailEntryBootID  = compatibleTailEntryBootID
+	HeaderCompatibleSealedContinuous = compatibleSealedContinuous
+
+	HeaderIncompatibleCompressedXZ   = incompatibleCompressedXZ
+	HeaderIncompatibleCompressedLZ4  = incompatibleCompressedLZ4
+	HeaderIncompatibleKeyedHash      = incompatibleKeyedHash
+	HeaderIncompatibleCompressedZSTD = incompatibleCompressedZSTD
+	HeaderIncompatibleCompact        = incompatibleCompact
+)
+
 const (
 	stateOffline  = 0
 	stateOnline   = 1

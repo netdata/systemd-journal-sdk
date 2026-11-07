@@ -69,7 +69,8 @@ pub use journal_core::error::JournalError;
 use journal_core::file::ExperimentalMmapStrategy;
 pub use journal_core::file::{
     BucketUtilization, Compression, Direction, EntryItemsType, FieldNamePolicy, HashableObject,
-    JournalFile, JournalReader, Location, Mmap, RecoveryReason, RecoveryStatus, WindowManagerStats,
+    HeaderCompatibleFlags, HeaderIncompatibleFlags, JournalFile, JournalReader, Location, Mmap,
+    RecoveryReason, RecoveryStatus, WindowManagerStats,
 };
 use journal_core::file::{CurrentRowMetadata, CurrentRowView};
 pub use journal_log_writer::{
