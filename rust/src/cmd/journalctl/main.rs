@@ -21,10 +21,10 @@ use journal::{
     Entry, FacadeError, FileHeader, FileReader, HeaderCompatibleFlags, HeaderIncompatibleFlags,
     SdJournal, SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch,
     SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor, SdJournalGetEntry,
-    SdJournalNext, SdJournalOpenDirectoryPath, SdJournalOpenFilePaths, SdJournalPrevious,
-    SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
-    SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_bytes, parse_match_string,
-    verify_file, verify_file_with_key,
+    SdJournalListBoots, SdJournalNext, SdJournalOpenDirectoryPath, SdJournalOpenFilePaths,
+    SdJournalPrevious, SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec,
+    SdJournalSeekTail, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_bytes,
+    parse_match_string, verify_file, verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
 use regex::Regex;
@@ -3754,112 +3754,16 @@ struct BootEntry {
 }
 
 fn collect_boots(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
-    match collect_boots_indexed(journal) {
-        Ok(boots) if !boots.is_empty() => return Ok(boots),
-        Ok(_) | Err(_) => {
-            SdJournalFlushMatches(journal).map_err(|err| anyhow!("flush boot matches: {err}"))?;
-        }
-    }
-    collect_boots_by_scan(journal)
-}
-
-fn collect_boots_indexed(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
-    use std::collections::HashSet;
-
-    let mut seen = HashSet::new();
-    let mut boot_ids = Vec::new();
-    SdJournalVisitUniqueValues(journal, "_BOOT_ID", |value| {
-        let Ok(text) = std::str::from_utf8(value) else {
-            return Ok(());
-        };
-        let Some(id) = parse_boot_id_prefix(text) else {
-            return Ok(());
-        };
-        if id.chars().all(|ch| ch == '0') || !seen.insert(id.clone()) {
-            return Ok(());
-        }
-        boot_ids.push(id);
-        Ok(())
-    })
-    .map_err(|err| anyhow!("query _BOOT_ID values: {err}"))?;
-
-    let mut out = Vec::with_capacity(boot_ids.len());
-    for boot_id in boot_ids {
-        SdJournalFlushMatches(journal).map_err(|err| anyhow!("flush boot matches: {err}"))?;
-        add_match_pair(journal, "_BOOT_ID", &boot_id)?;
-        SdJournalAddConjunction(journal).map_err(|err| anyhow!("add boot conjunction: {err}"))?;
-
-        SdJournalSeekHead(journal).map_err(|err| anyhow!("seek boot head: {err}"))?;
-        if SdJournalNext(journal).map_err(|err| anyhow!("next boot entry: {err}"))? == 0 {
-            continue;
-        }
-        let first = SdJournalGetEntry(journal)
-            .map_err(|err| anyhow!("get first boot entry: {err}"))?
-            .realtime;
-
-        SdJournalSeekTail(journal).map_err(|err| anyhow!("seek boot tail: {err}"))?;
-        if SdJournalPrevious(journal).map_err(|err| anyhow!("previous boot entry: {err}"))? == 0 {
-            continue;
-        }
-        let last = SdJournalGetEntry(journal)
-            .map_err(|err| anyhow!("get last boot entry: {err}"))?
-            .realtime;
-
-        out.push(BootEntry {
-            index: 0,
-            boot_id,
-            first_entry: first,
-            last_entry: last,
-        });
-    }
-    SdJournalFlushMatches(journal).map_err(|err| anyhow!("flush boot matches: {err}"))?;
-    out.sort_by(|a, b| {
-        a.last_entry
-            .cmp(&b.last_entry)
-            .then_with(|| a.first_entry.cmp(&b.first_entry))
-            .then_with(|| a.boot_id.cmp(&b.boot_id))
-    });
-    Ok(out)
-}
-
-fn collect_boots_by_scan(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
-    use std::collections::HashMap;
-
-    SdJournalSeekHead(journal).map_err(|err| anyhow!("seek head: {err}"))?;
-    let mut boots: HashMap<String, BootEntry> = HashMap::new();
-    loop {
-        match SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? {
-            0 => break,
-            _ => {
-                let entry =
-                    SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
-                let boot_id = hex::encode(entry.boot_id);
-                if boot_id.chars().all(|ch| ch == '0') {
-                    continue;
-                }
-                boots
-                    .entry(boot_id.clone())
-                    .and_modify(|boot| {
-                        boot.first_entry = boot.first_entry.min(entry.realtime);
-                        boot.last_entry = boot.last_entry.max(entry.realtime);
-                    })
-                    .or_insert(BootEntry {
-                        index: 0,
-                        boot_id,
-                        first_entry: entry.realtime,
-                        last_entry: entry.realtime,
-                    });
-            }
-        }
-    }
-    let mut out: Vec<_> = boots.into_values().collect();
-    out.sort_by(|a, b| {
-        a.last_entry
-            .cmp(&b.last_entry)
-            .then_with(|| a.first_entry.cmp(&b.first_entry))
-            .then_with(|| a.boot_id.cmp(&b.boot_id))
-    });
-    Ok(out)
+    let boots = SdJournalListBoots(journal).map_err(|err| anyhow!("list boots: {err}"))?;
+    Ok(boots
+        .into_iter()
+        .map(|boot| BootEntry {
+            index: boot.index as isize,
+            boot_id: boot.boot_id,
+            first_entry: boot.first_entry as u64,
+            last_entry: boot.last_entry as u64,
+        })
+        .collect())
 }
 
 fn select_boot_rows(boots: &[BootEntry], args: &Args) -> Result<Vec<BootEntry>> {
@@ -3990,26 +3894,6 @@ fn parse_invocation_descriptor(descriptor: &str) -> Result<Option<(String, isize
     parse_boot_descriptor(descriptor)
         .map(Some)
         .map_err(|_| anyhow!("failed to parse invocation descriptor: {descriptor}"))
-}
-
-fn parse_boot_id_prefix(value: &str) -> Option<String> {
-    if value.len() >= 32 && value[..32].bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Some(value[..32].to_ascii_lowercase());
-    }
-    if value.len() >= 36 {
-        let candidate = &value[..36];
-        let valid = candidate.bytes().enumerate().all(|(idx, b)| {
-            if matches!(idx, 8 | 13 | 18 | 23) {
-                b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        });
-        if valid {
-            return Some(candidate.replace('-', "").to_ascii_lowercase());
-        }
-    }
-    None
 }
 
 fn parse_duration_usec_allow_zero(value: &str) -> Result<u64> {

@@ -5,6 +5,7 @@
 //! the imported implementation and adds byte-safe entries, directory reading,
 //! export/JSON formatting, and a libsystemd-style facade.
 
+mod boots;
 mod indexed_snapshot;
 pub use indexed_snapshot::{
     CapturedValue, IndexedSnapshot, IndexedSnapshotOptions, SnapshotControl, SnapshotEntry,

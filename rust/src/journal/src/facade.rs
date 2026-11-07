@@ -497,9 +497,11 @@ impl SdJournal {
         .map_err(map_error)
     }
 
+    /// Lists every boot, oldest first, as `journalctl --list-boots` does. If
+    /// the files cannot be read it falls back to one boot per file header.
     pub fn list_boots(&self) -> Vec<BootInfo> {
         match &self.reader {
-            ReaderKind::File(reader) => {
+            ReaderKind::File(reader) => reader.list_boots().unwrap_or_else(|_| {
                 let header = reader.cached_header().header;
                 vec![BootInfo {
                     index: 0,
@@ -507,8 +509,15 @@ impl SdJournal {
                     first_entry: header.head_entry_realtime as i64,
                     last_entry: header.tail_entry_realtime as i64,
                 }]
-            }
+            }),
             ReaderKind::Directory(reader) => reader.list_boots(),
+        }
+    }
+
+    fn try_list_boots(&self) -> crate::Result<Vec<BootInfo>> {
+        match &self.reader {
+            ReaderKind::File(reader) => reader.list_boots(),
+            ReaderKind::Directory(reader) => reader.try_list_boots(),
         }
     }
 
@@ -658,7 +667,7 @@ pub fn SdJournalEnumerateField(j: &mut SdJournal) -> std::result::Result<Option<
 }
 
 pub fn SdJournalListBoots(j: &mut SdJournal) -> std::result::Result<Vec<BootInfo>, Error> {
-    Ok(j.list_boots())
+    j.try_list_boots().map_err(map_error)
 }
 
 pub fn SdJournalQueryUnique(

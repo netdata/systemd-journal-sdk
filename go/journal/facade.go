@@ -617,8 +617,8 @@ func formatEntryText(entry *Entry) string {
 }
 
 func SdJournalListBoots(j *sdJournal) ([]BootInfo, error) {
-	if dr, ok := j.reader.(*DirectoryReader); ok {
-		return dr.ListBoots()
+	if lister, ok := j.reader.(interface{ ListBoots() ([]BootInfo, error) }); ok {
+		return lister.ListBoots()
 	}
 	return nil, ErrUnsupported
 }

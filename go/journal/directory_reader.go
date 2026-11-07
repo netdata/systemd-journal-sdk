@@ -1201,6 +1201,10 @@ func (r *Reader) currentDirectoryEntryKey() (directoryEntryKey, error) {
 	if err != nil {
 		return directoryEntryKey{}, err
 	}
+	return r.entryKeyAt(offset)
+}
+
+func (r *Reader) entryKeyAt(offset uint64) (directoryEntryKey, error) {
 	hdr, err := r.readEntryHeaderAt(offset)
 	if err != nil {
 		return directoryEntryKey{}, err
@@ -1316,73 +1320,9 @@ func (dr *DirectoryReader) resetCandidates() {
 	}
 }
 
-func (dr *DirectoryReader) ListBoots() ([]BootInfo, error) {
-	type bootEntry struct {
-		bootID    UUID
-		firstSeq  uint64
-		lastSeq   uint64
-		firstTime uint64
-		lastTime  uint64
-	}
-
-	bootMap := make(map[string]*bootEntry)
-
-	for _, r := range dr.files {
-		header := r.effectiveHeader()
-		if r.recovery.Incomplete() && header.nEntries == 0 {
-			continue
-		}
-		bootID := header.tailEntryBootID
-		key := bootID.String()
-
-		if entry, ok := bootMap[key]; ok {
-			if header.headEntrySeqnum < entry.firstSeq {
-				entry.firstSeq = header.headEntrySeqnum
-			}
-			if header.headEntryRealtime < entry.firstTime {
-				entry.firstTime = header.headEntryRealtime
-			}
-			if header.tailEntrySeqnum > entry.lastSeq {
-				entry.lastSeq = header.tailEntrySeqnum
-			}
-			if header.tailEntryRealtime > entry.lastTime {
-				entry.lastTime = header.tailEntryRealtime
-			}
-		} else {
-			bootMap[key] = &bootEntry{
-				bootID:    bootID,
-				firstSeq:  header.headEntrySeqnum,
-				lastSeq:   header.tailEntrySeqnum,
-				firstTime: header.headEntryRealtime,
-				lastTime:  header.tailEntryRealtime,
-			}
-		}
-	}
-
-	var boots []*bootEntry
-	for _, e := range bootMap {
-		boots = append(boots, e)
-	}
-
-	sort.Slice(boots, func(i, j int) bool {
-		return boots[i].firstTime < boots[j].firstTime
-	})
-
-	var results []BootInfo
-	offset := -(len(boots) - 1)
-	for _, b := range boots {
-		results = append(results, BootInfo{
-			Index:      int64(offset),
-			BootID:     b.bootID.String(),
-			FirstEntry: int64(b.firstTime),
-			LastEntry:  int64(b.lastTime),
-		})
-		offset++
-	}
-
-	return results, nil
-}
-
+// BootInfo is one boot of a journal. Index counts back from the newest boot
+// (0) as journalctl --list-boots does; FirstEntry and LastEntry are the
+// realtime timestamps of the boot's first and last entries.
 type BootInfo struct {
 	Index      int64
 	BootID     string

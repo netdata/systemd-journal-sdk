@@ -270,11 +270,34 @@ Implementation choices made during F1 (agent-chosen, pending user review):
   user-visible change to a recorded contract. `JSONEntry` / `json_entry` and
   the facade JSON keep full values (no 4096-byte null). Open user decision 8.
 
+Implementation choices made during F2 (agent-chosen, pending user review):
+
+- Algorithm: the one both CLIs already used and the query matrix validates
+  (each boot's first/last entry is what a `_BOOT_ID` match reaches from head
+  and tail; order by last entry, first entry, ID; header scan when no
+  `_BOOT_ID` DATA). It now reads the `_BOOT_ID` DATA entry arrays directly
+  instead of flushing the caller's matches and seeking, so listing boots no
+  longer changes matches or position. systemd v262 `journal_get_log_ids`
+  walks boots in entry order instead; the CLIs' order was already validated.
+- Only canonical (32 lowercase hex) `_BOOT_ID` values name a boot. The old
+  CLIs normalized any spelling and then matched the canonical one, so
+  non-canonical DATA was already skipped; this keeps that result explicitly.
+- New public API: Go `Reader.ListBoots`; Rust `FileReader::list_boots`
+  (returns `Result`). The facade lists boots for single files too.
+- Rust `DirectoryReader::list_boots` and `SdJournal::list_boots` keep their
+  infallible `Vec<BootInfo>` signature (public API); on read errors they fall
+  back to the old one-boot-per-file-header summary. `SdJournalListBoots`
+  returns the error, as Go does. Open user decision 9.
+
 Open user decisions:
 
 8. Should legacy `ExportEntry` / `export_entry_bytes` become systemd-exact
    (stop at the first invalid field name, as `EntryEncoder` does) or keep the
    SOW-0043 lossless contract? Current state: lossless kept.
+9. Should Rust `DirectoryReader::list_boots` / `SdJournal::list_boots` return
+   `Result<Vec<BootInfo>>` like Go `DirectoryReader.ListBoots` (breaking a
+   public signature; Netdata does not call it), or keep the infallible
+   signature with the header-summary fallback? Current state: kept.
 
 ## Plan
 
@@ -318,6 +341,37 @@ behavior, stop and ask the user.
   each failed one different follow case on timing (Rust SIGTERM exit with
   correct output; Go live fixture writer not ready); rerun at final
   validation.
+- F2: Go `Reader.ListBoots` / `DirectoryReader.ListBoots` and Rust
+  `FileReader::list_boots` / `DirectoryReader::list_boots` list every boot
+  from the `_BOOT_ID` DATA entry arrays (per-file first/last entry keys,
+  merged across files with the directory order comparator), falling back to
+  an entry-header scan; both journalctl rewrites call the SDK (old
+  `collectBoots*` / `collect_boots_*` deleted). Tests in both languages:
+  multi-boot file and directory, header fallback, non-canonical `_BOOT_ID`,
+  matches and position preserved, dirty `.journal~` archives from a fresh
+  reader with exact values.
+- F2 regression found and fixed during validation: the first Rust version
+  failed on dirty archives (`invalid object size: 0`) because it did not
+  retry after reader tail recovery as the reader's own seeks do; the existing
+  test listed boots only after a full read, which had already activated
+  recovery. Fixed with the reader's recover-and-retry pattern; fresh-reader
+  tests added in both languages.
+- F2 evidence: full query matrix vs v262 PASS (3586 cases, follow included)
+  before the recovery fix, and PASS with `--skip-follow` after it; `go test
+  ./...` and `cargo test --workspace` PASS (Rust SDK and CLI crates rerun
+  after the fix). Old-vs-new `--list-boots` sweep over 1409 generated corpus
+  files and 288 directories: identical except four corrupted verifier
+  fixtures, where three now print the v262 boot list instead of the old
+  CLIs' decode errors and one (`main_entry_array_missing`) is unchanged.
+- F2 cost (hyperfine, this host): 200 boots x 1000 entries, one file: Go
+  33.3 -> 30.1 ms, Rust 10.1 -> 9.2 ms, v262 19.6 ms. 100k-entry file without
+  `_BOOT_ID` DATA: Go 3.61 s -> 77 ms, Rust 1.50 s -> 46 ms (the old CLIs
+  decoded every entry through the reader).
+- Pre-existing differences found by the F2 sweep, unchanged by it:
+  (a) for a file without `_BOOT_ID` DATA v262 prints "No boot found." while
+  both rewrites list the header boot IDs (the validated CLI fallback);
+  (b) on `main_entry_array_missing.journal` v262 fails to open the file, Go
+  prints "No boot found." and Rust lists the boot.
 
 ## Validation
 

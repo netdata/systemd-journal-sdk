@@ -2004,151 +2004,15 @@ func selectBootRows(boots []bootInfo, flags *cliFlags) ([]bootInfo, error) {
 }
 
 func collectBoots(j cliJournal) ([]bootInfo, error) {
-	boots, err := collectBootsIndexed(j)
-	if err == nil && len(boots) > 0 {
-		return boots, nil
-	}
-	j.FlushMatches()
-	return collectBootsByScan(j)
-}
-
-func collectBootsIndexed(j cliJournal) ([]bootInfo, error) {
-	seen := make(map[string]struct{})
-	var bootIDs []string
-	if err := j.VisitUnique("_BOOT_ID", func(value []byte) error {
-		id, err := journal.ParseUUID(string(value))
-		if err != nil || strings.Trim(id.String(), "0") == "" {
-			return nil
-		}
-		bootID := id.String()
-		if _, ok := seen[bootID]; ok {
-			return nil
-		}
-		seen[bootID] = struct{}{}
-		bootIDs = append(bootIDs, bootID)
-		return nil
-	}); err != nil {
+	boots, err := j.ListBoots()
+	if err != nil {
 		return nil, err
 	}
-
-	boots := make([]bootInfo, 0, len(bootIDs))
-	for _, bootID := range bootIDs {
-		j.FlushMatches()
-		if err := addMatchPair(j, "_BOOT_ID", bootID); err != nil {
-			return nil, err
-		}
-		if err := j.AddConjunction(); err != nil {
-			return nil, err
-		}
-
-		if err := j.SeekHead(); err != nil {
-			return nil, err
-		}
-		ok, err := j.Next()
-		if err != nil {
-			return nil, err
-		}
-		if ok == 0 {
-			continue
-		}
-		firstEntry, err := j.GetEntry()
-		if err != nil {
-			return nil, err
-		}
-
-		if err := j.SeekTail(); err != nil {
-			return nil, err
-		}
-		ok, err = j.Previous()
-		if err != nil {
-			return nil, err
-		}
-		if ok == 0 {
-			continue
-		}
-		lastEntry, err := j.GetEntry()
-		if err != nil {
-			return nil, err
-		}
-
-		boots = append(boots, bootInfo{
-			bootID:     bootID,
-			firstEntry: firstEntry.Realtime,
-			lastEntry:  lastEntry.Realtime,
-		})
-	}
-	j.FlushMatches()
-	sort.Slice(boots, func(i, k int) bool {
-		if boots[i].lastEntry != boots[k].lastEntry {
-			return boots[i].lastEntry < boots[k].lastEntry
-		}
-		if boots[i].firstEntry != boots[k].firstEntry {
-			return boots[i].firstEntry < boots[k].firstEntry
-		}
-		return boots[i].bootID < boots[k].bootID
-	})
-	base := 1 - len(boots)
-	for i := range boots {
-		boots[i].index = base + i
-	}
-	return boots, nil
-}
-
-func collectBootsByScan(j cliJournal) ([]bootInfo, error) {
-	if err := j.SeekHead(); err != nil {
-		return nil, err
-	}
-	boots := make(map[string]*bootInfo)
-	for {
-		ok, err := j.Next()
-		if err != nil {
-			return nil, err
-		}
-		if ok == 0 {
-			break
-		}
-		entry, err := j.GetEntry()
-		if err != nil {
-			return nil, err
-		}
-		bootID := entry.BootID.String()
-		if bootID == "" || strings.Trim(bootID, "0") == "" {
-			continue
-		}
-		updateBootInfo(boots, bootID, entry.Realtime)
-	}
-	out := make([]bootInfo, 0, len(boots))
-	for _, item := range boots {
-		out = append(out, *item)
-	}
-	sort.Slice(out, func(i, k int) bool {
-		if out[i].lastEntry != out[k].lastEntry {
-			return out[i].lastEntry < out[k].lastEntry
-		}
-		if out[i].firstEntry != out[k].firstEntry {
-			return out[i].firstEntry < out[k].firstEntry
-		}
-		return out[i].bootID < out[k].bootID
-	})
-	base := 1 - len(out)
-	for i := range out {
-		out[i].index = base + i
+	out := make([]bootInfo, len(boots))
+	for i, boot := range boots {
+		out[i] = bootInfo{index: int(boot.Index), bootID: boot.BootID, firstEntry: uint64(boot.FirstEntry), lastEntry: uint64(boot.LastEntry)}
 	}
 	return out, nil
-}
-
-func updateBootInfo(boots map[string]*bootInfo, bootID string, realtime uint64) {
-	item := boots[bootID]
-	if item == nil {
-		boots[bootID] = &bootInfo{bootID: bootID, firstEntry: realtime, lastEntry: realtime}
-		return
-	}
-	if realtime < item.firstEntry {
-		item.firstEntry = realtime
-	}
-	if realtime > item.lastEntry {
-		item.lastEntry = realtime
-	}
 }
 
 func resolveBootID(j cliJournal, descriptor string) (string, error) {
