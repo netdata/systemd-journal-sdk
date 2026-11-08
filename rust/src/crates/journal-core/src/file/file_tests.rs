@@ -1326,7 +1326,7 @@ fn reader_open_refuses_unknown_state_and_short_sealed_header() {
         .err()
         .expect("short sealed header must be refused");
     assert!(
-        matches!(err, JournalError::InvalidObjectLocation),
+        matches!(err, JournalError::InvalidJournalFileState),
         "{err:?}"
     );
 }
@@ -1350,7 +1350,7 @@ fn writable_open_refuses_unknown_state_and_short_sealed_header() {
                 patch_header(path, 88, &232u64.to_le_bytes());
                 patch_header(path, 96, &(arena + 40).to_le_bytes());
             },
-            |err| matches!(err, JournalError::InvalidObjectLocation),
+            |err| matches!(err, JournalError::InvalidJournalFileState),
         ),
     ];
     for (name, patch, expected) in cases {

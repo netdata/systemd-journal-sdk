@@ -566,6 +566,28 @@ Real-use evidence:
   `systemd/systemd` tag `v262` at `.local/sow0045-oracle/systemd-v262-build/journalctl`,
   features `+PCRE2 +LZ4 +XZ +ZSTD`, no FSS (libgcrypt headers were absent).
 
+PR review follow-up, second pass (2026-11-08, after the first fixes were pushed):
+
+- Valid, fixed: an active `system.journal` with an unknown state or a short
+  sealed header stopped `Log` startup, while systemd returns `-EBADMSG`
+  (`systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-file.c:561,579`) and journald sets the file
+  aside (`src/shared/journal-file-util.c:516-522`). Both `Log`s now do that and
+  keep the sequence. Rust reports both headers as `InvalidJournalFileState`;
+  Go marks them with `errRefusedHeader`, which stays an invalid-journal error.
+  Root retention cannot archive such a file or keep a set-aside one, so it
+  reports the error and leaves the file untouched.
+- Same-path parity fix: Go's chain scan applied the every-open refusals and
+  skipped such files, restarting the sequence at 1 where Rust continued it from
+  the raw header. It now reads the header without those refusals.
+- Valid, fixed: the spec implied directory writers refuse a zero realtime; they
+  raise it to the clock floor.
+- Codacy, fixed: `open_writable` complexity 23 (limit 20). Header refusals moved
+  to `validate_writable_header`, same order.
+- Tests: `log_sets_aside_active_file_with_refused_header`,
+  `root_log_refuses_active_file_with_refused_header` and their Go pairs. Go
+  `go test ./...` and Rust `cargo test --workspace` pass.
+
 Reviewer findings:
 
 - PR #18 bot threads T3-T26, each answered in its thread. Valid and fixed:

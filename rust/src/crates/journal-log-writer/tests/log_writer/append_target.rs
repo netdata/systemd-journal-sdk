@@ -124,6 +124,108 @@ fn log_sets_aside_active_file_it_cannot_extend() {
     }
 }
 
+/// Headers every open refuses; patched into a valid online file.
+fn every_open_refusal_cases() -> Vec<AppendTargetCase> {
+    vec![
+        ("state-3", |path| patch(path, 16, &[3])),
+        ("sealed-header-232", |path| {
+            let arena = read_u64(path, 96);
+            patch(path, 8, &(read_u32(path, 8) | 1).to_le_bytes());
+            patch(path, 88, &232u64.to_le_bytes());
+            patch(path, 96, &(arena + 40).to_le_bytes());
+        }),
+    ]
+}
+
+fn write_refused_active(journal_dir: &Path, strict: bool, mutate: fn(&Path)) -> std::path::PathBuf {
+    fs::create_dir_all(journal_dir).unwrap();
+    let seqnum_id = uuid::Uuid::from_u128(0x707172737475767778797a7b7c7d7e7f);
+    let head_realtime = 1_700_020_400_000_000_u64;
+    let path = if strict {
+        journal_dir.join("system.journal")
+    } else {
+        journal_dir.join(format!(
+            "system@{}-{:016x}-{:016x}.journal",
+            seqnum_id.simple(),
+            1,
+            head_realtime
+        ))
+    };
+    write_online_test_journal(
+        &path,
+        test_machine_id(),
+        test_boot_id(),
+        seqnum_id,
+        head_realtime,
+    );
+    mutate(&path);
+    path
+}
+
+// journald sets these aside through -EBADMSG and continues the sequence.
+// Paired with Go TestLogSetsAsideActiveFileWithRefusedHeader.
+#[test]
+fn log_sets_aside_active_file_with_refused_header() {
+    for strict in [false, true] {
+        for (name, mutate) in every_open_refusal_cases() {
+            let dir = TempDir::new().unwrap();
+            let journal_dir = dir.path().join(test_machine_id().as_simple().to_string());
+            let path = write_refused_active(&journal_dir, strict, mutate);
+
+            let mut log =
+                Log::new(dir.path(), test_config().with_strict_systemd_naming(strict)).unwrap();
+            // Default chain naming only treats online files as active, so
+            // state 3 stays behind as history.
+            let expected = usize::from(strict || name != "state-3");
+            assert_eq!(
+                disposed_journal_paths(&journal_dir).len(),
+                expected,
+                "{name}, strict={strict}"
+            );
+            let realtime = Microseconds::now().get() + 10_000_000;
+            log.write_entry_with_timestamps(
+                &[b"MESSAGE=set aside"],
+                EntryTimestamps::default()
+                    .with_entry_realtime_usec(realtime)
+                    .with_entry_monotonic_usec(3),
+            )
+            .unwrap_or_else(|err| panic!("{name}, strict={strict}: {err:?}"));
+            let active = log.active_file().expect("replacement active file");
+            if !strict {
+                assert_ne!(active.path(), path.to_str().unwrap(), "{name}");
+            }
+            let file = File::from_path(Path::new(active.path())).expect("replacement path");
+            let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open replacement");
+            let header = journal.journal_header_ref();
+            assert_eq!(
+                (header.head_entry_seqnum, header.tail_entry_seqnum),
+                (3, 3),
+                "{name}, strict={strict}"
+            );
+        }
+    }
+}
+
+// A root Log can neither keep a disposed file nor archive a header every open
+// refuses, so it reports the error and leaves the file alone.
+// Paired with Go TestRootLogRefusesActiveFileWithRefusedHeader.
+#[test]
+fn root_log_refuses_active_file_with_refused_header() {
+    for (name, mutate) in every_open_refusal_cases() {
+        let dir = TempDir::new().unwrap();
+        let journal_dir = dir.path().join(test_machine_id().as_simple().to_string());
+        let path = write_refused_active(&journal_dir, true, mutate);
+        let before = fs::read(&path).unwrap();
+
+        let config = test_config()
+            .with_strict_systemd_naming(true)
+            .with_root_retention(true);
+        assert!(Log::new(dir.path(), config).is_err(), "{name}");
+        assert_eq!(fs::read(&path).unwrap(), before, "{name}");
+        assert!(disposed_journal_paths(&journal_dir).is_empty(), "{name}");
+    }
+}
+
 // Paired with Go TestRootLogArchivesActiveFileItCannotExtend. Root inventory
 // refuses disposed files, so a root Log archives the file instead.
 #[test]
