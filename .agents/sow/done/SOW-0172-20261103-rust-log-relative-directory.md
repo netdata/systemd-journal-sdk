@@ -44,8 +44,9 @@ Facts:
 
 Inferences:
 
-- Every caller so far passes absolute paths, so nobody has hit it; it is a
-  parity gap and a confusing error, not data loss.
+- Production callers so far pass absolute paths; the SOW-0156 fill validation
+  used a relative path and reproduced the failure. This is a parity gap and a
+  confusing error, not data loss.
 
 ### Acceptance Criteria
 
@@ -71,8 +72,9 @@ Recommendation: A.
 
 Risks:
 
-- A: a later `chdir` in the caller no longer changes where files go (the same
-  as Go today, which resolves at open time through the OS).
+- A: a later `chdir` in the caller no longer changes where files go. This is
+  an intentional difference from Go, which keeps the relative path, so its
+  later operations follow the process working directory.
 
 ## Pre-Implementation Gate
 
@@ -209,8 +211,9 @@ Acceptance criteria evidence:
   deletes the oldest of two archived fixtures under a 2-file count policy.
 - Empty directory: Rust returns `InvalidPath` at construction; Go returns an
   error (existing `validateNewLogConfig` check).
-- Absolute paths unchanged: `std::path::absolute` returns an absolute input
-  normalized only by `.` removal; all existing Rust and Go tests pass.
+- Absolute paths unchanged: existing Rust and Go tests pass.
+  `std::path::absolute` does not resolve symlinks; its component handling is
+  platform-specific and may keep `..`.
 
 Tests or equivalent validation:
 
@@ -236,6 +239,10 @@ Real-use evidence:
 
 Reviewer findings:
 
+- PR #23 bot review (2026-11-08): T34, T35, T38-T42 fixed (empty-directory
+  tests now check the filesystem, relative tests are Unix-only, wording
+  corrected); T36 fixed in SOW-0173. T32 and T37 rejected with evidence in
+  their threads. T33 (test-helper duplication) left as is by user decision.
 - Self-review of the whole diff. One finding: the first doc and spec
   wording misdescribed Go as resolving at construction; fixed. The discarded
   `canonicalize()` result in `helpers.rs` `create_chain` stays as an

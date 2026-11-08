@@ -31,7 +31,8 @@ It handles:
 Directory writers store files below `<directory>/<machine-id>/`. They are
 single-writer objects; callers must serialize method calls on one instance.
 Both languages accept a relative directory and refuse an empty one. Rust
-resolves a relative directory once, when the writer is created, and its path
+resolves a relative directory once, when the writer is created, by lexical
+join with the working directory (no symlink resolution), and its path
 accessors return absolute paths. Go keeps the path as given, so it follows
 later changes of the process working directory.
 
@@ -72,11 +73,19 @@ with Go `ErrUnsupportedJournal` and Rust
   otherwise append an unsealed tail;
 - a file with entries whose head realtime is zero or at least 2^55, whose tail
   realtime or tail monotonic is at least 2^55, or whose tail boot ID is null;
-- a regular file larger than 4 GiB, where the 32-bit tail entry array hint can
+- a regular file of 4 GiB or more, where the 32-bit tail entry array hint can
   no longer locate the tail array.
 
 These files stay readable. Readers ignore the tail entry array hint when the
 declared arena ends above 4 GiB, because earlier writers stored it truncated.
+
+Append-open also refuses, as invalid rather than unsupported, files missing the
+DATA or FIELD hash table or the tail object, because every append indexes
+through both tables (Go returns an invalid-journal error that is not
+`ErrUnsupportedJournal`; Rust returns `JournalError::InvalidObjectLocation`).
+Files with an unknown state, or a sealed header shorter than 240 bytes, are
+refused by every open, readers included, as systemd does (Rust
+`JournalError::InvalidJournalFileState` and `InvalidObjectLocation`).
 
 Entries must carry a realtime in `1..2^55-1` microseconds and a monotonic below
 2^55 microseconds. Go returns `ErrTimestampOutOfRange` and Rust returns
@@ -284,7 +293,8 @@ The shared policy:
   append-target refusals above, so old files written by earlier releases can
   still be archived and pruned. At startup, a current active file that
   append-open refuses is archived under its archive name the same way, instead
-  of being set aside, because inventory rejects set-aside files.
+  of being set aside, because inventory rejects set-aside files. An empty one
+  is removed instead, since it holds no history.
 - Reports safe cleanup failures independently from healthy appends; uncertain
   archive mutation remains a writer failure and stops pruning. Opening or
   validating a retired file before mutation may fail without poisoning the
