@@ -124,7 +124,9 @@ Evidence reviewed:
 
 Affected contracts and surfaces:
 
-- Rust `journal-registry` `Registry::unwatch_directory` only.
+- Rust `journal-registry`: `Registry::watch_directory`,
+  `Registry::unwatch_directory`, `Monitor` watch and reset behavior, and
+  repository file retention. No public API is added.
 
 Existing patterns to reuse:
 
@@ -222,7 +224,8 @@ Open decisions:
 
 ## Plan
 
-Pending the decision.
+Implemented according to the decisions recorded above; see the Implementation
+And Review Plan and the Execution Log.
 
 ## Implementation And Review Plan
 
@@ -314,6 +317,11 @@ Real-use evidence:
 
 Reviewer findings:
 
+- PR #25 bot review (2026-11-08): T47 and T48 fixed (a watcher rebuild attempts
+  every directory, records exactly those armed and returns the first error;
+  unit test added), T49 fixed (rescans keep indexed time ranges; test added),
+  T50 addressed by documenting that a post-success rescan failure is logged,
+  because the requested watch change is already in place, T51 and T52 fixed.
 - Self-review of the whole diff; two findings fixed (Execution Log
   2026-11-06). Accepted costs: watch/unwatch hold the write lock while
   scanning (as before); a watcher rebuild rescans every watched directory,

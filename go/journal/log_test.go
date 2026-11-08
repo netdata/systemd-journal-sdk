@@ -1098,7 +1098,11 @@ func TestLogRelativeDirectoryWritesRotatesAndReopens(t *testing.T) {
 }
 
 func TestLogRefusesEmptyDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
 	if _, err := NewLog("", LogConfig{Options: testOptions(), Source: "system"}); err == nil {
 		t.Fatal("NewLog(\"\") succeeded, want an error")
+	}
+	if entries, err := os.ReadDir("."); err != nil || len(entries) != 0 {
+		t.Fatalf("NewLog(\"\") left the working directory with %d entries (%v), want none", len(entries), err)
 	}
 }

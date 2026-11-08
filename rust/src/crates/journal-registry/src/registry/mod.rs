@@ -230,19 +230,32 @@ impl RegistryInner {
 
     /// Replace all notify watches with a fresh watcher armed for `target`.
     /// Every directory in it must then be reconciled.
+    ///
+    /// One failing directory does not cost the others their watch: all are
+    /// attempted, `armed_directories` records exactly those that succeeded,
+    /// and the first error is returned.
     fn rebuild(&mut self, target: &HashSet<String>) -> Result<()> {
         self.armed_directories.clear();
         self.monitor.reset()?;
+        let mut first_error = None;
         for dir in target {
-            self.monitor.watch_directory(dir)?;
-            self.armed_directories.insert(dir.clone());
+            match self.monitor.watch_directory(dir) {
+                Ok(()) => {
+                    self.armed_directories.insert(dir.clone());
+                }
+                Err(e) => {
+                    warn!("failed to arm notify watch for {}: {}", dir, e);
+                    first_error.get_or_insert(e);
+                }
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Return to the `previous` notify watches after a failed `rearm`, and
-    /// rescan them for events lost meanwhile. Best effort: the error being
-    /// returned matters more.
+    /// rescan them for events lost meanwhile. Best effort, because the
+    /// original error is the one returned; a directory that cannot be re-armed
+    /// is logged and stays out of `armed_directories`.
     fn restore(&mut self, previous: &HashSet<String>) {
         if let Err(e) = self.rebuild(previous) {
             error!("failed to restore notify watches: {}", e);
@@ -275,6 +288,11 @@ impl RegistryInner {
         drop(found);
 
         for file in files {
+            // Inserting resets the time range, and indexing will not revisit
+            // a file it has already covered.
+            if self.repository.file_metadata.contains_key(&file) {
+                continue;
+            }
             trace!("adding file to repository: {:?}", file.path());
             if let Err(e) = self.repository.insert(file) {
                 error!("failed to insert file into repository: {}", e);
@@ -318,7 +336,10 @@ impl Registry {
     /// time, lexically (symlinks and `..` are kept); an empty one is refused.
     /// Trailing separators are ignored. Directories may overlap: a directory
     /// inside or around one already watched is supported. On error the
-    /// registry is left unchanged.
+    /// registry is left unchanged, except that a watch which could not be
+    /// restored is logged and stays disarmed. After success, a failed rescan of
+    /// a directory whose watch changed hands is logged, not returned, because
+    /// the requested watch is in place.
     pub fn watch_directory(&self, path: &str) -> Result<()> {
         let dir = absolute_directory(path)?;
         let mut inner = self.inner.write();
@@ -359,7 +380,10 @@ impl Registry {
     /// The directory is resolved as in [`Registry::watch_directory`]. Every
     /// registered file under it is forgotten unless another watched directory
     /// still covers it; files on disk are never touched. On error the registry
-    /// is left unchanged.
+    /// is left unchanged, except that a watch which could not be restored is
+    /// logged and stays disarmed. After success, a failed rescan of a directory
+    /// whose watch changed hands is logged, not returned, because the requested
+    /// unwatch is done.
     pub fn unwatch_directory(&self, path: &str) -> Result<()> {
         let dir = absolute_directory(path)?;
         let mut inner = self.inner.write();
@@ -528,5 +552,34 @@ impl Registry {
             time_range,
         };
         inner.repository.update_file_info(file_info);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebuild_arms_every_directory_it_can_and_returns_the_failure() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut good = HashSet::default();
+        for i in 0..8 {
+            let path = dir.path().join(format!("watch-{i}"));
+            std::fs::create_dir(&path).unwrap();
+            good.insert(path.to_str().unwrap().to_string());
+        }
+        let missing = dir.path().join("missing").to_str().unwrap().to_string();
+        let mut target = good.clone();
+        target.insert(missing);
+
+        let (monitor, _events) = Monitor::new().unwrap();
+        let mut inner = RegistryInner {
+            repository: Repository::new(),
+            watched_directories: HashSet::default(),
+            armed_directories: HashSet::default(),
+            monitor,
+        };
+        assert!(inner.rebuild(&target).is_err());
+        assert_eq!(inner.armed_directories, good);
     }
 }

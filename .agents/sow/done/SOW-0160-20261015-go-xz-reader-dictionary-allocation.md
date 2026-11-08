@@ -165,9 +165,10 @@ here so the numbers can be regenerated):
 Decision D1 (decided 2026-11-03: A; changes Go writer output bytes):
 
 - A: Go writer declares 256 KiB, the Rust writer's value. Pros: Go/Rust
-  writers agree; Go reads of new Go-written files about 9x faster with 28x
-  less allocation; stock readers benefit too. Cons: payloads over 256 KiB
-  compress slightly worse; existing 8 MiB files keep their cost.
+  writers agree; Go reads of new Go-written files about 9x faster at the
+  measured 600-byte payload with 28x less allocation; stock readers would
+  likely benefit too (unmeasured inference, later refuted below). Cons:
+  payloads over 256 KiB compress slightly worse; existing 8 MiB files keep their cost.
 - B: Go writer declares 1 MiB, systemd's value. Pros: matches journald.
   Cons: about 3x slower decode than A; Go/Rust writers still differ.
 - C: keep 8 MiB. No output change; the cost stays.
@@ -337,6 +338,10 @@ Acceptance criteria evidence:
   constant in an existing dependency's config, no new dependency.
 - Affected paths improve; non-XZ paths are untouched (only `xzCompress`
   changed).
+- Concurrent independent readers: not measured, because the change cannot
+  couple them. Each DATA expansion builds and drops its own `xz.Reader`, the
+  readers share no dictionary or pool, and the change only lowers the
+  dictionary each one allocates.
 
 Tests or equivalent validation:
 
@@ -347,7 +352,11 @@ Tests or equivalent validation:
 - `run_byte_identity.py`: exit 0, all three writers verify.
 - A first Go suite run failed one seal test only because the oracle
   `journalctl` (built without FSS) was put on `PATH`; rerun without it
-  passed.
+  passed. PR review follow-up (2026-11-08): the Go and Rust seal tests now
+  skip when `journalctl` lacks sealing, so the suite no longer depends on
+  which build is on `PATH` and negative seal tests cannot pass for the wrong
+  reason. `TestXZDecompressRoundTripsLegacyDictionaries` proves that 1 MiB and
+  8 MiB streams still decode to the original payload.
 
 Real-use evidence:
 

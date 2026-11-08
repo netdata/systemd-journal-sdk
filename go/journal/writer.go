@@ -207,6 +207,11 @@ func Create(path string, opts Options) (*Writer, error) {
 		return nil, err
 	}
 
+	plan, err := prepareInitialFile(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	f, err := openWriterFile(path, true, *opts.FileMode)
 	if err != nil {
 		return nil, err
@@ -222,7 +227,7 @@ func Create(path string, opts Options) (*Writer, error) {
 		fieldNamePolicy:           opts.FieldNamePolicy,
 		legacyUncheckedTimestamps: opts.legacyUncheckedTimestamps,
 	}
-	if err := w.initialize(opts); err != nil {
+	if err := w.initialize(opts, plan); err != nil {
 		return nil, errors.Join(w.fail(err), w.release())
 	}
 	return w, nil
