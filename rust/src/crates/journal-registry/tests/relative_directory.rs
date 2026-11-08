@@ -5,9 +5,12 @@ use journal_registry::{Monitor, Registry};
 #[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
+#[cfg(unix)]
 use tempfile::TempDir;
 
+#[cfg(unix)]
 const MACHINE: &str = "00112233445566778899aabbccddeeff";
 
 /// Builds a relative path to `target` without changing the working directory,

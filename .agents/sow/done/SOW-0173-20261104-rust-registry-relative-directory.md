@@ -228,6 +228,10 @@ Real-use evidence:
 
 Reviewer findings:
 
+- PR #24 bot review (2026-11-08): T45 fixed (rename and remove events are now
+  tested), T38's `relative_directory.rs` part fixed (Unix-only test). T43
+  rejected with evidence in its thread; T46 was already fixed by SOW-0174. T44
+  (test-helper duplication) left as is by user decision.
 - Self-review of the whole diff. No blocking finding. Non-UTF-8 results
   (only via a non-UTF-8 working directory) are refused with `InvalidInput`,
   because watch keys are `String`; previously such a path could not arise
