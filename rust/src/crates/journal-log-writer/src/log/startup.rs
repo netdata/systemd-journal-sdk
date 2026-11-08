@@ -221,9 +221,13 @@ pub(super) fn configured_file_options(
 }
 
 pub(super) fn replaceable_active_open_error(err: &WriterError) -> bool {
+    // journald also sets aside the headers every open refuses, because
+    // journal_file_open_reliably treats their -EBADMSG as a corrupted file.
     matches!(
         err,
-        WriterError::Journal(JournalError::UnsupportedJournalFile)
+        WriterError::Journal(
+            JournalError::UnsupportedJournalFile | JournalError::InvalidJournalFileState
+        )
     )
 }
 
