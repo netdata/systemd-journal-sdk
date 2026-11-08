@@ -301,6 +301,19 @@ impl JournalHeader {
         Ok(())
     }
 
+    /// Header refusals systemd applies on every open, read-only or writable
+    /// (journal-file.c journal_file_verify_header).
+    #[doc(hidden)]
+    pub fn validate_open_state(&self) -> Result<()> {
+        if self.state > JournalState::Archived as u8 {
+            return Err(JournalError::InvalidJournalFileState);
+        }
+        if self.has_compatible_flag(HeaderCompatibleFlags::Sealed) && self.header_size < 240 {
+            return Err(JournalError::InvalidObjectLocation);
+        }
+        Ok(())
+    }
+
     /// Empty files may inherit a sequence counter, but not per-file ENTRY state.
     #[doc(hidden)]
     pub fn validate_empty_entry_metadata(&self) -> Result<()> {
