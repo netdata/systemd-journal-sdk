@@ -154,13 +154,73 @@ User decisions on 2026-11-08 about the open stacked PRs' bot reviews:
 Investigation results for items 3-9 (2026-11-08, read-only helpers, verified
 where noted): see `## Analysis`.
 
+Decisions awaiting the user (presented 2026-11-08; evidence in `## Analysis`):
+
+- Item 4, boot listing without `_BOOT_ID` DATA. A: drop the header fallback
+  everywhere (matches v262, but `ListBoots` returns nothing for files the core
+  writer makes without that field). B: CLIs match v262 and SDK callers keep the
+  fallback through a call option (CLI parity and useful SDK results, at the cost
+  of two documented behaviors). C: keep as is (the CLI contradiction stays).
+  Recommendation: B, long-term-best.
+- Item 5, main entry array missing. A: reject at open as systemd does (changes
+  the SOW-0159 recovery contract). B: Rust detects it at open as Go does (parity;
+  still differs from systemd for this corruption). C: both. Recommendation: B,
+  surgical.
+- Item 6, Go retention ignores `.journal~`. A: Go adopts Rust's counting and
+  deletion (bounded disk use; Go starts deleting disposed files, oldest first).
+  B: Rust stops counting them (unbounded growth in both). Recommendation: A,
+  long-term-best.
+- Item 7, Rust `open_files` with repeated paths. A: call the existing
+  `unique_files` helper (parity, no known cost). Recommendation: A, surgical.
+- Item 8, unreadable subdirectories. A: record the two narrow differences and
+  close. B: align both (low value). Recommendation: A, surgical.
+- Item 9, Go fails a whole entry on a damaged field. A: Go behaves like Rust and
+  systemd (no lost rows; callers no longer get an error for that corruption). B:
+  Rust errors like Go (diverges from systemd, loses rows). Recommendation: A,
+  long-term-best.
+- New, repeated field in the single-value map. Rust keeps the first value, as Go
+  and `sd_journal_get_data` do; callers relying on the last value would see a
+  change. Recommendation: yes, surgical.
+- I7, verify-key parity with v262. A: install `libgcrypt20-dev` and rebuild the
+  oracle (system package, needs approval). B: build libgcrypt inside `.local/`
+  (no system change, more effort). C: reject for now; the CLIs keep the 255
+  behavior until a release needs it. Recommendation: C, surgical.
+
 ## Plan
 
-Pending activation.
+Pending the decisions above.
+
+## Implementation And Review Plan
+
+Implementation: the project manager implements test-first, one item at a time,
+committing verified chunks, in both languages unless a decision says otherwise.
+
+Reviewers: whole-SOW self-review after local validation; tests are the gate.
+External reviewers are not used.
+
+Repository boundary block for every helper-agent prompt:
+
+```text
+CRITICAL REPOSITORY BOUNDARY:
+- Do not make changes outside this repository for any reason.
+- Repository path: current repository root.
+- You may inspect external references read-only when the task requires it.
+- Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
+- The only write exception outside the repository is /tmp.
+- Prefer .local/ inside this repository for scratch work, generated temporary files, cloned references, logs, and working notes.
+```
+
+Failure handling: implementation, validation, reviewer and audit failures stop
+advancement until fixed or decided by the user, and are recorded in the
+Execution Log.
 
 ## Execution Log
 
 ### 2026-11-08
+
+- Bot-review decision 1A delivered on the stack below this branch and merged
+  up; PR #26 T60 and T72 are answered by this file's decision list and
+  Implementation And Review Plan.
 
 - Decision 9 implemented: `DirectoryReader::list_boots` returns
   `Result<Vec<BootInfo>>` (the internal `try_list_boots` and the header
