@@ -2,7 +2,7 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
@@ -274,25 +274,130 @@ Execution Log.
   `product-scope.md` updated. `cargo test --workspace` PASS; wiki check and
   the `rust-list-boots` example PASS.
 
+- I7 implemented with the OpenSSL-enabled v262 oracle. `ParseVerificationKey` /
+  `parse_verification_key` are now the single owner of the key grammar (v262
+  `journal_auth_load_key`: dashes between seed bytes, `sscanf %lx` whitespace,
+  sign, `0x`, saturation, content after the interval ignored, zero values and
+  overflowing start rejected). The duplicate CLI validators are gone. Both CLIs
+  judge the key per file and stop on the first rejection, with v262's message.
+  Differential of 29 keys on sealed and plain files against stock v262: 0
+  exit-code differences (`.local/pr-review/keydiff.py`; includes a truly wrong
+  seed, which the earlier all-zero case could not test).
+- I7 remaining stderr differences: v262 prints `=> Validated from ...` after
+  PASS on sealed files and `FAIL: %s: %m` with an errno string. The first needs
+  a new public SDK report of the sealed range, tracked by pending SOW-0177. The
+  second is kept: our text names the failing check and offset, and exit codes
+  match.
+- Item 8 closed by decision A. Two narrow differences stay and are accepted: (1)
+  a read error in the middle of listing a directory; (2) the error class for a
+  missing root directory. Both skip unreadable subdirectories and fail on an
+  unreadable root, as the analysis found.
+- Self-review found `lossyUTF8` replaced every invalid byte while Rust's
+  `to_string_lossy` replaces a maximal truncated sequence once, so a truncated
+  multi-byte name differed between languages. Fixed in Go with cases matched
+  against Rust's output.
+
 ## Validation
 
-Pending.
+Acceptance criteria evidence:
+
+- Decisions 8 and 9: applied in both languages (Execution Log).
+- I7: done against the OpenSSL-enabled v262 oracle; 29 keys on sealed and plain
+  files, 0 exit-code differences.
+- Items 4-7, 9, New, T67, T69/T84: fixed in both languages with paired tests.
+  Item 8: closed by decision A with the two differences recorded.
+
+Tests or equivalent validation (2026-11-08, stock = systemd 262 oracle):
+
+- `go test ./journal ./cmd/...` PASS; `CGO_ENABLED=0 go build ./journal` PASS;
+  `cargo test --workspace` PASS.
+- `run_byte_identity.py --final-state all`: PASS, every `all_equal` true.
+- `run_verify_matrix.py`, `run_directory_matrix.py`: PASS.
+- `run_mixed_directory_matrix.py`: 42/42. `run_live_matrix.py`: 18/18 (2
+  writers, 30 entries each, stock, libsystemd and SDK readers, final verify).
+- `run_journalctl_query_matrix.py` with follow: PASS, including the new
+  no-`_BOOT_ID` exit and stdout cases.
+- `run_reader_hardening.py` with both adapters: PASS, 552 observations.
+- `check_v260_manifest.py`, `run_parser_parity.py`, `check_wiki_docs.py`,
+  `verify_examples.py`, `check_duplication.py`: PASS.
+
+Real-use evidence:
+
+- Both built CLIs and stock v262 run against the same sealed and plain files in
+  the key differential, and against the matrix fixtures above.
+
+Reviewer findings:
+
+- Project-manager review of the whole changed surface; no external reviewers,
+  per `AGENTS.md`. One finding: Go `lossyUTF8` differed from Rust on truncated
+  multi-byte sequences. Fixed and tested. Core-purity search of the diff found
+  no process launches or host-path access. Compressed-DATA failures still fail
+  the entry in both languages by design.
+
+Same-failure scan:
+
+- Key parsing: no other parser remains (`grep` for `valid_verification_key`,
+  `validVerificationKey`). Lossy conversion: `lossyUTF8` is the only Go
+  conversion of source names. Retention: the root-retention path has its own
+  contract and was not changed.
 
 Sensitive data gate:
 
-- Pending; the work uses synthetic fixtures and public systemd test data only.
+- Durable artifacts contain synthetic fixtures and public systemd references
+  only.
+
+Artifact maintenance gate:
+
+- AGENTS.md: no change; no workflow or project rule changed.
+- Runtime project skills: no change; the matrix guidance still holds.
+- Specs: `journalctl-v260-parity-matrix.md` (verify-key) and `product-scope.md`
+  (boot listing, retention).
+- End-user/operator docs: `docs/Go-API.md`, `docs/Rust-API.md`, `go/API.md`,
+  `rust/README.md`, `docs/Reader-APIs.md`, `docs/Writer-APIs.md`.
+- End-user/operator skills: none exist.
+- SOW lifecycle: `Status: completed`, moved to `done/`.
+- SOW-status.md: updated.
+
+Specs update:
+
+- As listed in the artifact maintenance gate.
+
+Project skills update:
+
+- None needed; no new way of working.
+
+End-user/operator docs update:
+
+- As listed in the artifact maintenance gate.
+
+End-user/operator skills update:
+
+- None exist.
+
+Lessons:
+
+- See `## Lessons Extracted`.
+
+Follow-up mapping:
+
+- `=> Validated` summary line: tracked by SOW-0177.
+- `FAIL` wording and item 8's two differences: accepted, recorded above.
 
 ## Outcome
 
-Pending.
+All decisions delivered in Go and Rust. Verify-key handling now matches v262 on
+exit status through one SDK parser per language, against an FSS-capable oracle.
 
 ## Lessons Extracted
 
-None yet.
+- Check a feature's real dependency in the oracle's source before asking for a
+  system package: v262 sealing needs OpenSSL, not libgcrypt.
+- A differential case is only evidence if its inputs differ: an all-zero
+  "wrong" seed equalled the good one.
 
 ## Followup
 
-None yet.
+SOW-0177 tracks the validated-range summary.
 
 ## Regression Log
 

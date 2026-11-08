@@ -108,6 +108,11 @@ Detection is lazy where the native access path permits it. A zero/`None` status
 means no loss has been observed; it does not certify integrity. A catalog query
 does not validate unrelated entry arrays.
 
+A single unreadable DATA object, or one without a field separator, costs that
+field only: the entry is still returned, and a payload without `=` stays in the
+raw payload list. A DATA object that cannot be decompressed still fails the
+entry.
+
 Recovery is read-only: the SDK does not reconstruct or overwrite damaged source
 journals. Journald abandons a corrupt file and writes to a new one. Normal live
 publication can make temporarily unavailable data readable; this is distinct

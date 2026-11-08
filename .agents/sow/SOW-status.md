@@ -46,9 +46,6 @@ order; the user may reorder it.
 
 ## Current
 
-- SOW-0176 - Single Ownership Follow-ups: in progress; all user decisions made
-  2026-11-08 and being implemented.
-
 ## Pending
 
 - SOW-0066 - V1 Release: v1.0.0 API freeze and release; not scheduled (user
@@ -76,11 +73,15 @@ order; the user may reorder it.
   by user decision.
 - SOW-0171 - Continue Sealing When Reopening A Sealed File: tracked
   2026-11-03 (SOW-0156 decision N1); not scheduled.
+- SOW-0177 - Report The Validated Sealed Range From Verification: tracked from
+  SOW-0176 item I7; needs a public API decision.
 - SOW-0175 - Split The journalctl Rewrites By Responsibility: tracked
   2026-11-07 (SOW-0097 decision 7); after SOW-0097.
 
 ## Recently Closed Or Completed
 
+- SOW-0176 - Single Ownership Follow-ups: completed 2026-11-08; follow-up
+  SOW-0177.
 - SOW-0174 - Rust Registry Unwatch Leaves Files When The Directory Key
   Differs: completed 2026-11-06. Unwatch forgets exactly the files no
   remaining watch covers, overlapping watches work in any order, failures
