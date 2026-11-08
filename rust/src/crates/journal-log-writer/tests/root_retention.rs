@@ -977,6 +977,7 @@ fn root_sub_microsecond_age_retains_exact_tail_and_expires_one_microsecond_later
     log.close_without_retention().unwrap();
 }
 
+#[cfg(unix)] // Windows temp directories may sit on another drive.
 #[test]
 fn root_retention_with_relative_root_prunes() {
     let dir = TempDir::new().unwrap();

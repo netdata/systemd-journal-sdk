@@ -31,7 +31,8 @@ It handles:
 Directory writers store files below `<directory>/<machine-id>/`. They are
 single-writer objects; callers must serialize method calls on one instance.
 Both languages accept a relative directory and refuse an empty one. Rust
-resolves a relative directory once, when the writer is created, and its path
+resolves a relative directory once, when the writer is created, by lexical
+join with the working directory (no symlink resolution), and its path
 accessors return absolute paths. Go keeps the path as given, so it follows
 later changes of the process working directory.
 

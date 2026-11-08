@@ -31,8 +31,9 @@ Facts:
 - Notify events for that watch carry the same relative paths, and the
   event handlers in `registry/mod.rs` skip them the same way.
 - The registry is Rust-only (there is no Go equivalent), so this is not a
-  Go/Rust parity gap. In-repo callers (`journal-engine/examples/index.rs`)
-  pass absolute paths.
+  Go/Rust parity gap. The in-repo caller
+  (`journal-engine/examples/index.rs`) passes an absolute path by default and
+  forwards a user-supplied CLI argument unchanged.
 
 Inferences:
 

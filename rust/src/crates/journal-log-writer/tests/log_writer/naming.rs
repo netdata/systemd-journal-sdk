@@ -611,7 +611,9 @@ fn test_custom_source_naming_is_honored_in_default_and_strict_modes() {
 }
 
 /// A relative path to `target` that resolves through the current directory,
-/// so tests need not change the process-wide working directory.
+/// so tests need not change the process-wide working directory. Unix only:
+/// Windows temp directories may sit on another drive, with no relative route.
+#[cfg(unix)]
 fn relative_to_cwd(target: &Path) -> PathBuf {
     let cwd = std::env::current_dir().unwrap();
     let mut rel = PathBuf::new();
@@ -621,6 +623,7 @@ fn relative_to_cwd(target: &Path) -> PathBuf {
     rel.join(target.strip_prefix("/").unwrap())
 }
 
+#[cfg(unix)]
 #[test]
 fn relative_directory_writes_rotates_and_reopens() {
     let dir = TempDir::new().unwrap();
@@ -669,4 +672,9 @@ fn empty_directory_is_refused_before_creating_anything() {
         Err(err) => err,
     };
     assert!(matches!(err, WriterError::InvalidPath(_)), "{err:?}");
+    // An empty path would resolve to the working directory.
+    assert!(
+        !Path::new(&test_machine_id().as_simple().to_string()).exists(),
+        "a refused directory created the machine directory"
+    );
 }
