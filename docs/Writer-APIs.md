@@ -79,8 +79,12 @@ DATA or FIELD hash table or the tail object, because every append indexes
 through both tables (Go returns an invalid-journal error that is not
 `ErrUnsupportedJournal`; Rust returns `JournalError::InvalidObjectLocation`).
 Files with an unknown state, or a sealed header shorter than 240 bytes, are
-refused by every open, readers included, as systemd does (Rust
-`JournalError::InvalidJournalFileState` and `InvalidObjectLocation`).
+refused by every open, readers included, as systemd does (Go returns an
+invalid-journal error, Rust `JournalError::InvalidJournalFileState`). The
+directory writer sets such an active file aside and continues its sequence, as
+journald does. With root retention it reports the error instead and leaves the
+file in place, because it can neither archive such a file nor keep a set-aside
+one.
 
 Entries must carry a realtime in `1..2^55-1` microseconds and a monotonic below
 2^55 microseconds. Go returns `ErrTimestampOutOfRange` and Rust returns
@@ -289,7 +293,8 @@ The shared policy:
   still be archived and pruned. At startup, a current active file that
   append-open refuses is archived under its archive name the same way, instead
   of being set aside, because inventory rejects set-aside files. An empty one
-  is removed instead, since it holds no history.
+  is removed instead, since it holds no history. A header every open refuses
+  cannot be archived either, so startup reports that error.
 - Reports safe cleanup failures independently from healthy appends; uncertain
   archive mutation remains a writer failure and stops pruning. Opening or
   validating a retired file before mutation may fail without poisoning the
