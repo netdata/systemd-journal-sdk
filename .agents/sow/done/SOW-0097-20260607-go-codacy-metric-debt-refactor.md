@@ -5,12 +5,12 @@ decision on 2026-11-07 (see Implications And Decisions).
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: activated 2026-11-07 on branch `sow-0097/cli-sdk-single-owner`;
-decisions recorded; implementation starts test-first.
+Sub-state: delivered on branch `sow-0097/cli-sdk-single-owner`; open user
+decisions 8 and 9, I7 and the divergences found are tracked by SOW-0176.
 
 ## Requirements
 
@@ -375,25 +375,119 @@ behavior, stop and ask the user.
 
 ## Validation
 
-Pending.
+Acceptance criteria evidence:
+
+- Test-first: each item added tests (SDK and CLI) before switching the
+  callers; behavior fixes are proven against v262 goldens (`tests/output/`)
+  or the query matrix.
+- CLI copies deleted, both languages: directory listing, file dedupe, header
+  flags, export seqnum ID, unit-name SipHash (Go), field-name rule, export and
+  JSON rendering, printable rule, boot listing (see git log
+  `d928f46..HEAD`).
+- New public SDK functions, both languages, recorded above and in
+  `go/API.md`, `rust/README.md`, `docs/Go-API.md`, `docs/Rust-API.md`.
+- Benchmarks: F1 faster in every mode (Execution Log); F2 cost recorded
+  (faster on both measured shapes).
+- Duplication gate in CI (`.github/workflows/duplication.yml`) with baseline
+  locked at 76 pairs / 5167 production lines (from 79 / 5299).
+- `AGENTS.md` records the single-ownership rule and review question.
+- I7 not delivered: tracked by SOW-0176 (needs an FSS-enabled v262 oracle).
+
+Tests or equivalent validation (2026-11-07/08):
+
+- `go test ./...` PASS; `cargo test --workspace` PASS (48 test binaries);
+  Rust SDK and CLI crates rerun after the last code change PASS.
+- `run_journalctl_query_matrix.py --journalctl <v262 oracle>`: PASS, 3586
+  cases including follow; rerun `--skip-follow` after the last change PASS.
+- `run_directory_matrix.py` PASS (34 checks); `run_mixed_directory_matrix.py`
+  PASS (42/42, stock/go/rust); `run_verify_matrix.py` PASS (63 results,
+  stock systemd 255 from PATH).
+- `tests/docs/check_wiki_docs.py` PASS (16 pages);
+  `tests/docs/verify_examples.py` PASS (39/39, four new examples).
+- `tests/duplication/check_duplication.py` OK.
+
+Real-use evidence:
+
+- Both CLIs against the v262 oracle on the shared goldens (export/JSON) and
+  on generated multi-boot, dirty-archive and corrupted journals
+  (`--list-boots`); old-vs-new sweep over 1409 corpus files and 288
+  directories (Execution Log).
+
+Reviewer findings (project manager whole-SOW self-review; no external
+reviewers per `AGENTS.md`):
+
+- F2 Rust dirty-archive failure (blocking): fixed with reader recovery retry,
+  fresh-reader tests added in both languages.
+- Non-canonical `_BOOT_ID` handling (behavior): kept the old CLI result
+  explicitly, tested in both languages.
+- Rust `list_boots` infallible signature vs Go error (parity): kept,
+  decision 9, SOW-0176.
+- Purity scan of the core diff (process launches, host paths, sysctl): no
+  matches outside comments.
+- Netdata-protected surfaces: only the agreed trivial changes (non-UTF-8 name
+  classification parity, explorer comments, shared field-name rule); reader
+  and writer hot paths unchanged except the shared field-name helper,
+  covered by existing tests.
+
+Same-failure scan:
+
+- Other boot/recovery consumers: the reader's own seeks already retry after
+  recovery; the new boot code was the only direct DATA-array walker added.
+- Other CLI copies of SDK behavior: the duplication gate plus the SOW
+  inventory; remaining items tracked by SOW-0176, SOW-0098 and SOW-0175.
 
 Sensitive data gate:
 
-- Pending.
+- Durable artifacts contain synthetic IDs, fixture boot IDs from the public
+  systemd test data and repository paths only; no credentials, personal or
+  customer data.
+
+Artifact maintenance gate:
+
+- AGENTS.md: updated in `3b3b874` (single-ownership rule, duplication gate).
+- Runtime project skills: no update; the compatibility and docs skills
+  already describe the matrices and examples used, and the fresh-reader
+  recovery lesson is already in `project-journal-compatibility`.
+- Specs: `product-scope.md` updated (export/JSON encoder, boot listing).
+- End-user/operator docs: `docs/Go-API.md`, `docs/Rust-API.md`,
+  `go/API.md`, `rust/README.md`; journalctl CLI docs unchanged because the
+  CLI options did not change.
+- End-user/operator skills: none exist.
+- SOW lifecycle: completed and moved to `done/` in the close-out commit;
+  follow-ups in SOW-0176 and SOW-0175.
+- SOW-status.md: updated.
+
+Lessons:
+
+- See Lessons Extracted.
+
+Follow-up mapping:
+
+- Decisions 8 and 9, I7, divergences 4-9: tracked by SOW-0176.
+- CLI file split: SOW-0175. `jf` duplication: SOW-0098.
 
 ## Outcome
 
-Pending.
+Journal behaviors that the journalctl rewrites copied from the SDK now have
+one owner per language, exposed as public SDK functions in both Go and Rust,
+and both CLIs call them. Export/JSON output and `--list-boots` became
+systemd-faithful and faster on the measured shapes; a CI duplication gate
+keeps new production copies out.
 
 ## Lessons Extracted
 
 - Agent inventories overstate risk without the owning oracle: the vacuum
   emptiness check reported as the riskiest item is a verbatim systemd rule.
+- A test that reads a dirty archive fully before the assertion activates
+  reader recovery and hides recovery bugs in the code under test; assert on
+  a fresh reader (the compatibility skill already says so, and the existing
+  boot test still missed it).
 
 ## Followup
 
 - SOW-0175: split the journalctl rewrites into files by responsibility.
 - SOW-0098: `jf` duplication.
+- SOW-0176: decisions 8 and 9, I7, and divergences found during this SOW.
 
 ## Regression Log
 

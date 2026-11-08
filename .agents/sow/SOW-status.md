@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-11-07
+Last updated: 2026-11-08
 
 ## Backlog Order
 
@@ -14,7 +14,7 @@ order; the user may reorder it.
 3. SOW-0122 - journalctl performance follow-ups (completed 2026-11-01; gaps
    tracked by SOW-0166, SOW-0167, SOW-0168).
 4. SOW-0097 - Single ownership of journal behavior, CLI and SDK, Go and
-   Rust (rescoped and activated 2026-11-07).
+   Rust (completed 2026-11-08; follow-ups in SOW-0176).
 5. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
 6. SOW-0153 - Consumer docs release clarity (completed 2026-11-01).
 7. SOW-0125 - Netdata filter operators (needs design decisions first).
@@ -43,12 +43,12 @@ order; the user may reorder it.
     differs (completed 2026-11-06, options A and 2B).
 22. SOW-0175 - Split the journalctl rewrites by responsibility (tracked by
     user decision 2026-11-07; after SOW-0097).
+23. SOW-0176 - Single ownership follow-ups: open decisions 8 and 9, I7 and
+    divergences found in SOW-0097 (needs user decisions).
 
 ## Current
 
-- SOW-0097 - Single Ownership Of Journal Behavior: in progress since
-  2026-11-07; CLI copies removed into public SDK owners, SDK output and boot
-  list fixed, duplication gate added.
+- None.
 
 ## Pending
 
@@ -79,8 +79,17 @@ order; the user may reorder it.
   2026-11-03 (SOW-0156 decision N1); not scheduled.
 - SOW-0175 - Split The journalctl Rewrites By Responsibility: tracked
   2026-11-07 (SOW-0097 decision 7); after SOW-0097.
+- SOW-0176 - Single Ownership Follow-ups: tracked 2026-11-08 from SOW-0097;
+  needs user decisions (legacy export contract, Rust list_boots Result) plus
+  I7 and six Go/Rust or SDK/systemd divergences.
 
 ## Recently Closed Or Completed
+
+- SOW-0097 - Single Ownership Of Journal Behavior: completed 2026-11-08. CLI
+  copies of journal behavior moved into public SDK owners in both languages;
+  export/JSON and `--list-boots` became systemd-faithful and faster; a CI
+  duplication gate guards production code. Follow-ups: SOW-0176, SOW-0175,
+  SOW-0098.
 
 - SOW-0174 - Rust Registry Unwatch Leaves Files When The Directory Key
   Differs: completed 2026-11-06. Unwatch forgets exactly the files no
