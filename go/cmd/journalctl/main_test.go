@@ -418,8 +418,15 @@ func TestRunVerifyKeyInvalidSeed(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("expected no stdout, got: %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Failed to parse seed.") {
+	if !strings.Contains(stderr.String(), "Failed to load verification key: Key was rejected by service") {
 		t.Fatalf("expected parse seed error in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifyKeyJudgedOnlyWhenAFileIsReached(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify-key=not-a-key", "--directory", t.TempDir()}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("no file reached, so the key is not judged: %v (%s)", err, stderr.String())
 	}
 }
 
@@ -433,7 +440,7 @@ func TestRunVerifyKeyEmptySeed(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("expected no stdout, got: %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Failed to parse seed.") {
+	if !strings.Contains(stderr.String(), "Failed to load verification key: Key was rejected by service") {
 		t.Fatalf("expected parse seed error in stderr, got: %q", stderr.String())
 	}
 }

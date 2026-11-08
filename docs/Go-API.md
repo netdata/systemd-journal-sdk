@@ -761,6 +761,8 @@ if err := journal.VerifyFile("/var/log/journal/example/system.journal"); err != 
 }
 ```
 
+`ParseVerificationKey` validates a key with the same grammar as systemd v262.
+
 Use `VerifyFileWithKey` for sealed files when a verification key is available.
 Verification is for integrity checks, not normal query serving.
 File-path verification uses the same bounded reader access architecture as

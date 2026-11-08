@@ -660,6 +660,9 @@ verify_file("/var/log/journal/example/system.journal")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+`parse_verification_key()` validates a key with the same grammar as systemd
+v262.
+
 Use `verify_file_with_key()` for sealed files when a verification key is
 available. Verification is for integrity checks, not normal query serving.
 File-path verification uses the same bounded reader access architecture as

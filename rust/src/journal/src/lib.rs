@@ -34,7 +34,9 @@ pub use export::{
     is_printable_text, json_entry,
 };
 pub use parse::{ParseError, ParsedCursor, parse_cursor, parse_match_bytes, parse_match_string};
-pub use sealed_verify::{verify_file, verify_file_with_key, verify_index};
+pub use sealed_verify::{
+    VerificationKey, parse_verification_key, verify_file, verify_file_with_key, verify_index,
+};
 
 use ouroboros::self_referencing;
 use std::collections::HashMap;

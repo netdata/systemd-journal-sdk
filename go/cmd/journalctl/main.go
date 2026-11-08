@@ -24,6 +24,9 @@ import (
 
 var errSilentNoData = errors.New("no matching entries")
 
+// errVerificationKeyRejected is already reported on stderr in systemd's wording.
+var errVerificationKeyRejected = errors.New("verification key rejected")
+
 func noDataError(quiet bool, message string) error {
 	if quiet {
 		return errSilentNoData
@@ -287,7 +290,7 @@ func (f *optionalStringFlag) IsBoolFlag() bool {
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
-		if !errors.Is(err, errSilentNoData) {
+		if !errors.Is(err, errSilentNoData) && !errors.Is(err, errVerificationKeyRejected) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
 		os.Exit(1)
@@ -2947,10 +2950,6 @@ func (f *followOutput) syncVisitedCursor() error {
 }
 
 func runVerify(input cliInput, verifyKey string, hasVerifyKey, quiet bool, stdout, stderr io.Writer) error {
-	if err := validateVerificationKeyOption(verifyKey, hasVerifyKey, stderr); err != nil {
-		return err
-	}
-
 	files, directoryInput, err := input.journalFiles("verify")
 	if err != nil {
 		return err
@@ -2965,6 +2964,9 @@ func runVerify(input cliInput, verifyKey string, hasVerifyKey, quiet bool, stdou
 	var firstErr error
 	for _, path := range files {
 		if err := verifyOneFile(path, verifyKey, hasVerifyKey, directoryInput, quiet, stderr); err != nil {
+			if errors.Is(err, errVerificationKeyRejected) {
+				return err
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -3734,18 +3736,25 @@ func formatJournalBytes(bytes uint64) string {
 	return fmt.Sprintf("%dB", bytes)
 }
 
-func validateVerificationKeyOption(verifyKey string, hasVerifyKey bool, stderr io.Writer) error {
-	if !hasVerifyKey || validVerificationKey(verifyKey) {
-		return nil
+// loadVerificationKey runs per file, as systemd does, so a key is judged only
+// once a journal file is reached.
+func loadVerificationKey(key string, stderr io.Writer) error {
+	if _, err := journal.ParseVerificationKey(key); err != nil {
+		fmt.Fprintln(stderr, "Failed to load verification key: Key was rejected by service")
+		return errVerificationKeyRejected
 	}
-	fmt.Fprintln(stderr, "Failed to parse seed.")
-	return errors.New("failed to parse seed")
+	return nil
 }
 
 func verifyOneFile(path, verifyKey string, hasVerifyKey, directoryInput, quiet bool, stderr io.Writer) error {
 	sealed, err := isFileSealed(path)
 	if err != nil {
 		return reportVerifyOpenError(path, err, directoryInput, stderr)
+	}
+	if hasVerifyKey {
+		if err := loadVerificationKey(verifyKey, stderr); err != nil {
+			return err
+		}
 	}
 	if sealed && !hasVerifyKey {
 		return reportVerifyMissingKey(path, stderr)
@@ -3818,63 +3827,6 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 		}
 	})
 	return wasSet
-}
-
-func validVerificationKey(key string) bool {
-	seedEnd, ok := consumeVerificationSeed(key)
-	if !ok || seedEnd >= len(key) || key[seedEnd] != '/' {
-		return false
-	}
-	startEnd, ok := consumeHex(key, seedEnd+1)
-	if !ok || startEnd >= len(key) || key[startEnd] != '-' {
-		return false
-	}
-	end, ok := consumeHex(key, startEnd+1)
-	return ok && end == len(key) && hexRangeHasNonZero(key[startEnd+1:end])
-}
-
-func consumeVerificationSeed(key string) (int, bool) {
-	i := 0
-	for c := 0; c < 12; c++ {
-		next, ok := consumeVerificationSeedByte(key, i)
-		if !ok {
-			return 0, false
-		}
-		i = next
-	}
-	return i, true
-}
-
-func consumeVerificationSeedByte(key string, start int) (int, bool) {
-	i := start
-	for i < len(key) && key[i] == '-' {
-		i++
-	}
-	if i+2 > len(key) || !isHex(key[i]) || !isHex(key[i+1]) {
-		return 0, false
-	}
-	return i + 2, true
-}
-
-func hexRangeHasNonZero(s string) bool {
-	for _, b := range s {
-		if b != '0' {
-			return true
-		}
-	}
-	return false
-}
-
-func consumeHex(s string, start int) (int, bool) {
-	i := start
-	for i < len(s) && isHex(s[i]) {
-		i++
-	}
-	return i, i > start
-}
-
-func isHex(b byte) bool {
-	return ('0' <= b && b <= '9') || ('a' <= b && b <= 'f') || ('A' <= b && b <= 'F')
 }
 
 // tableIndexWidth follows stock table formatting: IDX is as wide as the widest

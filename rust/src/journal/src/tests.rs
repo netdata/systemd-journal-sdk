@@ -411,6 +411,7 @@ fn directory_reader_uses_sequential_path_for_non_overlapping_files() {
 mod boots;
 mod directory_files;
 mod entry_damage;
+mod verification_key;
 mod entry_output;
 mod facade;
 mod verification;
