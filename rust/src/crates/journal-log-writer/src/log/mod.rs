@@ -152,18 +152,23 @@ impl Log {
     /// Refuses timestamps systemd rejects before rotation can create files or
     /// the clocks advance, so a bad input never becomes a floor.
     fn check_entry_timestamps(&self, realtime: u64, timestamps: &EntryTimestamps) -> Result<()> {
-        let desired = timestamps.entry_monotonic_usec.unwrap_or(0);
-        let monotonic = if desired > self.last_monotonic_usec {
-            desired
-        } else {
-            self.last_monotonic_usec.saturating_add(1)
-        };
+        let monotonic = self.next_monotonic(timestamps.entry_monotonic_usec.unwrap_or(0));
         if journal_core::file::valid_realtime(realtime)
             && journal_core::file::valid_monotonic(monotonic)
         {
             Ok(())
         } else {
             Err(JournalError::TimestampOutOfRange.into())
+        }
+    }
+
+    /// The monotonic value the next entry gets: strictly above the last one.
+    /// The pre-write check and the writer must agree on it.
+    fn next_monotonic(&self, desired: u64) -> u64 {
+        if desired > self.last_monotonic_usec {
+            desired
+        } else {
+            self.last_monotonic_usec.saturating_add(1)
         }
     }
 
@@ -330,11 +335,7 @@ impl Log {
                 WriterError::InvalidConfig("entry monotonic timestamp is required".to_string())
             })?;
 
-        let monotonic = if desired_monotonic > self.last_monotonic_usec {
-            desired_monotonic
-        } else {
-            self.last_monotonic_usec.saturating_add(1)
-        };
+        let monotonic = self.next_monotonic(desired_monotonic);
         self.last_monotonic_usec = monotonic;
 
         Ok((realtime, monotonic))
@@ -1220,6 +1221,8 @@ mod tests {
 
     #[test]
     fn log_continues_in_new_file_when_active_file_is_full() {
+        // Rotation archives, which the archive-sync tests count.
+        let _guard = ARCHIVE_SYNC_TEST_LOCK.lock().expect("lock sync test");
         for structured in [false, true] {
             let dir = TempDir::new().unwrap();
             let mut log = Log::new(dir.path(), unrotated_config()).unwrap();
@@ -1273,9 +1276,46 @@ mod tests {
             matches!(err, WriterError::Journal(JournalError::JournalFileFull)),
             "{err:?}"
         );
-        assert_eq!(log.injected_file_full, 1, "retried in an empty file");
+        assert_eq!(
+            log.injected_file_full, 1,
+            "refused without retry on an empty file"
+        );
         assert_eq!(log.clock_state(), clocks, "refused entry moved the clocks");
         assert_eq!(journal_paths(&dir).len(), 1);
+    }
+
+    #[test]
+    fn log_retries_full_file_once_then_refuses() {
+        // Rotation archives, which the archive-sync tests count.
+        let _guard = ARCHIVE_SYNC_TEST_LOCK.lock().expect("lock sync test");
+        let dir = TempDir::new().unwrap();
+        let mut log = Log::new(dir.path(), unrotated_config()).unwrap();
+        write_test_entry(&mut log, b"MESSAGE=first", 1_700_000_000_000_001);
+        let full = log.active_file().unwrap().path().to_string();
+        let clocks = log.clock_state();
+        log.injected_file_full = 3;
+        let err = log
+            .write_entry_with_timestamps(
+                &[b"MESSAGE=too big"],
+                EntryTimestamps::default()
+                    .with_entry_realtime_usec(1_700_000_000_000_002)
+                    .with_entry_monotonic_usec(1_700_000_000_000_002),
+            )
+            .expect_err("entry must not fit");
+        assert!(
+            matches!(err, WriterError::Journal(JournalError::JournalFileFull)),
+            "{err:?}"
+        );
+        assert_eq!(
+            log.injected_file_full, 1,
+            "one attempt in the full file, one retry in the new file"
+        );
+        assert_eq!(log.clock_state(), clocks, "refused entry moved the clocks");
+        assert_ne!(
+            log.active_file().unwrap().path(),
+            full,
+            "Log did not rotate away from the full file"
+        );
     }
 
     fn test_uuid(seed: u8) -> uuid::Uuid {

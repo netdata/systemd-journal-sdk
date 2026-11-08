@@ -431,8 +431,9 @@ Current shared writer layout contract:
   SOW-0123). Unset, a fresh Rust chain starts at wall-clock time, so past
   caller realtime is clamped forward, while a fresh Go chain starts at zero.
   Seeds at or above `2^55 - 1` are rejected so `seed + 1` stays inside
-  systemd's valid realtime range `(0, 2^55)`. The writers do not yet reject
-  caller-supplied realtime at or above `2^55`; that gap is tracked in SOW-0156. Eager open names the active file before
+  systemd's valid realtime range `(0, 2^55)`. Caller-supplied entry
+  timestamps outside that range are refused before mutation (see the
+  timestamp rule below). Eager open names the active file before
   any event, so event-time filenames need lazy open.
 
 Current writer performance certification status:
@@ -622,12 +623,14 @@ Current shared high-level directory writer API slice:
   missing tail-entry-boot-ID flag, archived state, sealed files (sealing
   state cannot be restored, so the tail would be unsealed), invalid tail metadata
   (head realtime outside `1..2^55-1`, tail realtime or monotonic at or above
-  2^55, null tail boot ID) and regular files above 4 GiB, as unsupported and
+  2^55, null tail boot ID) and regular files of 4 GiB or more, as unsupported and
   before mutation. Readers keep accepting these files. Log set-aside does not
   use an out-of-range tail timestamp as a clock floor. Root-retention Logs
   archive such a current active under its archive name instead of setting it
   aside, and finalize retired files the same way, through an archive-only
-  open that skips these refusals.
+  open that skips these refusals. Every open, reader, append and archive-only
+  alike, refuses an unknown header state and a sealed header shorter than 240
+  bytes, as systemd's journal_file_verify_header does.
 - Rust and Go writers refuse entry timestamps with realtime outside
   `1..2^55-1` or monotonic at or above 2^55 before mutation (Go
   `ErrTimestampOutOfRange`, Rust `JournalError::TimestampOutOfRange`); the

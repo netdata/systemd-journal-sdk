@@ -1331,6 +1331,55 @@ fn reader_open_refuses_unknown_state_and_short_sealed_header() {
     );
 }
 
+// Writable opens apply the same every-open refusals as readers, before any
+// mutation. Paired with Go TestWritableOpenRefusesUnknownStateAndShortSealedHeader.
+#[test]
+fn writable_open_refuses_unknown_state_and_short_sealed_header() {
+    type Patch = fn(&Path);
+    let cases: [(&str, Patch, fn(&JournalError) -> bool); 2] = [
+        (
+            "state-3",
+            |path| patch_header(path, 16, &[3]),
+            |err| matches!(err, JournalError::InvalidJournalFileState),
+        ),
+        (
+            "sealed-232",
+            |path| {
+                patch_u32(path, 8, |v| v | HeaderCompatibleFlags::Sealed as u32);
+                let arena = read_u64_at(path, 96);
+                patch_header(path, 88, &232u64.to_le_bytes());
+                patch_header(path, 96, &(arena + 40).to_le_bytes());
+            },
+            |err| matches!(err, JournalError::InvalidObjectLocation),
+        ),
+    ];
+    for (name, patch, expected) in cases {
+        for archive_only in [false, true] {
+            let dir = TempDir::new().expect("create temp dir");
+            let (path, repo_file) = header_gate_journal(&dir, false);
+            patch(&path);
+            let before = std::fs::read(&path).expect("read journal before open");
+            let result = if archive_only {
+                JournalFile::<MmapMut>::open_for_archive(&repo_file, 8 * 1024 * 1024)
+            } else {
+                JournalFile::<MmapMut>::open_for_append(&repo_file, 8 * 1024 * 1024)
+            };
+            let err = result
+                .err()
+                .unwrap_or_else(|| panic!("{name}, archive_only={archive_only}: must refuse"));
+            assert!(
+                expected(&err),
+                "{name}, archive_only={archive_only}: {err:?}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("read journal after open"),
+                before,
+                "{name}, archive_only={archive_only}"
+            );
+        }
+    }
+}
+
 // SDK writers before this check, like systemd's, stored a truncated 32-bit
 // tail entry array hint once a regular file grew past 4 GiB. Paired with Go
 // TestReadersIgnoreTailArrayHintAboveFourGiB.
@@ -1354,6 +1403,48 @@ fn committed_arena_ignores_tail_array_hint_above_four_gib() {
         let journal = JournalFile::<crate::file::Mmap>::open(&repo_file, 4096).expect("open");
         let result = journal.validate_committed_arena();
         assert_eq!(result.is_ok(), large, "large={large}: {result:?}");
+        if large {
+            // Readers still reach every entry through the entry arrays.
+            let mut offsets = Vec::new();
+            journal.entry_offsets(&mut offsets).expect("entry offsets");
+            assert_eq!(offsets.len() as u64, journal.journal_header_ref().n_entries);
+            assert!(!offsets.is_empty());
+        }
+    }
+}
+
+// Paired with Go TestCreateRefusesOversizeLayoutWithoutTouchingTarget.
+#[test]
+fn create_refuses_oversize_layout_without_touching_target() {
+    let dir = TempDir::new().expect("create temp dir");
+    let buckets = (crate::file::writer::JOURNAL_COMPACT_SIZE_MAX as usize)
+        / std::mem::size_of::<crate::file::HashItem>()
+        + 1;
+    let options = || {
+        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+            .with_data_hash_table_buckets(buckets)
+    };
+    for existing in [false, true] {
+        let path = dir
+            .path()
+            .join(format!("system{}.journal", u8::from(existing)));
+        if existing {
+            std::fs::write(&path, b"keep").expect("write existing file");
+        }
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+        let err = JournalFile::<MmapMut>::create(&repo_file, options())
+            .err()
+            .expect("layout above 4 GiB must be refused");
+        assert!(
+            matches!(err, JournalError::ObjectExceedsFileBounds),
+            "{err:?}"
+        );
+        if existing {
+            assert_eq!(std::fs::read(&path).expect("read existing"), b"keep");
+        } else {
+            assert!(!path.exists(), "refused create left a file behind");
+        }
     }
 }
 
