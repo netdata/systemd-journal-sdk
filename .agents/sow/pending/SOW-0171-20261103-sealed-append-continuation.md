@@ -168,7 +168,57 @@ Failure handling:
 
 ## Validation
 
-Pending implementation.
+Acceptance criteria evidence:
+
+- Pending activation.
+
+Tests or equivalent validation:
+
+- Pending activation.
+
+Real-use evidence:
+
+- Pending activation.
+
+Reviewer findings:
+
+- Pending activation.
+
+Same-failure scan:
+
+- Pending activation.
+
+Sensitive data gate:
+
+- This planning artifact contains no raw secrets or sensitive runtime data.
+
+Artifact maintenance gate:
+
+- Pending activation.
+
+Specs update:
+
+- Pending activation.
+
+Project skills update:
+
+- Pending activation.
+
+End-user/operator docs update:
+
+- Pending activation.
+
+End-user/operator skills update:
+
+- Pending activation.
+
+Lessons:
+
+- Pending activation.
+
+Follow-up mapping:
+
+- Pending activation.
 
 ## Outcome
 
