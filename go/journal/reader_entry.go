@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 )
@@ -147,15 +148,18 @@ func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {
 	for _, dataOff := range entries {
 		payload, err := r.readDataPayloadTemp(dataOff)
 		if err != nil {
+			if recoverableEntryDataError(err) {
+				continue
+			}
 			return nil, fmt.Errorf("read data object at offset %d for entry at offset %d: %w", dataOff, offset, err)
-		}
-		nameBytes, value, ok := splitRawPayload(payload)
-		if !ok {
-			return nil, fmt.Errorf("%w: data object at offset %d has no field separator", errCorruptObject, dataOff)
 		}
 
 		payloadCopy := cloneBytes(payload)
 		payloads = append(payloads, payloadCopy)
+		nameBytes, value, ok := splitRawPayload(payload)
+		if !ok {
+			continue
+		}
 		nameCopy := cloneBytes(nameBytes)
 		valueCopy := cloneBytes(value)
 		rawFields = append(rawFields, RawField{Name: nameCopy, Value: valueCopy})
@@ -205,6 +209,13 @@ func formatCursorFromDirectoryKey(key directoryEntryKey) string {
 		key.monotonic,
 		key.realtime,
 		key.xorHash)
+}
+
+// recoverableEntryDataError reports a bad DATA object that costs one field, not
+// the entry; sd_journal_enumerate_data skips those too (sd-journal.c).
+func recoverableEntryDataError(err error) bool {
+	var bounds readerBoundsError
+	return errors.Is(err, errCorruptObject) || errors.As(err, &bounds)
 }
 
 func (r *Reader) readDataPayloadTemp(offset uint64) ([]byte, error) {

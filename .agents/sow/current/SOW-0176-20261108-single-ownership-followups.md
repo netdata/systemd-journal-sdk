@@ -2,14 +2,15 @@
 
 ## Status
 
-Status: paused
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: activated 2026-11-08 on branch `sow-0176/single-ownership-followups`
 (stacked on SOW-0097); decisions 8 and 9 made; paused 2026-11-08 by user
 decision while the stacked PRs' review findings are fixed (decision 1A);
-items 3-9 investigated, user asked for more information before deciding.
+resumed 2026-11-08 with every decision made (see `## Implications And
+Decisions`).
 
 ## Requirements
 
@@ -101,7 +102,7 @@ Decisions), plus the 2026-11-08 investigations:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: ready
 
 Problem / root-cause model: parallel Go/Rust and CLI/SDK implementations
 drifted before single ownership was a project rule.
@@ -128,8 +129,7 @@ verify matrices with the pinned oracles.
 
 Artifact impact plan: specs and API docs for any contract change.
 
-Open decisions: 8 and 9 above; whether to build an FSS-enabled v262 oracle
-for I7.
+Open decisions: none; all recorded under `## Implications And Decisions`.
 
 ## Implications And Decisions
 
@@ -154,7 +154,11 @@ User decisions on 2026-11-08 about the open stacked PRs' bot reviews:
 Investigation results for items 3-9 (2026-11-08, read-only helpers, verified
 where noted): see `## Analysis`.
 
-Decisions awaiting the user (presented 2026-11-08; evidence in `## Analysis`):
+User decisions on 2026-11-08 on the options below: item 4 = B, 5 = B, 6 = A,
+7 = A, 8 = A, 9 = A, new = yes, I7 = A. I7 = A is the user's approval to install
+`libgcrypt20-dev` system-wide, the one exception to the repository boundary.
+
+Options as presented (evidence in `## Analysis`):
 
 - Item 4, boot listing without `_BOOT_ID` DATA. A: drop the header fallback
   everywhere (matches v262, but `ListBoots` returns nothing for files the core
@@ -188,7 +192,18 @@ Decisions awaiting the user (presented 2026-11-08; evidence in `## Analysis`):
 
 ## Plan
 
-Pending the decisions above.
+One chunk per item, test first, both languages, committed when verified:
+
+1. Item 7, Rust `open_files` deduplicates.
+2. New, Rust single-value maps keep the first repeated value.
+3. Item 9, Go keeps entries with damaged fields.
+4. Item 5, Rust detects a missing main entry array at open.
+5. Item 6, Go retention counts and deletes `*.journal~`.
+6. Item 4, CLIs match v262; SDK callers opt into the header fallback.
+7. T67 reader-level live posting bound; T69/T84 Netdata non-UTF-8 namespace
+   names.
+8. I7, FSS-enabled v262 oracle and verify-key parity.
+9. Item 8, record the two differences and close.
 
 ## Implementation And Review Plan
 
@@ -217,6 +232,20 @@ Execution Log.
 ## Execution Log
 
 ### 2026-11-08
+
+- I7 prerequisite: `libgcrypt20-dev` 1.10.3-2ubuntu0.2 and its dependency
+  `libgpg-error-dev` installed with the user's approval; recorded in the host
+  docs. The v262 oracle is reconfigured with `-Dgcrypt=enabled`
+  (`HAVE_GCRYPT 1`; `--version` does not list this feature in v262).
+
+- Item 7: Rust `DirectoryReader::open_files_with_options` calls `unique_files`.
+- New: Rust single-value maps keep the first repeated value.
+- Item 9: Go keeps an entry with a damaged field and returns a payload without
+  `=` in `Payloads` only. Where Rust and systemd differed, systemd decided:
+  a DATA object with the wrong type or a bad size is skipped in both languages
+  (`sd-journal.c` skips `-EADDRNOTAVAIL` and `-EBADMSG`). Decompression failures
+  still fail the entry in both, as before.
+  Tests: `tests/entry_damage.rs`, `reader_entry_damage_test.go`.
 
 - Bot-review decision 1A delivered on the stack below this branch and merged
   up; PR #26 T60 and T72 are answered by this file's decision list and

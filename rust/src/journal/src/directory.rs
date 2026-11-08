@@ -142,16 +142,19 @@ impl DirectoryReader {
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
     {
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .map(|p| p.as_ref().to_path_buf())
+            .collect();
         let mut files = Vec::new();
-        for path in paths {
-            let path = path.as_ref();
-            if !path.is_file() || !is_journal_file_name(path) {
+        for path in unique_files(&paths) {
+            if !path.is_file() || !is_journal_file_name(&path) {
                 return Err(SdkError::InvalidPath(format!(
                     "not a journal file: {}",
                     path.display()
                 )));
             }
-            files.push(FileReader::open_with_options(path, options)?);
+            files.push(FileReader::open_with_options(&path, options)?);
         }
 
         Self::from_readers(files, false)

@@ -46,9 +46,8 @@ order; the user may reorder it.
 
 ## Current
 
-- SOW-0176 - Single Ownership Follow-ups: paused 2026-11-08 while the open
-  PRs' review findings are fixed; decision 8 = A, decision 9 = B (done);
-  items 3-9 investigated, awaiting user decisions.
+- SOW-0176 - Single Ownership Follow-ups: in progress; all user decisions made
+  2026-11-08 and being implemented.
 
 ## Pending
 
