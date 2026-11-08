@@ -80,9 +80,8 @@ def compare(baseline: dict[str, int], current: dict[str, int]) -> tuple[list[str
 
 def run_jscpd(command: list[str]) -> list[dict]:
     # The jscpd command comes from the CI workflow, and runs without a shell.
-    # nosemgrep
     version = subprocess.run(  # nosec B603
-        [*command, "--version"], check=True, capture_output=True, text=True
+        [*command, "--version"], check=True, capture_output=True, text=True  # nosemgrep
     ).stdout.strip().removeprefix("jscpd ").strip()
     if version != JSCPD_VERSION:
         raise SystemExit(
@@ -92,9 +91,8 @@ def run_jscpd(command: list[str]) -> list[dict]:
     with tempfile.TemporaryDirectory(prefix="dup-scan-") as tmp:
         for prefix, fmt in LANGUAGES.items():
             out = Path(tmp) / prefix
-            # nosemgrep
             subprocess.run(  # nosec B603
-                [
+                [  # nosemgrep
                     *command,
                     "--silent",
                     "--min-tokens",
