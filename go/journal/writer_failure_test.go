@@ -182,10 +182,12 @@ func TestWriterSyncFailureBlocksMutation(t *testing.T) {
 }
 
 func TestLogCreateFailureBlocksTruncatingRetry(t *testing.T) {
-	opts := testOptions()
-	opts.Compact = true
-	opts.DataHashTableBuckets = 1 << 29 // Exceeds compact capacity after initial truncation.
-	l, _ := newTestLog(t, LogConfig{Options: opts, Source: "system", StrictSystemdNaming: true})
+	old := newWriterArena
+	defer func() { newWriterArena = old }()
+	newWriterArena = func(*os.File, uint64) (*mappedArena, error) {
+		return nil, errors.New("arena mapping failure")
+	}
+	l, _ := newTestLog(t, LogConfig{Options: testOptions(), Source: "system", StrictSystemdNaming: true})
 	if err := l.Append([]Field{StringField("MESSAGE", "first")}, EntryOptions{MonotonicUsec: 1}); !errors.Is(err, ErrWriterFailed) {
 		t.Fatalf("first Append = %v", err)
 	}

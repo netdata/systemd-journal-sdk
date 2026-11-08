@@ -653,14 +653,7 @@ impl<M: MemoryMap> JournalFile<M> {
         if header.incompatible_flags & !SUPPORTED_INCOMPATIBLE_FLAGS != 0 {
             return Err(JournalError::UnsupportedJournalFile);
         }
-        // systemd refuses these on every open (journal-file.c
-        // journal_file_verify_header).
-        if header.state > JournalState::Archived as u8 {
-            return Err(JournalError::InvalidJournalFileState);
-        }
-        if header.has_compatible_flag(HeaderCompatibleFlags::Sealed) && header.header_size < 240 {
-            return Err(JournalError::InvalidObjectLocation);
-        }
+        header.validate_open_state()?;
         let sanitized_header =
             (header.header_size < header_size).then(|| sanitize_header_for_size(header));
 

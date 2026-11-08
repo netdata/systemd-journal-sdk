@@ -133,9 +133,6 @@ func (v *graphVerifier) validateHeader() error {
 	if err := v.validateHeaderBounds(); err != nil {
 		return err
 	}
-	if v.header.state != stateOffline && v.header.state != stateOnline && v.header.state != stateArchived {
-		return fmt.Errorf("invalid journal state %d", v.header.state)
-	}
 	if v.header.compatibleFlags&^compatibleSupportedMask != 0 {
 		return fmt.Errorf("unsupported compatible flags 0x%x", v.header.compatibleFlags)
 	}

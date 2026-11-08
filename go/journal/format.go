@@ -3,6 +3,7 @@ package journal
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
 
 const (
@@ -337,8 +338,11 @@ func parseHeader(src []byte) (journalHeader, error) {
 	// systemd refuses these on every open (journal-file.c
 	// journal_file_verify_header): an unknown state, or a sealed file whose
 	// header has no n_entry_arrays.
-	if h.state > stateArchived || (h.compatibleFlags&compatibleSealed != 0 && h.headerSize < 240) {
-		return journalHeader{}, errInvalidJournal
+	if h.state > stateArchived {
+		return journalHeader{}, fmt.Errorf("%w: invalid journal state %d", errInvalidJournal, h.state)
+	}
+	if h.compatibleFlags&compatibleSealed != 0 && h.headerSize < 240 {
+		return journalHeader{}, fmt.Errorf("%w: sealed header_size %d is below 240", errInvalidJournal, h.headerSize)
 	}
 	return h, nil
 }
