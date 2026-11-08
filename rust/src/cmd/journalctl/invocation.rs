@@ -85,6 +85,9 @@ fn parse_id(value: &[u8]) -> Option<[u8; 16]> {
     (id != [0; 16]).then_some(id)
 }
 
+/// Bounds the valid-ID prefilter; paired with Go invocationEligibilityMaxTerms.
+const ELIGIBILITY_MAX_TERMS: usize = 32;
+
 fn eligibility(journal: &mut SdJournal) -> Result<Vec<Vec<u8>>> {
     let mut matches = Vec::new();
     for field in INVOCATION_ID_FIELDS {
@@ -157,6 +160,14 @@ impl Walker {
             Vec::new()
         };
         let done = option.is_some() && eligibility.is_empty();
+        // The OR prefilter costs one term per step. With many IDs that is
+        // slower than visiting the unit's rows, which is what native discovery
+        // does; rows without a valid ID are skipped either way.
+        let eligibility = if eligibility.len() > ELIGIBILITY_MAX_TERMS {
+            Vec::new()
+        } else {
+            eligibility
+        };
         let mut walker = Self {
             scan,
             bounds: if done {
