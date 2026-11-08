@@ -641,6 +641,10 @@ Current shared high-level directory writer API slice:
   leaves the file in place. Default chain naming treats only online files as
   active, so an unknown-state chain file stays behind as history while the new
   file still continues its sequence.
+- Rust and Go non-root directory retention counts disposed `*.journal~` files
+  of the same source, both `<source>@...` forms, and deletes them oldest first
+  and before archives, as journald's vacuum does. Max-age retention deletes any
+  expired file whatever its place in that order.
 - Rust and Go writers refuse entry timestamps with realtime outside
   `1..2^55-1` or monotonic at or above 2^55 before mutation (Go
   `ErrTimestampOutOfRange`, Rust `JournalError::TimestampOutOfRange`); the
@@ -1079,11 +1083,12 @@ Current Go reader feature slice:
 - boot listing (`Reader.ListBoots`, `DirectoryReader.ListBoots`,
   `SdJournalListBoots`) reports every boot from the `_BOOT_ID` DATA entry
   arrays, merged across files in directory order and ordered by last entry,
-  first entry and ID. When no usable canonical index exists it scans entry
-  headers instead, so header IDs can name boots then; a directory scans only
-  when no file has such an index or one cannot be read. Only canonical
-  lowercase `_BOOT_ID` values name indexed boots. It does not change matches
-  or position. Both journalctl rewrites use it;
+  first entry and ID. A journal with no `_BOOT_ID` DATA lists no boots, as
+  v262 journalctl does; `HeaderFallback` (Rust `header_fallback`) scans entry
+  headers then, and for a directory only when no file has `_BOOT_ID` DATA.
+  Noncanonical `_BOOT_ID` DATA counts as present but names no boot. Read
+  failures return an error. It does not change matches or position. Both
+  journalctl rewrites use the default;
 - file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,

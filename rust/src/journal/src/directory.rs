@@ -887,13 +887,17 @@ impl DirectoryReader {
     /// merged directory order. It does not change matches or the read
     /// position.
     pub fn list_boots(&self) -> Result<Vec<BootInfo>> {
+        self.list_boots_with_options(BootListOptions::default())
+    }
+
+    /// [`Self::list_boots`] with the given options. `header_fallback` applies
+    /// only when no file in the directory has `_BOOT_ID` DATA.
+    pub fn list_boots_with_options(&self, options: BootListOptions) -> Result<Vec<BootInfo>> {
         let mut merged: HashMap<[u8; 16], BootRange> = HashMap::new();
-        let mut indexed = true;
+        let mut any_data = false;
         for reader in &self.files {
-            let Ok(ranges) = reader.boot_ranges() else {
-                indexed = false;
-                break;
-            };
+            let (ranges, has_data) = reader.boot_ranges()?;
+            any_data |= has_data;
             for boot in ranges {
                 merged
                     .entry(boot.boot_id)
@@ -908,7 +912,7 @@ impl DirectoryReader {
                     .or_insert(boot);
             }
         }
-        if indexed && !merged.is_empty() {
+        if any_data || !options.header_fallback {
             return Ok(order_boots(merged.values().map(BootRange::times).collect()));
         }
         let mut boots = HashMap::new();

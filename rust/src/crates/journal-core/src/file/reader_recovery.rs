@@ -388,6 +388,27 @@ impl<M: MemoryMap> JournalFile<M> {
             .transpose()
     }
 
+    /// The last entry a reader may see: the recovered prefix's end, else the
+    /// header's tail entry, else the end of the global entry array.
+    #[doc(hidden)]
+    pub fn reader_last_visible_entry(&self) -> Result<Option<NonZeroU64>> {
+        if let Some(prefix) = self.recovery.get() {
+            return Ok(prefix.last_entry);
+        }
+        let header = self.journal_header_ref();
+        if header.n_entries == 0 {
+            return Ok(None);
+        }
+        if header.header_size >= 272 {
+            if let Some(tail) = NonZeroU64::new(header.tail_entry_offset) {
+                return Ok(Some(tail));
+            }
+        }
+        let mut offsets = Vec::new();
+        self.entry_offsets(&mut offsets)?;
+        Ok(offsets.last().copied())
+    }
+
     #[doc(hidden)]
     pub fn recover_reader_tail(&self, err: &JournalError) -> Result<bool> {
         if !self.recovery_enabled

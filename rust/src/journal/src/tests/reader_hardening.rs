@@ -798,7 +798,11 @@ fn directory_repair_preserves_pending_merge_rows() {
         }
         assert_eq!(times, vec![2000, 3000]);
         assert!(directory.recovery_statuses().is_empty());
-        let boots = directory.list_boots().unwrap();
+        let boots = directory
+            .list_boots_with_options(BootListOptions {
+                header_fallback: true,
+            })
+            .unwrap();
         assert_eq!(boots.len(), 1);
         assert_eq!(boots[0].last_entry, 3000);
         directory.seek_tail();

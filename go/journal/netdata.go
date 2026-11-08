@@ -3023,11 +3023,17 @@ func journalFileExactSourceName(path string) string {
 			name = trimJournalSuffix(name)
 		}
 		if strings.HasPrefix(name, "remote-") {
-			return name
+			return lossyUTF8(name)
 		}
 		return ""
 	}
-	return localNamespaceSourceName(path)
+	return lossyUTF8(localNamespaceSourceName(path))
+}
+
+// lossyUTF8 replaces each invalid byte with U+FFFD, as the Rust layer's lossy
+// conversion does, so both languages expose the same source name.
+func lossyUTF8(s string) string {
+	return string([]rune(s))
 }
 
 func trimJournalSuffix(name string) string {

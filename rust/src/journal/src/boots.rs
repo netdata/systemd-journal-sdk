@@ -35,9 +35,13 @@ impl FileReader {
     /// Lists the boots in this file, oldest first, as `journalctl
     /// --list-boots` does. It does not change matches or the read position.
     pub fn list_boots(&self) -> Result<Vec<BootInfo>> {
-        if let Ok(ranges) = self.boot_ranges()
-            && !ranges.is_empty()
-        {
+        self.list_boots_with_options(BootListOptions::default())
+    }
+
+    /// [`Self::list_boots`] with the given options.
+    pub fn list_boots_with_options(&self, options: BootListOptions) -> Result<Vec<BootInfo>> {
+        let (ranges, has_data) = self.boot_ranges()?;
+        if has_data || !options.header_fallback {
             return Ok(order_boots(ranges.iter().map(BootRange::times).collect()));
         }
         let mut boots = HashMap::new();
@@ -46,10 +50,11 @@ impl FileReader {
     }
 
     /// First and last entries of every boot that has `_BOOT_ID` DATA in this
-    /// file, from the DATA objects' entry arrays. This is what a `_BOOT_ID`
-    /// match with seek_head/seek_tail finds, without decoding entries or
-    /// touching the caller's matches and position.
-    pub(crate) fn boot_ranges(&self) -> Result<Vec<BootRange>> {
+    /// file, from the DATA objects' entry arrays, and whether the file has any
+    /// `_BOOT_ID` DATA. This is what a `_BOOT_ID` match with
+    /// seek_head/seek_tail finds, without decoding entries or touching the
+    /// caller's matches and position.
+    pub(crate) fn boot_ranges(&self) -> Result<(Vec<BootRange>, bool)> {
         let seqnum_id = self.header_snapshot.header.seqnum_id;
         self.inner
             .with_file(|file| with_reader_recovery(file, || file_boot_ranges(file, seqnum_id)))
@@ -82,9 +87,13 @@ fn with_reader_recovery<T>(
     }
 }
 
-fn file_boot_ranges(file: &JournalFile<Mmap>, seqnum_id: [u8; 16]) -> CoreResult<Vec<BootRange>> {
+fn file_boot_ranges(
+    file: &JournalFile<Mmap>,
+    seqnum_id: [u8; 16],
+) -> CoreResult<(Vec<BootRange>, bool)> {
     let mut data_offsets = Vec::new();
     let mut decompressed = Vec::new();
+    let mut has_data = false;
     for item in file.field_data_objects_with_offsets(b"_BOOT_ID")? {
         let (offset, data) = item?;
         let payload = if data.is_compressed() {
@@ -94,9 +103,9 @@ fn file_boot_ranges(file: &JournalFile<Mmap>, seqnum_id: [u8; 16]) -> CoreResult
         } else {
             data.raw_payload()
         };
-        let boot_id = payload
-            .strip_prefix(b"_BOOT_ID=")
-            .and_then(parse_canonical_boot_id);
+        let value = payload.strip_prefix(b"_BOOT_ID=");
+        has_data |= value.is_some();
+        let boot_id = value.and_then(parse_canonical_boot_id);
         drop(data);
         if let Some(boot_id) = boot_id {
             data_offsets.push((offset, boot_id));
@@ -114,6 +123,10 @@ fn file_boot_ranges(file: &JournalFile<Mmap>, seqnum_id: [u8; 16]) -> CoreResult
             xor_hash: entry.header.xor_hash,
         })
     };
+    // Postings may reach past the visible tail of a dirty or growing journal.
+    let Some(last_visible) = file.reader_last_visible_entry()? else {
+        return Ok((Vec::new(), has_data));
+    };
     let mut ranges = Vec::with_capacity(data_offsets.len());
     for (offset, boot_id) in data_offsets {
         let first = file.data_object_directed_partition_point(
@@ -123,10 +136,12 @@ fn file_boot_ranges(file: &JournalFile<Mmap>, seqnum_id: [u8; 16]) -> CoreResult
         )?;
         let last = file.data_object_directed_partition_point(
             offset,
-            |_| Ok(true),
+            |candidate| Ok(candidate <= last_visible),
             ArrayDirection::Backward,
         )?;
-        if let (Some(first), Some(last)) = (first, last) {
+        if let (Some(first), Some(last)) = (first, last)
+            && first <= last_visible
+        {
             ranges.push(BootRange {
                 boot_id,
                 first: key_at(first)?,
@@ -134,7 +149,7 @@ fn file_boot_ranges(file: &JournalFile<Mmap>, seqnum_id: [u8; 16]) -> CoreResult
             });
         }
     }
-    Ok(ranges)
+    Ok((ranges, has_data))
 }
 
 fn file_boot_times(file: &JournalFile<Mmap>) -> CoreResult<HashMap<[u8; 16], BootTimes>> {

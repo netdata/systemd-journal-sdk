@@ -74,3 +74,24 @@ func TestDamagedDataObjectCostsTheFieldNotTheEntry(t *testing.T) {
 		})
 	}
 }
+
+// Paired with Rust missing_main_entry_array_hides_every_entry.
+func TestMissingMainEntryArrayHidesEveryEntry(t *testing.T) {
+	for _, filtered := range []bool{false, true} {
+		path := headerGateJournal(t, false)
+		patchHeader(t, path, 176, u64Bytes(0))
+		j, err := SdJournalOpenFiles([]string{path}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer j.Close()
+		if filtered {
+			if err := SdJournalAddMatch(j, []byte("MESSAGE=gate")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n, err := SdJournalNext(j); err != nil || n != 0 {
+			t.Fatalf("filtered=%v next = %d, %v", filtered, n, err)
+		}
+	}
+}

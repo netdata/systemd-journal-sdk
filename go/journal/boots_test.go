@@ -106,13 +106,17 @@ func TestListBootsMultiBoot(t *testing.T) {
 	}
 }
 
-// Journals without _BOOT_ID DATA fall back to entry header boot IDs.
+// Journals without _BOOT_ID DATA list no boots, as v262 journalctl does,
+// unless the caller opts into the entry header boot IDs.
 func TestListBootsFallsBackToEntryHeaders(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "system.journal")
 	writeBootTestJournal(t, path, 0x30, false, []bootTestEntry{{0xd0, 500, 1}, {0xd0, 510, 2}, {0xe0, 600, 1}})
 	r := mustOpenReaderFile(t, path)
 	defer r.Close()
-	got, err := r.ListBoots()
+	if got, err := r.ListBoots(); err != nil || len(got) != 0 {
+		t.Fatalf("default ListBoots = %+v, %v; want none", got, err)
+	}
+	got, err := r.ListBootsWithOptions(BootListOptions{HeaderFallback: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +144,21 @@ func TestListBootsIgnoresNonCanonicalBootIDData(t *testing.T) {
 	}
 	if want := []BootInfo{bootInfo(0, 0xa0, 100, 100)}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ListBoots\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+// Noncanonical _BOOT_ID DATA still counts as present, so the fallback must not
+// report boots a _BOOT_ID match would not find.
+func TestListBootsFallbackIgnoresAllNonCanonicalData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "system.journal")
+	writeBootTestJournalData(t, path, 0x51, func(b byte) string {
+		return strings.ToUpper(bootTestID(b).String())
+	}, []bootTestEntry{{0xbb, 200, 1}})
+	r := mustOpenReaderFile(t, path)
+	defer r.Close()
+	got, err := r.ListBootsWithOptions(BootListOptions{HeaderFallback: true})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("ListBootsWithOptions = %+v, %v; want none", got, err)
 	}
 }
 

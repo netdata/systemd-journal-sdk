@@ -33,7 +33,11 @@ func TestNetdataNonUTF8JournalNamesAreListedAndClassified(t *testing.T) {
 		t.Fatalf("source type = %d, want %d", got, want)
 	}
 	remote := "/var/log/journal/remote/remote-h\xffst@x.journal"
-	if got := journalFileExactSourceName(remote); got != "remote-h\xffst" {
+	if got := journalFileExactSourceName(remote); got != "remote-h\uFFFDst" {
 		t.Fatalf("exact source name = %q", got)
+	}
+	namespaced := filepath.Join("/var/log/journal", "machine.n\xffs", "system.journal")
+	if got := journalFileExactSourceName(namespaced); got != "namespace-n\uFFFDs" {
+		t.Fatalf("namespace source name = %q", got)
 	}
 }

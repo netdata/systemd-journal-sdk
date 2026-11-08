@@ -96,3 +96,22 @@ fn open_files_opens_a_repeated_path_once() {
     assert!(reader.next().unwrap());
     assert!(!reader.next().unwrap(), "the same file was read twice");
 }
+
+// Paired with Go TestMissingMainEntryArrayHidesEveryEntry.
+#[test]
+fn missing_main_entry_array_hides_every_entry() {
+    for filtered in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = journal_path(dir.path());
+        write_entry(&path, &[b"MESSAGE=hidden"]);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[176..184].fill(0);
+        std::fs::write(&path, bytes).unwrap();
+
+        let mut reader = DirectoryReader::open_files([&path]).unwrap();
+        if filtered {
+            reader.add_match(b"MESSAGE=hidden");
+        }
+        assert!(!reader.next().unwrap(), "filtered={filtered}");
+    }
+}

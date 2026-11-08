@@ -98,7 +98,8 @@ Decisions), plus the 2026-11-08 investigations:
   seqnum/monotonic getters and Netdata row expansion.
 - New: single-value field maps keep the first repeated value in Go and the
   last in Rust (`reader_helpers.rs:75`); systemd returns the first.
-- I7: an FSS-enabled v262 oracle needs libgcrypt headers (not installed).
+- I7: an FSS-enabled v262 oracle needs OpenSSL (corrected 2026-11-08; the first
+  analysis said libgcrypt).
 
 ## Pre-Implementation Gate
 
@@ -233,10 +234,23 @@ Execution Log.
 
 ### 2026-11-08
 
-- I7 prerequisite: `libgcrypt20-dev` 1.10.3-2ubuntu0.2 and its dependency
-  `libgpg-error-dev` installed with the user's approval; recorded in the host
-  docs. The v262 oracle is reconfigured with `-Dgcrypt=enabled`
-  (`HAVE_GCRYPT 1`; `--version` does not list this feature in v262).
+- I7 prerequisite, correction: `libgcrypt20-dev` 1.10.3-2ubuntu0.2 and its
+  dependency `libgpg-error-dev` were installed with the user's approval, then
+  found unnecessary: v262 sealing uses OpenSSL (`src/shared/journal-authenticate.c:21`,
+  `fsprg-openssl.c`), and the earlier analysis naming libgcrypt was wrong.
+  `libssl-dev` was already installed, so the oracle is rebuilt with
+  `-Dopenssl=enabled` (`+OPENSSL`).
+
+- Item 4: the default boot list has no header fallback, as v262; a
+  `BootListOptions` flag opts in. Noncanonical `_BOOT_ID` DATA counts as present
+  (T90/T91), and read errors are returned.
+- Item 5: Rust activates recovery at open when the main entry array is missing.
+- Item 6: Go retention counts and deletes `*.journal~`, first and oldest first.
+  Same-path fix: Rust did not count disposed chain-named files
+  (`<source>@...@<usec>-<n>.journal~`), which parse as an unknown source. Go
+  max-age stops depending on the delete order.
+- T67: Rust `file_boot_ranges` stops at `reader_last_visible_entry`.
+- T69/T84: non-UTF-8 namespace and remote source names become U+FFFD in both.
 
 - Item 7: Rust `DirectoryReader::open_files_with_options` calls `unique_files`.
 - New: Rust single-value maps keep the first repeated value.

@@ -103,7 +103,8 @@ fn list_boots_multi_boot() {
     );
 }
 
-/// Journals without `_BOOT_ID` DATA fall back to ENTRY header boot IDs.
+/// Journals without `_BOOT_ID` DATA list no boots, as v262 journalctl does,
+/// unless the caller opts into the ENTRY header boot IDs.
 #[test]
 fn list_boots_falls_back_to_entry_headers() {
     let temp = tempfile::tempdir().unwrap();
@@ -115,8 +116,12 @@ fn list_boots_falls_back_to_entry_headers() {
         None,
     );
     let reader = FileReader::open(&path).unwrap();
+    assert!(reader.list_boots().unwrap().is_empty());
+    let options = BootListOptions {
+        header_fallback: true,
+    };
     assert_eq!(
-        rows(reader.list_boots().unwrap()),
+        rows(reader.list_boots_with_options(options).unwrap()),
         vec![boot(-1, 0xd0, 500, 510), boot(0, 0xe0, 600, 600)]
     );
 }
@@ -139,6 +144,53 @@ fn list_boots_ignores_non_canonical_boot_id_data() {
             }
         }),
     );
+    let reader = FileReader::open(&path).unwrap();
+    assert_eq!(
+        rows(reader.list_boots().unwrap()),
+        vec![boot(0, 0xa0, 100, 100)]
+    );
+}
+
+/// Noncanonical `_BOOT_ID` DATA still counts as present, so the fallback must
+/// not report boots a `_BOOT_ID` match would not find.
+#[test]
+fn list_boots_fallback_ignores_all_non_canonical_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("system.journal");
+    write_boot_journal(
+        &path,
+        0x51,
+        &[(0xbb, 200, 1)],
+        Some(|b| boot_hex(b).to_ascii_uppercase()),
+    );
+    let reader = FileReader::open(&path).unwrap();
+    let options = BootListOptions {
+        header_fallback: true,
+    };
+    assert!(reader.list_boots_with_options(options).unwrap().is_empty());
+}
+
+/// Postings past the visible tail do not reach the boot list.
+#[test]
+fn list_boots_stops_at_the_visible_tail() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("system.journal");
+    write_boot_journal(
+        &path,
+        0x52,
+        &[(0xa0, 100, 1), (0xa0, 200, 2)],
+        Some(boot_hex),
+    );
+    let repo = RepoFile::from_path(&path).unwrap();
+    let mut offsets = Vec::new();
+    JournalFile::<Mmap>::open(&repo, 4096)
+        .unwrap()
+        .entry_offsets(&mut offsets)
+        .unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[264..272].copy_from_slice(&offsets[0].get().to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
     let reader = FileReader::open(&path).unwrap();
     assert_eq!(
         rows(reader.list_boots().unwrap()),

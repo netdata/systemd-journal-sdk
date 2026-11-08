@@ -1,8 +1,8 @@
 #![allow(non_snake_case)]
 
 use crate::{
-    BootInfo, DirectoryReader, Entry, EntryEncoder, EntryOutputOptions, FileReader, ReaderOptions,
-    SdkError, export_entry_bytes, format_entry_text,
+    BootInfo, BootListOptions, DirectoryReader, Entry, EntryEncoder, EntryOutputOptions,
+    FileReader, ReaderOptions, SdkError, export_entry_bytes, format_entry_text,
 };
 use std::fmt;
 use std::path::Path;
@@ -500,9 +500,16 @@ impl SdJournal {
     /// Lists every boot, oldest first, as `journalctl --list-boots` does. It
     /// does not change matches or the read position.
     pub fn list_boots(&self) -> std::result::Result<Vec<BootInfo>, Error> {
+        self.list_boots_with_options(BootListOptions::default())
+    }
+
+    pub fn list_boots_with_options(
+        &self,
+        options: BootListOptions,
+    ) -> std::result::Result<Vec<BootInfo>, Error> {
         match &self.reader {
-            ReaderKind::File(reader) => reader.list_boots(),
-            ReaderKind::Directory(reader) => reader.list_boots(),
+            ReaderKind::File(reader) => reader.list_boots_with_options(options),
+            ReaderKind::Directory(reader) => reader.list_boots_with_options(options),
         }
         .map_err(map_error)
     }
@@ -654,6 +661,13 @@ pub fn SdJournalEnumerateField(j: &mut SdJournal) -> std::result::Result<Option<
 
 pub fn SdJournalListBoots(j: &mut SdJournal) -> std::result::Result<Vec<BootInfo>, Error> {
     j.list_boots()
+}
+
+pub fn SdJournalListBootsWithOptions(
+    j: &mut SdJournal,
+    options: BootListOptions,
+) -> std::result::Result<Vec<BootInfo>, Error> {
+    j.list_boots_with_options(options)
 }
 
 pub fn SdJournalQueryUnique(
