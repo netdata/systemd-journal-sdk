@@ -12,9 +12,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Pending
 
-- SOW-0161 - File Indexer Source Posting Membership: open source-analysis
-  lead, not activated. Investigate inherited source-map target membership and
-  captured-tail handling before selecting any behavior/performance change.
 - SOW-0160 - Go XZ Reader Dictionary Allocation: open, not activated. Tracks
   unchanged decoder allocation measured during SOW-0108; no redesign is
   authorized and no dependency is added to the current execution chain.
@@ -35,8 +32,8 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
-- SOW-0045, SOW-0071, SOW-0123 and SOW-0137: completed 2026-11-01; details
-  in the canonical ledger.
+- SOW-0045, SOW-0071, SOW-0123, SOW-0137 and SOW-0161: completed 2026-11-01;
+  details in the canonical ledger.
 - SOW-0121 - File-Backed Journalctl Full Parity And Ship Decision: completed.
   Directional cursor integration and PR12 fixes pass three internal reviews,
   3,514 native comparisons and146 portable controls. Pushed-head native CI is
