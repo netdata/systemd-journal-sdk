@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -116,5 +117,44 @@ func TestLogRefusesEntryThatDoesNotFitAnEmptyFile(t *testing.T) {
 	}
 	if log.ActivePath() != empty {
 		t.Fatal("Log rotated away from an empty file")
+	}
+}
+
+// Paired with Rust file_tests.rs create_refuses_oversize_layout_without_touching_target.
+func TestCreateRefusesOversizeLayoutWithoutTouchingTarget(t *testing.T) {
+	opts := testOptions()
+	opts.DataHashTableBuckets = int(journalCompactSizeMax/hashItemSize) + 1
+	dir := t.TempDir()
+
+	missing := filepath.Join(dir, "missing.journal")
+	if w, err := Create(missing, opts); err == nil {
+		_ = w.Close()
+		t.Fatal("Create() accepted a layout above 4 GiB")
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused Create() left a file behind: %v", err)
+	}
+
+	existing := filepath.Join(dir, "existing.journal")
+	if err := os.WriteFile(existing, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w, err := Create(existing, opts); err == nil {
+		_ = w.Close()
+		t.Fatal("Create() accepted a layout above 4 GiB")
+	}
+	if got := readFileForTest(t, existing); string(got) != "keep" {
+		t.Fatalf("refused Create() changed the existing file: %q", got)
+	}
+
+	// Invalid sealing options are refused just as early.
+	sealed := testOptions()
+	sealed.Seal = &SealOptions{Seed: []byte("short"), IntervalUsec: 1, StartUsec: 1}
+	if w, err := Create(existing, sealed); err == nil {
+		_ = w.Close()
+		t.Fatal("Create() accepted an invalid seal seed")
+	}
+	if got := readFileForTest(t, existing); string(got) != "keep" {
+		t.Fatalf("refused Create() changed the existing file: %q", got)
 	}
 }

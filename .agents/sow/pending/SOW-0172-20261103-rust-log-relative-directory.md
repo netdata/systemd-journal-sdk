@@ -59,8 +59,9 @@ Recommendation: A.
 
 Risks:
 
-- A: a later `chdir` in the caller no longer changes where files go (the same
-  as Go today, which resolves at open time through the OS).
+- A: a later `chdir` in the caller no longer changes where files go. This is
+  an intentional difference from Go, which keeps the relative path, so its
+  later operations follow the process working directory.
 
 ## Pre-Implementation Gate
 

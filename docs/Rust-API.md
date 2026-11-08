@@ -29,7 +29,8 @@ hint has a default, so existing custom object implementations can omit it.
 Unreleased writer hardening adds `JournalError::TimestampOutOfRange`, returned
 before mutation for entry timestamps systemd would refuse, and
 `JournalError::JournalFileFull`, returned before mutation when an entry could
-take the file past 4 GiB. Exhaustive matches must handle these variants.
+take the file past the `2^32 - 8 MiB` append ceiling (writers keep an 8 MiB
+growth step below 4 GiB). Exhaustive matches must handle these variants.
 
 The same unreleased update advances `journal-engine`'s persisted index cache
 from generation 3 to 4. Old entries are invalidated, because earlier array

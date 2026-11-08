@@ -156,9 +156,9 @@ CRITICAL REPOSITORY BOUNDARY:
 
 Failure handling:
 
-- Validation or audit failures are recorded in the Execution Log with
-  evidence; the SOW does not advance until they are fixed or a user decision
-  is recorded.
+- Activation, implementation, validation, reviewer or audit failures stop the
+  SOW; they are recorded in the Execution Log with evidence, and the SOW does
+  not advance until they are fixed or a user decision is recorded.
 
 ## Execution Log
 
