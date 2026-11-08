@@ -335,14 +335,8 @@ func TestReaderOpenRefusesUnknownStateAndShortSealedHeader(t *testing.T) {
 	})
 }
 
-// Writable opens apply the same every-open refusals as readers, before any
-// mutation. Paired with Rust
-// writable_open_refuses_unknown_state_and_short_sealed_header.
-func TestWritableOpenRefusesUnknownStateAndShortSealedHeader(t *testing.T) {
-	cases := []struct {
-		name  string
-		patch func(*testing.T, string)
-	}{
+func everyOpenRefusalCases() []appendTargetCase {
+	return []appendTargetCase{
 		{"state-3", func(t *testing.T, path string) { patchHeader(t, path, 16, []byte{3}) }},
 		{"sealed-header-232", func(t *testing.T, path string) {
 			patchHeaderU32(t, path, 8, func(v uint32) uint32 { return v | compatibleSealed })
@@ -351,6 +345,72 @@ func TestWritableOpenRefusesUnknownStateAndShortSealedHeader(t *testing.T) {
 			patchHeader(t, path, 96, u64Bytes(arena+40))
 		}},
 	}
+}
+
+// journald sets these aside through -EBADMSG and continues the sequence.
+// Paired with Rust log_sets_aside_active_file_with_refused_header.
+func TestLogSetsAsideActiveFileWithRefusedHeader(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		for _, c := range everyOpenRefusalCases() {
+			t.Run(fmt.Sprintf("strict=%v/%s", strict, c.name), func(t *testing.T) {
+				root := t.TempDir()
+				config := LogConfig{Options: testOptions(), Source: "system", StrictSystemdNaming: strict, RotationPolicy: RotationPolicy{}.WithMaxEntries(10)}
+				first := mustNewLogForTest(t, root, config, "first")
+				appendLogRange(t, first, "refused", "", 0, 2, 1_700_002_274_000_000)
+				syncLogForTest(t, first, "first")
+				activePath := forceCloseActiveWriter(t, first, "first")
+				c.patch(t, activePath)
+
+				second := mustNewLogForTest(t, root, config, "second")
+				// Default chain naming only treats online files as active,
+				// so state 3 stays behind as history.
+				want := 1
+				if !strict && c.name == "state-3" {
+					want = 0
+				}
+				assertDisposedJournalCount(t, second.JournalDirectory(), want)
+				appendLogEntry(t, second, "refused-2", "", 1_700_002_274_000_002, 3)
+				assertJournalSeqnumRange(t, second.ActivePath(), "replacement", 3, 3)
+				closeLogForTest(t, second, "second")
+			})
+		}
+	}
+}
+
+// A root Log can neither keep a disposed file nor archive a header every open
+// refuses, so it reports the error and leaves the file alone.
+// Paired with Rust root_log_refuses_active_file_with_refused_header.
+func TestRootLogRefusesActiveFileWithRefusedHeader(t *testing.T) {
+	for _, c := range everyOpenRefusalCases() {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			config := rootTestConfig()
+			first := mustNewLogForTest(t, root, config, "first")
+			appendLogRange(t, first, "root-refused", "", 0, 2, 1_700_002_274_000_000)
+			syncLogForTest(t, first, "first")
+			activePath := forceCloseActiveWriter(t, first, "first")
+			c.patch(t, activePath)
+			before := readFileForTest(t, activePath)
+
+			if log, err := NewLog(root, config); !errors.Is(err, errInvalidJournal) {
+				if log != nil {
+					_ = log.Close()
+				}
+				t.Fatalf("NewLog error = %v, want errInvalidJournal", err)
+			}
+			if !bytes.Equal(readFileForTest(t, activePath), before) {
+				t.Fatal("refused root open mutated the file")
+			}
+			assertDisposedJournalCount(t, filepath.Dir(activePath), 0)
+		})
+	}
+}
+
+// Writable opens apply the same every-open refusals as readers, before any
+// mutation. Paired with Rust
+// writable_open_refuses_unknown_state_and_short_sealed_header.
+func TestWritableOpenRefusesUnknownStateAndShortSealedHeader(t *testing.T) {
+	cases := everyOpenRefusalCases()
 	opens := []struct {
 		name string
 		open func(string) (*Writer, error)
