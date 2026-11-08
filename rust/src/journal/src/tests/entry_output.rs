@@ -248,3 +248,31 @@ fn printable_text_matches_systemd() {
         );
     }
 }
+
+// A caller-built cursor must not break the lossless record framing. Paired
+// with Go TestExportEntryLengthPrefixesUnsafeMetadata.
+#[test]
+fn export_entry_bytes_length_prefixes_unsafe_metadata() {
+    let mut entry = synthetic_entry(&[b"FIRST=1"]);
+    entry.cursor = "a\nb".to_string();
+    let got = export_entry_bytes(&entry);
+    let want: &[u8] = b"__CURSOR\n\x03\x00\x00\x00\x00\x00\x00\x00a\nb\n";
+    assert!(got.starts_with(want), "{:?}", String::from_utf8_lossy(&got));
+}
+
+// Paired with Go TestMapFallbackSkipsFieldWithoutValues.
+#[test]
+fn map_fallback_skips_field_without_values() {
+    let mut entry = synthetic_entry(&[]);
+    entry.field_values.insert("EMPTY".into(), Vec::new());
+    entry
+        .field_values
+        .insert("KEPT".into(), vec![b"1".to_vec()]);
+    entry.fields.insert("FALLBACK".into(), b"2".to_vec());
+    let mut out = Vec::new();
+    EntryEncoder::new(EntryOutputOptions::default()).append_export(&mut out, &entry);
+    let got = String::from_utf8_lossy(&out);
+    assert!(!got.contains("EMPTY"), "{got}");
+    assert!(got.contains("KEPT=1\n"), "{got}");
+    assert!(got.contains("FALLBACK=2\n"), "{got}");
+}

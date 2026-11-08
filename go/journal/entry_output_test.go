@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -272,5 +273,33 @@ func TestExportEntryKeepsInvalidFieldNames(t *testing.T) {
 	strict := string(NewEntryEncoder(EntryOutputOptions{}).AppendExport(nil, entry))
 	if !bytes.HasSuffix([]byte(strict), []byte("FIRST=1\n\n")) {
 		t.Fatalf("EntryEncoder did not stop at the invalid name: %q", strict)
+	}
+}
+
+// A caller-built cursor must not break the lossless record framing. Paired
+// with Rust export_entry_bytes_length_prefixes_unsafe_metadata.
+func TestExportEntryLengthPrefixesUnsafeMetadata(t *testing.T) {
+	entry := entryOutputSyntheticEntry()
+	entry.Cursor = "a\nb"
+	got := ExportEntry(entry)
+	if want := "__CURSOR\n\x03\x00\x00\x00\x00\x00\x00\x00a\nb\n"; !bytes.HasPrefix([]byte(got), []byte(want)) {
+		t.Fatalf("ExportEntry metadata\n got: %q\nwant prefix: %q", got, want)
+	}
+}
+
+// Paired with Rust map_fallback_skips_field_without_values.
+func TestMapFallbackSkipsFieldWithoutValues(t *testing.T) {
+	entry := entryOutputSyntheticEntry()
+	entry.Payloads = nil
+	entry.FieldValues = map[string][][]byte{"EMPTY": {}, "KEPT": {[]byte("1")}}
+	entry.Fields = map[string][]byte{"FALLBACK": []byte("2")}
+	got := string(NewEntryEncoder(EntryOutputOptions{}).AppendExport(nil, entry))
+	if strings.Contains(got, "EMPTY") {
+		t.Fatalf("empty FieldValues slice produced a field: %q", got)
+	}
+	for _, want := range []string{"KEPT=1\n", "FALLBACK=2\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output %q lacks %q", got, want)
+		}
 	}
 }

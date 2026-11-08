@@ -261,8 +261,9 @@ Reader limitations:
 
 - `FileReader::list_boots`, `DirectoryReader::list_boots` and
   `SdJournalListBoots` list every boot from the `_BOOT_ID` DATA entry arrays,
-  as `journalctl --list-boots` does, falling back to an entry-header scan for
-  files without `_BOOT_ID` DATA. `DirectoryReader::list_boots` and
+  as `journalctl --list-boots` does, falling back to an entry-header scan when
+  no usable canonical index exists (for a directory, only when no file has one
+  or one cannot be read). `DirectoryReader::list_boots` and
   `SdJournal::list_boots` cannot return an error, so when the files cannot be
   read they report one boot per file header; `SdJournalListBoots` and
   `FileReader::list_boots` return the error;

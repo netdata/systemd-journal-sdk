@@ -460,9 +460,9 @@ impl File {
 
     /// Check if a path looks like a journal file.
     ///
-    /// Whole-file `.zst` journals are deliberately excluded: neither journald
-    /// nor Netdata's plugin produces or reads them, and opening one means
-    /// decompressing the whole file.
+    /// Whole-file `.zst` journals are deliberately excluded by this registry
+    /// helper, because opening one means decompressing the whole file. The
+    /// directory reader does read them.
     pub fn is_journal_file(path: &str) -> bool {
         path.ends_with(".journal") || path.ends_with(".journal~")
     }

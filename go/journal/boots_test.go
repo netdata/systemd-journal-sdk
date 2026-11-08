@@ -146,7 +146,8 @@ func TestListBootsIgnoresNonCanonicalBootIDData(t *testing.T) {
 // ListBoots leaves the caller's matches and read position alone.
 func TestListBootsKeepsMatchesAndPosition(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "system.journal")
-	writeBootTestJournal(t, path, 0x40, true, []bootTestEntry{{0xa0, 100, 1}, {0xb0, 200, 1}, {0xb0, 210, 2}})
+	// The trailing entry does not match, so a lost match would reach it.
+	writeBootTestJournal(t, path, 0x40, true, []bootTestEntry{{0xa0, 100, 1}, {0xb0, 200, 1}, {0xb0, 210, 2}, {0xa0, 300, 2}})
 	dr, err := OpenFiles([]string{path})
 	if err != nil {
 		t.Fatal(err)
@@ -195,5 +196,37 @@ func TestListBootsDirtyArchivesFreshReader(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ListBoots\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+// A reader kept open while the journal grows lists what is on disk now.
+func TestListBootsSeesEntriesAppendedAfterOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "system.journal")
+	writeBootTestJournal(t, path, 0x60, true, []bootTestEntry{{0xa0, 100, 1}})
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloads := [][]byte{[]byte("MESSAGE=later"), []byte("_BOOT_ID=" + bootTestID(0xb0).String())}
+	if err := w.AppendRaw(payloads, EntryOptions{RealtimeUsec: 200, RealtimeUsecSet: true, MonotonicUsec: 1, MonotonicUsecSet: true, BootID: bootTestID(0xb0)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	boots, err := r.ListBoots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []BootInfo{bootInfo(-1, 0xa0, 100, 100), bootInfo(0, 0xb0, 200, 200)}
+	if !reflect.DeepEqual(boots, want) {
+		t.Fatalf("ListBoots = %+v, want %+v", boots, want)
 	}
 }

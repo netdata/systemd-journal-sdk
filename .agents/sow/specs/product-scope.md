@@ -1059,8 +1059,8 @@ Current Go reader feature slice:
 - systemd-compatible export output for binary fields using size-prefixed field
   values and blank-line entry separators;
 - systemd-compatible JSON output for duplicate fields and binary values;
-- `EntryEncoder` renders systemd v262 `output_export`/`output_json` exactly
-  (metadata first, DATA in on-disk order, export stops at a payload without
+- `EntryEncoder` renders systemd v262 `output_export` exactly and
+  `output_json` semantically (metadata first, DATA in on-disk order, export stops at a payload without
   `=` or with an invalid field name, JSON skips such fields, 4096-byte JSON
   `null` threshold unless `ShowAll`, systemd's printable rule); JSON keys are
   sorted because systemd's order is hash order. Both journalctl rewrites
@@ -1069,9 +1069,11 @@ Current Go reader feature slice:
 - boot listing (`Reader.ListBoots`, `DirectoryReader.ListBoots`,
   `SdJournalListBoots`) reports every boot from the `_BOOT_ID` DATA entry
   arrays, merged across files in directory order and ordered by last entry,
-  first entry and ID, with an entry-header scan for files without `_BOOT_ID`
-  DATA; only canonical lowercase `_BOOT_ID` values name a boot; it does not
-  change matches or position. Both journalctl rewrites use it;
+  first entry and ID. When no usable canonical index exists it scans entry
+  headers instead, so header IDs can name boots then; a directory scans only
+  when no file has such an index or one cannot be read. Only canonical
+  lowercase `_BOOT_ID` values name indexed boots. It does not change matches
+  or position. Both journalctl rewrites use it;
 - file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,

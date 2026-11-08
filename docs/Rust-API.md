@@ -183,9 +183,9 @@ for `journalctl --directory` style behavior.
 
 ## Render Entries As Export Or JSON
 
-`EntryEncoder` renders entries exactly as `journalctl -o export`, `-o json`
-and `-o json-pretty` do in systemd v262, including `--output-fields` and
-`--all`. It appends to a caller buffer, so one buffer serves many entries.
+`EntryEncoder` renders entries as `journalctl -o export`, `-o json` and
+`-o json-pretty` do in systemd v262, including `--output-fields` and `--all`:
+export byte for byte, JSON with the same values and sorted keys. It appends to a caller buffer, so one buffer serves many entries.
 
 <!-- verify-example: lang=rust id=rust-entry-encoder -->
 ```rust
@@ -216,7 +216,9 @@ contract.
 ## List Boots
 
 `list_boots` lists every boot as `journalctl --list-boots` does, from the
-`_BOOT_ID` indexes, without changing matches or the read position.
+`_BOOT_ID` indexes when a usable canonical index exists, otherwise from entry
+headers (a directory scans headers only when no file has such an index or one
+cannot be read), without changing matches or the read position.
 
 <!-- verify-example: lang=rust id=rust-list-boots -->
 ```rust

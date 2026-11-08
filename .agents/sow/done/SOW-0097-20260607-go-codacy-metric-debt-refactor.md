@@ -256,7 +256,8 @@ User decisions on 2026-11-07:
 6. Duplication gate: yes.
 7. CLI file split: separate pending SOW (SOW-0175).
 
-Implementation choices made during F1 (agent-chosen, pending user review):
+Implementation choices made during F1 (agent-chosen, reported to the user at
+close; the forks are decisions 8 and 9 below):
 
 - F1 API: `EntryEncoder` (Go `NewEntryEncoder(EntryOutputOptions)` with
   `AppendExport`, `AppendJSON`, `AppendJSONPretty`; Rust `EntryEncoder::new`
@@ -270,7 +271,8 @@ Implementation choices made during F1 (agent-chosen, pending user review):
   user-visible change to a recorded contract. `JSONEntry` / `json_entry` and
   the facade JSON keep full values (no 4096-byte null). Open user decision 8.
 
-Implementation choices made during F2 (agent-chosen, pending user review):
+Implementation choices made during F2 (agent-chosen, reported to the user at
+close; the fork is decision 9 below):
 
 - Algorithm: the one both CLIs already used and the query matrix validates
   (each boot's first/last entry is what a `_BOOT_ID` match reaches from head
@@ -289,7 +291,10 @@ Implementation choices made during F2 (agent-chosen, pending user review):
   back to the old one-boot-per-file-header summary. `SdJournalListBoots`
   returns the error, as Go does. Open user decision 9.
 
-Open user decisions:
+User decisions raised during implementation. The code kept the previous
+public contract until the user decided, so no fork was taken for them. The
+user decided both on 2026-11-08: 8 = A (lossless contract stays), 9 = B
+(return `Result`, implemented by SOW-0176).
 
 8. Should legacy `ExportEntry` / `export_entry_bytes` become systemd-exact
    (stop at the first invalid field name, as `EntryEncoder` does) or keep the
@@ -311,8 +316,22 @@ time, committing verified chunks.
 Review: test suite plus the project manager's whole-SOW self-review, per
 `AGENTS.md`. No external reviewers.
 
+Repository boundary block for every helper-agent prompt:
+
+```text
+CRITICAL REPOSITORY BOUNDARY:
+- Do not make changes outside this repository for any reason.
+- Repository path: current repository root.
+- You may inspect external references read-only when the task requires it.
+- Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
+- The only write exception outside the repository is /tmp.
+- Prefer .local/ inside this repository for scratch work, generated temporary files, cloned references, logs, and working notes.
+```
+
 Failure handling: if an item cannot be done without changing protected
-behavior, stop and ask the user.
+behavior, stop and ask the user. Implementation, validation, reviewer and
+audit failures stop advancement until fixed or decided by the user, and are
+recorded in the Execution Log.
 
 ## Execution Log
 
@@ -389,7 +408,8 @@ Acceptance criteria evidence:
 - Benchmarks: F1 faster in every mode (Execution Log); F2 cost recorded
   (faster on both measured shapes).
 - Duplication gate in CI (`.github/workflows/duplication.yml`) with baseline
-  locked at 76 pairs / 5167 production lines (from 79 / 5299).
+  locked at 64 pairs / 4391 production lines (from 79 / 5299). The first lock
+  was 76 / 5167, before `*_tests.rs` modules were classified as test code.
 - `AGENTS.md` records the single-ownership rule and review question.
 - I7 not delivered: tracked by SOW-0176 (needs an FSS-enabled v262 oracle).
 
@@ -399,6 +419,9 @@ Tests or equivalent validation (2026-11-07/08):
   Rust SDK and CLI crates rerun after the last code change PASS.
 - `run_journalctl_query_matrix.py --journalctl <v262 oracle>`: PASS, 3586
   cases including follow; rerun `--skip-follow` after the last change PASS.
+  Rerun in full, follow included, after the last code change of the PR review
+  follow-up (2026-11-08): overall PASS, no failing case (3587 PASS
+  statuses in the report, which also counts group records).
 - `run_directory_matrix.py` PASS (34 checks); `run_mixed_directory_matrix.py`
   PASS (42/42, stock/go/rust); `run_verify_matrix.py` PASS (63 results,
   stock systemd 255 from PATH).
@@ -416,6 +439,14 @@ Real-use evidence:
 Reviewer findings (project manager whole-SOW self-review; no external
 reviewers per `AGENTS.md`):
 
+- PR #26 bot review (2026-11-08, user decision 1A): every thread is answered in
+  place. Fixed: T57-T59, T61-T64, T66, T68, T70, T71, T73, T76-T79, T81, T82,
+  T85, T87-T89, T92-T95. T60 and T72 are fixed in SOW-0176; T65 was fixed by
+  decision 9. Rejected with evidence: T53, T55, T56, T74, T75, T80, T83. Left
+  by user decision: T54 (SOW-0175), T67, T69 and T84 (SOW-0176), T86. T90 and
+  T91 await SOW-0176 item 4.
+- The Windows CI failure in `verify_directory_uses_systemd_layout` was a test
+  path built with `/`; each component is now joined separately.
 - F2 Rust dirty-archive failure (blocking): fixed with reader recovery retry,
   fresh-reader tests added in both languages.
 - Non-canonical `_BOOT_ID` handling (behavior): kept the old CLI result
@@ -456,6 +487,27 @@ Artifact maintenance gate:
 - SOW lifecycle: completed and moved to `done/` in the close-out commit;
   follow-ups in SOW-0176 and SOW-0175.
 - SOW-status.md: updated.
+
+Specs update:
+
+- `product-scope.md`; see the artifact gate.
+
+Project skills update:
+
+- None needed; see the artifact gate.
+
+End-user/operator docs update:
+
+- See the artifact gate.
+
+End-user/operator skills update:
+
+- None exist.
+
+Closing audit:
+
+- `.agents/sow/audit.sh` reported `SOW initialization complete and clean` at
+  close and after the PR review follow-up below.
 
 Lessons:
 

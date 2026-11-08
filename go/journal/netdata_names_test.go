@@ -3,12 +3,16 @@ package journal
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 // File names are bytes on Unix; the Netdata layer lists and classifies
 // non-UTF-8 names, as the Rust layer does.
 func TestNetdataNonUTF8JournalNamesAreListedAndClassified(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file names are UTF-16 and do not preserve arbitrary bytes")
+	}
 	machine := filepath.Join(t.TempDir(), "machine")
 	if err := os.Mkdir(machine, 0o755); err != nil {
 		t.Fatal(err)

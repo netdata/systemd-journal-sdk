@@ -73,6 +73,11 @@ func (e *EntryEncoder) selected(name []byte) bool {
 func (e *EntryEncoder) AppendExport(dst []byte, entry *Entry) []byte {
 	metadata := e.metadata(entry)
 	for i := range metadata {
+		// Lossless output must stay parseable for any caller-built cursor.
+		if e.lossless {
+			dst = appendExportField(dst, metadata[i].name, metadata[i].value)
+			continue
+		}
 		dst = append(dst, metadata[i].name...)
 		dst = append(dst, '=')
 		dst = append(dst, metadata[i].value...)
@@ -323,7 +328,11 @@ func forEachEntryData(entry *Entry, visit func(name, value []byte, separated boo
 		for _, name := range names {
 			values := entry.FieldValues[name]
 			if len(values) == 0 {
-				values = [][]byte{entry.Fields[name]}
+				value, ok := entry.Fields[name]
+				if !ok {
+					continue
+				}
+				values = [][]byte{value}
 			}
 			for _, value := range values {
 				if !visit([]byte(name), value, true) {

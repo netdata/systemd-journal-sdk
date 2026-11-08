@@ -155,7 +155,13 @@ fn list_boots_keeps_matches_and_position() {
     write_boot_journal(
         &path,
         0x40,
-        &[(0xa0, 100, 1), (0xb0, 200, 1), (0xb0, 210, 2)],
+        // The trailing entry does not match, so a lost match would reach it.
+        &[
+            (0xa0, 100, 1),
+            (0xb0, 200, 1),
+            (0xb0, 210, 2),
+            (0xa0, 300, 2),
+        ],
         Some(boot_hex),
     );
     let mut directory = DirectoryReader::open_files([&path]).unwrap();
