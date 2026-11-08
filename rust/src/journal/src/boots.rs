@@ -158,7 +158,7 @@ fn file_boot_times(file: &JournalFile<Mmap>) -> CoreResult<HashMap<[u8; 16], Boo
     Ok(boots)
 }
 
-pub(crate) fn merge_boot_times(boots: &mut HashMap<[u8; 16], BootTimes>, times: BootTimes) {
+fn merge_boot_times(boots: &mut HashMap<[u8; 16], BootTimes>, times: BootTimes) {
     boots
         .entry(times.boot_id)
         .and_modify(|boot| {

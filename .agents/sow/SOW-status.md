@@ -43,12 +43,14 @@ order; the user may reorder it.
     differs (completed 2026-11-06, options A and 2B).
 22. SOW-0175 - Split the journalctl rewrites by responsibility (tracked by user
     decision 2026-11-07; after SOW-0097).
-23. SOW-0176 - Single ownership follow-ups: open decisions 8 and 9, I7 and
-    divergences found in SOW-0097 (needs user decisions).
+23. SOW-0176 - Single ownership follow-ups: decisions 8 and 9 made 2026-11-08;
+    I7 and divergences found in SOW-0097 (in progress).
 
 ## Current
 
-None.
+- SOW-0176 - Single Ownership Follow-ups: in progress since 2026-11-08;
+  decision 8 = A (no change), decision 9 = B (Rust list_boots returns Result,
+  done); items 3-9 under investigation.
 
 ## Pending
 
@@ -79,9 +81,6 @@ None.
   2026-11-03 (SOW-0156 decision N1); not scheduled.
 - SOW-0175 - Split The journalctl Rewrites By Responsibility: tracked
   2026-11-07 (SOW-0097 decision 7); after SOW-0097.
-- SOW-0176 - Single Ownership Follow-ups: tracked 2026-11-08 from SOW-0097;
-  needs user decisions (legacy export contract, Rust list_boots Result) plus
-  I7 and six Go/Rust or SDK/systemd divergences.
 
 ## Recently Closed Or Completed
 

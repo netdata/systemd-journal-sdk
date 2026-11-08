@@ -1217,9 +1217,8 @@ Current Rust reader feature slice:
   contract as the Go `EntryEncoder`; both journalctl rewrites render through
   it. `export_entry_bytes` and `json_entry` keep the older lossless contract;
 - boot listing (`FileReader::list_boots`, `DirectoryReader::list_boots`,
-  `SdJournalListBoots`) follows the Go boot-listing contract;
-  `DirectoryReader::list_boots` and `SdJournal::list_boots` cannot return an
-  error and fall back to one boot per file header when files cannot be read;
+  `SdJournalListBoots`) follows the Go boot-listing contract, including
+  returning an error when files cannot be read;
 - file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,

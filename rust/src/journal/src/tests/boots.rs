@@ -92,8 +92,7 @@ fn list_boots_multi_boot() {
         boot(-1, 0xb0, 200, 220),
         boot(0, 0xa0, 100, 300),
     ];
-    assert_eq!(rows(directory.try_list_boots().unwrap()), want);
-    assert_eq!(rows(directory.list_boots()), want);
+    assert_eq!(rows(directory.list_boots().unwrap()), want);
 
     let mut facade = SdJournalOpenDirectory(temp.path().to_str().unwrap(), 0).unwrap();
     assert_eq!(rows(SdJournalListBoots(&mut facade).unwrap()), want);
@@ -161,7 +160,7 @@ fn list_boots_keeps_matches_and_position() {
     let mut directory = DirectoryReader::open_files([&path]).unwrap();
     directory.add_match(format!("_BOOT_ID={}", boot_hex(0xb0)).as_bytes());
     assert!(directory.next().unwrap());
-    assert_eq!(directory.list_boots().len(), 2);
+    assert_eq!(directory.list_boots().unwrap().len(), 2);
     assert!(directory.next().unwrap());
     assert_eq!(directory.get_realtime_usec().unwrap(), 210);
     assert!(!directory.next().unwrap(), "match was lost");
@@ -199,7 +198,7 @@ fn list_boots_dirty_archives_fresh_reader() {
         ),
     ];
     let directory = DirectoryReader::open(&dir).unwrap();
-    assert_eq!(rows(directory.try_list_boots().unwrap()), want);
+    assert_eq!(rows(directory.list_boots().unwrap()), want);
     let mut facade = SdJournalOpenDirectory(dir.to_str().unwrap(), 0).unwrap();
     assert_eq!(rows(SdJournalListBoots(&mut facade).unwrap()), want);
 }

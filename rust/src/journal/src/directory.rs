@@ -1,5 +1,5 @@
 use super::*;
-use crate::boots::{BootRange, BootTimes, merge_boot_times, order_boots};
+use crate::boots::{BootRange, order_boots};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 const DIRECTORY_UNIQUE_CACHE_CAPACITY: usize = 8;
@@ -882,14 +882,8 @@ impl DirectoryReader {
     /// `journalctl --list-boots` does. A boot's first and last entries are the
     /// ones a `_BOOT_ID` match reaches from the head and from the tail of the
     /// merged directory order. It does not change matches or the read
-    /// position. If the files cannot be read it falls back to one boot per
-    /// file header.
-    pub fn list_boots(&self) -> Vec<BootInfo> {
-        self.try_list_boots()
-            .unwrap_or_else(|_| self.list_header_boots())
-    }
-
-    pub(crate) fn try_list_boots(&self) -> Result<Vec<BootInfo>> {
+    /// position.
+    pub fn list_boots(&self) -> Result<Vec<BootInfo>> {
         let mut merged: HashMap<[u8; 16], BootRange> = HashMap::new();
         let mut indexed = true;
         for reader in &self.files {
@@ -919,27 +913,6 @@ impl DirectoryReader {
             reader.scan_boot_times(&mut boots)?;
         }
         Ok(order_boots(boots.into_values().collect()))
-    }
-
-    /// One boot per file header: the pre-index summary, kept only as the
-    /// fallback of the infallible list_boots.
-    fn list_header_boots(&self) -> Vec<BootInfo> {
-        let mut boots: HashMap<[u8; 16], BootTimes> = HashMap::new();
-        for reader in &self.files {
-            let header = reader.effective_header();
-            if reader.recovery_status().incomplete() && header.n_entries == 0 {
-                continue;
-            }
-            merge_boot_times(
-                &mut boots,
-                BootTimes {
-                    boot_id: header.tail_entry_boot_id,
-                    first: header.head_entry_realtime,
-                    last: header.tail_entry_realtime,
-                },
-            );
-        }
-        order_boots(boots.into_values().collect())
     }
 
     pub fn add_match(&mut self, data: &[u8]) {

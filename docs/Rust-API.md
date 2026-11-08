@@ -223,15 +223,14 @@ contract.
 use journal::DirectoryReader;
 
 let reader = DirectoryReader::open("/var/log/journal")?;
-for boot in reader.list_boots() {
+for boot in reader.list_boots()? {
     println!("{} {} {} {}", boot.index, boot.boot_id, boot.first_entry, boot.last_entry);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`FileReader::list_boots` and `SdJournalListBoots` return an error when the
-file cannot be read; `DirectoryReader::list_boots` falls back to one boot per
-file header instead.
+`FileReader::list_boots`, `DirectoryReader::list_boots` and
+`SdJournalListBoots` return an error when the files cannot be read.
 
 ## Use Snapshot Bounds For Query Workloads
 

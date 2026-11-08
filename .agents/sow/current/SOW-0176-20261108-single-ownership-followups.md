@@ -2,11 +2,12 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: needs user decisions; tracked from SOW-0097 on 2026-11-08.
+Sub-state: activated 2026-11-08 on branch `sow-0176/single-ownership-followups`
+(stacked on SOW-0097); decisions 8 and 9 made; items 3-9 under investigation.
 
 ## Requirements
 
@@ -84,7 +85,9 @@ verify matrices.
 Risk and blast radius: decisions 8 and 9 change public contracts; item 6
 changes retention (data deletion); item 9 changes what readers return.
 
-Sensitive data handling plan: synthetic fixtures only.
+Sensitive data handling plan:
+
+- Synthetic fixtures and public systemd test data only.
 
 Implementation plan: per item, test first, both languages.
 
@@ -98,7 +101,13 @@ for I7.
 
 ## Implications And Decisions
 
-Pending.
+User decisions on 2026-11-08 (user agreed with both recommendations):
+
+- Decision 8 = A: legacy `ExportEntry` / `export_entry_bytes` keep the
+  SOW-0043 lossless contract. No code change; rejected as a change.
+- Decision 9 = B: Rust `DirectoryReader::list_boots` and
+  `SdJournal::list_boots` return `Result`, as Go does; the header-summary
+  fallback is removed.
 
 ## Plan
 
@@ -106,11 +115,24 @@ Pending activation.
 
 ## Execution Log
 
-None.
+### 2026-11-08
+
+- Decision 9 implemented: `DirectoryReader::list_boots` returns
+  `Result<Vec<BootInfo>>` (the internal `try_list_boots` and the header
+  fallback are gone); `SdJournal::list_boots` returns
+  `Result<Vec<BootInfo>, Error>`. Callers were the facade, tests and the
+  conformance adapter (already on `SdJournalListBoots`); Netdata does not
+  call it. Docs (`rust/README.md`, `docs/Rust-API.md`) and
+  `product-scope.md` updated. `cargo test --workspace` PASS; wiki check and
+  the `rust-list-boots` example PASS.
 
 ## Validation
 
 Pending.
+
+Sensitive data gate:
+
+- Pending; the work uses synthetic fixtures and public systemd test data only.
 
 ## Outcome
 
