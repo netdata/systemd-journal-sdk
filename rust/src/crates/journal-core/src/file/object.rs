@@ -309,7 +309,7 @@ impl JournalHeader {
             return Err(JournalError::InvalidJournalFileState);
         }
         if self.has_compatible_flag(HeaderCompatibleFlags::Sealed) && self.header_size < 240 {
-            return Err(JournalError::InvalidObjectLocation);
+            return Err(JournalError::InvalidJournalFileState);
         }
         Ok(())
     }

@@ -432,7 +432,8 @@ Current shared writer layout contract:
   caller realtime is clamped forward, while a fresh Go chain starts at zero.
   Seeds at or above `2^55 - 1` are rejected so `seed + 1` stays inside
   systemd's valid realtime range `(0, 2^55)`. Caller-supplied entry
-  timestamps outside that range are refused before mutation (see the
+  timestamps outside that range are refused before mutation, except that
+  directory writers raise a zero realtime to the clock floor (see the
   timestamp rule below). Eager open names the active file before
   any event, so event-time filenames need lazy open.
 
@@ -634,11 +635,17 @@ Current shared high-level directory writer API slice:
   aside, and finalize retired files the same way, through an archive-only
   open that skips these refusals. Every open, reader, append and archive-only
   alike, refuses an unknown header state and a sealed header shorter than 240
-  bytes, as systemd's journal_file_verify_header does.
+  bytes, as systemd's journal_file_verify_header does. Log sets such an active
+  file aside and keeps its sequence identity, as journald does for that
+  -EBADMSG; a root-retention Log cannot archive it, so it reports the error and
+  leaves the file in place. Default chain naming treats only online files as
+  active, so an unknown-state chain file stays behind as history while the new
+  file still continues its sequence.
 - Rust and Go writers refuse entry timestamps with realtime outside
   `1..2^55-1` or monotonic at or above 2^55 before mutation (Go
   `ErrTimestampOutOfRange`, Rust `JournalError::TimestampOutOfRange`); the
-  writer stays usable and Log clocks do not move.
+  writer stays usable and Log clocks do not move. Directory writers first raise
+  a zero realtime to their clock floor, so only the low-level writers refuse it.
 - Rust and Go writers keep regular and compact files below 4 GiB. Before an
   entry mutates the file, a bound computed from payload lengths (DATA, FIELD
   and minimum ENTRY_ARRAY per item, the ENTRY, a minimum global array and any

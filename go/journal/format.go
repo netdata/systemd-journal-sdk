@@ -144,9 +144,13 @@ const (
 var (
 	errInvalidJournal     = errors.New("invalid journal file")
 	errUnsupportedJournal = errors.New("unsupported journal file")
-	errWriterClosed       = errors.New("journal writer is closed")
-	errFieldName          = errors.New("invalid journal field name")
-	errEntryEmpty         = errors.New("journal entry has no fields")
+	// errRefusedHeader marks the headers every open refuses. It stays an
+	// invalid-journal error, but Log sets such an active file aside as journald
+	// does for -EBADMSG (journal-file-util.c journal_file_open_reliably).
+	errRefusedHeader = fmt.Errorf("%w: refused header", errInvalidJournal)
+	errWriterClosed  = errors.New("journal writer is closed")
+	errFieldName     = errors.New("invalid journal field name")
+	errEntryEmpty    = errors.New("journal entry has no fields")
 )
 
 var (
@@ -309,7 +313,24 @@ func putHeader(dst []byte, h journalHeader) {
 	binary.LittleEndian.PutUint64(dst[264:272], h.tailEntryOffset)
 }
 
+// parseHeader decodes a header and applies the refusals systemd makes on every
+// open (journal-file.c journal_file_verify_header).
 func parseHeader(src []byte) (journalHeader, error) {
+	h, err := decodeHeader(src)
+	if err != nil {
+		return journalHeader{}, err
+	}
+	if h.state > stateArchived {
+		return journalHeader{}, fmt.Errorf("%w: journal state %d", errRefusedHeader, h.state)
+	}
+	// A sealed file's header must reach n_entry_arrays.
+	if h.compatibleFlags&compatibleSealed != 0 && h.headerSize < 240 {
+		return journalHeader{}, fmt.Errorf("%w: sealed header_size %d is below 240", errRefusedHeader, h.headerSize)
+	}
+	return h, nil
+}
+
+func decodeHeader(src []byte) (journalHeader, error) {
 	if len(src) < headerMinSize {
 		return journalHeader{}, errInvalidJournal
 	}
@@ -349,15 +370,6 @@ func parseHeader(src []byte) (journalHeader, error) {
 
 	if h.headerSize < headerMinSize {
 		return journalHeader{}, errUnsupportedJournal
-	}
-	// systemd refuses these on every open (journal-file.c
-	// journal_file_verify_header): an unknown state, or a sealed file whose
-	// header has no n_entry_arrays.
-	if h.state > stateArchived {
-		return journalHeader{}, fmt.Errorf("%w: invalid journal state %d", errInvalidJournal, h.state)
-	}
-	if h.compatibleFlags&compatibleSealed != 0 && h.headerSize < 240 {
-		return journalHeader{}, fmt.Errorf("%w: sealed header_size %d is below 240", errInvalidJournal, h.headerSize)
 	}
 	return h, nil
 }
