@@ -30,6 +30,41 @@ struct MutableObjectContext {
     arena_end: u64,
 }
 
+/// Every refusal decidable from the header alone, before any mutation.
+fn validate_writable_header(
+    header: &JournalHeader,
+    file_size: u64,
+    archive_only: bool,
+) -> Result<()> {
+    if header.signature != *b"LPKSHHRH" {
+        return Err(JournalError::InvalidMagicNumber);
+    }
+    header.validate_open_state()?;
+    if header.header_size < std::mem::size_of::<JournalHeader>() as u64 {
+        return Err(JournalError::UnsupportedJournalFile);
+    }
+    if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
+        || header.incompatible_flags & !SUPPORTED_INCOMPATIBLE_FLAGS != 0
+    {
+        return Err(JournalError::UnsupportedJournalFile);
+    }
+    // Appends index every object, so both tables must exist before mutation.
+    if header.data_hash_table_offset.is_none()
+        || header.field_hash_table_offset.is_none()
+        || header.tail_object_offset.is_none()
+    {
+        return Err(JournalError::InvalidObjectLocation);
+    }
+    if !archive_only {
+        validate_entry_append_target(header, file_size)?;
+    } else if header.has_incompatible_flag(HeaderIncompatibleFlags::Compact)
+        && file_size > JOURNAL_COMPACT_SIZE_MAX
+    {
+        return Err(JournalError::ObjectExceedsFileBounds);
+    }
+    header.validate_empty_entry_metadata()
+}
+
 /// The refusals that apply only when entries will be appended. systemd's
 /// writer refuses these files too (journal-file.c journal_file_verify_header),
 /// then sets the file aside and continues the sequence in a new one;
@@ -101,34 +136,7 @@ impl JournalFile<super::mmap::MmapMut> {
         let mut header_bytes = [0u8; std::mem::size_of::<JournalHeader>()];
         read_file_exact_at(&fd, 0, &mut header_bytes)?;
         let header = JournalHeader::read_from_prefix(&header_bytes).unwrap().0;
-        if header.signature != *b"LPKSHHRH" {
-            return Err(JournalError::InvalidMagicNumber);
-        }
-        header.validate_open_state()?;
-        if header.header_size < header_size {
-            return Err(JournalError::UnsupportedJournalFile);
-        }
-        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
-            || header.incompatible_flags & !SUPPORTED_INCOMPATIBLE_FLAGS != 0
-        {
-            return Err(JournalError::UnsupportedJournalFile);
-        }
-        // Appends index every object, so both tables must exist before mutation.
-        if header.data_hash_table_offset.is_none()
-            || header.field_hash_table_offset.is_none()
-            || header.tail_object_offset.is_none()
-        {
-            return Err(JournalError::InvalidObjectLocation);
-        }
-        if !archive_only {
-            validate_entry_append_target(&header, file_size)?;
-        } else if header.has_incompatible_flag(HeaderIncompatibleFlags::Compact)
-            && file_size > JOURNAL_COMPACT_SIZE_MAX
-        {
-            return Err(JournalError::ObjectExceedsFileBounds);
-        }
-
-        header.validate_empty_entry_metadata()?;
+        validate_writable_header(&header, file_size, archive_only)?;
         Self::validate_committed_arena_header(&header, file_size, |offset, bytes| {
             read_file_exact_at(&fd, offset, bytes)
         })?;
