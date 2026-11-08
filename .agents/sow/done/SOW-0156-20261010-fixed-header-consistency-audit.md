@@ -569,7 +569,7 @@ Real-use evidence:
 Reviewer findings:
 
 - PR #18 bot threads T3-T26, each answered in its thread. Valid and fixed:
-  T6-T14, T16, T19-T26. Rejected with evidence in the thread: T4, T5, T15, T17,
+  T6-T14, T16, T17, T19-T26. Rejected with evidence in the thread: T4, T5, T15,
   T18. T3 was already fixed.
 
 Same-failure scan:
