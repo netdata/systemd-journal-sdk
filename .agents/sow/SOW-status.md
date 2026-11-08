@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-11-05
+Last updated: 2026-11-06
 
 ## Backlog Order
 
@@ -39,7 +39,7 @@ order; the user may reorder it.
 20. SOW-0173 - Rust Registry skips files under a relative directory (completed
     2026-11-05, option A).
 21. SOW-0174 - Rust Registry unwatch leaves files when the directory key
-    differs (tracked 2026-11-05 from SOW-0173; needs a user decision).
+    differs (completed 2026-11-06, options A and 2B).
 
 ## Current
 
@@ -47,9 +47,6 @@ None.
 
 ## Pending
 
-- SOW-0174 - Rust Registry Unwatch Leaves Files When The Directory Key
-  Differs: tracked 2026-11-05 from SOW-0173; needs a user decision (A/B/C in
-  the SOW).
 - SOW-0066 - V1 Release: v1.0.0 API freeze and release; not scheduled (user
   decision 2026-11-03). Netdata gate is SOW-0164.
 - SOW-0097 - Go Codacy Metric Debt Refactor: real duplicated helpers; cited
@@ -79,6 +76,12 @@ None.
   2026-11-03 (SOW-0156 decision N1); not scheduled.
 
 ## Recently Closed Or Completed
+
+- SOW-0174 - Rust Registry Unwatch Leaves Files When The Directory Key
+  Differs: completed 2026-11-06. Unwatch forgets exactly the files no
+  remaining watch covers, overlapping watches work in any order, failures
+  leave the registry unchanged, and the notify 8.2 stale-entry bug is
+  handled by rebuilding the watcher.
 
 - SOW-0173 - Rust Registry Skips Files Under A Relative Directory: completed
   2026-11-05. `watch_directory` and `unwatch_directory` resolve a relative
