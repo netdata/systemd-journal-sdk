@@ -48,9 +48,9 @@ order; the user may reorder it.
 
 ## Current
 
-- SOW-0176 - Single Ownership Follow-ups: in progress since 2026-11-08;
-  decision 8 = A (no change), decision 9 = B (Rust list_boots returns Result,
-  done); items 3-9 under investigation.
+- SOW-0176 - Single Ownership Follow-ups: paused 2026-11-08 while the open
+  PRs' review findings are fixed; decision 8 = A, decision 9 = B (done);
+  items 3-9 investigated, awaiting user decisions.
 
 ## Pending
 

@@ -2,12 +2,14 @@
 
 ## Status
 
-Status: in-progress
+Status: paused
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: activated 2026-11-08 on branch `sow-0176/single-ownership-followups`
-(stacked on SOW-0097); decisions 8 and 9 made; items 3-9 under investigation.
+(stacked on SOW-0097); decisions 8 and 9 made; paused 2026-11-08 by user
+decision while the stacked PRs' review findings are fixed (decision 1A);
+items 3-9 investigated, user asked for more information before deciding.
 
 ## Requirements
 
@@ -65,7 +67,37 @@ Unknowns:
 ## Analysis
 
 Evidence is in SOW-0097 (Execution Log, F2 sweep, Implications And
-Decisions). Refresh at activation.
+Decisions), plus the 2026-11-08 investigations:
+
+- Item 4: v262 `discover_next_id` (systemd/systemd @ v262
+  src/shared/logs-show.c:2021-2159) needs `_BOOT_ID` DATA; with none,
+  `--list-boots` prints "No boot found." and `-b 0` fails. The SDK header
+  fallback (`go/journal/boots.go`, `rust/src/journal/src/boots.rs`) lists the
+  header boot, after which `-b 0` prints "-- No entries --". No oracle
+  fixture lacks `_BOOT_ID`. Related review threads: PR#26 T88/T90/T91/T92/T95.
+- Item 5: v262 refuses `entry_array_offset == 0 && tail_entry_array_offset !=
+  0` at open (systemd/systemd @ v260.1 src/libsystemd/sd-journal/
+  journal-file.c:646). Go recovers an empty prefix (0 entries everywhere);
+  Rust activates recovery lazily, so filtered reads and `boot_ranges` see 5
+  entries while unfiltered reads see 0.
+- Item 6 confirmed: Go retention parses only `.journal` names
+  (`go/journal/log.go:1297-1322`); Rust counts and deletes `.journal~` first
+  (`journal-log-writer/src/log/chain.rs:142-162`); journald vacuums them
+  (journal-vacuum.c:217-248).
+- Item 7 confirmed: Rust `DirectoryReader::open_files_with_options` opens
+  duplicates (same file twice: Rust 10 entries, Go 5); the facade already
+  dedupes; systemd dedupes (sd-journal.c:1611-1643).
+- Item 8 mostly refuted: both skip unreadable subdirectories and fail on an
+  unreadable root; narrow differences: mid-listing read errors and the error
+  class for a missing root.
+- Item 9 confirmed: Go `readEntryAt` fails the whole entry on a payload
+  without `=` or an unreadable DATA object (`go/journal/reader_entry.go:
+  146-155`); Rust keeps the raw payload (`reader_helpers.rs:61-79`); systemd
+  returns payloads as-is (sd-journal.c:2889-2898). Affects the Go facade
+  seqnum/monotonic getters and Netdata row expansion.
+- New: single-value field maps keep the first repeated value in Go and the
+  last in Rust (`reader_helpers.rs:75`); systemd returns the first.
+- I7: an FSS-enabled v262 oracle needs libgcrypt headers (not installed).
 
 ## Pre-Implementation Gate
 
@@ -108,6 +140,19 @@ User decisions on 2026-11-08 (user agreed with both recommendations):
 - Decision 9 = B: Rust `DirectoryReader::list_boots` and
   `SdJournal::list_boots` return `Result`, as Go does; the header-summary
   fallback is removed.
+
+User decisions on 2026-11-08 about the open stacked PRs' bot reviews:
+
+- 1 = A: fix every valid finding on the branch it belongs to, bottom-up,
+  merge up the stack, rerun validation, reply in and resolve every thread.
+  This SOW pauses until that is done.
+- 2 = agree: not fixed in the PRs, replied with reasons: test-helper
+  duplication (T33/T44), npm lockfile (T86), `runFollow` complexity
+  (T54, SOW-0175); the reader-level live posting bound (T67) and Netdata
+  non-UTF-8 namespace-name normalization (T69/T84) are added to this SOW.
+
+Investigation results for items 3-9 (2026-11-08, read-only helpers, verified
+where noted): see `## Analysis`.
 
 ## Plan
 
