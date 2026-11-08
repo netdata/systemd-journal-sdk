@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-11-06
+Last updated: 2026-11-08
 
 ## Backlog Order
 
@@ -13,7 +13,8 @@ order; the user may reorder it.
    writer declares 256 KiB).
 3. SOW-0122 - journalctl performance follow-ups (completed 2026-11-01; gaps
    tracked by SOW-0166, SOW-0167, SOW-0168).
-4. SOW-0097 - Go duplication debt.
+4. SOW-0097 - Single ownership of journal behavior, CLI and SDK, Go and Rust
+   (completed 2026-11-08; follow-ups in SOW-0176).
 5. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
 6. SOW-0153 - Consumer docs release clarity (completed 2026-11-01).
 7. SOW-0125 - Netdata filter operators (needs design decisions first).
@@ -40,6 +41,10 @@ order; the user may reorder it.
     2026-11-05, option A).
 21. SOW-0174 - Rust Registry unwatch leaves files when the directory key
     differs (completed 2026-11-06, options A and 2B).
+22. SOW-0175 - Split the journalctl rewrites by responsibility (tracked by user
+    decision 2026-11-07; after SOW-0097).
+23. SOW-0176 - Single ownership follow-ups: open decisions 8 and 9, I7 and
+    divergences found in SOW-0097 (needs user decisions).
 
 ## Current
 
@@ -49,8 +54,6 @@ None.
 
 - SOW-0066 - V1 Release: v1.0.0 API freeze and release; not scheduled (user
   decision 2026-11-03). Netdata gate is SOW-0164.
-- SOW-0097 - Go Codacy Metric Debt Refactor: real duplicated helpers; cited
-  line numbers need refreshing at activation.
 - SOW-0098 - Rust Legacy Core Duplication Debt: real `jf` duplication; feeds
   SOW-0162.
 - SOW-0166 - Directory Realtime Seek Cost: directory `--since` 17x slower than
@@ -74,6 +77,11 @@ None.
   by user decision.
 - SOW-0171 - Continue Sealing When Reopening A Sealed File: tracked
   2026-11-03 (SOW-0156 decision N1); not scheduled.
+- SOW-0175 - Split The journalctl Rewrites By Responsibility: tracked
+  2026-11-07 (SOW-0097 decision 7); after SOW-0097.
+- SOW-0176 - Single Ownership Follow-ups: tracked 2026-11-08 from SOW-0097;
+  needs user decisions (legacy export contract, Rust list_boots Result) plus
+  I7 and six Go/Rust or SDK/systemd divergences.
 
 ## Recently Closed Or Completed
 
@@ -96,6 +104,12 @@ None.
   2026-11-04. Rust `Log` resolves a relative directory once at construction,
   in default and root modes, and refuses an empty one, matching Go.
   Follow-up: SOW-0173.
+
+- SOW-0097 - Single Ownership Of Journal Behavior: completed 2026-11-08. CLI
+  copies of journal behavior moved into public SDK owners in both languages;
+  export/JSON and `--list-boots` became systemd-faithful and faster; a CI
+  duplication gate guards production code. Follow-ups: SOW-0176, SOW-0175,
+  SOW-0098.
 
 - SOW-0156 - Fixed-Header Consistency Audit: completed 2026-11-03. Both SDKs
   apply systemd v260.1's writable-open header rules and timestamp ranges, keep

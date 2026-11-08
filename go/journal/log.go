@@ -642,7 +642,7 @@ func disposedJournalPath(path string, attempt int) string {
 	return fmt.Sprintf(
 		"%s@%016x-%016x.journal~",
 		stem,
-		uint64(time.Now().UnixNano()),
+		uint64(time.Now().UnixMicro()),
 		uint64(os.Getpid())^uint64(attempt),
 	)
 }

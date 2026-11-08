@@ -18,13 +18,13 @@ use anyhow::{Result, anyhow};
 use clap::builder::TypedValueParser;
 use clap::{Parser, ValueEnum};
 use journal::{
-    Entry, FacadeError, FileHeader, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
-    SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalFlushMatches,
-    SdJournalGetCursor, SdJournalGetEntry, SdJournalNext, SdJournalOpenDirectoryPath,
-    SdJournalOpenFilePaths, SdJournalPrevious, SdJournalSeekCursorDirection, SdJournalSeekHead,
-    SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
-    SdJournalVisitUniqueValues, parse_match_bytes, parse_match_string, verify_file,
-    verify_file_with_key,
+    Entry, FacadeError, FileHeader, FileReader, HeaderCompatibleFlags, HeaderIncompatibleFlags,
+    SdJournal, SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch,
+    SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor, SdJournalGetEntry,
+    SdJournalListBoots, SdJournalNext, SdJournalOpenDirectoryPath, SdJournalOpenFilePaths,
+    SdJournalPrevious, SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec,
+    SdJournalSeekTail, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_bytes,
+    parse_match_string, verify_file, verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
 use regex::Regex;
@@ -38,15 +38,14 @@ use std::process::exit;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// HEADER_COMPATIBLE_SEALED from systemd journal-def.h
-const COMPATIBLE_SEALED: u32 = 1;
-const COMPATIBLE_TAIL_ENTRY_BOOT_ID: u32 = 1 << 1;
-const COMPATIBLE_SEALED_CONTINUOUS: u32 = 1 << 2;
-const INCOMPATIBLE_COMPRESSED_XZ: u32 = 1 << 0;
-const INCOMPATIBLE_COMPRESSED_LZ4: u32 = 1 << 1;
-const INCOMPATIBLE_KEYED_HASH: u32 = 1 << 2;
-const INCOMPATIBLE_COMPRESSED_ZSTD: u32 = 1 << 3;
-const INCOMPATIBLE_COMPACT: u32 = 1 << 4;
+const COMPATIBLE_SEALED: u32 = HeaderCompatibleFlags::Sealed as u32;
+const COMPATIBLE_TAIL_ENTRY_BOOT_ID: u32 = HeaderCompatibleFlags::TailEntryBootId as u32;
+const COMPATIBLE_SEALED_CONTINUOUS: u32 = HeaderCompatibleFlags::SealedContinuous as u32;
+const INCOMPATIBLE_COMPRESSED_XZ: u32 = HeaderIncompatibleFlags::CompressedXz as u32;
+const INCOMPATIBLE_COMPRESSED_LZ4: u32 = HeaderIncompatibleFlags::CompressedLz4 as u32;
+const INCOMPATIBLE_KEYED_HASH: u32 = HeaderIncompatibleFlags::KeyedHash as u32;
+const INCOMPATIBLE_COMPRESSED_ZSTD: u32 = HeaderIncompatibleFlags::CompressedZstd as u32;
+const INCOMPATIBLE_COMPACT: u32 = HeaderIncompatibleFlags::Compact as u32;
 const HASH_ITEM_SIZE: u64 = 16;
 const JOURNAL_HEADER_SIZE: u64 = 272;
 const JOURNAL_HEADER_N_ENTRIES_OFFSET: u64 = 152;
@@ -439,30 +438,6 @@ enum OutputModeArg {
     Help,
 }
 
-impl From<OutputModeArg> for OutputMode {
-    fn from(value: OutputModeArg) -> Self {
-        match value {
-            OutputModeArg::Short
-            | OutputModeArg::ShortFull
-            | OutputModeArg::ShortIso
-            | OutputModeArg::ShortIsoPrecise
-            | OutputModeArg::ShortPrecise
-            | OutputModeArg::ShortMonotonic
-            | OutputModeArg::ShortDelta
-            | OutputModeArg::ShortUnix
-            | OutputModeArg::Verbose
-            | OutputModeArg::Cat
-            | OutputModeArg::WithUnit => Self::Default,
-            OutputModeArg::Export => Self::Export,
-            OutputModeArg::Json
-            | OutputModeArg::JsonPretty
-            | OutputModeArg::JsonSse
-            | OutputModeArg::JsonSeq => Self::Json,
-            OutputModeArg::Help => Self::Default,
-        }
-    }
-}
-
 fn main() {
     if let Err(err) = run() {
         if !err.is::<SilentNoData>() {
@@ -781,7 +756,7 @@ impl CliInput {
     fn journal_files(&self, context: &str) -> Result<(Vec<PathBuf>, bool)> {
         match self {
             Self::Files(paths) => Ok((paths.clone(), false)),
-            Self::Directory(path) => collect_journal_files_for_verify(path)
+            Self::Directory(path) => journal::directory_files(path)
                 .map(|files| (files, true))
                 .map_err(|err| anyhow!("{}: read directory {}: {}", context, path.display(), err)),
         }
@@ -790,7 +765,6 @@ impl CliInput {
 
 fn resolve_file_inputs(values: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    let mut seen = HashSet::new();
     for value in values {
         if value == Path::new("-") {
             return Err(portable_unsupported(
@@ -800,21 +774,12 @@ fn resolve_file_inputs(values: &[PathBuf]) -> Result<Vec<PathBuf>> {
         }
         let matches = file_glob::expand(value)?;
         if matches.is_empty() {
-            push_unique_file(&mut files, &mut seen, value.clone());
+            files.push(value.clone());
         } else {
-            for path in matches {
-                push_unique_file(&mut files, &mut seen, path);
-            }
+            files.extend(matches);
         }
     }
-    Ok(files)
-}
-
-fn push_unique_file(files: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path: PathBuf) {
-    let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-    if seen.insert(key) {
-        files.push(path);
-    }
+    Ok(journal::unique_files(&files))
 }
 
 fn effective_quiet(args: &Args) -> bool {
@@ -1263,7 +1228,6 @@ fn open_filtered_journal(
         apply_cli_matches(&mut journal, args)?;
     }
     apply_matches(&mut journal, &args.matches)?;
-    SdJournalSetOutputMode(&mut journal, args.output.clone().into());
     Ok(journal)
 }
 
@@ -1361,61 +1325,6 @@ fn run_verify_input(input: &CliInput, verify_key: Option<&str>, quiet: bool) -> 
 fn is_file_sealed(path: &Path) -> Result<bool> {
     let reader = FileReader::open(path).map_err(|err| anyhow!("open: {err}"))?;
     Ok(reader.header().compatible_flags & COMPATIBLE_SEALED != 0)
-}
-
-fn is_journal_file_name(path: &Path) -> bool {
-    path.file_name()
-        .map(|name| name.as_encoded_bytes())
-        .is_some_and(|name| {
-            name.ends_with(b".journal")
-                || name.ends_with(b".journal~")
-                || name.ends_with(b".journal.zst")
-                || name.ends_with(b".journal~.zst")
-        })
-}
-
-fn collect_journal_files_for_verify(path: &Path) -> Result<Vec<PathBuf>> {
-    let entries: Vec<_> = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-    let mut files = Vec::new();
-
-    for entry in &entries {
-        let file_path = entry.path();
-        if file_path.is_file() && is_journal_file_name(&file_path) {
-            files.push(file_path);
-        }
-    }
-
-    for entry in &entries {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if !is_journal_subdir_name(&name) {
-            continue;
-        }
-        let child_path = entry.path();
-        if !child_path.is_dir() {
-            continue;
-        }
-        let Ok(children) = std::fs::read_dir(&child_path) else {
-            continue;
-        };
-        for child in children.flatten() {
-            let file_path = child.path();
-            if file_path.is_file() && is_journal_file_name(&file_path) {
-                files.push(file_path);
-            }
-        }
-    }
-
-    files.sort();
-    Ok(files)
-}
-
-fn is_journal_subdir_name(name: &str) -> bool {
-    if name.contains('.') {
-        return false;
-    }
-    id128_string_valid(name)
 }
 
 fn print_new_id128() {
@@ -2222,20 +2131,6 @@ fn format_journal_bytes(bytes: u64) -> String {
     }
 
     format!("{bytes}B")
-}
-
-fn id128_string_valid(s: &str) -> bool {
-    match s.len() {
-        32 => s.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        36 => s.bytes().enumerate().all(|(idx, byte)| {
-            if matches!(idx, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        }),
-        _ => false,
-    }
 }
 
 fn valid_verification_key(key: &str) -> bool {
@@ -3859,112 +3754,16 @@ struct BootEntry {
 }
 
 fn collect_boots(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
-    match collect_boots_indexed(journal) {
-        Ok(boots) if !boots.is_empty() => return Ok(boots),
-        Ok(_) | Err(_) => {
-            SdJournalFlushMatches(journal).map_err(|err| anyhow!("flush boot matches: {err}"))?;
-        }
-    }
-    collect_boots_by_scan(journal)
-}
-
-fn collect_boots_indexed(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
-    use std::collections::HashSet;
-
-    let mut seen = HashSet::new();
-    let mut boot_ids = Vec::new();
-    SdJournalVisitUniqueValues(journal, "_BOOT_ID", |value| {
-        let Ok(text) = std::str::from_utf8(value) else {
-            return Ok(());
-        };
-        let Some(id) = parse_boot_id_prefix(text) else {
-            return Ok(());
-        };
-        if id.chars().all(|ch| ch == '0') || !seen.insert(id.clone()) {
-            return Ok(());
-        }
-        boot_ids.push(id);
-        Ok(())
-    })
-    .map_err(|err| anyhow!("query _BOOT_ID values: {err}"))?;
-
-    let mut out = Vec::with_capacity(boot_ids.len());
-    for boot_id in boot_ids {
-        SdJournalFlushMatches(journal).map_err(|err| anyhow!("flush boot matches: {err}"))?;
-        add_match_pair(journal, "_BOOT_ID", &boot_id)?;
-        SdJournalAddConjunction(journal).map_err(|err| anyhow!("add boot conjunction: {err}"))?;
-
-        SdJournalSeekHead(journal).map_err(|err| anyhow!("seek boot head: {err}"))?;
-        if SdJournalNext(journal).map_err(|err| anyhow!("next boot entry: {err}"))? == 0 {
-            continue;
-        }
-        let first = SdJournalGetEntry(journal)
-            .map_err(|err| anyhow!("get first boot entry: {err}"))?
-            .realtime;
-
-        SdJournalSeekTail(journal).map_err(|err| anyhow!("seek boot tail: {err}"))?;
-        if SdJournalPrevious(journal).map_err(|err| anyhow!("previous boot entry: {err}"))? == 0 {
-            continue;
-        }
-        let last = SdJournalGetEntry(journal)
-            .map_err(|err| anyhow!("get last boot entry: {err}"))?
-            .realtime;
-
-        out.push(BootEntry {
-            index: 0,
-            boot_id,
-            first_entry: first,
-            last_entry: last,
-        });
-    }
-    SdJournalFlushMatches(journal).map_err(|err| anyhow!("flush boot matches: {err}"))?;
-    out.sort_by(|a, b| {
-        a.last_entry
-            .cmp(&b.last_entry)
-            .then_with(|| a.first_entry.cmp(&b.first_entry))
-            .then_with(|| a.boot_id.cmp(&b.boot_id))
-    });
-    Ok(out)
-}
-
-fn collect_boots_by_scan(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
-    use std::collections::HashMap;
-
-    SdJournalSeekHead(journal).map_err(|err| anyhow!("seek head: {err}"))?;
-    let mut boots: HashMap<String, BootEntry> = HashMap::new();
-    loop {
-        match SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? {
-            0 => break,
-            _ => {
-                let entry =
-                    SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
-                let boot_id = hex::encode(entry.boot_id);
-                if boot_id.chars().all(|ch| ch == '0') {
-                    continue;
-                }
-                boots
-                    .entry(boot_id.clone())
-                    .and_modify(|boot| {
-                        boot.first_entry = boot.first_entry.min(entry.realtime);
-                        boot.last_entry = boot.last_entry.max(entry.realtime);
-                    })
-                    .or_insert(BootEntry {
-                        index: 0,
-                        boot_id,
-                        first_entry: entry.realtime,
-                        last_entry: entry.realtime,
-                    });
-            }
-        }
-    }
-    let mut out: Vec<_> = boots.into_values().collect();
-    out.sort_by(|a, b| {
-        a.last_entry
-            .cmp(&b.last_entry)
-            .then_with(|| a.first_entry.cmp(&b.first_entry))
-            .then_with(|| a.boot_id.cmp(&b.boot_id))
-    });
-    Ok(out)
+    let boots = SdJournalListBoots(journal).map_err(|err| anyhow!("list boots: {err}"))?;
+    Ok(boots
+        .into_iter()
+        .map(|boot| BootEntry {
+            index: boot.index as isize,
+            boot_id: boot.boot_id,
+            first_entry: boot.first_entry as u64,
+            last_entry: boot.last_entry as u64,
+        })
+        .collect())
 }
 
 fn select_boot_rows(boots: &[BootEntry], args: &Args) -> Result<Vec<BootEntry>> {
@@ -4095,26 +3894,6 @@ fn parse_invocation_descriptor(descriptor: &str) -> Result<Option<(String, isize
     parse_boot_descriptor(descriptor)
         .map(Some)
         .map_err(|_| anyhow!("failed to parse invocation descriptor: {descriptor}"))
-}
-
-fn parse_boot_id_prefix(value: &str) -> Option<String> {
-    if value.len() >= 32 && value[..32].bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Some(value[..32].to_ascii_lowercase());
-    }
-    if value.len() >= 36 {
-        let candidate = &value[..36];
-        let valid = candidate.bytes().enumerate().all(|(idx, b)| {
-            if matches!(idx, 8 | 13 | 18 | 23) {
-                b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        });
-        if valid {
-            return Some(candidate.replace('-', "").to_ascii_lowercase());
-        }
-    }
-    None
 }
 
 fn parse_duration_usec_allow_zero(value: &str) -> Result<u64> {
@@ -4715,6 +4494,24 @@ mod tests {
 
         let resolved = resolve_file_inputs(&[path.clone(), path.clone()]).expect("resolve files");
         assert_eq!(resolved, vec![path]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_file_inputs_deduplicates_aliases() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("real.journal");
+        let other = dir.path().join("other.journal");
+        fs::write(&path, b"not-a-real-journal").expect("write fixture");
+        fs::write(&other, b"not-a-real-journal").expect("write fixture");
+        let link = dir.path().join("link.journal");
+        std::os::unix::fs::symlink(&path, &link).expect("symlink");
+        let dotted = dir.path().join(".").join("real.journal");
+
+        let resolved =
+            resolve_file_inputs(&[link.clone(), path.clone(), dotted, other.clone(), path])
+                .expect("resolve files");
+        assert_eq!(resolved, vec![link, other]);
     }
 
     #[test]

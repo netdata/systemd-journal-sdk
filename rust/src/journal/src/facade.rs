@@ -1,12 +1,11 @@
 #![allow(non_snake_case)]
 
 use crate::{
-    BootInfo, DirectoryReader, Entry, FileReader, ReaderOptions, SdkError, export_entry_bytes,
-    format_entry_text, json_entry,
+    BootInfo, DirectoryReader, Entry, EntryEncoder, EntryOutputOptions, FileReader, ReaderOptions,
+    SdkError, export_entry_bytes, format_entry_text,
 };
-use std::collections::HashSet;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
@@ -186,30 +185,13 @@ pub fn SdJournalOpenFilePathsWithOptions<P: AsRef<Path>>(
     if paths.len() == 1 {
         return SdJournalOpenFilePathWithOptions(paths[0].as_ref(), flags, options);
     }
-    let paths = dedupe_open_file_paths(paths);
+    let paths = crate::unique_files(paths);
     if paths.len() == 1 {
         return SdJournalOpenFilePathWithOptions(&paths[0], flags, options);
     }
     Ok(SdJournal::new(ReaderKind::Directory(
         DirectoryReader::open_files_with_options(&paths, options).map_err(map_error)?,
     )))
-}
-
-fn dedupe_open_file_paths<P: AsRef<Path>>(paths: &[P]) -> Vec<PathBuf> {
-    let mut out = Vec::with_capacity(paths.len());
-    let mut seen = HashSet::with_capacity(paths.len());
-    for path in paths {
-        let path = path.as_ref();
-        let key = canonical_open_file_key(path);
-        if seen.insert(key) {
-            out.push(path.to_path_buf());
-        }
-    }
-    out
-}
-
-fn canonical_open_file_key(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub fn SdJournalClose(j: SdJournal) {
@@ -515,9 +497,11 @@ impl SdJournal {
         .map_err(map_error)
     }
 
+    /// Lists every boot, oldest first, as `journalctl --list-boots` does. If
+    /// the files cannot be read it falls back to one boot per file header.
     pub fn list_boots(&self) -> Vec<BootInfo> {
         match &self.reader {
-            ReaderKind::File(reader) => {
+            ReaderKind::File(reader) => reader.list_boots().unwrap_or_else(|_| {
                 let header = reader.cached_header().header;
                 vec![BootInfo {
                     index: 0,
@@ -525,8 +509,15 @@ impl SdJournal {
                     first_entry: header.head_entry_realtime as i64,
                     last_entry: header.tail_entry_realtime as i64,
                 }]
-            }
+            }),
             ReaderKind::Directory(reader) => reader.list_boots(),
+        }
+    }
+
+    fn try_list_boots(&self) -> crate::Result<Vec<BootInfo>> {
+        match &self.reader {
+            ReaderKind::File(reader) => reader.list_boots(),
+            ReaderKind::Directory(reader) => reader.try_list_boots(),
         }
     }
 
@@ -539,9 +530,13 @@ impl SdJournal {
             OutputMode::Default => Ok(format_entry_text(entry)),
             OutputMode::Export => Ok(export_entry_bytes(entry)),
             OutputMode::Json => {
-                let mut out = serde_json::to_vec(&json_entry(entry))
-                    .map_err(|err| Error::Other(err.to_string()))?;
-                out.push(b'\n');
+                // Full values, as before; the SDK facade never truncates to null.
+                let mut out = Vec::new();
+                EntryEncoder::new(EntryOutputOptions {
+                    fields: None,
+                    show_all: true,
+                })
+                .append_json(&mut out, entry);
                 Ok(out)
             }
         }
@@ -672,7 +667,7 @@ pub fn SdJournalEnumerateField(j: &mut SdJournal) -> std::result::Result<Option<
 }
 
 pub fn SdJournalListBoots(j: &mut SdJournal) -> std::result::Result<Vec<BootInfo>, Error> {
-    Ok(j.list_boots())
+    j.try_list_boots().map_err(map_error)
 }
 
 pub fn SdJournalQueryUnique(

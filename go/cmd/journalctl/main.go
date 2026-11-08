@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -32,15 +31,6 @@ func noDataError(quiet bool, message string) error {
 	return errors.New(message)
 }
 
-// HEADER_COMPATIBLE_SEALED from systemd journal-def.h
-const compatibleSealed = 1
-const compatibleTailEntryBootID = 1 << 1
-const compatibleSealedContinuous = 1 << 2
-const incompatibleCompressedXZ = 1 << 0
-const incompatibleCompressedLZ4 = 1 << 1
-const incompatibleKeyedHash = 1 << 2
-const incompatibleCompressedZSTD = 1 << 3
-const incompatibleCompact = 1 << 4
 const hashItemSizeBytes = 16
 const journalHeaderSize = 272
 const journalHeaderNEntriesOffset = 152
@@ -122,8 +112,6 @@ type cliJournal interface {
 	Next() (int, error)
 	Previous() (int, error)
 	GetEntry() (*journal.Entry, error)
-	SetOutputMode(string)
-	ProcessOutput(*journal.Entry) (string, error)
 	ListBoots() ([]journal.BootInfo, error)
 	EnumerateFields() ([]string, error)
 	VisitUnique(string, func([]byte) error) error
@@ -399,10 +387,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			}
 		}
 		all = all || *flags.noTail
-		return runFollow(input, operands, flags, *flags.output, sinceUsec, untilUsec, tail, all, stdout, postFilters, cursorControl, outputOptions)
+		return runFollow(input, operands, flags, sinceUsec, untilUsec, tail, all, stdout, postFilters, cursorControl, outputOptions)
 	}
 
-	j, err := openFilteredJournal(input, operands, flags, *flags.output, optionalStringFlag{})
+	j, err := openFilteredJournal(input, operands, flags, optionalStringFlag{})
 	if err != nil {
 		return err
 	}
@@ -918,7 +906,7 @@ func (i cliInput) journalFiles(context string) ([]string, bool, error) {
 	if i.directory == "" {
 		return append([]string(nil), i.files...), false, nil
 	}
-	files, err := collectJournalFilesForVerify(i.directory)
+	files, err := journal.DirectoryFiles(i.directory)
 	if err != nil {
 		return nil, true, fmt.Errorf("%s: read directory: %w", context, err)
 	}
@@ -944,7 +932,6 @@ func (f *cliFlags) input() (cliInput, error) {
 
 func resolveFileInputs(values []string) ([]string, error) {
 	var files []string
-	seen := make(map[string]struct{})
 	for _, value := range values {
 		if value == "-" {
 			return nil, portableUnsupported(
@@ -957,34 +944,12 @@ func resolveFileInputs(values []string) ([]string, error) {
 			return nil, fmt.Errorf("failed to add paths: %w", err)
 		}
 		if len(matches) == 0 {
-			files = appendUniqueFile(files, seen, value)
+			files = append(files, value)
 			continue
 		}
-		for _, match := range matches {
-			files = appendUniqueFile(files, seen, match)
-		}
+		files = append(files, matches...)
 	}
-	return files, nil
-}
-
-func appendUniqueFile(files []string, seen map[string]struct{}, path string) []string {
-	key := canonicalFileKey(path)
-	if _, ok := seen[key]; ok {
-		return files
-	}
-	seen[key] = struct{}{}
-	return append(files, path)
-}
-
-func canonicalFileKey(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
-	}
-	return abs
+	return journal.UniqueFiles(files), nil
 }
 
 func (f *cliFlags) timeBounds() (*uint64, *uint64, error) {
@@ -1864,7 +1829,7 @@ func (f *cliFlags) effectiveQuiet() bool {
 	}
 }
 
-func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outputMode string, bootOverride optionalStringFlag) (cliJournal, error) {
+func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, bootOverride optionalStringFlag) (cliJournal, error) {
 	j, err := input.openJournalWithCursor(*flags.showCursorFlag || *flags.cursorFileFlag != "" || flags.seen["cursor-file"] || *flags.cursorFlag != "" || *flags.afterCursorFlag != "" || flags.seen["cursor"] || flags.seen["after-cursor"])
 	if err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)
@@ -1912,7 +1877,6 @@ func openFilteredJournal(input cliInput, matches []string, flags *cliFlags, outp
 		}
 	}
 
-	j.SetOutputMode(outputMode)
 	ok = true
 	return j, nil
 }
@@ -2040,151 +2004,15 @@ func selectBootRows(boots []bootInfo, flags *cliFlags) ([]bootInfo, error) {
 }
 
 func collectBoots(j cliJournal) ([]bootInfo, error) {
-	boots, err := collectBootsIndexed(j)
-	if err == nil && len(boots) > 0 {
-		return boots, nil
-	}
-	j.FlushMatches()
-	return collectBootsByScan(j)
-}
-
-func collectBootsIndexed(j cliJournal) ([]bootInfo, error) {
-	seen := make(map[string]struct{})
-	var bootIDs []string
-	if err := j.VisitUnique("_BOOT_ID", func(value []byte) error {
-		id, err := journal.ParseUUID(string(value))
-		if err != nil || strings.Trim(id.String(), "0") == "" {
-			return nil
-		}
-		bootID := id.String()
-		if _, ok := seen[bootID]; ok {
-			return nil
-		}
-		seen[bootID] = struct{}{}
-		bootIDs = append(bootIDs, bootID)
-		return nil
-	}); err != nil {
+	boots, err := j.ListBoots()
+	if err != nil {
 		return nil, err
 	}
-
-	boots := make([]bootInfo, 0, len(bootIDs))
-	for _, bootID := range bootIDs {
-		j.FlushMatches()
-		if err := addMatchPair(j, "_BOOT_ID", bootID); err != nil {
-			return nil, err
-		}
-		if err := j.AddConjunction(); err != nil {
-			return nil, err
-		}
-
-		if err := j.SeekHead(); err != nil {
-			return nil, err
-		}
-		ok, err := j.Next()
-		if err != nil {
-			return nil, err
-		}
-		if ok == 0 {
-			continue
-		}
-		firstEntry, err := j.GetEntry()
-		if err != nil {
-			return nil, err
-		}
-
-		if err := j.SeekTail(); err != nil {
-			return nil, err
-		}
-		ok, err = j.Previous()
-		if err != nil {
-			return nil, err
-		}
-		if ok == 0 {
-			continue
-		}
-		lastEntry, err := j.GetEntry()
-		if err != nil {
-			return nil, err
-		}
-
-		boots = append(boots, bootInfo{
-			bootID:     bootID,
-			firstEntry: firstEntry.Realtime,
-			lastEntry:  lastEntry.Realtime,
-		})
-	}
-	j.FlushMatches()
-	sort.Slice(boots, func(i, k int) bool {
-		if boots[i].lastEntry != boots[k].lastEntry {
-			return boots[i].lastEntry < boots[k].lastEntry
-		}
-		if boots[i].firstEntry != boots[k].firstEntry {
-			return boots[i].firstEntry < boots[k].firstEntry
-		}
-		return boots[i].bootID < boots[k].bootID
-	})
-	base := 1 - len(boots)
-	for i := range boots {
-		boots[i].index = base + i
-	}
-	return boots, nil
-}
-
-func collectBootsByScan(j cliJournal) ([]bootInfo, error) {
-	if err := j.SeekHead(); err != nil {
-		return nil, err
-	}
-	boots := make(map[string]*bootInfo)
-	for {
-		ok, err := j.Next()
-		if err != nil {
-			return nil, err
-		}
-		if ok == 0 {
-			break
-		}
-		entry, err := j.GetEntry()
-		if err != nil {
-			return nil, err
-		}
-		bootID := entry.BootID.String()
-		if bootID == "" || strings.Trim(bootID, "0") == "" {
-			continue
-		}
-		updateBootInfo(boots, bootID, entry.Realtime)
-	}
-	out := make([]bootInfo, 0, len(boots))
-	for _, item := range boots {
-		out = append(out, *item)
-	}
-	sort.Slice(out, func(i, k int) bool {
-		if out[i].lastEntry != out[k].lastEntry {
-			return out[i].lastEntry < out[k].lastEntry
-		}
-		if out[i].firstEntry != out[k].firstEntry {
-			return out[i].firstEntry < out[k].firstEntry
-		}
-		return out[i].bootID < out[k].bootID
-	})
-	base := 1 - len(out)
-	for i := range out {
-		out[i].index = base + i
+	out := make([]bootInfo, len(boots))
+	for i, boot := range boots {
+		out[i] = bootInfo{index: int(boot.Index), bootID: boot.BootID, firstEntry: uint64(boot.FirstEntry), lastEntry: uint64(boot.LastEntry)}
 	}
 	return out, nil
-}
-
-func updateBootInfo(boots map[string]*bootInfo, bootID string, realtime uint64) {
-	item := boots[bootID]
-	if item == nil {
-		boots[bootID] = &bootInfo{bootID: bootID, firstEntry: realtime, lastEntry: realtime}
-		return
-	}
-	if realtime < item.firstEntry {
-		item.firstEntry = realtime
-	}
-	if realtime > item.lastEntry {
-		item.lastEntry = realtime
-	}
 }
 
 func resolveBootID(j cliJournal, descriptor string) (string, error) {
@@ -2969,8 +2797,8 @@ func resolveFollowBootFlag(input cliInput, flags *cliFlags) (optionalStringFlag,
 	return optionalStringFlag{set: true, value: bootID}, nil
 }
 
-func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, outputMode string, bootOverride optionalStringFlag, sinceUsec, untilUsec *uint64, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
-	j, err := openFilteredJournal(input, matches, flags, outputMode, bootOverride)
+func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, bootOverride optionalStringFlag, sinceUsec, untilUsec *uint64, cursorSeek *cursorSeek, fn func(*journal.Entry) error) error {
+	j, err := openFilteredJournal(input, matches, flags, bootOverride)
 	if err != nil {
 		return err
 	}
@@ -2978,118 +2806,144 @@ func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, outpu
 	return nextEntries(j, sinceUsec, untilUsec, cursorSeek, nil, fn)
 }
 
-func runFollow(input cliInput, matches []string, flags *cliFlags, outputMode string, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
-	var lastSeenCursor string
-	var lastVisitedCursor string
-	renderer := newOutputRenderer(outputOptions)
-	bootSeparators := newBootSeparatorState(outputOptions.mode, flags.effectiveQuiet(), outputOptions.merge)
+func runFollow(input cliInput, matches []string, flags *cliFlags, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
+	out := &followOutput{
+		stdout:         stdout,
+		renderer:       newOutputRenderer(outputOptions),
+		bootSeparators: newBootSeparatorState(outputOptions.mode, flags.effectiveQuiet(), outputOptions.merge),
+		postFilters:    postFilters,
+		cursorControl:  cursorControl,
+	}
 	bootOverride, err := resolveFollowBootFlag(input, flags)
 	if err != nil {
 		return err
 	}
-	if noTail || cursorControl.seek != nil {
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
-			lastVisitedCursor = entry.Cursor
-			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
-			if err != nil {
-				return err
-			}
-			if !matched {
-				return nil
-			}
-			if entry.Cursor != "" {
-				lastSeenCursor = entry.Cursor
-				return updateCursorFile(cursorControl, lastSeenCursor)
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-	} else {
-		var selected []*journal.Entry
-		start := 0
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
-			if entry.Cursor != "" {
-				lastVisitedCursor = entry.Cursor
-			}
-			if tail == 0 {
-				return nil
-			}
-			if len(selected) < tail {
-				selected = append(selected, entry)
-				return nil
-			}
-			selected[start] = entry
-			start = (start + 1) % tail
-			return nil
-		}); err != nil {
-			return err
-		}
-		for i := 0; i < len(selected); i++ {
-			idx := i
-			if len(selected) == tail {
-				idx = (start + i) % tail
-			}
-			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, selected[idx])
-			if err != nil {
-				return err
-			}
-			if matched {
-				lastSeenCursor = selected[idx].Cursor
-			}
-		}
-		if err := updateCursorFile(cursorControl, lastSeenCursor); err != nil {
-			return err
-		}
+	read := func(seek *cursorSeek, fn func(*journal.Entry) error) error {
+		return forEachFollowEntry(input, matches, flags, bootOverride, sinceUsec, untilUsec, seek, fn)
 	}
-	if cursorControl.updateFile != nil && lastVisitedCursor != "" && lastVisitedCursor != lastSeenCursor {
-		if err := updateCursorFile(cursorControl, lastVisitedCursor); err != nil {
+	if noTail || cursorControl.seek != nil {
+		err = read(cursorControl.seek, func(entry *journal.Entry) error {
+			_, err := out.emit(entry)
 			return err
-		}
-		lastSeenCursor = lastVisitedCursor
+		})
+	} else {
+		err = out.emitInitialTail(tail, func(fn func(*journal.Entry) error) error {
+			return read(cursorControl.seek, fn)
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if err := out.syncVisitedCursor(); err != nil {
+		return err
 	}
 	pollInterval := 100 * time.Millisecond
 	const maxPollInterval = time.Second
 	for {
 		time.Sleep(pollInterval)
 		seek := cursorControl.seek
-		if lastVisitedCursor != "" {
-			seek = &cursorSeek{cursor: lastVisitedCursor, after: true}
+		if out.lastVisitedCursor != "" {
+			seek = &cursorSeek{cursor: out.lastVisitedCursor, after: true}
 		}
 		emitted := 0
-		if err := forEachFollowEntry(input, matches, flags, outputMode, bootOverride, sinceUsec, untilUsec, seek, func(entry *journal.Entry) error {
-			lastVisitedCursor = entry.Cursor
-			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
-			if err != nil {
-				return err
+		if err := read(seek, func(entry *journal.Entry) error {
+			matched, err := out.emit(entry)
+			if matched {
+				emitted++
 			}
-			if !matched {
-				return nil
-			}
-			emitted++
-			if entry.Cursor != "" {
-				lastSeenCursor = entry.Cursor
-				return updateCursorFile(cursorControl, lastSeenCursor)
-			}
-			return nil
+			return err
 		}); err != nil {
 			return err
 		}
-		if cursorControl.updateFile != nil && lastVisitedCursor != "" && lastVisitedCursor != lastSeenCursor {
-			if err := updateCursorFile(cursorControl, lastVisitedCursor); err != nil {
-				return err
-			}
-			lastSeenCursor = lastVisitedCursor
+		if err := out.syncVisitedCursor(); err != nil {
+			return err
 		}
 		if emitted > 0 {
 			pollInterval = 100 * time.Millisecond
 		} else {
-			pollInterval *= 2
-			if pollInterval > maxPollInterval {
-				pollInterval = maxPollInterval
-			}
+			pollInterval = min(pollInterval*2, maxPollInterval)
 		}
 	}
+}
+
+// followOutput carries what a follow run has printed and the cursors it owes
+// the cursor file.
+type followOutput struct {
+	stdout            io.Writer
+	renderer          *outputRenderer
+	bootSeparators    bootSeparatorState
+	postFilters       *cliPostFilters
+	cursorControl     cursorControl
+	lastSeenCursor    string
+	lastVisitedCursor string
+}
+
+func (f *followOutput) render(entry *journal.Entry) (bool, error) {
+	return renderMatchingEntry(f.stdout, f.renderer, &f.bootSeparators, f.postFilters, entry)
+}
+
+func (f *followOutput) emit(entry *journal.Entry) (bool, error) {
+	f.lastVisitedCursor = entry.Cursor
+	matched, err := f.render(entry)
+	if err != nil || !matched {
+		return matched, err
+	}
+	if entry.Cursor != "" {
+		f.lastSeenCursor = entry.Cursor
+		return true, updateCursorFile(f.cursorControl, f.lastSeenCursor)
+	}
+	return true, nil
+}
+
+// emitInitialTail prints the last tail entries, keeping only that many in a
+// ring while reading.
+func (f *followOutput) emitInitialTail(tail int, read func(func(*journal.Entry) error) error) error {
+	var selected []*journal.Entry
+	start := 0
+	if err := read(func(entry *journal.Entry) error {
+		if entry.Cursor != "" {
+			f.lastVisitedCursor = entry.Cursor
+		}
+		if tail == 0 {
+			return nil
+		}
+		if len(selected) < tail {
+			selected = append(selected, entry)
+			return nil
+		}
+		selected[start] = entry
+		start = (start + 1) % tail
+		return nil
+	}); err != nil {
+		return err
+	}
+	for i := 0; i < len(selected); i++ {
+		idx := i
+		if len(selected) == tail {
+			idx = (start + i) % tail
+		}
+		matched, err := f.render(selected[idx])
+		if err != nil {
+			return err
+		}
+		if matched {
+			f.lastSeenCursor = selected[idx].Cursor
+		}
+	}
+	return updateCursorFile(f.cursorControl, f.lastSeenCursor)
+}
+
+// syncVisitedCursor saves the last visited entry when filters hid it from the
+// output, so a restart does not rescan it.
+func (f *followOutput) syncVisitedCursor() error {
+	if f.cursorControl.updateFile == nil || f.lastVisitedCursor == "" || f.lastVisitedCursor == f.lastSeenCursor {
+		return nil
+	}
+	if err := updateCursorFile(f.cursorControl, f.lastVisitedCursor); err != nil {
+		return err
+	}
+	f.lastSeenCursor = f.lastVisitedCursor
+	return nil
 }
 
 func runVerify(input cliInput, verifyKey string, hasVerifyKey, quiet bool, stdout, stderr io.Writer) error {
@@ -3121,12 +2975,10 @@ func runVerify(input cliInput, verifyKey string, hasVerifyKey, quiet bool, stdou
 }
 
 func printNewID128(stdout io.Writer) error {
-	var id [16]byte
-	if _, err := rand.Read(id[:]); err != nil {
+	id, err := journal.NewUUID()
+	if err != nil {
 		return fmt.Errorf("generate ID128: %w", err)
 	}
-	id[6] = (id[6] & 0x0f) | 0x40
-	id[8] = (id[8] & 0x3f) | 0x80
 
 	simple := hex.EncodeToString(id[:])
 	uuidText := fmt.Sprintf("%s-%s-%s-%s-%s", simple[0:8], simple[8:12], simple[12:16], simple[16:20], simple[20:32])
@@ -3691,16 +3543,16 @@ func headerStateName(state uint8) string {
 
 func compatibleFlagText(flags uint32) string {
 	var parts []string
-	if flags&compatibleSealed != 0 {
+	if flags&journal.HeaderCompatibleSealed != 0 {
 		parts = append(parts, "SEALED")
 	}
-	if flags&compatibleSealedContinuous != 0 {
+	if flags&journal.HeaderCompatibleSealedContinuous != 0 {
 		parts = append(parts, "SEALED_CONTINUOUS")
 	}
-	if flags&compatibleTailEntryBootID != 0 {
+	if flags&journal.HeaderCompatibleTailEntryBootID != 0 {
 		parts = append(parts, "TAIL_ENTRY_BOOT_ID")
 	}
-	if flags&^(compatibleSealed|compatibleSealedContinuous|compatibleTailEntryBootID) != 0 {
+	if flags&^(journal.HeaderCompatibleSealed|journal.HeaderCompatibleSealedContinuous|journal.HeaderCompatibleTailEntryBootID) != 0 {
 		parts = append(parts, "???")
 	}
 	if len(parts) == 0 {
@@ -3711,22 +3563,22 @@ func compatibleFlagText(flags uint32) string {
 
 func incompatibleFlagText(flags uint32) string {
 	var parts []string
-	if flags&incompatibleCompressedXZ != 0 {
+	if flags&journal.HeaderIncompatibleCompressedXZ != 0 {
 		parts = append(parts, "COMPRESSED-XZ")
 	}
-	if flags&incompatibleCompressedLZ4 != 0 {
+	if flags&journal.HeaderIncompatibleCompressedLZ4 != 0 {
 		parts = append(parts, "COMPRESSED-LZ4")
 	}
-	if flags&incompatibleCompressedZSTD != 0 {
+	if flags&journal.HeaderIncompatibleCompressedZSTD != 0 {
 		parts = append(parts, "COMPRESSED-ZSTD")
 	}
-	if flags&incompatibleKeyedHash != 0 {
+	if flags&journal.HeaderIncompatibleKeyedHash != 0 {
 		parts = append(parts, "KEYED-HASH")
 	}
-	if flags&incompatibleCompact != 0 {
+	if flags&journal.HeaderIncompatibleCompact != 0 {
 		parts = append(parts, "COMPACT")
 	}
-	if flags&^(incompatibleCompressedXZ|incompatibleCompressedLZ4|incompatibleCompressedZSTD|incompatibleKeyedHash|incompatibleCompact) != 0 {
+	if flags&^(journal.HeaderIncompatibleCompressedXZ|journal.HeaderIncompatibleCompressedLZ4|journal.HeaderIncompatibleCompressedZSTD|journal.HeaderIncompatibleKeyedHash|journal.HeaderIncompatibleCompact) != 0 {
 		parts = append(parts, "???")
 	}
 	if len(parts) == 0 {
@@ -3936,99 +3788,7 @@ func isFileSealed(path string) (bool, error) {
 		return false, err
 	}
 	defer r.Close()
-	return r.Header().CompatibleFlags()&compatibleSealed != 0, nil
-}
-
-func isJournalFileName(name string) bool {
-	return strings.HasSuffix(name, ".journal") ||
-		strings.HasSuffix(name, ".journal~") ||
-		strings.HasSuffix(name, ".journal.zst") ||
-		strings.HasSuffix(name, ".journal~.zst")
-}
-
-func collectJournalFilesForVerify(path string) ([]string, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var files []string
-	for _, entry := range entries {
-		candidate := filepath.Join(path, entry.Name())
-		if isRegularFile(candidate) && isJournalFileName(entry.Name()) {
-			files = append(files, candidate)
-		}
-	}
-
-	for _, entry := range entries {
-		if !isJournalSubdirName(entry.Name()) {
-			continue
-		}
-		childPath := filepath.Join(path, entry.Name())
-		if !isDirectory(childPath) {
-			continue
-		}
-		children, err := os.ReadDir(childPath)
-		if err != nil {
-			continue
-		}
-		for _, child := range children {
-			candidate := filepath.Join(childPath, child.Name())
-			if isRegularFile(candidate) && isJournalFileName(child.Name()) {
-				files = append(files, candidate)
-			}
-		}
-	}
-
-	sort.Strings(files)
-	return files, nil
-}
-
-func isRegularFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
-}
-
-func isDirectory(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-func isJournalSubdirName(name string) bool {
-	if strings.Contains(name, ".") {
-		return false
-	}
-	return id128StringValid(name)
-}
-
-func id128StringValid(s string) bool {
-	if len(s) == 32 {
-		for _, ch := range s {
-			if !isASCIIHex(ch) {
-				return false
-			}
-		}
-		return true
-	}
-	if len(s) == 36 {
-		for i, ch := range s {
-			if i == 8 || i == 13 || i == 18 || i == 23 {
-				if ch != '-' {
-					return false
-				}
-				continue
-			}
-			if !isASCIIHex(ch) {
-				return false
-			}
-		}
-		return true
-	}
-	return false
-}
-
-func isASCIIHex(ch rune) bool {
-	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+	return r.Header().CompatibleFlags()&journal.HeaderCompatibleSealed != 0, nil
 }
 
 func hasStringFlag(args []string, name string) bool {

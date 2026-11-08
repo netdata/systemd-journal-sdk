@@ -6,8 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"math/bits"
 	"strings"
+
+	"github.com/netdata/systemd-journal-sdk/go/journal"
 )
 
 const unitNameChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-_.\\@"
@@ -125,7 +126,7 @@ func normalizeUnitName(value string) (name, escaped string, err error) {
 			name = b.String() + suffix
 			if len(name) >= 256 {
 				var hash [8]byte
-				binary.LittleEndian.PutUint64(hash[:], unitNameHash(append([]byte(name), 0)))
+				binary.LittleEndian.PutUint64(hash[:], journal.SipHash24(longUnitNameHashKey, append([]byte(name), 0)))
 				name = name[:256-1-len(suffix)-16-1] + "_" + hex.EncodeToString(hash[:]) + suffix
 			}
 			return name, "", nil
@@ -162,46 +163,8 @@ func containsString(values []string, value string) bool {
 	return false
 }
 
-// The journalctl path-name hash is independent from a journal file's DATA hash.
-func unitNameHash(msg []byte) uint64 {
-	key := [16]byte{0xec, 0xf2, 0x37, 0xfb, 0x58, 0x32, 0x4a, 0x32, 0x84, 0x9f, 0x06, 0x9b, 0x0d, 0x21, 0xeb, 0x9a}
-	k0, k1 := binary.LittleEndian.Uint64(key[:8]), binary.LittleEndian.Uint64(key[8:])
-	v0, v1, v2, v3 := uint64(0x736f6d6570736575)^k0, uint64(0x646f72616e646f6d)^k1, uint64(0x6c7967656e657261)^k0, uint64(0x7465646279746573)^k1
-	round := func() {
-		v0 += v1
-		v1 = bits.RotateLeft64(v1, 13) ^ v0
-		v0 = bits.RotateLeft64(v0, 32)
-		v2 += v3
-		v3 = bits.RotateLeft64(v3, 16) ^ v2
-		v0 += v3
-		v3 = bits.RotateLeft64(v3, 21) ^ v0
-		v2 += v1
-		v1 = bits.RotateLeft64(v1, 17) ^ v2
-		v2 = bits.RotateLeft64(v2, 32)
-	}
-	rest := msg
-	for len(rest) >= 8 {
-		m := binary.LittleEndian.Uint64(rest[:8])
-		v3 ^= m
-		round()
-		round()
-		v0 ^= m
-		rest = rest[8:]
-	}
-	b := uint64(len(msg)) << 56
-	for i, c := range rest {
-		b |= uint64(c) << (8 * uint(i))
-	}
-	v3 ^= b
-	round()
-	round()
-	v0 ^= b
-	v2 ^= 0xff
-	for range 4 {
-		round()
-	}
-	return v0 ^ v1 ^ v2 ^ v3
-}
+// longUnitNameHashKey is systemd's LONG_UNIT_NAME_HASH_KEY (src/basic/unit-name.c).
+var longUnitNameHashKey = [16]byte{0xec, 0xf2, 0x37, 0xfb, 0x58, 0x32, 0x4a, 0x32, 0x84, 0x9f, 0x06, 0x9b, 0x0d, 0x21, 0xeb, 0x9a}
 
 func validUnitPathComponents(parts []string) bool {
 	for _, part := range parts {

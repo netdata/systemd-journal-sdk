@@ -5,6 +5,12 @@ import (
 	"math/bits"
 )
 
+// SipHash24 returns the SipHash-2-4 of msg under key, the hash systemd uses
+// for keyed journal hash tables and for long unit names.
+func SipHash24(key [16]byte, msg []byte) uint64 {
+	return sipHash24(UUID(key), msg)
+}
+
 func sipHash24(key UUID, msg []byte) uint64 {
 	k0 := binary.LittleEndian.Uint64(key[0:8])
 	k1 := binary.LittleEndian.Uint64(key[8:16])
