@@ -2,11 +2,10 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: Two non-blocking documentation findings from SOW-0151 review are
-tracked. No implementation is authorized or started; choose the documentation
-approach before changing consumer guidance.
+Sub-state: completed 2026-11-01 in the autonomous backlog run; decision 1A
+approved by the user 2026-11-03.
 
 ## Requirements
 
@@ -78,7 +77,8 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: passed 2026-11-01 with decision 1A (approved by the user 2026-11-03,
+see Implications And Decisions).
 
 Problem / root-cause model:
 
@@ -150,7 +150,7 @@ Open decisions:
 - Decision 1: B, surgical: update the explicit Go version and document the
   existing writer-state APIs. This changes little prose but retains a version
   statement that future releases must update.
-- Neither option is approved or implemented by creating this tracking record.
+- Resolved: 1A, approved by the user 2026-11-03.
 
 ## Implications And Decisions
 
@@ -158,6 +158,10 @@ Open decisions:
   documentation follow-up is independent and does not block the release.
 - Recommend decision 1A when this SOW is activated; record the actual selection
   before implementation.
+- 2026-11-01: decision 1A applied as agent-chosen, pending user review (the
+  user authorized autonomous low-risk choices flagged in PRs): `go/API.md`
+  links to `go/README.md` for the current release instead of naming a tag.
+- 2026-11-03 (user): decision 1A approved.
 
 ## Plan
 
@@ -169,13 +173,13 @@ Open decisions:
 
 Implementation:
 
-- The project manager implements after user selection; no changes to consumer
-  documentation have been made under this SOW.
+- The project manager implemented decision 1A (agent-chosen, approved by the
+  user 2026-11-03) on 2026-11-01; see Validation.
 
 Reviewers:
 
-- The initial findings are independently confirmed. Apply the current
-  external-review authorization rules at the whole-SOW review milestone.
+- Whole-SOW self-review after local validation; tests are the gate. External
+  reviewers are not used.
 
 Repository boundary block for every external-reviewer prompt:
 
@@ -201,81 +205,117 @@ Failure handling:
 - Created a pending tracking record from the project-local SOW template for
   two confirmed P3 findings. Publication source and consumer docs are unchanged.
 
+### 2026-11-01
+
+- Applied decision 1A and the Rust writer-state wording; validated; closed.
+- PR review: Rust wording refined to say the failing call returns its own
+  error, later mutation attempts return `JournalError::WriterPoisoned`, and
+  `Log` wraps it as `WriterError::Journal` (verified at `journal-core`
+  `writer.rs:629-636` and `journal-log-writer` `error.rs:44`).
+
 ## Validation
 
 Acceptance criteria evidence:
 
-- The cited current passages establish the problem; implementation acceptance
-  has not been evaluated because the approach remains unselected.
+- `go/API.md` no longer names a version; it states the `go/vX.Y.Z` tag form
+  and links to `go/README.md`, which carries the install command
+  (`go/README.md:9`); `tests/release/release.py` `validate_install_examples`
+  fails a release when that reference names another version.
+- `docs/Writer-APIs.md` names Rust `JournalError::WriterPoisoned`,
+  `JournalWriter::is_poisoned()` and `Log::is_poisoned()` beside Go
+  `ErrWriterFailed`; verified against `journal-core` `writer.rs:281,439,524`
+  and `journal-log-writer` `log/mod.rs:116,127`.
 
 Tests or equivalent validation:
 
-- Read-only passage and API inspection completed. Documentation checks belong
-  to the eventual implementation and have not been claimed here.
+- `python3 tests/docs/check_wiki_docs.py`: 16 files validated.
+- `git diff --check`: clean.
+- `python3 tests/docs/verify_examples.py` (2026-11-03, caches under
+  `.local/`): all 35 examples pass (19 Go, 16 Rust). No example changed in
+  this SOW; the run confirms the edited pages still build.
 
 Real-use evidence:
 
-- The stale tag is visible in the Go stability document; existing state-query
-  names were checked directly in public Rust source.
+- Links and API names checked by reading the targets.
 
-Reviewer findings:
+Reviewer findings (self-review; tests are the gate, no external reviewers):
 
-- Deepseek's stale Go version claim and GLM's thin Rust state-query wording
-  are tracked here; neither was a release-blocking runtime finding.
+1. The first wording implied `WriterPoisoned` is the error of the failing
+   call and named it without `Log`'s `WriterError::Journal` wrapper.
+   Disposition: fixed in both pages (raised in PR review, confirmed against
+   the code above).
+2. `go/API.md` now depends on `go/README.md` staying current. Disposition:
+   accepted. `tests/release/release.py` (`validate_install_examples`) fails a
+   release when a versioned module reference in `go/README.md` names a
+   different version; it does not require the install command to exist, so
+   removing that command would not be caught.
 
 Same-failure scan:
 
-- Full active consumer prose scanning is part of the implementation plan,
-  after the user selects the maintenance approach.
+- `grep -rn "go/v0\.[0-9]"` over active Markdown outside SOW records and the
+  status ledger: no other stale version claim. `docs/Indexed-Snapshots.md`
+  had the same vague Rust wording ("its failed-writer error"); fixed.
+- `grep -n "WriterPoisoned" docs/*.md`: `docs/Rust-API.md` only lists the
+  variant in its semver notes; no shape claim to fix.
 
 Sensitive data gate:
 
-- This record uses only public API names, release commits and relative paths.
+- Public API names and repository paths only.
 
 Artifact maintenance gate:
 
-- AGENTS.md, runtime skills and specs have no implemented changes.
-- Consumer docs remain unchanged; no output/reference skills exist.
-- This SOW is open in pending; both ledgers record it. Full close-out artifact
-  evidence will be added after the authorized implementation.
+- AGENTS.md: no change; documentation-only fix with no workflow rule.
+- Runtime project skills: `project-docs-authoring` rules were followed;
+  no new rule.
+- Specs: no change; the specs describe writer poisoning behavior, which did
+  not change.
+- End-user/operator docs: `go/API.md`, `docs/Writer-APIs.md`,
+  `docs/Indexed-Snapshots.md`.
+- End-user/operator skills: none exist.
+- SOW lifecycle: `Status: completed` and the move to `done/` are committed
+  with the documentation change.
+- SOW-status.md: canonical ledger and root index updated.
 
 Specs update:
 
-- Existing SDK behavior has not changed; any installation reference impact
-  will be checked during implementation.
+- None needed (see the artifact maintenance gate).
 
 Project skills update:
 
-- No release-scan policy change has been approved.
+- None needed.
 
 End-user/operator docs update:
 
-- The two identified passages are pending; no docs change is claimed.
+- `go/API.md`, `docs/Writer-APIs.md`, `docs/Indexed-Snapshots.md`.
 
 End-user/operator skills update:
 
-- None exist in this repository.
+- None exist.
 
 Lessons:
 
-- Release-version prose can become stale even when executable installation
-  declarations are consistent.
+- See Lessons Extracted.
 
 Follow-up mapping:
 
-- Both confirmed documentation findings are assigned to this pending SOW.
+- None remain; both findings are implemented.
+
+Audit:
+
+- `.agents/sow/audit.sh`: SOW initialization complete and clean.
 
 ## Outcome
 
-Open; design selection and implementation have not started.
+Completed. The Go stability guide defers versions to the install guide, and
+the writer docs name the Rust state queries beside Go's error.
 
 ## Lessons Extracted
 
-- Prefer one authoritative version guide when the user selects that approach.
+- Prefer one authoritative version guide; other pages link to it.
 
 ## Followup
 
-- The two findings are the work of this SOW; no further item is deferred.
+- None.
 
 ## Regression Log
 

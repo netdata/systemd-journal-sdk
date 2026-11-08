@@ -15,7 +15,7 @@ order; the user may reorder it.
    tracked by SOW-0166, SOW-0167, SOW-0168).
 4. SOW-0097 - Go duplication debt.
 5. SOW-0098 - Rust legacy core / `jf` duplication debt (feeds SOW-0162).
-6. SOW-0153 - Consumer docs release clarity.
+6. SOW-0153 - Consumer docs release clarity (completed 2026-11-01).
 7. SOW-0125 - Netdata filter operators (needs design decisions first).
 8. SOW-0162 - Publishable C reader crate.
 9. SOW-0169 - Pin the stock journalctl oracle in interoperability matrices
@@ -57,8 +57,6 @@ None.
   (cheap polling first).
 - SOW-0125 - Netdata Filter Operators Gap Analysis: feature analysis; needs
   semantic decisions before implementation.
-- SOW-0153 - Consumer Documentation Release Clarity: stale `go/v0.3.0` text and
-  Rust writer-state discoverability.
 - SOW-0162 - Publishable C Reader Crate: new, 2026-10-31.
 - SOW-0163 - v0.11.0 Release: new, 2026-10-31.
 - SOW-0164 - Netdata SDK-Exclusive Adoption And Vendored Journal Removal:
@@ -89,6 +87,7 @@ None.
   read and continue every file earlier releases wrote. Follow-ups: SOW-0171,
   SOW-0172.
 
+- SOW-0153 - Consumer Documentation Release Clarity: completed 2026-11-01.
 - SOW-0122 - Journalctl Performance Followups: completed 2026-11-01;
   `--list-invocations` 8-120x faster and IDX alignment matches stock.
 - SOW-0161 - File Indexer Source Posting Membership: completed 2026-11-01;
