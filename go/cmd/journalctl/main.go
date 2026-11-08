@@ -2807,117 +2807,143 @@ func forEachFollowEntry(input cliInput, matches []string, flags *cliFlags, bootO
 }
 
 func runFollow(input cliInput, matches []string, flags *cliFlags, sinceUsec, untilUsec *uint64, tail int, noTail bool, stdout io.Writer, postFilters *cliPostFilters, cursorControl cursorControl, outputOptions outputOptions) error {
-	var lastSeenCursor string
-	var lastVisitedCursor string
-	renderer := newOutputRenderer(outputOptions)
-	bootSeparators := newBootSeparatorState(outputOptions.mode, flags.effectiveQuiet(), outputOptions.merge)
+	out := &followOutput{
+		stdout:         stdout,
+		renderer:       newOutputRenderer(outputOptions),
+		bootSeparators: newBootSeparatorState(outputOptions.mode, flags.effectiveQuiet(), outputOptions.merge),
+		postFilters:    postFilters,
+		cursorControl:  cursorControl,
+	}
 	bootOverride, err := resolveFollowBootFlag(input, flags)
 	if err != nil {
 		return err
 	}
-	if noTail || cursorControl.seek != nil {
-		if err := forEachFollowEntry(input, matches, flags, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
-			lastVisitedCursor = entry.Cursor
-			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
-			if err != nil {
-				return err
-			}
-			if !matched {
-				return nil
-			}
-			if entry.Cursor != "" {
-				lastSeenCursor = entry.Cursor
-				return updateCursorFile(cursorControl, lastSeenCursor)
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-	} else {
-		var selected []*journal.Entry
-		start := 0
-		if err := forEachFollowEntry(input, matches, flags, bootOverride, sinceUsec, untilUsec, cursorControl.seek, func(entry *journal.Entry) error {
-			if entry.Cursor != "" {
-				lastVisitedCursor = entry.Cursor
-			}
-			if tail == 0 {
-				return nil
-			}
-			if len(selected) < tail {
-				selected = append(selected, entry)
-				return nil
-			}
-			selected[start] = entry
-			start = (start + 1) % tail
-			return nil
-		}); err != nil {
-			return err
-		}
-		for i := 0; i < len(selected); i++ {
-			idx := i
-			if len(selected) == tail {
-				idx = (start + i) % tail
-			}
-			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, selected[idx])
-			if err != nil {
-				return err
-			}
-			if matched {
-				lastSeenCursor = selected[idx].Cursor
-			}
-		}
-		if err := updateCursorFile(cursorControl, lastSeenCursor); err != nil {
-			return err
-		}
+	read := func(seek *cursorSeek, fn func(*journal.Entry) error) error {
+		return forEachFollowEntry(input, matches, flags, bootOverride, sinceUsec, untilUsec, seek, fn)
 	}
-	if cursorControl.updateFile != nil && lastVisitedCursor != "" && lastVisitedCursor != lastSeenCursor {
-		if err := updateCursorFile(cursorControl, lastVisitedCursor); err != nil {
+	if noTail || cursorControl.seek != nil {
+		err = read(cursorControl.seek, func(entry *journal.Entry) error {
+			_, err := out.emit(entry)
 			return err
-		}
-		lastSeenCursor = lastVisitedCursor
+		})
+	} else {
+		err = out.emitInitialTail(tail, func(fn func(*journal.Entry) error) error {
+			return read(cursorControl.seek, fn)
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if err := out.syncVisitedCursor(); err != nil {
+		return err
 	}
 	pollInterval := 100 * time.Millisecond
 	const maxPollInterval = time.Second
 	for {
 		time.Sleep(pollInterval)
 		seek := cursorControl.seek
-		if lastVisitedCursor != "" {
-			seek = &cursorSeek{cursor: lastVisitedCursor, after: true}
+		if out.lastVisitedCursor != "" {
+			seek = &cursorSeek{cursor: out.lastVisitedCursor, after: true}
 		}
 		emitted := 0
-		if err := forEachFollowEntry(input, matches, flags, bootOverride, sinceUsec, untilUsec, seek, func(entry *journal.Entry) error {
-			lastVisitedCursor = entry.Cursor
-			matched, err := renderMatchingEntry(stdout, renderer, &bootSeparators, postFilters, entry)
-			if err != nil {
-				return err
+		if err := read(seek, func(entry *journal.Entry) error {
+			matched, err := out.emit(entry)
+			if matched {
+				emitted++
 			}
-			if !matched {
-				return nil
-			}
-			emitted++
-			if entry.Cursor != "" {
-				lastSeenCursor = entry.Cursor
-				return updateCursorFile(cursorControl, lastSeenCursor)
-			}
-			return nil
+			return err
 		}); err != nil {
 			return err
 		}
-		if cursorControl.updateFile != nil && lastVisitedCursor != "" && lastVisitedCursor != lastSeenCursor {
-			if err := updateCursorFile(cursorControl, lastVisitedCursor); err != nil {
-				return err
-			}
-			lastSeenCursor = lastVisitedCursor
+		if err := out.syncVisitedCursor(); err != nil {
+			return err
 		}
 		if emitted > 0 {
 			pollInterval = 100 * time.Millisecond
 		} else {
-			pollInterval *= 2
-			if pollInterval > maxPollInterval {
-				pollInterval = maxPollInterval
-			}
+			pollInterval = min(pollInterval*2, maxPollInterval)
 		}
 	}
+}
+
+// followOutput carries what a follow run has printed and the cursors it owes
+// the cursor file.
+type followOutput struct {
+	stdout            io.Writer
+	renderer          *outputRenderer
+	bootSeparators    bootSeparatorState
+	postFilters       *cliPostFilters
+	cursorControl     cursorControl
+	lastSeenCursor    string
+	lastVisitedCursor string
+}
+
+func (f *followOutput) render(entry *journal.Entry) (bool, error) {
+	return renderMatchingEntry(f.stdout, f.renderer, &f.bootSeparators, f.postFilters, entry)
+}
+
+func (f *followOutput) emit(entry *journal.Entry) (bool, error) {
+	f.lastVisitedCursor = entry.Cursor
+	matched, err := f.render(entry)
+	if err != nil || !matched {
+		return matched, err
+	}
+	if entry.Cursor != "" {
+		f.lastSeenCursor = entry.Cursor
+		return true, updateCursorFile(f.cursorControl, f.lastSeenCursor)
+	}
+	return true, nil
+}
+
+// emitInitialTail prints the last tail entries, keeping only that many in a
+// ring while reading.
+func (f *followOutput) emitInitialTail(tail int, read func(func(*journal.Entry) error) error) error {
+	var selected []*journal.Entry
+	start := 0
+	if err := read(func(entry *journal.Entry) error {
+		if entry.Cursor != "" {
+			f.lastVisitedCursor = entry.Cursor
+		}
+		if tail == 0 {
+			return nil
+		}
+		if len(selected) < tail {
+			selected = append(selected, entry)
+			return nil
+		}
+		selected[start] = entry
+		start = (start + 1) % tail
+		return nil
+	}); err != nil {
+		return err
+	}
+	for i := 0; i < len(selected); i++ {
+		idx := i
+		if len(selected) == tail {
+			idx = (start + i) % tail
+		}
+		matched, err := f.render(selected[idx])
+		if err != nil {
+			return err
+		}
+		if matched {
+			f.lastSeenCursor = selected[idx].Cursor
+		}
+	}
+	return updateCursorFile(f.cursorControl, f.lastSeenCursor)
+}
+
+// syncVisitedCursor saves the last visited entry when filters hid it from the
+// output, so a restart does not rescan it.
+func (f *followOutput) syncVisitedCursor() error {
+	if f.cursorControl.updateFile == nil || f.lastVisitedCursor == "" || f.lastVisitedCursor == f.lastSeenCursor {
+		return nil
+	}
+	if err := updateCursorFile(f.cursorControl, f.lastVisitedCursor); err != nil {
+		return err
+	}
+	f.lastSeenCursor = f.lastVisitedCursor
+	return nil
 }
 
 func runVerify(input cliInput, verifyKey string, hasVerifyKey, quiet bool, stdout, stderr io.Writer) error {

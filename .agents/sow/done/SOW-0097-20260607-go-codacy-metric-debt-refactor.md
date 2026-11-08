@@ -544,3 +544,17 @@ keeps new production copies out.
 ## Regression Log
 
 None.
+
+## PR #26 Codacy Follow-Up - 2026-11-08
+
+Codacy reported three new issues on the PR after the review fixes were pushed:
+
+- `runFollow` complexity 24 (limit 20): an existing function that Codacy counted
+  as new because the PR changed its signature. Fixed anyway: its state and
+  repeated emit and cursor-sync blocks moved to `followOutput`, with the same
+  order of rendering and cursor updates.
+- Two Semgrep `dangerous-subprocess-use-tainted-env-args` reports in
+  `tests/duplication/check_duplication.py`: false positives. The jscpd command
+  comes from the CI workflow's `--jscpd` argument and runs without a shell.
+  Marked `nosemgrep`, the narrow suppression `documentation/code-scanning.md`
+  allows and other test harnesses here already use.
