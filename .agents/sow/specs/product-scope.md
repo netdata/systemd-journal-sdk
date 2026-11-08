@@ -431,8 +431,9 @@ Current shared writer layout contract:
   SOW-0123). Unset, a fresh Rust chain starts at wall-clock time, so past
   caller realtime is clamped forward, while a fresh Go chain starts at zero.
   Seeds at or above `2^55 - 1` are rejected so `seed + 1` stays inside
-  systemd's valid realtime range `(0, 2^55)`. The writers do not yet reject
-  caller-supplied realtime at or above `2^55`; that gap is tracked in SOW-0156. Eager open names the active file before
+  systemd's valid realtime range `(0, 2^55)`. Caller-supplied entry
+  timestamps outside that range are refused before mutation (see the
+  timestamp rule below). Eager open names the active file before
   any event, so event-time filenames need lazy open.
 
 Current writer performance certification status:
@@ -626,12 +627,14 @@ Current shared high-level directory writer API slice:
   missing tail-entry-boot-ID flag, archived state, sealed files (sealing
   state cannot be restored, so the tail would be unsealed), invalid tail metadata
   (head realtime outside `1..2^55-1`, tail realtime or monotonic at or above
-  2^55, null tail boot ID) and regular files above 4 GiB, as unsupported and
+  2^55, null tail boot ID) and regular files of 4 GiB or more, as unsupported and
   before mutation. Readers keep accepting these files. Log set-aside does not
   use an out-of-range tail timestamp as a clock floor. Root-retention Logs
   archive such a current active under its archive name instead of setting it
   aside, and finalize retired files the same way, through an archive-only
-  open that skips these refusals.
+  open that skips these refusals. Every open, reader, append and archive-only
+  alike, refuses an unknown header state and a sealed header shorter than 240
+  bytes, as systemd's journal_file_verify_header does.
 - Rust and Go writers refuse entry timestamps with realtime outside
   `1..2^55-1` or monotonic at or above 2^55 before mutation (Go
   `ErrTimestampOutOfRange`, Rust `JournalError::TimestampOutOfRange`); the
@@ -1059,8 +1062,8 @@ Current Go reader feature slice:
 - systemd-compatible export output for binary fields using size-prefixed field
   values and blank-line entry separators;
 - systemd-compatible JSON output for duplicate fields and binary values;
-- `EntryEncoder` renders systemd v262 `output_export`/`output_json` exactly
-  (metadata first, DATA in on-disk order, export stops at a payload without
+- `EntryEncoder` renders systemd v262 `output_export` exactly and
+  `output_json` semantically (metadata first, DATA in on-disk order, export stops at a payload without
   `=` or with an invalid field name, JSON skips such fields, 4096-byte JSON
   `null` threshold unless `ShowAll`, systemd's printable rule); JSON keys are
   sorted because systemd's order is hash order. Both journalctl rewrites
@@ -1069,9 +1072,11 @@ Current Go reader feature slice:
 - boot listing (`Reader.ListBoots`, `DirectoryReader.ListBoots`,
   `SdJournalListBoots`) reports every boot from the `_BOOT_ID` DATA entry
   arrays, merged across files in directory order and ordered by last entry,
-  first entry and ID, with an entry-header scan for files without `_BOOT_ID`
-  DATA; only canonical lowercase `_BOOT_ID` values name a boot; it does not
-  change matches or position. Both journalctl rewrites use it;
+  first entry and ID. When no usable canonical index exists it scans entry
+  headers instead, so header IDs can name boots then; a directory scans only
+  when no file has such an index or one cannot be read. Only canonical
+  lowercase `_BOOT_ID` values name indexed boots. It does not change matches
+  or position. Both journalctl rewrites use it;
 - file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,

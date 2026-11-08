@@ -15,6 +15,8 @@ class ClassificationTest(unittest.TestCase):
             "go/journal/reader_test.go",
             "rust/src/crates/journal-registry/tests/overlapping_watches.rs",
             "rust/src/journal/src/tests.rs",
+            "rust/src/crates/journal-core/src/file/file_tests.rs",
+            "rust/src/crates/journal-core/src/file/writer_test.rs",
             "go/internal/testcmd/reader_core_bench/main.go",
             "rust/src/internal/testcmd/livewriter/src/main.rs",
             "rust/src/crates/journal-engine/examples/index.rs",
@@ -26,7 +28,7 @@ class ClassificationTest(unittest.TestCase):
             "go/journal/directory_reader.go",
             "go/cmd/journalctl/main.go",
             "rust/src/journal/src/netdata.rs",
-            "rust/src/crates/journal-core/src/file/testing_helpers_are_not_tests.rs",
+            "rust/src/crates/journal-core/src/file/latests.rs",
         ):
             self.assertFalse(is_test_path(path), path)
 

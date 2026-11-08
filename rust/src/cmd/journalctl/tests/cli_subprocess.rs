@@ -1,6 +1,7 @@
 //! Subprocess tests use Cargo's integration-test binary path instead of a
 //! workspace-target fallback.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn run_cli(args: &[&str]) -> Output {
@@ -190,10 +191,11 @@ fn verify_directory_uses_systemd_layout() {
     }
     let mut want = Vec::new();
     for rel in [
-        "system.journal.zst".to_string(),
-        "system@archived.journal~.zst".to_string(),
-        format!("{plain_id}/user-1000.journal.zst"),
-        format!("{dashed_id}/system.journal.zst"),
+        PathBuf::from("system.journal.zst"),
+        PathBuf::from("system@archived.journal~.zst"),
+        // Joined per component: the CLI prints native separators on Windows.
+        Path::new(plain_id).join("user-1000.journal.zst"),
+        Path::new(dashed_id).join("system.journal.zst"),
     ] {
         let path = root.path().join(rel);
         std::fs::copy(&fixture, &path).expect("copy fixture");

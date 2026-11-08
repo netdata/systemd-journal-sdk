@@ -52,7 +52,7 @@ To be refreshed at activation, after SOW-0097 lands.
 
 ## Pre-Implementation Gate
 
-Status: not started
+Status: blocked
 
 Problem / root-cause model: entry files grew as features landed.
 
@@ -92,17 +92,79 @@ Activate after SOW-0097.
 
 Project manager implements; test suite plus self-review.
 
+Repository boundary block for every helper-agent prompt:
+
+```text
+CRITICAL REPOSITORY BOUNDARY:
+- Do not make changes outside this repository for any reason.
+- Repository path: current repository root.
+- You may inspect external references read-only when the task requires it.
+- Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
+- The only write exception outside the repository is /tmp.
+- Prefer .local/ inside this repository for scratch work, generated temporary files, cloned references, logs, and working notes.
+```
+
+Failure handling: implementation, validation and audit failures stop
+advancement until fixed or decided by the user, and are recorded in the
+Execution Log.
+
 ## Execution Log
 
 None.
 
 ## Validation
 
-Pending.
+Acceptance criteria evidence:
+
+- Pending activation.
+
+Tests or equivalent validation:
+
+- Pending activation.
+
+Real-use evidence:
+
+- Pending activation.
+
+Reviewer findings:
+
+- Pending activation.
+
+Same-failure scan:
+
+- Pending activation.
 
 Sensitive data gate:
 
 - Pending.
+
+Artifact maintenance gate:
+
+- Pending activation.
+
+Specs update:
+
+- Pending activation.
+
+Project skills update:
+
+- Pending activation.
+
+End-user/operator docs update:
+
+- Pending activation.
+
+End-user/operator skills update:
+
+- Pending activation.
+
+Lessons:
+
+- Pending activation.
+
+Follow-up mapping:
+
+- Pending activation.
 
 ## Outcome
 

@@ -79,6 +79,11 @@ impl EntryEncoder {
     pub fn append_export(&mut self, out: &mut Vec<u8>, entry: &Entry) {
         self.fill_metadata(entry);
         for (slot, name) in METADATA_NAMES.iter().enumerate() {
+            // Lossless output must stay parseable for any caller-built cursor.
+            if self.lossless {
+                append_export_field(out, name.as_bytes(), self.metadata_value(slot));
+                continue;
+            }
             out.extend_from_slice(name.as_bytes());
             out.push(b'=');
             out.extend_from_slice(self.metadata_value(slot));
@@ -109,16 +114,7 @@ impl EntryEncoder {
             if !self.selected(name) {
                 continue;
             }
-            // `NAME=value` is text exactly when both halves are: `=` is ASCII.
-            if is_printable_text(name, false) && is_printable_text(value, false) {
-                out.extend_from_slice(payload);
-            } else {
-                out.extend_from_slice(name);
-                out.push(b'\n');
-                out.extend_from_slice(&(value.len() as u64).to_le_bytes());
-                out.extend_from_slice(value);
-            }
-            out.push(b'\n');
+            append_export_field(out, name, value);
         }
         out.push(b'\n');
     }
@@ -373,6 +369,20 @@ fn entry_payloads(entry: &Entry) -> Option<&[Vec<u8>]> {
 }
 
 /// Builds `NAME=value` payloads from the field maps in name order.
+fn append_export_field(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
+    out.extend_from_slice(name);
+    // `NAME=value` is text exactly when both halves are: `=` is ASCII.
+    if is_printable_text(name, false) && is_printable_text(value, false) {
+        out.push(b'=');
+        out.extend_from_slice(value);
+    } else {
+        out.push(b'\n');
+        out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        out.extend_from_slice(value);
+    }
+    out.push(b'\n');
+}
+
 fn synthesize_payloads(entry: &Entry) -> Vec<Vec<u8>> {
     let mut names: Vec<&String> = entry.field_values.keys().collect();
     names.extend(
@@ -387,10 +397,13 @@ fn synthesize_payloads(entry: &Entry) -> Vec<Vec<u8>> {
         let single;
         let values: &[Vec<u8>] = match entry.field_values.get(name) {
             Some(values) if !values.is_empty() => values,
-            _ => {
-                single = [entry.fields.get(name).cloned().unwrap_or_default()];
-                &single
-            }
+            _ => match entry.fields.get(name) {
+                Some(value) => {
+                    single = [value.clone()];
+                    &single
+                }
+                None => continue,
+            },
         };
         for value in values {
             let mut payload = Vec::with_capacity(name.len() + 1 + value.len());

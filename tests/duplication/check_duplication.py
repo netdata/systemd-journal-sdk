@@ -14,7 +14,7 @@ import argparse
 import json
 import re
 import shlex
-import subprocess
+import subprocess  # nosec B404
 import sys
 import tempfile
 from pathlib import Path
@@ -30,6 +30,7 @@ TEST_PATTERNS = (
     re.compile(r"_test\.go$"),
     re.compile(r"(^|/)tests?/"),
     re.compile(r"(^|/)tests?\.rs$"),
+    re.compile(r"(^|/)[^/]*_tests?\.rs$"),
     re.compile(r"(^|/)internal/testcmd/"),
     re.compile(r"(^|/)benches/"),
     re.compile(r"(^|/)examples/"),
@@ -78,7 +79,7 @@ def compare(baseline: dict[str, int], current: dict[str, int]) -> tuple[list[str
 
 
 def run_jscpd(command: list[str]) -> list[dict]:
-    version = subprocess.run(
+    version = subprocess.run(  # nosec B603
         [*command, "--version"], check=True, capture_output=True, text=True
     ).stdout.strip().removeprefix("jscpd ").strip()
     if version != JSCPD_VERSION:
@@ -89,7 +90,7 @@ def run_jscpd(command: list[str]) -> list[dict]:
     with tempfile.TemporaryDirectory(prefix="dup-scan-") as tmp:
         for prefix, fmt in LANGUAGES.items():
             out = Path(tmp) / prefix
-            subprocess.run(
+            subprocess.run(  # nosec B603
                 [
                     *command,
                     "--silent",

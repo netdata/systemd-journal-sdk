@@ -86,25 +86,46 @@ func TestXZCompressDeclaresWriterDictionary(t *testing.T) {
 	}
 }
 
+func xzStreamWithDictionary(tb testing.TB, payload []byte, dict int) []byte {
+	tb.Helper()
+	cfg := xz.WriterConfig{NoCheckSum: true, DictCap: dict}
+	var buf bytes.Buffer
+	w, err := cfg.NewWriter(&buf)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if _, err := w.Write(payload); err != nil {
+		tb.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		tb.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// Files written before the 256 KiB dictionary declare larger ones.
+func TestXZDecompressRoundTripsLegacyDictionaries(t *testing.T) {
+	for _, dict := range []int{1 << 20, 8 << 20} {
+		for _, size := range []int{600, 64 << 10} {
+			payload := xzTestPayload(size)
+			decoded, err := xzDecompress(xzStreamWithDictionary(t, payload, dict))
+			if err != nil {
+				t.Fatalf("dict=%d size=%d: %v", dict, size, err)
+			}
+			if !bytes.Equal(decoded, payload) {
+				t.Fatalf("dict=%d size=%d: round trip differs", dict, size)
+			}
+		}
+	}
+}
+
 // BenchmarkXZDecompressByDeclaredDictionary measures per-DATA decode cost,
 // which follows the dictionary the writer declared, not the payload size.
 func BenchmarkXZDecompressByDeclaredDictionary(b *testing.B) {
 	for _, size := range []int{600, 64 << 10} {
 		payload := xzTestPayload(size)
 		for _, dict := range []int{xzDictCap, 1 << 20, 8 << 20} {
-			cfg := xz.WriterConfig{NoCheckSum: true, DictCap: dict}
-			var buf bytes.Buffer
-			w, err := cfg.NewWriter(&buf)
-			if err != nil {
-				b.Fatal(err)
-			}
-			if _, err := w.Write(payload); err != nil {
-				b.Fatal(err)
-			}
-			if err := w.Close(); err != nil {
-				b.Fatal(err)
-			}
-			stream := buf.Bytes()
+			stream := xzStreamWithDictionary(b, payload, dict)
 			b.Run(fmt.Sprintf("payload=%d/dict=%dKiB", size, dict>>10), func(b *testing.B) {
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {

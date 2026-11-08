@@ -30,8 +30,9 @@ Facts:
 - Notify events for that watch carry the same relative paths, and the
   event handlers in `registry/mod.rs` skip them the same way.
 - The registry is Rust-only (there is no Go equivalent), so this is not a
-  Go/Rust parity gap. In-repo callers (`journal-engine/examples/index.rs`)
-  pass absolute paths.
+  Go/Rust parity gap. The in-repo caller
+  (`journal-engine/examples/index.rs`) passes an absolute path by default and
+  forwards a user-supplied CLI argument unchanged.
 
 Inferences:
 
@@ -198,9 +199,9 @@ Failure handling:
 Acceptance criteria evidence:
 
 - Relative watch: `relative_directory_registers_files_events_and_unwatch`
-  registers the existing `system.journal`, applies a notify create event for
-  a second file, and `unwatch_directory` with the same relative string
-  removes both.
+  registers the existing `system.journal`, applies notify create, rename and
+  remove events, and `unwatch_directory` with the same relative string removes
+  what remains.
 - Absolute input unchanged: `std::path::absolute` returns `"/x/y/"` and
   `"/x/../y"` as given (probe), so keys and paths for absolute callers are
   identical; all existing workspace tests pass.
@@ -228,6 +229,10 @@ Real-use evidence:
 
 Reviewer findings:
 
+- PR #24 bot review (2026-11-08): T45 fixed (rename and remove events are now
+  tested), T38's `relative_directory.rs` part fixed (Unix-only test). T43
+  rejected with evidence in its thread; T46 was already fixed by SOW-0174. T44
+  (test-helper duplication) left as is by user decision.
 - Self-review of the whole diff. No blocking finding. Non-UTF-8 results
   (only via a non-UTF-8 working directory) are refused with `InvalidInput`,
   because watch keys are `String`; previously such a path could not arise

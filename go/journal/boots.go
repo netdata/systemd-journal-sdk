@@ -16,6 +16,10 @@ type bootRange struct {
 // is what a _BOOT_ID match with SeekHead/SeekTail finds, without decoding
 // entries or touching the caller's matches and position.
 func (r *Reader) bootRanges() ([]bootRange, error) {
+	// A long-lived reader must describe the file as it is now, like Next does.
+	if _, err := r.refreshEntryOffsets(); err != nil {
+		return nil, err
+	}
 	if len(r.entryOffsets) == 0 {
 		return nil, nil
 	}

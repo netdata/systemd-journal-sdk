@@ -4,9 +4,19 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"testing"
 )
+
+// Creating symlinks on Windows needs a privilege test hosts may lack.
+func skipOrFailSymlink(t *testing.T, err error) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skipf("cannot create symlinks: %v", err)
+	}
+	t.Fatal(err)
+}
 
 // directoryFilesLayout builds the systemd directory layout cases the listing
 // must accept or ignore, and returns the root and the expected sorted files.
@@ -45,7 +55,7 @@ func directoryFilesLayout(t *testing.T) (string, []string) {
 	}
 	linkTarget := touch("target.bin")
 	if err := os.Symlink(linkTarget, filepath.Join(root, "linked.journal")); err != nil {
-		t.Fatal(err)
+		skipOrFailSymlink(t, err)
 	}
 	want = append(want, filepath.Join(root, "linked.journal"))
 
@@ -89,7 +99,7 @@ func TestUniqueFilesKeepsFirstSpellingOfEachFile(t *testing.T) {
 	}
 	link := filepath.Join(dir, "link.journal")
 	if err := os.Symlink(path, link); err != nil {
-		t.Fatal(err)
+		skipOrFailSymlink(t, err)
 	}
 	dotted := filepath.Join(dir, ".") + string(filepath.Separator) + "real.journal"
 	missing := filepath.Join(dir, "missing.journal")

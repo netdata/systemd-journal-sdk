@@ -104,6 +104,7 @@ impl JournalFile<super::mmap::MmapMut> {
         if header.signature != *b"LPKSHHRH" {
             return Err(JournalError::InvalidMagicNumber);
         }
+        header.validate_open_state()?;
         if header.header_size < header_size {
             return Err(JournalError::UnsupportedJournalFile);
         }
@@ -240,11 +241,12 @@ impl<M: MemoryMapMut> JournalFile<M> {
     }
 
     pub fn create(file: &crate::repository::File, options: JournalFileOptions) -> Result<Self> {
-        let fd = Self::open_new_file(file, options.file_mode)?;
+        // Refuse before opening, which creates or truncates the target.
         let layout = Self::create_layout(&options)?;
         if layout.file_size > JOURNAL_COMPACT_SIZE_MAX {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
+        let fd = Self::open_new_file(file, options.file_mode)?;
         fd.set_len(layout.file_size)?;
         let mut header = Self::create_header(&options, layout);
         let data_hash_table_map = map_hash_table(

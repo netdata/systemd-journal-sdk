@@ -83,9 +83,10 @@ libsystemd/Netdata `jf` needed by Netdata readers:
 `Reader.ListBoots`, `DirectoryReader.ListBoots` and `SdJournalListBoots` list
 every boot, oldest first, as `journalctl --list-boots` does: each boot's first
 and last entries come from its `_BOOT_ID` DATA entry array (merged in directory
-order across files), with an entry-header scan for files without `_BOOT_ID`
-DATA. Only the canonical lowercase `_BOOT_ID` spelling names a boot. Listing
-boots does not change matches or the read position.
+order across files). When no usable canonical index exists they scan entry
+headers instead, and a directory does so only when no file has such an index
+or one cannot be read. Only the canonical lowercase `_BOOT_ID` spelling names
+an indexed boot. Listing boots does not change matches or the read position.
 
 `SdJournalSeekCursor` accepts a syntactically valid cursor as a seek location
 even when no exact entry exists. Use `SdJournalTestCursor` to check whether the

@@ -29,7 +29,8 @@ hint has a default, so existing custom object implementations can omit it.
 Unreleased writer hardening adds `JournalError::TimestampOutOfRange`, returned
 before mutation for entry timestamps systemd would refuse, and
 `JournalError::JournalFileFull`, returned before mutation when an entry could
-take the file past 4 GiB. Exhaustive matches must handle these variants.
+take the file past the `2^32 - 8 MiB` append ceiling (writers keep an 8 MiB
+growth step below 4 GiB). Exhaustive matches must handle these variants.
 
 The same unreleased update advances `journal-engine`'s persisted index cache
 from generation 3 to 4. Old entries are invalidated, because earlier array
@@ -183,9 +184,9 @@ for `journalctl --directory` style behavior.
 
 ## Render Entries As Export Or JSON
 
-`EntryEncoder` renders entries exactly as `journalctl -o export`, `-o json`
-and `-o json-pretty` do in systemd v262, including `--output-fields` and
-`--all`. It appends to a caller buffer, so one buffer serves many entries.
+`EntryEncoder` renders entries as `journalctl -o export`, `-o json` and
+`-o json-pretty` do in systemd v262, including `--output-fields` and `--all`:
+export byte for byte, JSON with the same values and sorted keys. It appends to a caller buffer, so one buffer serves many entries.
 
 <!-- verify-example: lang=rust id=rust-entry-encoder -->
 ```rust
@@ -216,7 +217,9 @@ contract.
 ## List Boots
 
 `list_boots` lists every boot as `journalctl --list-boots` does, from the
-`_BOOT_ID` indexes, without changing matches or the read position.
+`_BOOT_ID` indexes when a usable canonical index exists, otherwise from entry
+headers (a directory scans headers only when no file has such an index or one
+cannot be read), without changing matches or the read position.
 
 <!-- verify-example: lang=rust id=rust-list-boots -->
 ```rust

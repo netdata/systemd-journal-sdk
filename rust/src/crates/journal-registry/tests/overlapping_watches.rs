@@ -297,3 +297,34 @@ fn queued_events_do_not_restore_unwatched_files() {
     }
     f.expect(&[]);
 }
+
+#[test]
+fn watch_handoff_keeps_indexed_time_ranges() {
+    let f = Fixture::new();
+    f.registry
+        .watch_directory(&f.machine_str(MACHINE_A))
+        .unwrap();
+    let info = f
+        .registry
+        .find_files_in_range(Seconds(0), Seconds(u32::MAX))
+        .unwrap()
+        .remove(0);
+    f.registry
+        .update_time_range(&info.file, Seconds(100), Seconds(200), Seconds(300), false);
+
+    // The wider watch takes over and rescans the file's directory.
+    f.registry.watch_directory(&f.root()).unwrap();
+
+    let kept = f
+        .registry
+        .find_files_in_range(Seconds(0), Seconds(u32::MAX))
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.file == info.file)
+        .expect("file stays registered");
+    assert!(
+        matches!(kept.time_range, journal_registry::TimeRange::Bounded { .. }),
+        "{:?}",
+        kept.time_range
+    );
+}
