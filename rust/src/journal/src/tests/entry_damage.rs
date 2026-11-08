@@ -71,6 +71,16 @@ fn damaged_data_object_costs_the_field_not_the_entry() {
             1 + usize::from(payload_kept),
             "{name}"
         );
+
+        let mut collected = Vec::new();
+        reader.collect_entry_payloads(&mut collected).unwrap();
+        assert_eq!(collected.len(), 1 + usize::from(payload_kept), "{name}");
+        reader.entry_data_restart().unwrap();
+        let mut enumerated = 0;
+        while reader.enumerate_entry_payload().unwrap().is_some() {
+            enumerated += 1;
+        }
+        assert_eq!(enumerated, 1 + usize::from(payload_kept), "{name}");
     }
 }
 

@@ -216,8 +216,9 @@ Default behavior:
 - the active/current file is never selected for deletion to satisfy retention;
 - retention is enforced when an active file is opened or created, and can also
   be enforced explicitly;
-- disposed `.journal~` files count toward the limits and are deleted before
-  archived history, as journald does.
+- disposed `.journal~` files count toward the limits; file-count and byte
+  limits delete them before archived history, as journald does, while an age
+  limit deletes any file older than the cutoff.
 
 Use explicit size and duration limits for production backends. The SDK derives
 systemd-like file-size defaults from retention envelopes when supported by the

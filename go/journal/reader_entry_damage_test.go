@@ -71,6 +71,33 @@ func TestDamagedDataObjectCostsTheFieldNotTheEntry(t *testing.T) {
 			if len(entry.Payloads) != want {
 				t.Fatalf("payloads = %d, want %d", len(entry.Payloads), want)
 			}
+
+			r, err := OpenFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("step = %v, %v", ok, err)
+			}
+			collected, err := r.CollectEntryPayloads()
+			if err != nil || len(collected) != want {
+				t.Fatalf("collected = %d, %v, want %d", len(collected), err, want)
+			}
+			enumerated := 0
+			for {
+				_, ok, err := r.EnumerateEntryPayload()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !ok {
+					break
+				}
+				enumerated++
+			}
+			if enumerated != want {
+				t.Fatalf("enumerated = %d, want %d", enumerated, want)
+			}
 		})
 	}
 }

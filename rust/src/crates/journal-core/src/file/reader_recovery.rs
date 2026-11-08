@@ -399,14 +399,20 @@ impl<M: MemoryMap> JournalFile<M> {
         if header.n_entries == 0 {
             return Ok(None);
         }
-        if header.header_size >= 272 {
-            if let Some(tail) = NonZeroU64::new(header.tail_entry_offset) {
-                return Ok(Some(tail));
-            }
+        let tail = (header.header_size >= 272)
+            .then(|| NonZeroU64::new(header.tail_entry_offset))
+            .flatten();
+        // A writer may publish the tail hint before n_entries, so only a file
+        // no writer holds can use the hint without walking the array.
+        if header.state != JournalState::Online as u8 && tail.is_some() {
+            return Ok(tail);
         }
         let mut offsets = Vec::new();
         self.entry_offsets(&mut offsets)?;
-        Ok(offsets.last().copied())
+        Ok(match (tail, offsets.last().copied()) {
+            (Some(tail), Some(last)) => Some(tail.min(last)),
+            (_, last) => last,
+        })
     }
 
     #[doc(hidden)]

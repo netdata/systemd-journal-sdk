@@ -109,8 +109,9 @@ means no loss has been observed; it does not certify integrity. A catalog query
 does not validate unrelated entry arrays.
 
 A single unreadable DATA object, or one without a field separator, costs that
-field only: the entry is still returned, and a payload without `=` stays in the
-raw payload list. A DATA object that cannot be decompressed still fails the
+field only when reading the current entry: `GetEntry`/`get_entry` still return
+the entry and the payload visitor and enumeration calls continue, and a payload
+without `=` stays in the raw payload list. A DATA object that cannot be decompressed still fails the
 entry.
 
 Recovery is read-only: the SDK does not reconstruct or overwrite damaged source

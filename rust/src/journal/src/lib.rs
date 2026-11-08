@@ -820,7 +820,12 @@ impl FileReader {
         let row = &mut self.row;
         let payload = self.inner.with_mut(|fields| {
             fields.reader.release_object_guards();
-            row.read_next_payload(fields.file)
+            loop {
+                match row.read_next_payload(fields.file) {
+                    Err(err) if recoverable_entry_data_error(&err) => continue,
+                    other => break other,
+                }
+            }
         })?;
         Ok(payload.map(|payload| self.row.payload_slice(payload)))
     }

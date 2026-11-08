@@ -43,6 +43,8 @@ order; the user may reorder it.
     differs (completed 2026-11-06, options A and 2B).
 22. SOW-0175 - Split the journalctl rewrites by responsibility (tracked by user
     decision 2026-11-07; after SOW-0097).
+23. SOW-0177 - Report the validated sealed range from verification (tracked
+    2026-11-08 from SOW-0176; needs a public API decision).
 
 ## Current
 

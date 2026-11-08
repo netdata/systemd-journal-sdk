@@ -33,6 +33,9 @@ func (r *Reader) VisitEntryPayloads(visitor func([]byte) error) error {
 	for _, dataOff := range offsets {
 		payload, err := r.readDataPayloadTemp(dataOff)
 		if err != nil {
+			if recoverableEntryDataError(err) {
+				continue
+			}
 			return err
 		}
 		if err := visitor(payload); err != nil {
@@ -121,17 +124,20 @@ func (r *Reader) EnumerateEntryPayload() ([]byte, bool, error) {
 			return nil, false, err
 		}
 	}
-	if r.entryDataIndex >= len(r.entryDataOffsets) {
-		r.clearEntryDataState()
-		return nil, false, nil
+	for r.entryDataIndex < len(r.entryDataOffsets) {
+		dataOff := r.entryDataOffsets[r.entryDataIndex]
+		r.entryDataIndex++
+		payload, err := r.readDataPayloadRow(dataOff)
+		if err != nil {
+			if recoverableEntryDataError(err) {
+				continue
+			}
+			return nil, false, err
+		}
+		return payload, true, nil
 	}
-	dataOff := r.entryDataOffsets[r.entryDataIndex]
-	r.entryDataIndex++
-	payload, err := r.readDataPayloadRow(dataOff)
-	if err != nil {
-		return nil, false, err
-	}
-	return payload, true, nil
+	r.clearEntryDataState()
+	return nil, false, nil
 }
 
 func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {

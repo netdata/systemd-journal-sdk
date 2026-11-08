@@ -198,6 +198,36 @@ fn list_boots_stops_at_the_visible_tail() {
     );
 }
 
+/// While a writer holds the file, the tail hint may lead `n_entries`.
+#[test]
+fn list_boots_ignores_a_tail_hint_ahead_of_the_entry_count() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("system.journal");
+    write_boot_journal(
+        &path,
+        0x53,
+        &[(0xa0, 100, 1), (0xb0, 200, 1)],
+        Some(boot_hex),
+    );
+    let repo = RepoFile::from_path(&path).unwrap();
+    let mut offsets = Vec::new();
+    JournalFile::<Mmap>::open(&repo, 4096)
+        .unwrap()
+        .entry_offsets(&mut offsets)
+        .unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[16] = 1;
+    bytes[152..160].copy_from_slice(&1u64.to_le_bytes());
+    bytes[264..272].copy_from_slice(&offsets[1].get().to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
+    let reader = FileReader::open(&path).unwrap();
+    assert_eq!(
+        rows(reader.list_boots().unwrap()),
+        vec![boot(0, 0xa0, 100, 100)]
+    );
+}
+
 /// list_boots leaves the caller's matches and read position alone.
 #[test]
 fn list_boots_keeps_matches_and_position() {

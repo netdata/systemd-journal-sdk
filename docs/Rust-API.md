@@ -235,7 +235,8 @@ for boot in reader.list_boots()? {
 ```
 
 `FileReader::list_boots`, `DirectoryReader::list_boots` and
-`SdJournalListBoots` return an error when the files cannot be read.
+`SdJournalListBoots` return an error when an open file cannot be read. Opening
+a directory skips files that cannot be opened, so those are not reported here.
 
 ## Use Snapshot Bounds For Query Workloads
 

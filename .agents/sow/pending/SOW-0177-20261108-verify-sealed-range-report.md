@@ -110,6 +110,30 @@ None yet.
 
 See the implementation plan above.
 
+## Implementation And Review Plan
+
+Implementation:
+
+- The project manager implements the approved API in both languages, with one
+  chunk for the SDK result and one for the CLI output.
+
+Reviewers:
+
+- Whole-SOW self-review after local validation; tests are the gate. External
+  reviewers are not used.
+
+Repository boundary block for every external-agent prompt:
+
+```text
+CRITICAL REPOSITORY BOUNDARY:
+- Do not make changes outside this repository for any reason.
+- Repository path: current repository root.
+- You may inspect external references read-only when the task requires it.
+- Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
+- The only write exception outside the repository is /tmp.
+- Prefer .local/ inside this repository for scratch work, generated temporary files, cloned references, logs, and working notes.
+```
+
 ## Execution Log
 
 None yet.

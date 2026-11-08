@@ -317,7 +317,10 @@ Tests or equivalent validation (2026-11-08, stock = systemd 262 oracle):
   writers, 30 entries each, stock, libsystemd and SDK readers, final verify).
 - `run_journalctl_query_matrix.py` with follow: PASS, including the new
   no-`_BOOT_ID` exit and stdout cases.
-- `run_reader_hardening.py` with both adapters: PASS, 552 observations.
+- `run_reader_hardening.py --go-adapter <built go adapter> --rust-adapter
+  <built rust adapter> --journalctl
+  .local/sow0045-oracle/systemd-v262-build/journalctl --out <new .local dir>`,
+  all three groups (chains, streams, recovery): PASS, 552 observations.
 - `check_v260_manifest.py`, `run_parser_parity.py`, `check_wiki_docs.py`,
   `verify_examples.py`, `check_duplication.py`: PASS.
 
@@ -333,6 +336,16 @@ Reviewer findings:
   multi-byte sequences. Fixed and tested. Core-purity search of the diff found
   no process launches or host-path access. Compressed-DATA failures still fail
   the entry in both languages by design.
+
+- PR review, same scope. Fixed: Go payload visitors and both languages' entry
+  enumeration now skip a damaged DATA object as `GetEntry` does (systemd
+  sd-journal.c:2896); Rust stops trusting the tail hint alone while a writer
+  holds the file (the Go writer publishes it before `n_entries`); doc wording
+  for retention order, field-level damage and `list_boots` errors. Rejected:
+  file-identity check before retention deletes, because journald also unlinks
+  by name (journal-vacuum.c:263, 307) and one writer owns the directory. Open
+  for a user decision: whether undecompressible DATA costs one field (systemd)
+  or fails the entry (today, covered by `run_reader_hardening.py` streams).
 
 Same-failure scan:
 

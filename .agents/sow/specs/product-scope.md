@@ -481,7 +481,8 @@ saved time, and evicts whole files in tail/path order. Default retention policie
 and file format are unchanged; Go now applies cleanup after a successful
 successor-creation retry following a safe creation failure.
 Ordinary `Log` retention in both languages counts disposed `*.journal~` files and
-deletes them before archived history, as journald does.
+deletes them before archived history under file-count and byte limits, as
+journald does; an age limit deletes any file older than the cutoff.
 `MaintainRootRetention` finalizes verified retired active
 files and only seals live actives for idle expiry or required size-policy
 allocation changes, leaving successors lazy even after eager startup. Startup,
