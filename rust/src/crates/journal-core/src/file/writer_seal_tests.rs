@@ -1,8 +1,24 @@
 use super::*;
 
+// Builds without sealing fail every --verify-key run, so negative seal tests
+// would pass for the wrong reason.
+fn journalctl_supports_sealing() -> bool {
+    journalctl_available()
+        && Command::new("journalctl")
+            .args([
+                "--verify",
+                "--verify-key=probe",
+                "--file=/nonexistent.journal",
+            ])
+            .output()
+            .is_ok_and(|output| {
+                !String::from_utf8_lossy(&output.stderr).contains("without forward-secure sealing")
+            })
+}
+
 #[test]
 fn sealed_writer_basic_passes_stock_verify() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping sealed writer stock verify");
         return;
     }
@@ -52,7 +68,7 @@ fn sealed_writer_basic_passes_stock_verify() {
 
 #[test]
 fn sealed_writer_interval_crossing_passes_stock_verify() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping interval crossing stock verify");
         return;
     }
@@ -119,7 +135,7 @@ fn sealed_writer_interval_crossing_passes_stock_verify() {
 
 #[test]
 fn sealed_writer_wrong_key_fails_stock_verify() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping wrong key verify");
         return;
     }
@@ -164,7 +180,7 @@ fn sealed_writer_wrong_key_fails_stock_verify() {
 
 #[test]
 fn sealed_writer_tampered_data_fails_stock_verify() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping tamper verify");
         return;
     }
@@ -243,7 +259,7 @@ fn unsealed_writer_does_not_set_sealed_flags() {
 
 #[test]
 fn sealed_writer_first_entry_future_epoch_passes_stock_verify() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping first-entry future-epoch stock verify");
         return;
     }
@@ -334,7 +350,7 @@ fn sealed_writer_entry_before_start_rejected() {
 
 #[test]
 fn sealed_writer_multi_interval_gap_passes_stock_verify() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping multi-interval gap stock verify");
         return;
     }
@@ -390,7 +406,7 @@ fn sealed_writer_multi_interval_gap_passes_stock_verify() {
 
 #[test]
 fn sealed_writer_unaligned_start_uses_systemd_epoch_boundary() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping unaligned-start stock verify");
         return;
     }
@@ -441,7 +457,7 @@ fn sealed_writer_unaligned_start_uses_systemd_epoch_boundary() {
 
 #[test]
 fn sealed_writer_empty_file_passes_stock_verify() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping empty sealed stock verify");
         return;
     }
@@ -480,7 +496,7 @@ fn sealed_writer_empty_file_passes_stock_verify() {
 
 #[test]
 fn compact_sealed_writer_passes_stock_verify() {
-    if !journalctl_available() {
+    if !journalctl_supports_sealing() {
         eprintln!("journalctl not available; skipping compact+sealed stock verify");
         return;
     }
