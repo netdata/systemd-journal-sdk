@@ -82,6 +82,14 @@ func TestAppendOpenRefusesTargetsSystemdWillNotExtend(t *testing.T) {
 					t.Fatalf("compact=%v: OpenFile() error = %v", compact, err)
 				}
 				_ = r.Close()
+				// Archive-only opens keep earlier releases' files retainable.
+				a, err := openForArchive(path)
+				if err != nil {
+					t.Fatalf("compact=%v: openForArchive() error = %v", compact, err)
+				}
+				if err := a.Close(); err != nil {
+					t.Fatalf("compact=%v: archive writer Close() error = %v", compact, err)
+				}
 			})
 		}
 	}
@@ -325,6 +333,49 @@ func TestReaderOpenRefusesUnknownStateAndShortSealedHeader(t *testing.T) {
 			t.Fatalf("OpenFile() error = %v, want errInvalidJournal", err)
 		}
 	})
+}
+
+// Writable opens apply the same every-open refusals as readers, before any
+// mutation. Paired with Rust
+// writable_open_refuses_unknown_state_and_short_sealed_header.
+func TestWritableOpenRefusesUnknownStateAndShortSealedHeader(t *testing.T) {
+	cases := []struct {
+		name  string
+		patch func(*testing.T, string)
+	}{
+		{"state-3", func(t *testing.T, path string) { patchHeader(t, path, 16, []byte{3}) }},
+		{"sealed-header-232", func(t *testing.T, path string) {
+			patchHeaderU32(t, path, 8, func(v uint32) uint32 { return v | compatibleSealed })
+			arena := binary.LittleEndian.Uint64(readFileForTest(t, path)[96:104])
+			patchHeader(t, path, 88, u64Bytes(232))
+			patchHeader(t, path, 96, u64Bytes(arena+40))
+		}},
+	}
+	opens := []struct {
+		name string
+		open func(string) (*Writer, error)
+	}{
+		{"append", func(path string) (*Writer, error) { return Open(path) }},
+		{"archive", openForArchive},
+	}
+	for _, c := range cases {
+		for _, o := range opens {
+			t.Run(c.name+"/"+o.name, func(t *testing.T) {
+				path := headerGateJournal(t, false)
+				c.patch(t, path)
+				before := readFileForTest(t, path)
+				if w, err := o.open(path); !errors.Is(err, errInvalidJournal) {
+					if w != nil {
+						_ = w.Close()
+					}
+					t.Fatalf("open error = %v, want errInvalidJournal", err)
+				}
+				if !bytes.Equal(readFileForTest(t, path), before) {
+					t.Fatal("refused writable open mutated the file")
+				}
+			})
+		}
+	}
 }
 
 // SDK writers before this check, like systemd's, stored a truncated 32-bit

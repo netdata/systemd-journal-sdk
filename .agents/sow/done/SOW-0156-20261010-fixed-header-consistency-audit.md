@@ -383,7 +383,7 @@ Chunk 1 (2026-11-03):
 | Fixture | Read (Go, Rust) | Append-open | `Log` |
 |---|---|---|---|
 | regular, compact, zstd, xz | yes | appends | - |
-| sealed | yes | unsupported (N1 = A) | - |
+| sealed | yes | unsupported (N1 = A) | set aside to `.journal~`, a new sealed file starts (Go `TestLogSetsAsideSealedActiveFile`, Rust `append_target.rs` table case `sealed`) |
 | zero realtime entry | yes | appends; Go `VerifyIndex` flags the entry, as systemd verify does | - |
 | tail realtime 2^60, monotonic 2^55 | yes | unsupported | - |
 | ARCHIVED state at the active name | yes | - | set aside to `.journal~`, sequence continues (4 rows) |
@@ -519,6 +519,104 @@ Sensitive data gate:
   stays true, so none changes. No spec states the per-flag rules. Specs and
   docs are revisited when D1-D6 change documented behavior. Both status
   indexes are updated.
+
+PR review follow-up (2026-11-08, bot review of PR #18, user decision 1A):
+
+Acceptance criteria evidence:
+
+- Invariants enumerated and both SDKs audited: Pre-Implementation Gate and the
+  D1-D6, A1, A4, A5, N1 and N2 records above. Authorized checks and paired
+  tests: chunks 1 and 2 above, extended by this follow-up.
+
+Tests or equivalent validation:
+
+- Rust writable opens lacked the every-open refusals readers had (unknown
+  state, sealed header below 240 bytes). `JournalHeader::validate_open_state`
+  now backs reader, append and archive-only opens. Paired tests:
+  Rust `writable_open_refuses_unknown_state_and_short_sealed_header`,
+  Go `TestWritableOpenRefusesUnknownStateAndShortSealedHeader`.
+- A refused oversize `create` left an empty or truncated target in both SDKs;
+  the layout check now runs before the open. Paired tests:
+  `create_refuses_oversize_layout_without_touching_target`,
+  `TestCreateRefusesOversizeLayoutWithoutTouchingTarget`. Go's invalid sealing
+  options had the same flaw and are now validated before the open as well.
+  `TestLogCreateFailureBlocksTruncatingRetry` used the oversize layout as its
+  post-truncation failure, so it now injects an arena-mapping fault.
+- The Go parity test now asserts archive-only open for every refused target;
+  the Rust 4 GiB hint test now iterates entries.
+- Rust `Log` gained a retry-then-refuse test. Go has no fault hook for the
+  retry's new file, so the case is covered in Rust only; the retry code it
+  exercises is the Rust `Log`'s own.
+- Go `parseHeader` errors now name the refused state or size and still match
+  `errInvalidJournal`, and the unreachable verifier state branch is removed.
+
+Real-use evidence:
+
+- Earlier-release fixtures, extending the v0.10.0 set above: the Go writers of
+  tags go/v0.2.0, v0.3.0, v0.4.0, v0.5.1, v0.6.4, v0.7.8, v0.8.2 and v0.9.0
+  (`git archive` into `.local/sow0156/multi/`, the newest patch of each minor;
+  compression modules swapped for cached versions because the files are
+  uncompressed) each wrote a regular and a compact file of 50 rows. Current
+  Go and Rust read 50 rows from each, append-open appends one, Go snapshot and
+  `VerifyIndex` pass, and the v262 oracle `--verify` exits 0.
+- Not covered by fixtures: Rust-writer output of earlier tags, and patch
+  releases other than the ones listed. The per-tag header check recorded under
+  the compatibility rule above covers them at header level only.
+- Oracle identity for the query matrix: `systemd 262 (262)`, built from
+  `systemd/systemd` tag `v262` at `.local/sow0045-oracle/systemd-v262-build/journalctl`,
+  features `+PCRE2 +LZ4 +XZ +ZSTD`, no FSS (libgcrypt headers were absent).
+
+Reviewer findings:
+
+- PR #18 bot threads T3-T26, each answered in its thread. Valid and fixed:
+  T6-T14, T16, T19-T26. Rejected with evidence in the thread: T4, T5, T15, T17,
+  T18. T3 was already fixed.
+
+Same-failure scan:
+
+- Other Rust writable paths go through `open_writable`; Go's go through
+  `parseHeader`. The rotating `log_continues_in_new_file_when_active_file_is_full`
+  test had the archive-sync counter race the new test exposed, and now takes
+  the same lock.
+
+Artifact maintenance gate:
+
+- AGENTS.md: no change; project rules are unaffected.
+- Runtime project skills: no change; the compatibility skill's earlier-release
+  rule already requires what this follow-up did.
+- Specs: `product-scope.md` (stale realtime gap removed, 4 GiB boundary,
+  every-open refusals).
+- End-user/operator docs: `docs/Writer-APIs.md` (invalid-file refusals, 4 GiB
+  boundary, empty refused actives removed), `docs/Rust-API.md` (append ceiling).
+- End-user/operator skills: none exist.
+- SOW lifecycle: stays `completed` in `done/`; this is pre-merge PR follow-up.
+- SOW-status.md: no change; the SOW's status is unchanged.
+
+Specs update:
+
+- See the artifact gate.
+
+Project skills update:
+
+- None needed; see the artifact gate.
+
+End-user/operator docs update:
+
+- See the artifact gate.
+
+End-user/operator skills update:
+
+- None exist.
+
+Lessons:
+
+- A check added to one open path needs the same check on its siblings; a
+  shared header method makes that the default.
+
+Follow-up mapping:
+
+- All PR #18 findings are fixed or rejected above. SOW-0171 and SOW-0172 remain
+  as recorded under Followup.
 
 ## Outcome
 
