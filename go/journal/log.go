@@ -554,7 +554,7 @@ func (l *Log) archiveOnlineChainActive(path string) error {
 }
 
 func replaceableActiveOpenError(err error) bool {
-	return errors.Is(err, errUnsupportedJournal)
+	return errors.Is(err, errUnsupportedJournal) || errors.Is(err, errRefusedHeader)
 }
 
 func (l *Log) replaceActiveFile(path string) error {
@@ -1142,6 +1142,8 @@ func (l *Log) scanChainState() (chainState, error) {
 	return state, nil
 }
 
+// readJournalHeader skips the every-open refusals, so a file no open accepts
+// still passes on its sequence identity to the Log replacing it.
 func readJournalHeader(path string) (journalHeader, error) {
 	f, err := openReaderFile(path)
 	if err != nil {
@@ -1152,7 +1154,7 @@ func readJournalHeader(path string) (journalHeader, error) {
 	if _, err := f.ReadAt(buf, 0); err != nil {
 		return journalHeader{}, err
 	}
-	return parseHeader(buf)
+	return decodeHeader(buf)
 }
 
 func committedJournalSize(path string, fallback uint64) uint64 {
