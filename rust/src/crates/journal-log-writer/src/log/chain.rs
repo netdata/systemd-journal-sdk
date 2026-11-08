@@ -229,8 +229,10 @@ impl OwnedChain {
         let Some(tail) = self.tail_state(include_active)? else {
             return Ok(None);
         };
+        // Tails outside systemd's range, which earlier releases could write,
+        // are not clock floors: they would push every new entry out of range.
         let realtime = tail.tail_realtime;
-        if realtime == 0 {
+        if !journal_core::file::valid_realtime(realtime) {
             Ok(None)
         } else {
             Ok(Some(Microseconds::new(realtime)))
@@ -251,7 +253,7 @@ impl OwnedChain {
         }
 
         let monotonic = tail.tail_monotonic;
-        if monotonic == 0 {
+        if monotonic == 0 || !journal_core::file::valid_monotonic(monotonic) {
             Ok(None)
         } else {
             Ok(Some(monotonic))
@@ -334,6 +336,61 @@ impl OwnedChain {
         file: &repository::File,
     ) -> Result<()> {
         self.dispose_file(file)
+    }
+
+    /// Root inventory refuses disposed files, so root mode keeps an active file
+    /// it cannot extend as history under its archive name. The archive-only
+    /// open skips the append-target rules, so files earlier releases wrote stay
+    /// retainable.
+    pub(super) fn archive_unsupported_active_file(
+        &mut self,
+        file: &repository::File,
+        sync_on_archive: bool,
+    ) -> Result<()> {
+        let mut journal_file =
+            JournalFile::<journal_core::file::MmapMut>::open_for_archive(file, 8 * 1024 * 1024)?;
+        let header = journal_file.journal_header_ref();
+        let (seqnum_id, head_seqnum, head_realtime, n_entries) = (
+            Uuid::from_bytes(header.seqnum_id),
+            header.head_entry_seqnum,
+            header.head_entry_realtime,
+            header.n_entries,
+        );
+        if n_entries == 0 {
+            drop(journal_file);
+            match std::fs::remove_file(file.path()) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+            sync_directory(&self.path)?;
+            self.remove_tracked_file(file);
+            return Ok(());
+        }
+        let target = create_chain_file(
+            &self.path,
+            &self.source_name,
+            seqnum_id,
+            head_seqnum,
+            head_realtime,
+        )
+        .ok_or_else(|| {
+            WriterError::FileCreation(format!(
+                "failed to create archived journal file name in {}",
+                self.path.display()
+            ))
+        })?;
+        if std::fs::symlink_metadata(target.path()).is_ok() {
+            return Err(WriterError::InvalidPath(format!(
+                "{}: archive target already exists",
+                target.path()
+            )));
+        }
+        journal_file.journal_header_mut().state = JournalState::Archived as u8;
+        super::sync_archive_journal_file(sync_on_archive, &mut journal_file)?;
+        drop(journal_file);
+        self.archive_file(file, seqnum_id, head_seqnum, head_realtime)?;
+        Ok(())
     }
 
     fn dispose_file(&mut self, file: &repository::File) -> Result<()> {

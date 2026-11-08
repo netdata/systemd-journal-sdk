@@ -57,6 +57,52 @@ Direct append-open is not a promise to mutate arbitrary historical or
 systemd-created files. Unsupported append targets must fail before entry
 mutation.
 
+Append-open applies systemd v260.1's writable-open header rules and refuses,
+with Go `ErrUnsupportedJournal` and Rust
+`JournalError::UnsupportedJournalFile`, files that systemd would not extend:
+
+- a header size other than the current 272 bytes;
+- unknown compatible flags, or a missing tail-entry-boot-ID flag;
+- an archived file;
+- a sealed file, because the writer cannot restore its sealing state and would
+  otherwise append an unsealed tail;
+- a file with entries whose head realtime is zero or at least 2^55, whose tail
+  realtime or tail monotonic is at least 2^55, or whose tail boot ID is null;
+- a regular file of 4 GiB or more, where the 32-bit tail entry array hint can
+  no longer locate the tail array.
+
+These files stay readable. Readers ignore the tail entry array hint when the
+declared arena ends above 4 GiB, because earlier writers stored it truncated.
+
+Append-open also refuses, as invalid rather than unsupported, files missing the
+DATA or FIELD hash table or the tail object, because every append indexes
+through both tables (Go returns an invalid-journal error that is not
+`ErrUnsupportedJournal`; Rust returns `JournalError::InvalidObjectLocation`).
+Files with an unknown state, or a sealed header shorter than 240 bytes, are
+refused by every open, readers included, as systemd does (Go returns an
+invalid-journal error, Rust `JournalError::InvalidJournalFileState`). The
+directory writer sets such an active file aside and continues its sequence, as
+journald does. With root retention it reports the error instead and leaves the
+file in place, because it can neither archive such a file nor keep a set-aside
+one.
+
+Entries must carry a realtime in `1..2^55-1` microseconds and a monotonic below
+2^55 microseconds. Go returns `ErrTimestampOutOfRange` and Rust returns
+`JournalError::TimestampOutOfRange` before any file mutation; the writer stays
+usable. The directory writer raises a zero realtime to its clock floor and
+refuses other out-of-range values without moving its clocks.
+
+Regular and compact files both stop below 4 GiB, as systemd's do: the
+header's 32-bit tail entry array hint cannot address anything higher. Before
+writing an entry, the writer bounds the space the entry could need from its
+payload sizes and refuses it with Go `ErrJournalFileFull` or Rust
+`JournalError::JournalFileFull` when the file might cross 4 GiB minus one
+8 MiB growth step. Nothing is written and the writer stays usable, so the
+caller can rotate. Entry arrays stop doubling when the next one would not fit.
+The directory writer rotates once on this error and writes the entry to the new
+file; an entry that does not fit an empty file is refused and its clocks do not
+move.
+
 ## Uncertain Failures And Reopen
 
 A mutating append, sync or archive failure poisons the writer. Further mutation
@@ -131,7 +177,7 @@ calling the writer.
 | xz or lz4 compression | no | compatibility or measured workload fit |
 | FSS | no | tamper evidence is required |
 
-Compact format has a 4 GiB offset ceiling. Compression stores the whole
+Both formats stop below 4 GiB (see above). Compression stores the whole
 `FIELD=value` payload compressed, so the field name is not visible without
 decompression.
 
@@ -237,6 +283,13 @@ The shared policy:
   Empty-file disposal is not an archive event.
 - Installs valid replacement policies before enforcement, preserves explicit
   rotation limits, and recalculates derived allocation geometry.
+- Finalizes retired files through an archive-only open that skips the
+  append-target refusals above, so old files written by earlier releases can
+  still be archived and pruned. At startup, a current active file that
+  append-open refuses is archived under its archive name the same way, instead
+  of being set aside, because inventory rejects set-aside files. An empty one
+  is removed instead, since it holds no history. A header every open refuses
+  cannot be archived either, so startup reports that error.
 - Reports safe cleanup failures independently from healthy appends; uncertain
   archive mutation remains a writer failure and stops pruning. Opening or
   validating a retired file before mutation may fail without poisoning the

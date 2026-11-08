@@ -219,6 +219,7 @@ fn zstd_writer(threshold: usize) -> JournalWriter {
         live_publish_every_entries: 1,
         entries_since_live_publication: 0,
         seal: None,
+        entry_growth_bound: 0,
     }
 }
 
@@ -1049,7 +1050,7 @@ fn compact_preflight_failure_without_mutation_allows_retry() {
             };
             assert!(matches!(
                 writer.add_entry_fields(&mut file, [field], 2_000_000, 2),
-                Err(JournalError::ObjectExceedsFileBounds)
+                Err(JournalError::JournalFileFull)
             ));
             assert_eq!(before, std::fs::read(&path).unwrap());
             assert!(

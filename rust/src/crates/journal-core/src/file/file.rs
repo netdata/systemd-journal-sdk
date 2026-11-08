@@ -459,7 +459,8 @@ pub(super) fn map_hash_table<M: MemoryMap>(
     if offset.get() < header_size + object_header_size {
         return Err(JournalError::InvalidObjectLocation);
     }
-    if size.get() <= object_header_size {
+    // One bucket is the smallest table systemd and the Go reader accept.
+    if size.get() < std::mem::size_of::<HashItem>() as u64 {
         return Err(JournalError::InvalidObjectLocation);
     }
 
@@ -649,6 +650,10 @@ impl<M: MemoryMap> JournalFile<M> {
         if header.signature != *b"LPKSHHRH" {
             return Err(JournalError::InvalidMagicNumber);
         }
+        if header.incompatible_flags & !SUPPORTED_INCOMPATIBLE_FLAGS != 0 {
+            return Err(JournalError::UnsupportedJournalFile);
+        }
+        header.validate_open_state()?;
         let sanitized_header =
             (header.header_size < header_size).then(|| sanitize_header_for_size(header));
 

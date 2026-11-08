@@ -467,10 +467,26 @@ func (l *Log) applyChainTailState(state chainState, explicitHeadSeqnum, explicit
 	if !explicitSeqnumID {
 		l.options.SeqnumID = state.seqnumID
 	}
-	l.lastRealtime = state.tailRealtime
+	l.lastRealtime = inheritedRealtime(state.tailRealtime)
 	if state.tailBootID == l.options.BootID {
-		l.lastMonotonic = state.tailMonotonic
+		l.lastMonotonic = inheritedMonotonic(state.tailMonotonic)
 	}
+}
+
+// Tails outside systemd's timestamp range, which earlier releases could
+// write, are not clock floors: they would push every new entry out of range.
+func inheritedRealtime(usec uint64) uint64 {
+	if validRealtime(usec) {
+		return usec
+	}
+	return 0
+}
+
+func inheritedMonotonic(usec uint64) uint64 {
+	if validMonotonic(usec) {
+		return usec
+	}
+	return 0
 }
 
 func (l *Log) openStrictChainActive(state chainState) error {
@@ -501,7 +517,7 @@ func (l *Log) openDefaultChainActive(state chainState) error {
 func (l *Log) openActivePath(path string) error {
 	w, err := OpenWithOptions(path, l.options)
 	if err != nil {
-		if l.rootRetention || !replaceableActiveOpenError(err) {
+		if !replaceableActiveOpenError(err) {
 			return err
 		}
 		return l.replaceActiveFile(path)
@@ -538,12 +554,15 @@ func (l *Log) archiveOnlineChainActive(path string) error {
 }
 
 func replaceableActiveOpenError(err error) bool {
-	return errors.Is(err, errUnsupportedJournal)
+	return errors.Is(err, errUnsupportedJournal) || errors.Is(err, errRefusedHeader)
 }
 
 func (l *Log) replaceActiveFile(path string) error {
 	header, err := readJournalHeader(path)
 	if err != nil {
+		if l.rootRetention {
+			return err
+		}
 		return l.disposeActiveFile(path)
 	}
 	currentTail := uint64(0)
@@ -556,11 +575,44 @@ func (l *Log) replaceActiveFile(path string) error {
 		if !isZeroUUID(header.tailEntryBootID) {
 			l.options.BootID = header.tailEntryBootID
 		}
-		l.lastRealtime = header.tailEntryRealtime
-		l.lastMonotonic = header.tailEntryMonotonic
+		l.lastRealtime = inheritedRealtime(header.tailEntryRealtime)
+		l.lastMonotonic = inheritedMonotonic(header.tailEntryMonotonic)
 	}
-
+	if l.rootRetention {
+		return l.archiveUnsupportedRootActive(path)
+	}
 	return l.disposeActiveFile(path)
+}
+
+// archiveUnsupportedRootActive keeps an active file this Log cannot extend as
+// history under its archive name. Root inventory refuses disposed files, and
+// the archive-only open skips the append-target rules, so files earlier
+// releases wrote stay retainable.
+func (l *Log) archiveUnsupportedRootActive(path string) error {
+	w, err := openForArchive(path)
+	if err != nil {
+		return err
+	}
+	if l.active == path {
+		l.active = ""
+	}
+	if w.header.nEntries == 0 {
+		if err := w.Close(); err != nil {
+			return l.recordFailure(err)
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return syncJournalDirectory(path)
+	}
+	target := l.archivePathFor(w.header)
+	if err := requireRootPathAbsent(target); err != nil {
+		return errors.Join(err, w.release())
+	}
+	if err := w.archiveTo(target, l.syncOnArchive); err != nil {
+		return l.recordFailure(errors.Join(err, w.Close()))
+	}
+	return nil
 }
 
 func (l *Log) disposeActiveFile(path string) error {
@@ -640,6 +692,10 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	}
 	fields = preparedFields
 	opts = l.entryOptionsForAppend(opts)
+	// Refuse before rotation can create or archive files.
+	if err := validateEntryTimestamps(opts); err != nil {
+		return err
+	}
 	if err := l.enforceRetentionOnOpen(); err != nil {
 		return err
 	}
@@ -655,7 +711,14 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 		return err
 	}
 	fields = appendLogMetadataFields(fields, l.entryBootIDForAppend(opts), opts.SourceRealtimeUsec)
-	if err := l.writer.Append(fields, opts); err != nil {
+	err = l.writer.Append(fields, opts)
+	if l.activeFileFull(err) {
+		if err := l.rotate(opts); err != nil {
+			return err
+		}
+		err = l.writer.Append(fields, opts)
+	}
+	if err != nil {
 		return l.recordFailure(err)
 	}
 	l.captureAppendState()
@@ -678,6 +741,10 @@ func (l *Log) AppendRaw(payloads [][]byte, opts EntryOptions) error {
 	}
 	payloads = preparedPayloads
 	opts = l.entryOptionsForAppend(opts)
+	// Refuse before rotation can create or archive files.
+	if err := validateEntryTimestamps(opts); err != nil {
+		return err
+	}
 	if err := l.enforceRetentionOnOpen(); err != nil {
 		return err
 	}
@@ -693,7 +760,14 @@ func (l *Log) AppendRaw(payloads [][]byte, opts EntryOptions) error {
 		return err
 	}
 	payloads = appendLogMetadataPayloads(payloads, l.entryBootIDForAppend(opts), opts.SourceRealtimeUsec)
-	if err := l.writer.AppendRaw(payloads, opts); err != nil {
+	err = l.writer.AppendRaw(payloads, opts)
+	if l.activeFileFull(err) {
+		if err := l.rotate(opts); err != nil {
+			return err
+		}
+		err = l.writer.AppendRaw(payloads, opts)
+	}
+	if err != nil {
 		return l.recordFailure(err)
 	}
 	l.captureAppendState()
@@ -935,6 +1009,12 @@ func (l *Log) rotate(entryOpts EntryOptions) error {
 	return l.enforceRetention(l.activePath())
 }
 
+// activeFileFull reports whether the entry should be retried once in a new
+// file. An entry that does not fit an empty file is refused.
+func (l *Log) activeFileFull(err error) bool {
+	return errors.Is(err, ErrJournalFileFull) && l.writer.header.nEntries > 0
+}
+
 func (l *Log) captureAppendState() {
 	l.options.HeadSeqnum = l.writer.nextSeqnum
 	l.entriesInFile = int(l.writer.header.nEntries)
@@ -1062,6 +1142,8 @@ func (l *Log) scanChainState() (chainState, error) {
 	return state, nil
 }
 
+// readJournalHeader skips the every-open refusals, so a file no open accepts
+// still passes on its sequence identity to the Log replacing it.
 func readJournalHeader(path string) (journalHeader, error) {
 	f, err := openReaderFile(path)
 	if err != nil {
@@ -1072,7 +1154,7 @@ func readJournalHeader(path string) (journalHeader, error) {
 	if _, err := f.ReadAt(buf, 0); err != nil {
 		return journalHeader{}, err
 	}
-	return parseHeader(buf)
+	return decodeHeader(buf)
 }
 
 func committedJournalSize(path string, fallback uint64) uint64 {

@@ -107,24 +107,42 @@ func isZeroUUID(id UUID) bool {
 	return id == UUID{}
 }
 
-func (w *Writer) initialize(opts Options) error {
+// initialFile is everything Create must validate before opening, which
+// creates or truncates the target.
+type initialFile struct {
+	layout   initialLayout
+	fileSize uint64
+	seal     *sealState
+}
+
+func prepareInitialFile(opts Options) (initialFile, error) {
 	layout, err := initialWriterLayout(opts)
 	if err != nil {
-		return err
+		return initialFile{}, err
 	}
-
 	fileSize, ok := roundUpToFileSizeIncrease(layout.appendOffset)
 	if !ok {
-		return fmt.Errorf("journal initial arena too large")
+		return initialFile{}, fmt.Errorf("journal initial arena too large")
 	}
-	if opts.Compact && fileSize > journalCompactSizeMax {
-		return fmt.Errorf("compact journal cannot exceed 4 GiB")
+	if fileSize > journalCompactSizeMax {
+		return initialFile{}, fmt.Errorf("journal cannot exceed 4 GiB")
 	}
+	plan := initialFile{layout: layout, fileSize: fileSize}
+	if opts.Seal != nil {
+		if plan.seal, err = newSealState(*opts.Seal); err != nil {
+			return initialFile{}, err
+		}
+	}
+	return plan, nil
+}
 
+func (w *Writer) initialize(opts Options, plan initialFile) error {
+	layout, fileSize := plan.layout, plan.fileSize
 	incFlags := initialIncompatibleFlags(opts)
-	compatibleFlags, err := w.initialCompatibleFlags(opts)
-	if err != nil {
-		return err
+	compatibleFlags := uint32(compatibleTailEntryBootID)
+	if plan.seal != nil {
+		w.seal = plan.seal
+		compatibleFlags |= compatibleSealed | compatibleSealedContinuous
 	}
 
 	w.header = newInitialHeader(opts, layout, fileSize, compatibleFlags, incFlags)
@@ -171,19 +189,6 @@ func initialIncompatibleFlags(opts Options) uint32 {
 		flags |= incompatibleCompact
 	}
 	return flags
-}
-
-func (w *Writer) initialCompatibleFlags(opts Options) (uint32, error) {
-	flags := uint32(compatibleTailEntryBootID)
-	if opts.Seal == nil {
-		return flags, nil
-	}
-	seal, err := newSealState(*opts.Seal)
-	if err != nil {
-		return 0, err
-	}
-	w.seal = seal
-	return flags | compatibleSealed | compatibleSealedContinuous, nil
 }
 
 func (w *Writer) writeInitialHashTableObjects(layout initialLayout) error {
@@ -255,8 +260,11 @@ func newInitialHeader(opts Options, layout initialLayout, fileSize uint64, compa
 	}
 }
 
+// newWriterArena is replaced by tests to fail after the file was truncated.
+var newWriterArena = newMappedArena
+
 func (w *Writer) mapArena(size uint64) error {
-	arena, err := newMappedArena(w.file, size)
+	arena, err := newWriterArena(w.file, size)
 	if err != nil {
 		return err
 	}
@@ -475,8 +483,10 @@ func (w *Writer) ensureArenaSize(requiredSize uint64) error {
 	if !ok {
 		return fmt.Errorf("%w: object exceeds file bounds", errInvalidJournal)
 	}
-	if w.compact && newSize > journalCompactSizeMax {
-		return fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
+	// The append pre-check keeps entries below this; a file at 4 GiB would
+	// truncate the tail entry array hint and compact offsets.
+	if newSize > journalCompactSizeMax {
+		return fmt.Errorf("%w: journal cannot exceed 4 GiB", errInvalidJournal)
 	}
 	if err := checkArenaSize(newSize); err != nil {
 		return err

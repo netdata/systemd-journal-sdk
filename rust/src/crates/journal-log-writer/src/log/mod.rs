@@ -59,6 +59,9 @@ pub struct Log {
     root_result: Option<RootRetentionResult>,
     #[cfg(test)]
     root_faults: root_retention::RootFaults,
+    /// Makes the next writes report a full active file.
+    #[cfg(test)]
+    injected_file_full: u32,
     configured_dir: PathBuf,
     chain: OwnedChain,
     config: Config,
@@ -144,6 +147,50 @@ impl Log {
         } else {
             last_seen.saturating_add(1)
         }
+    }
+
+    /// Refuses timestamps systemd rejects before rotation can create files or
+    /// the clocks advance, so a bad input never becomes a floor.
+    fn check_entry_timestamps(&self, realtime: u64, timestamps: &EntryTimestamps) -> Result<()> {
+        let monotonic = self.next_monotonic(timestamps.entry_monotonic_usec.unwrap_or(0));
+        if journal_core::file::valid_realtime(realtime)
+            && journal_core::file::valid_monotonic(monotonic)
+        {
+            Ok(())
+        } else {
+            Err(JournalError::TimestampOutOfRange.into())
+        }
+    }
+
+    /// The monotonic value the next entry gets: strictly above the last one.
+    /// The pre-write check and the writer must agree on it.
+    fn next_monotonic(&self, desired: u64) -> u64 {
+        if desired > self.last_monotonic_usec {
+            desired
+        } else {
+            self.last_monotonic_usec.saturating_add(1)
+        }
+    }
+
+    fn clock_state(&self) -> (u64, u64) {
+        (self.clock.last_seen().get(), self.last_monotonic_usec)
+    }
+
+    fn restore_clock_state(&mut self, (realtime, monotonic): (u64, u64)) {
+        self.clock = RealtimeClock::with_initial(Microseconds::new(realtime));
+        self.last_monotonic_usec = monotonic;
+    }
+
+    /// Whether the entry should be retried once in a new file. An entry that
+    /// does not fit an empty file is refused.
+    fn active_file_full(&self, result: &Result<()>) -> bool {
+        matches!(
+            result,
+            Err(WriterError::Journal(JournalError::JournalFileFull))
+        ) && self
+            .active_file
+            .as_ref()
+            .is_some_and(|file| file.journal_file.journal_header_ref().n_entries > 0)
     }
 
     fn should_rotate_for_realtime(&self, realtime: u64) -> bool {
@@ -288,11 +335,7 @@ impl Log {
                 WriterError::InvalidConfig("entry monotonic timestamp is required".to_string())
             })?;
 
-        let monotonic = if desired_monotonic > self.last_monotonic_usec {
-            desired_monotonic
-        } else {
-            self.last_monotonic_usec.saturating_add(1)
-        };
+        let monotonic = self.next_monotonic(desired_monotonic);
         self.last_monotonic_usec = monotonic;
 
         Ok((realtime, monotonic))
@@ -349,6 +392,8 @@ impl Log {
             root_result: None,
             #[cfg(test)]
             root_faults: root_retention::RootFaults::default(),
+            #[cfg(test)]
+            injected_file_full: 0,
             configured_dir: path.to_path_buf(),
             chain: startup.chain,
             config: startup.config,
@@ -432,19 +477,40 @@ impl Log {
         Self::require_entry_monotonic(&timestamps)?;
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
+        self.check_entry_timestamps(entry_realtime, &timestamps)?;
         self.ensure_healthy()?;
         let filtered_items = self.raw_items_for_policy(items)?;
         self.prepare_append_for_realtime(entry_realtime)?;
         let write_items = filtered_items.as_deref().unwrap_or(items);
 
+        let clocks = self.clock_state();
         let (realtime, monotonic) = self.capture_dual_timestamp(Some(&timestamps))?;
-        self.write_raw_entry_fields(
+        let options = self.low_level_entry_options(EntryWriteOptions::default());
+        let mut result = self.write_raw_entry_fields(
             write_items,
             timestamps.source_realtime_usec,
             realtime,
             monotonic,
-            self.low_level_entry_options(EntryWriteOptions::default()),
-        )?;
+            options,
+        );
+        if self.active_file_full(&result) {
+            self.rotate(realtime, LogLifecycleReason::Rotation)?;
+            result = self.write_raw_entry_fields(
+                write_items,
+                timestamps.source_realtime_usec,
+                realtime,
+                monotonic,
+                options,
+            );
+        }
+        if matches!(
+            result,
+            Err(WriterError::Journal(JournalError::JournalFileFull))
+        ) {
+            // Refused before mutation: like Go, leave the clocks where they were.
+            self.restore_clock_state(clocks);
+        }
+        result?;
 
         let active_file = self.active_file.as_ref().unwrap();
         self.rotation_state.update(&active_file.writer);
@@ -510,19 +576,40 @@ impl Log {
         Self::require_entry_monotonic(&timestamps)?;
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
+        self.check_entry_timestamps(entry_realtime, &timestamps)?;
         self.ensure_healthy()?;
         let filtered_fields = self.structured_fields_for_policy(fields)?;
         self.prepare_append_for_realtime(entry_realtime)?;
         let write_fields = filtered_fields.as_deref().unwrap_or(fields);
 
+        let clocks = self.clock_state();
         let (realtime, monotonic) = self.capture_dual_timestamp(Some(&timestamps))?;
-        self.write_structured_entry_fields(
+        let options = self.low_level_entry_options(options);
+        let mut result = self.write_structured_entry_fields(
             write_fields,
             timestamps.source_realtime_usec,
             realtime,
             monotonic,
-            self.low_level_entry_options(options),
-        )?;
+            options,
+        );
+        if self.active_file_full(&result) {
+            self.rotate(realtime, LogLifecycleReason::Rotation)?;
+            result = self.write_structured_entry_fields(
+                write_fields,
+                timestamps.source_realtime_usec,
+                realtime,
+                monotonic,
+                options,
+            );
+        }
+        if matches!(
+            result,
+            Err(WriterError::Journal(JournalError::JournalFileFull))
+        ) {
+            // Refused before mutation: like Go, leave the clocks where they were.
+            self.restore_clock_state(clocks);
+        }
+        result?;
 
         let active_file = self.active_file.as_ref().unwrap();
         self.rotation_state.update(&active_file.writer);
@@ -539,6 +626,11 @@ impl Log {
         monotonic: u64,
         options: EntryWriteOptions,
     ) -> Result<()> {
+        #[cfg(test)]
+        if self.injected_file_full > 0 {
+            self.injected_file_full -= 1;
+            return Err(JournalError::JournalFileFull.into());
+        }
         let source_field = if let Some(timestamp_usec) = source_realtime_usec {
             self.prepare_source_realtime_field(timestamp_usec);
             Some(self.source_realtime_field.as_slice())
@@ -592,6 +684,11 @@ impl Log {
         monotonic: u64,
         options: EntryWriteOptions,
     ) -> Result<()> {
+        #[cfg(test)]
+        if self.injected_file_full > 0 {
+            self.injected_file_full -= 1;
+            return Err(JournalError::JournalFileFull.into());
+        }
         let source_field = if let Some(timestamp_usec) = source_realtime_usec {
             self.prepare_source_realtime_field(timestamp_usec);
             Some(self.source_realtime_field.as_slice())
@@ -1105,6 +1202,121 @@ mod tests {
     use tempfile::TempDir;
 
     pub(super) static ARCHIVE_SYNC_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    // Paired with Go TestLogContinuesInNewFileWhenActiveFileIsFull and
+    // TestLogRefusesEntryThatDoesNotFitAnEmptyFile. The core refusal itself is
+    // covered by journal-core append_refuses_entry_that_could_reach_four_gib.
+    fn unrotated_config() -> Config {
+        Config::new(
+            Origin {
+                machine_id: Some(test_uuid(1)),
+                namespace: None,
+                source: journal_registry::Source::System,
+            },
+            RotationPolicy::default(),
+            RetentionPolicy::default(),
+        )
+        .with_boot_id(test_uuid(2))
+    }
+
+    #[test]
+    fn log_continues_in_new_file_when_active_file_is_full() {
+        // Rotation archives, which the archive-sync tests count.
+        let _guard = ARCHIVE_SYNC_TEST_LOCK.lock().expect("lock sync test");
+        for structured in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let mut log = Log::new(dir.path(), unrotated_config()).unwrap();
+            write_test_entry(&mut log, b"MESSAGE=first", 1_700_000_000_000_001);
+            let full = log.active_file().unwrap().path().to_string();
+            log.injected_file_full = 1;
+            let timestamps = EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_000_000_000_002)
+                .with_entry_monotonic_usec(1_700_000_000_000_002);
+            if structured {
+                log.write_fields_with_timestamps(
+                    &[StructuredField::new(b"MESSAGE", b"second")],
+                    timestamps,
+                )
+            } else {
+                log.write_entry_with_timestamps(&[b"MESSAGE=second"], timestamps)
+            }
+            .unwrap_or_else(|err| panic!("structured={structured}: {err:?}"));
+            let active = log.active_file().unwrap().path().to_string();
+            assert_ne!(active, full, "structured={structured}: no rotation");
+            assert_eq!(journal_paths(&dir).len(), 2, "structured={structured}");
+            let header = log
+                .active_file
+                .as_ref()
+                .unwrap()
+                .journal_file
+                .journal_header_ref();
+            assert_eq!(
+                (header.head_entry_seqnum, header.tail_entry_seqnum),
+                (2, 2),
+                "structured={structured}"
+            );
+        }
+    }
+
+    #[test]
+    fn log_refuses_entry_that_does_not_fit_an_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let mut log = Log::new(dir.path(), unrotated_config()).unwrap();
+        log.injected_file_full = 2;
+        let clocks = log.clock_state();
+        let err = log
+            .write_entry_with_timestamps(
+                &[b"MESSAGE=too big"],
+                EntryTimestamps::default()
+                    .with_entry_realtime_usec(1_700_000_000_000_001)
+                    .with_entry_monotonic_usec(1),
+            )
+            .expect_err("entry must not fit");
+        assert!(
+            matches!(err, WriterError::Journal(JournalError::JournalFileFull)),
+            "{err:?}"
+        );
+        assert_eq!(
+            log.injected_file_full, 1,
+            "refused without retry on an empty file"
+        );
+        assert_eq!(log.clock_state(), clocks, "refused entry moved the clocks");
+        assert_eq!(journal_paths(&dir).len(), 1);
+    }
+
+    #[test]
+    fn log_retries_full_file_once_then_refuses() {
+        // Rotation archives, which the archive-sync tests count.
+        let _guard = ARCHIVE_SYNC_TEST_LOCK.lock().expect("lock sync test");
+        let dir = TempDir::new().unwrap();
+        let mut log = Log::new(dir.path(), unrotated_config()).unwrap();
+        write_test_entry(&mut log, b"MESSAGE=first", 1_700_000_000_000_001);
+        let full = log.active_file().unwrap().path().to_string();
+        let clocks = log.clock_state();
+        log.injected_file_full = 3;
+        let err = log
+            .write_entry_with_timestamps(
+                &[b"MESSAGE=too big"],
+                EntryTimestamps::default()
+                    .with_entry_realtime_usec(1_700_000_000_000_002)
+                    .with_entry_monotonic_usec(1_700_000_000_000_002),
+            )
+            .expect_err("entry must not fit");
+        assert!(
+            matches!(err, WriterError::Journal(JournalError::JournalFileFull)),
+            "{err:?}"
+        );
+        assert_eq!(
+            log.injected_file_full, 1,
+            "one attempt in the full file, one retry in the new file"
+        );
+        assert_eq!(log.clock_state(), clocks, "refused entry moved the clocks");
+        assert_ne!(
+            log.active_file().unwrap().path(),
+            full,
+            "Log did not rotate away from the full file"
+        );
+    }
 
     fn test_uuid(seed: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([seed; 16])

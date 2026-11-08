@@ -3,6 +3,7 @@ package journal
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
 
 const (
@@ -94,6 +95,19 @@ const (
 	compatibleTailEntryBootID = 1 << 1
 )
 
+// systemd's VALID_REALTIME and VALID_MONOTONIC bound (journal-file.h).
+const timestampLimitUsec = 1 << 55
+
+func validRealtime(usec uint64) bool  { return usec > 0 && usec < timestampLimitUsec }
+func validMonotonic(usec uint64) bool { return usec < timestampLimitUsec }
+
+// tailEntryArrayHintUsable reports whether the 32-bit tail entry array hint
+// can name every array. Writers, systemd's included, truncate offsets at or
+// above 4 GiB, so regular files written past that size carry a wrong hint.
+func (h *journalHeader) tailEntryArrayHintUsable() bool {
+	return h.headerSize >= 264 && h.headerSize <= 1<<32 && h.arenaSize <= 1<<32-h.headerSize
+}
+
 const (
 	objectCompressedXZ   = 1 << 0
 	objectCompressedLZ4  = 1 << 1
@@ -115,9 +129,13 @@ const (
 var (
 	errInvalidJournal     = errors.New("invalid journal file")
 	errUnsupportedJournal = errors.New("unsupported journal file")
-	errWriterClosed       = errors.New("journal writer is closed")
-	errFieldName          = errors.New("invalid journal field name")
-	errEntryEmpty         = errors.New("journal entry has no fields")
+	// errRefusedHeader marks the headers every open refuses. It stays an
+	// invalid-journal error, but Log sets such an active file aside as journald
+	// does for -EBADMSG (journal-file-util.c journal_file_open_reliably).
+	errRefusedHeader = fmt.Errorf("%w: refused header", errInvalidJournal)
+	errWriterClosed  = errors.New("journal writer is closed")
+	errFieldName     = errors.New("invalid journal field name")
+	errEntryEmpty    = errors.New("journal entry has no fields")
 )
 
 var (
@@ -280,7 +298,24 @@ func putHeader(dst []byte, h journalHeader) {
 	binary.LittleEndian.PutUint64(dst[264:272], h.tailEntryOffset)
 }
 
+// parseHeader decodes a header and applies the refusals systemd makes on every
+// open (journal-file.c journal_file_verify_header).
 func parseHeader(src []byte) (journalHeader, error) {
+	h, err := decodeHeader(src)
+	if err != nil {
+		return journalHeader{}, err
+	}
+	if h.state > stateArchived {
+		return journalHeader{}, fmt.Errorf("%w: journal state %d", errRefusedHeader, h.state)
+	}
+	// A sealed file's header must reach n_entry_arrays.
+	if h.compatibleFlags&compatibleSealed != 0 && h.headerSize < 240 {
+		return journalHeader{}, fmt.Errorf("%w: sealed header_size %d is below 240", errRefusedHeader, h.headerSize)
+	}
+	return h, nil
+}
+
+func decodeHeader(src []byte) (journalHeader, error) {
 	if len(src) < headerMinSize {
 		return journalHeader{}, errInvalidJournal
 	}

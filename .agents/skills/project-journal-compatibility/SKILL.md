@@ -60,6 +60,12 @@ files systemd rejects or reads differently.
 - Stable-file checks (verification, append-open, excluded-writer snapshots)
   validate declared arenas and header counters; live readers must not, because
   a writer may publish capacity before allocating it.
+- New strictness may refuse files systemd refuses, but files any earlier SDK
+  release wrote must stay readable and continuable by `Log` (user rule,
+  SOW-0156). Prove it with fixtures written by the release tag's own writer
+  (`git archive <tag>` into `.local/`), not with patched current-writer files.
+- The 32-bit `tail_entry_array_offset` hint is truncated once a regular file
+  passes 4 GiB; checks that trust it must apply only at or below 4 GiB.
 - Changes to `journal-engine` index semantics, `FileIndexKey`, serialized
   index contents or cache partitioning must decide whether `CACHE_VERSION`
   changes, and record the reindex impact or why old entries stay safe.
