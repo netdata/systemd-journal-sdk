@@ -2,14 +2,18 @@
 
 use journal_common::Seconds;
 use journal_registry::{Monitor, Registry};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 const MACHINE: &str = "00112233445566778899aabbccddeeff";
 
 /// Builds a relative path to `target` without changing the working directory,
-/// which would race with other tests in the same process.
+/// which would race with other tests in the same process. Unix only: Windows
+/// temp directories may sit on another drive, with no relative route.
+#[cfg(unix)]
 fn relative_to_cwd(target: &Path) -> PathBuf {
     let cwd = std::env::current_dir().unwrap();
     let mut rel = PathBuf::new();
@@ -30,6 +34,7 @@ fn registered(registry: &Registry) -> Vec<PathBuf> {
     paths
 }
 
+#[cfg(unix)]
 #[test]
 fn relative_directory_registers_files_events_and_unwatch() {
     let dir = TempDir::new().unwrap();
@@ -50,17 +55,28 @@ fn relative_directory_registers_files_events_and_unwatch() {
     // Notify reports paths in the form they were watched; they must still parse.
     let created = machine_dir.join("user-1000.journal");
     std::fs::write(&created, b"").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while registered(&registry).len() < 2 {
-        assert!(Instant::now() < deadline, "create event was not applied");
-        match events.try_recv() {
-            Ok(event) => registry.process_event(event).unwrap(),
-            Err(_) => std::thread::sleep(Duration::from_millis(20)),
-        }
-    }
-    let mut expected = vec![existing, created];
+    let mut expected = vec![existing.clone(), created.clone()];
     expected.sort();
-    assert_eq!(registered(&registry), expected);
+    let mut settle = |want: &[PathBuf], what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while registered(&registry) != want {
+            assert!(Instant::now() < deadline, "{what} event was not applied");
+            match events.try_recv() {
+                Ok(event) => registry.process_event(event).unwrap(),
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    };
+    settle(&expected, "create");
+
+    let renamed = machine_dir.join("user-1001.journal");
+    std::fs::rename(&created, &renamed).unwrap();
+    let mut expected = vec![existing.clone(), renamed.clone()];
+    expected.sort();
+    settle(&expected, "rename");
+
+    std::fs::remove_file(&existing).unwrap();
+    settle(std::slice::from_ref(&renamed), "remove");
 
     registry.unwatch_directory(rel).unwrap();
     assert!(registered(&registry).is_empty());

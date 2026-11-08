@@ -198,9 +198,9 @@ Failure handling:
 Acceptance criteria evidence:
 
 - Relative watch: `relative_directory_registers_files_events_and_unwatch`
-  registers the existing `system.journal`, applies a notify create event for
-  a second file, and `unwatch_directory` with the same relative string
-  removes both.
+  registers the existing `system.journal`, applies notify create, rename and
+  remove events, and `unwatch_directory` with the same relative string removes
+  what remains.
 - Absolute input unchanged: `std::path::absolute` returns `"/x/y/"` and
   `"/x/../y"` as given (probe), so keys and paths for absolute callers are
   identical; all existing workspace tests pass.
