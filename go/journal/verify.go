@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
-	"strconv"
+	"math/bits"
 )
 
 // VerificationError indicates a journal file failed structural integrity verification.
@@ -123,104 +123,118 @@ func verifyFileWithKeyOptions(path string, verificationKey string, opts ReaderOp
 		return verifyReaderStrict(r)
 	}
 
-	seed, startEpoch, intervalUsec, err := parseVerificationKey(verificationKey)
+	key, err := ParseVerificationKey(verificationKey)
 	if err != nil {
 		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: %v", err)}
 	}
 
-	if err := verifySealed(source, header, seed, startEpoch, intervalUsec); err != nil {
+	if err := verifySealed(source, header, key.Seed, key.StartEpoch, key.IntervalUsec); err != nil {
 		return err
 	}
 	return verifyReaderStrict(r)
 }
 
-// parseVerificationKey parses a systemd-style verification key.
-// Format: 12 seed bytes as hex pairs (optional dash separators), then /START_HEX-INTERVAL_HEX.
-func parseVerificationKey(key string) (seed [12]byte, start, interval uint64, err error) {
-	seed, i, err := parseVerificationSeed(key)
+// VerificationKey is a parsed Forward Secure Sealing verification key.
+type VerificationKey struct {
+	Seed         [12]byte
+	StartEpoch   uint64
+	IntervalUsec uint64
+}
+
+// ParseVerificationKey parses "<seed>/<start>-<interval>" with the grammar of
+// systemd v262 journal_auth_load_key, including its tolerance for content
+// after the interval.
+func ParseVerificationKey(key string) (VerificationKey, error) {
+	var parsed VerificationKey
+	i, err := parseVerificationSeed(key, &parsed.Seed)
 	if err != nil {
-		return seed, 0, 0, err
+		return VerificationKey{}, err
 	}
 	if i >= len(key) || key[i] != '/' {
-		return seed, 0, 0, fmt.Errorf("invalid verification key: missing / separator")
+		return VerificationKey{}, fmt.Errorf("invalid verification key: missing / separator")
 	}
-	start, interval, err = parseVerificationRange(key, i+1)
-	return seed, start, interval, err
+	start, next, ok := parseVerificationNumber(key, i+1)
+	if !ok || next >= len(key) || key[next] != '-' {
+		return VerificationKey{}, fmt.Errorf("invalid verification key: bad start hex")
+	}
+	interval, _, ok := parseVerificationNumber(key, next+1)
+	if !ok {
+		return VerificationKey{}, fmt.Errorf("invalid verification key: bad interval hex")
+	}
+	if start == 0 || interval == 0 {
+		return VerificationKey{}, fmt.Errorf("invalid verification key: zero start or interval")
+	}
+	if high, _ := bits.Mul64(start, interval); high != 0 {
+		return VerificationKey{}, fmt.Errorf("invalid verification key: start time overflows")
+	}
+	parsed.StartEpoch = start
+	parsed.IntervalUsec = interval
+	return parsed, nil
 }
 
-func parseVerificationSeed(key string) ([12]byte, int, error) {
-	var seed [12]byte
+func parseVerificationSeed(key string, seed *[12]byte) (int, error) {
 	i := 0
 	for c := range seed {
-		next, b, err := parseVerificationSeedByte(key, i)
-		if err != nil {
-			return seed, 0, err
+		for i < len(key) && key[i] == '-' {
+			i++
 		}
-		seed[c] = b
-		i = next
+		if i+2 > len(key) || !isHexDigit(key[i]) || !isHexDigit(key[i+1]) {
+			return 0, fmt.Errorf("invalid verification key: bad seed hex")
+		}
+		seed[c] = hexDigitValue(key[i])<<4 | hexDigitValue(key[i+1])
+		i += 2
 	}
-	return seed, i, nil
+	return i, nil
 }
 
-func parseVerificationSeedByte(key string, start int) (int, byte, error) {
+// parseVerificationNumber follows sscanf's %lx, which systemd uses here:
+// leading whitespace, a sign, a 0x prefix, and saturation on overflow.
+func parseVerificationNumber(key string, start int) (uint64, int, bool) {
 	i := start
-	for i < len(key) && key[i] == '-' {
+	for i < len(key) && (key[i] == ' ' || ('\t' <= key[i] && key[i] <= '\r')) {
 		i++
 	}
-	if i+2 > len(key) {
-		return 0, 0, fmt.Errorf("invalid verification key: seed too short")
-	}
-	b, err := strconv.ParseUint(key[i:i+2], 16, 8)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid verification key: bad seed hex")
-	}
-	return i + 2, byte(b), nil
-}
-
-func parseVerificationRange(key string, startOffset int) (uint64, uint64, error) {
-	start, next, err := parseVerificationHexValue(key, startOffset, "start")
-	if err != nil {
-		return 0, 0, err
-	}
-	if next >= len(key) || key[next] != '-' {
-		return 0, 0, fmt.Errorf("invalid verification key: bad start hex")
-	}
-
-	interval, next, err := parseVerificationHexValue(key, next+1, "interval")
-	if err != nil {
-		return 0, 0, err
-	}
-	if next != len(key) {
-		return 0, 0, fmt.Errorf("invalid verification key: trailing data")
-	}
-	if interval == 0 {
-		return 0, 0, fmt.Errorf("invalid verification key: zero interval")
-	}
-	return start, interval, nil
-}
-
-func parseVerificationHexValue(key string, offset int, name string) (uint64, int, error) {
-	next, ok := consumeVerificationHex(key, offset)
-	if !ok {
-		return 0, 0, fmt.Errorf("invalid verification key: bad %s hex", name)
-	}
-	value, err := strconv.ParseUint(key[offset:next], 16, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid verification key: bad %s hex", name)
-	}
-	return value, next, nil
-}
-
-func consumeVerificationHex(s string, start int) (int, bool) {
-	i := start
-	for i < len(s) && isHexDigit(s[i]) {
+	negative := false
+	if i < len(key) && (key[i] == '+' || key[i] == '-') {
+		negative = key[i] == '-'
 		i++
 	}
-	return i, i > start
+	if i+1 < len(key) && key[i] == '0' && (key[i+1] == 'x' || key[i+1] == 'X') {
+		i += 2
+	}
+	digits := i
+	var value uint64
+	overflow := false
+	for i < len(key) && isHexDigit(key[i]) {
+		overflow = overflow || value>>60 != 0
+		value = value<<4 | uint64(hexDigitValue(key[i]))
+		i++
+	}
+	if i == digits {
+		return 0, 0, false
+	}
+	if overflow {
+		return ^uint64(0), i, true
+	}
+	if negative {
+		value = -value
+	}
+	return value, i, true
 }
 
 func isHexDigit(b byte) bool {
 	return ('0' <= b && b <= '9') || ('a' <= b && b <= 'f') || ('A' <= b && b <= 'F')
+}
+
+func hexDigitValue(b byte) byte {
+	switch {
+	case b <= '9':
+		return b - '0'
+	case b <= 'F':
+		return b - 'A' + 10
+	default:
+		return b - 'a' + 10
+	}
 }
 
 type sealedVerifyObject struct {

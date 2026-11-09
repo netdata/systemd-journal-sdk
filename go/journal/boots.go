@@ -11,25 +11,36 @@ type bootRange struct {
 	first, last directoryEntryKey
 }
 
+// BootListOptions selects how boots are listed.
+type BootListOptions struct {
+	// HeaderFallback lists the boot IDs in ENTRY headers when the journal has
+	// no _BOOT_ID DATA at all, which the core writer can produce. journalctl
+	// --list-boots reports no boots for such a journal.
+	HeaderFallback bool
+}
+
 // bootRanges returns the first and last visible entries of every boot that
-// has _BOOT_ID DATA in this file, from the DATA objects' entry postings. This
-// is what a _BOOT_ID match with SeekHead/SeekTail finds, without decoding
-// entries or touching the caller's matches and position.
-func (r *Reader) bootRanges() ([]bootRange, error) {
+// has _BOOT_ID DATA in this file, from the DATA objects' entry postings, and
+// whether the file has any _BOOT_ID DATA. This is what a _BOOT_ID match with
+// SeekHead/SeekTail finds, without decoding entries or touching the caller's
+// matches and position.
+func (r *Reader) bootRanges() ([]bootRange, bool, error) {
 	// A long-lived reader must describe the file as it is now, like Next does.
 	if _, err := r.refreshEntryOffsets(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(r.entryOffsets) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	lastVisible := r.entryOffsets[len(r.entryOffsets)-1]
 	var ranges []bootRange
+	hasData := false
 	err := r.visitFieldDataObjects([]byte("_BOOT_ID"), func(offset uint64, _ dataHeader, payload []byte) error {
 		value, ok := bytes.CutPrefix(payload, []byte("_BOOT_ID="))
 		if !ok {
 			return nil
 		}
+		hasData = true
 		bootID, ok := parseCanonicalBootID(value)
 		if !ok {
 			return nil
@@ -63,7 +74,7 @@ func (r *Reader) bootRanges() ([]bootRange, error) {
 		ranges = append(ranges, bootRange{bootID: bootID, first: first, last: last})
 		return nil
 	})
-	return ranges, err
+	return ranges, hasData, err
 }
 
 // parseCanonicalBootID accepts only the 32 lowercase hex digits journald
@@ -126,8 +137,16 @@ func (r *Reader) scanBootTimes(boots map[UUID]*bootTimes) error {
 // ListBoots lists the boots in this file, oldest first, as journalctl
 // --list-boots does. It does not change matches or the read position.
 func (r *Reader) ListBoots() ([]BootInfo, error) {
-	ranges, err := r.bootRanges()
-	if err == nil && len(ranges) > 0 {
+	return r.ListBootsWithOptions(BootListOptions{})
+}
+
+// ListBootsWithOptions is ListBoots with the given options.
+func (r *Reader) ListBootsWithOptions(options BootListOptions) ([]BootInfo, error) {
+	ranges, hasData, err := r.bootRanges()
+	if err != nil {
+		return nil, err
+	}
+	if hasData || !options.HeaderFallback {
 		times := make([]bootTimes, 0, len(ranges))
 		for _, boot := range ranges {
 			times = append(times, bootTimes{bootID: boot.bootID, first: boot.first.realtime, last: boot.last.realtime})
@@ -146,15 +165,21 @@ func (r *Reader) ListBoots() ([]BootInfo, error) {
 // a _BOOT_ID match reaches from the head and from the tail of the merged
 // directory order. It does not change matches or the read position.
 func (dr *DirectoryReader) ListBoots() ([]BootInfo, error) {
+	return dr.ListBootsWithOptions(BootListOptions{})
+}
+
+// ListBootsWithOptions is ListBoots with the given options. HeaderFallback
+// applies only when no file in the directory has _BOOT_ID DATA.
+func (dr *DirectoryReader) ListBootsWithOptions(options BootListOptions) ([]BootInfo, error) {
 	merged := make(map[UUID]*bootRange)
 	var order []UUID
-	indexed := true
+	anyData := false
 	for _, r := range dr.files {
-		ranges, err := r.bootRanges()
+		ranges, hasData, err := r.bootRanges()
 		if err != nil {
-			indexed = false
-			break
+			return nil, err
 		}
+		anyData = anyData || hasData
 		for _, boot := range ranges {
 			current := merged[boot.bootID]
 			if current == nil {
@@ -171,7 +196,7 @@ func (dr *DirectoryReader) ListBoots() ([]BootInfo, error) {
 			}
 		}
 	}
-	if indexed && len(merged) > 0 {
+	if anyData || !options.HeaderFallback {
 		times := make([]bootTimes, 0, len(order))
 		for _, id := range order {
 			boot := merged[id]

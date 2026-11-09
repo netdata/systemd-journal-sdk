@@ -220,7 +220,7 @@ func TestJournalctlListBoots(t *testing.T) {
 	}
 	defer dr.Close()
 
-	boots, err := dr.ListBoots()
+	boots, err := dr.ListBootsWithOptions(BootListOptions{HeaderFallback: true})
 	if err != nil {
 		t.Fatalf("ListBoots error: %v", err)
 	}

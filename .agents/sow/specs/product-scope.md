@@ -480,6 +480,9 @@ Root retention counts file lengths including preallocation, expires by tail
 saved time, and evicts whole files in tail/path order. Default retention policies
 and file format are unchanged; Go now applies cleanup after a successful
 successor-creation retry following a safe creation failure.
+Ordinary `Log` retention in both languages counts disposed `*.journal~` files and
+deletes them before archived history under file-count and byte limits, as
+journald does; an age limit deletes any file older than the cutoff.
 `MaintainRootRetention` finalizes verified retired active
 files and only seals live actives for idle expiry or required size-policy
 allocation changes, leaving successors lazy even after eager startup. Startup,
@@ -641,6 +644,10 @@ Current shared high-level directory writer API slice:
   leaves the file in place. Default chain naming treats only online files as
   active, so an unknown-state chain file stays behind as history while the new
   file still continues its sequence.
+- Rust and Go non-root directory retention counts disposed `*.journal~` files
+  of the same source, both `<source>@...` forms, and deletes them oldest first
+  and before archives, as journald's vacuum does. Max-age retention deletes any
+  expired file whatever its place in that order.
 - Rust and Go writers refuse entry timestamps with realtime outside
   `1..2^55-1` or monotonic at or above 2^55 before mutation (Go
   `ErrTimestampOutOfRange`, Rust `JournalError::TimestampOutOfRange`); the
@@ -1079,11 +1086,12 @@ Current Go reader feature slice:
 - boot listing (`Reader.ListBoots`, `DirectoryReader.ListBoots`,
   `SdJournalListBoots`) reports every boot from the `_BOOT_ID` DATA entry
   arrays, merged across files in directory order and ordered by last entry,
-  first entry and ID. When no usable canonical index exists it scans entry
-  headers instead, so header IDs can name boots then; a directory scans only
-  when no file has such an index or one cannot be read. Only canonical
-  lowercase `_BOOT_ID` values name indexed boots. It does not change matches
-  or position. Both journalctl rewrites use it;
+  first entry and ID. A journal with no `_BOOT_ID` DATA lists no boots, as
+  v262 journalctl does; `HeaderFallback` (Rust `header_fallback`) scans entry
+  headers then, and for a directory only when no file has `_BOOT_ID` DATA.
+  Noncanonical `_BOOT_ID` DATA counts as present but names no boot. Read
+  failures return an error. It does not change matches or position. Both
+  journalctl rewrites use the default;
 - file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,
@@ -1229,9 +1237,8 @@ Current Rust reader feature slice:
   contract as the Go `EntryEncoder`; both journalctl rewrites render through
   it. `export_entry_bytes` and `json_entry` keep the older lossless contract;
 - boot listing (`FileReader::list_boots`, `DirectoryReader::list_boots`,
-  `SdJournalListBoots`) follows the Go boot-listing contract;
-  `DirectoryReader::list_boots` and `SdJournal::list_boots` cannot return an
-  error and fall back to one boot per file header when files cannot be read;
+  `SdJournalListBoots`) follows the Go boot-listing contract, including
+  returning an error when files cannot be read;
 - file-backed journalctl output modes cover the stock v262 family:
   `short`, `short-full`, `short-iso`, `short-iso-precise`,
   `short-precise`, `short-monotonic`, `short-delta`, `short-unix`,

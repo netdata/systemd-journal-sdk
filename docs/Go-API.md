@@ -232,9 +232,11 @@ formats. `ExportEntry` and `JSONEntry` keep their older, lossless contract.
 ## List Boots
 
 `ListBoots` lists every boot as `journalctl --list-boots` does, from the
-`_BOOT_ID` indexes when a usable canonical index exists, otherwise from entry
-headers (a directory scans headers only when no file has such an index or one
-cannot be read), without changing matches or the read position.
+`_BOOT_ID` indexes, without changing matches or the read position. A journal
+with no `_BOOT_ID` DATA lists no boots. Pass
+`BootListOptions{HeaderFallback: true}` to `ListBootsWithOptions` to list the
+boot IDs from entry headers instead; a directory does so only when no file has
+`_BOOT_ID` DATA.
 
 <!-- verify-example: lang=go id=go-list-boots -->
 ```go
@@ -758,6 +760,8 @@ if err := journal.VerifyFile("/var/log/journal/example/system.journal"); err != 
     return err
 }
 ```
+
+`ParseVerificationKey` validates a key with the same grammar as systemd v262.
 
 Use `VerifyFileWithKey` for sealed files when a verification key is available.
 Verification is for integrity checks, not normal query serving.

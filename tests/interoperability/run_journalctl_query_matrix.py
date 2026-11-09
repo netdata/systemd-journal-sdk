@@ -272,6 +272,7 @@ def make_fixtures() -> dict[str, Path]:
     source_realtime = FIXTURE_DIR / "source-realtime.journal"
     pager = FIXTURE_DIR / "pager.journal"
     implicit_boot = FIXTURE_DIR / "implicit-boot.journal"
+    no_boot_id = FIXTURE_DIR / "no-boot-id.journal"
     follow = FIXTURE_DIR / "follow"
     directory.mkdir(parents=True)
     follow.mkdir(parents=True)
@@ -285,6 +286,7 @@ def make_fixtures() -> dict[str, Path]:
     write_source_realtime_journal(source_realtime)
     write_pager_journal(pager)
     write_implicit_boot_journal(implicit_boot)
+    write_no_boot_id_journal(no_boot_id)
     return {
         "directory": directory,
         "file": single_file,
@@ -294,6 +296,7 @@ def make_fixtures() -> dict[str, Path]:
         "source_realtime": source_realtime,
         "pager": pager,
         "implicit_boot": implicit_boot,
+        "no_boot_id": no_boot_id,
         "follow": follow,
     }
 
@@ -501,6 +504,23 @@ def write_pager_journal(path: Path) -> None:
                 ],
             }
             for i in range(1005)
+        ],
+    )
+
+
+def write_no_boot_id_journal(path: Path) -> None:
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_C,
+        seqnum_id=VACUUM_SEQNUM_ID,
+        entries=[
+            {
+                "realtime_usec": 1_700_006_200_000_001,
+                "monotonic_usec": 1,
+                "boot_id": BOOT_C,
+                "fields": [("MESSAGE", "no-boot-id"), ("TEST_ID", "journalctl-no-boot-id")],
+            }
         ],
     )
 
@@ -1617,6 +1637,31 @@ def run_utility_action_cases(tools: dict[str, str], fixtures: dict[str, Path]) -
                     "status": "PASS" if ok else "FAIL",
                     "command": " ".join(cmd),
                     "expected": expected,
+                    "actual": result.stdout,
+                    "stderr": result.stderr[-1000:],
+                    "returncode": result.returncode,
+                }
+            )
+
+    # Exit status and stdout only: the error wording is not part of this check.
+    for case_name, args in (
+        ("list-boots-no-boot-id", ["--file", str(fixtures["no_boot_id"]), "--list-boots"]),
+        ("boot-zero-no-boot-id", ["--file", str(fixtures["no_boot_id"]), "-b", "0"]),
+    ):
+        stock = run(action_command("stock", tools, args), timeout=30)
+        if stock.returncode == 0:
+            raise RuntimeError(f"stock {case_name} unexpectedly succeeded")
+        for reader in ("go", "rust"):
+            cmd = action_command(reader, tools, args)
+            result = run(cmd, timeout=30)
+            ok = result.returncode == stock.returncode and result.stdout == stock.stdout
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": stock.stdout,
                     "actual": result.stdout,
                     "stderr": result.stderr[-1000:],
                     "returncode": result.returncode,

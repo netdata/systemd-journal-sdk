@@ -72,7 +72,7 @@ func (l *Log) enforceRetention(protectedPath string) error {
 }
 
 func (l *Log) newRetentionRun(protectedPath string) (retentionRun, error) {
-	files, _, err := l.archivedFiles()
+	files, _, err := l.scanJournalFiles(true)
 	if err != nil {
 		return retentionRun{}, err
 	}
@@ -102,7 +102,11 @@ func (l *Log) newRetentionRun(protectedPath string) (retentionRun, error) {
 		}
 	}
 
+	// Disposed files go first: journald vacuums them before history.
 	sort.Slice(files, func(i, j int) bool {
+		if files[i].disposed != files[j].disposed {
+			return files[i].disposed
+		}
 		if files[i].headRealtime != files[j].headRealtime {
 			return files[i].headRealtime < files[j].headRealtime
 		}
@@ -138,16 +142,12 @@ func (l *Log) enforceRetentionMaxAge(run *retentionRun) error {
 		return nil
 	}
 	cutoff := retentionAgeCutoff(*l.retention.MaxAge)
-	for len(run.files) > 0 {
-		if run.files[0].headRealtime > cutoff {
-			break
-		}
+	for {
 		ok, err := l.deleteOldestRetainedFile(run, &cutoff)
 		if err != nil || !ok {
 			return err
 		}
 	}
-	return nil
 }
 
 func retentionAgeCutoff(maxAge time.Duration) uint64 {
@@ -162,8 +162,9 @@ func retentionAgeCutoff(maxAge time.Duration) uint64 {
 func (l *Log) deleteOldestRetainedFile(run *retentionRun, cutoff *uint64) (bool, error) {
 	deleteIndex := -1
 	for i, file := range run.files {
+		// The order is not by age across disposed and archived files.
 		if cutoff != nil && file.headRealtime > *cutoff {
-			break
+			continue
 		}
 		if run.activePath == "" || file.path != run.activePath {
 			deleteIndex = i
@@ -185,6 +186,10 @@ func (l *Log) deleteOldestRetainedFile(run *retentionRun, cutoff *uint64) (bool,
 }
 
 func (l *Log) archivedFiles() ([]archivedJournalFile, uint64, error) {
+	return l.scanJournalFiles(false)
+}
+
+func (l *Log) scanJournalFiles(includeDisposed bool) ([]archivedJournalFile, uint64, error) {
 	entries, err := os.ReadDir(l.machineDir)
 	if err != nil {
 		return nil, 0, err
@@ -196,6 +201,9 @@ func (l *Log) archivedFiles() ([]archivedJournalFile, uint64, error) {
 			continue
 		}
 		archived, ok := parseArchivedJournalName(entry.Name(), l.source)
+		if !ok && includeDisposed {
+			archived, ok = parseDisposedJournalName(entry.Name(), l.source)
+		}
 		if !ok {
 			continue
 		}

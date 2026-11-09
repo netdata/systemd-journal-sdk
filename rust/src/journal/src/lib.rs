@@ -34,7 +34,9 @@ pub use export::{
     is_printable_text, json_entry,
 };
 pub use parse::{ParseError, ParsedCursor, parse_cursor, parse_match_bytes, parse_match_string};
-pub use sealed_verify::{verify_file, verify_file_with_key, verify_index};
+pub use sealed_verify::{
+    VerificationKey, parse_verification_key, verify_file, verify_file_with_key, verify_index,
+};
 
 use ouroboros::self_referencing;
 use std::collections::HashMap;
@@ -58,16 +60,17 @@ pub use facade::{
     SdJournalClose, SdJournalEnumerateAvailableData, SdJournalEnumerateAvailableUnique,
     SdJournalEnumerateField, SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor,
     SdJournalGetData, SdJournalGetEntry, SdJournalGetMonotonicUsec, SdJournalGetRealtimeUsec,
-    SdJournalGetSeqnum, SdJournalListBoots, SdJournalNext, SdJournalNextSkip, SdJournalOpen,
-    SdJournalOpenDirectory, SdJournalOpenDirectoryPath, SdJournalOpenDirectoryPathWithOptions,
-    SdJournalOpenDirectoryWithOptions, SdJournalOpenFile, SdJournalOpenFilePath,
-    SdJournalOpenFilePathWithOptions, SdJournalOpenFilePaths, SdJournalOpenFilePathsWithOptions,
-    SdJournalOpenFileWithOptions, SdJournalOpenFiles, SdJournalOpenFilesWithOptions,
-    SdJournalOpenPath, SdJournalPrevious, SdJournalPreviousSkip, SdJournalProcessOutput,
-    SdJournalQueryUnique, SdJournalQueryUniqueState, SdJournalRecoveryStatuses,
-    SdJournalRestartData, SdJournalRestartFields, SdJournalRestartUnique, SdJournalSeekCursor,
-    SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail,
-    SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
+    SdJournalGetSeqnum, SdJournalListBoots, SdJournalListBootsWithOptions, SdJournalNext,
+    SdJournalNextSkip, SdJournalOpen, SdJournalOpenDirectory, SdJournalOpenDirectoryPath,
+    SdJournalOpenDirectoryPathWithOptions, SdJournalOpenDirectoryWithOptions, SdJournalOpenFile,
+    SdJournalOpenFilePath, SdJournalOpenFilePathWithOptions, SdJournalOpenFilePaths,
+    SdJournalOpenFilePathsWithOptions, SdJournalOpenFileWithOptions, SdJournalOpenFiles,
+    SdJournalOpenFilesWithOptions, SdJournalOpenPath, SdJournalPrevious, SdJournalPreviousSkip,
+    SdJournalProcessOutput, SdJournalQueryUnique, SdJournalQueryUniqueState,
+    SdJournalRecoveryStatuses, SdJournalRestartData, SdJournalRestartFields,
+    SdJournalRestartUnique, SdJournalSeekCursor, SdJournalSeekCursorDirection, SdJournalSeekHead,
+    SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
+    SdJournalVisitUniqueValues,
 };
 pub use journal_core::error::JournalError;
 use journal_core::file::ExperimentalMmapStrategy;
@@ -303,6 +306,15 @@ fn split_raw_payload(payload: &[u8]) -> Option<RawField<'_>> {
     })
 }
 
+/// Selects how boots are listed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BootListOptions {
+    /// Lists the boot IDs in ENTRY headers when the journal has no `_BOOT_ID`
+    /// DATA at all, which the core writer can produce. `journalctl
+    /// --list-boots` reports no boots for such a journal.
+    pub header_fallback: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct BootInfo {
     pub index: i64,
@@ -510,9 +522,13 @@ impl FileReader {
     fn recover_missing_header_tail(file: &JournalFile<Mmap>) -> Result<()> {
         let header = file.journal_header_ref();
         let extent = file.reader_file_size()?;
-        if header
-            .tail_object_offset
-            .is_some_and(|offset| offset.get().checked_add(16).is_none_or(|end| end > extent))
+        // Without the main array, a filtered read could still reach entries
+        // through DATA postings; decide the visible prefix before any read.
+        let missing_main_array = header.entry_array_offset.is_none() && header.n_entries != 0;
+        if missing_main_array
+            || header
+                .tail_object_offset
+                .is_some_and(|offset| offset.get().checked_add(16).is_none_or(|end| end > extent))
         {
             file.recover_reader_tail(&JournalError::ObjectExceedsFileBounds)?;
         }
@@ -804,7 +820,12 @@ impl FileReader {
         let row = &mut self.row;
         let payload = self.inner.with_mut(|fields| {
             fields.reader.release_object_guards();
-            row.read_next_payload(fields.file)
+            loop {
+                match row.read_next_payload(fields.file) {
+                    Err(err) if recoverable_entry_data_error(&err) => continue,
+                    other => break other,
+                }
+            }
         })?;
         Ok(payload.map(|payload| self.row.payload_slice(payload)))
     }

@@ -3443,7 +3443,7 @@ fn journal_file_source_type(path: &Path) -> u64 {
 }
 
 fn local_namespace_source_name(path: &Path) -> Option<String> {
-    let parent = path.parent()?.file_name()?.to_str()?;
+    let parent = path.parent()?.file_name()?.to_string_lossy();
     let (_, namespace) = parent.rsplit_once('.')?;
     (!namespace.is_empty()).then(|| format!("namespace-{namespace}"))
 }

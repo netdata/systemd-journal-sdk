@@ -261,12 +261,11 @@ Reader limitations:
 
 - `FileReader::list_boots`, `DirectoryReader::list_boots` and
   `SdJournalListBoots` list every boot from the `_BOOT_ID` DATA entry arrays,
-  as `journalctl --list-boots` does, falling back to an entry-header scan when
-  no usable canonical index exists (for a directory, only when no file has one
-  or one cannot be read). `DirectoryReader::list_boots` and
-  `SdJournal::list_boots` cannot return an error, so when the files cannot be
-  read they report one boot per file header; `SdJournalListBoots` and
-  `FileReader::list_boots` return the error;
+  as `journalctl --list-boots` does. A journal with no `_BOOT_ID` DATA lists no
+  boots unless the caller passes `BootListOptions { header_fallback: true }` to
+  the `*_with_options` forms (for a directory, it applies only when no file has
+  `_BOOT_ID` DATA). All of them return an error when the files cannot be read,
+  as Go does;
 - full systemd object-graph verification parity is tracked separately;
 - daemon-only journalctl operations are not implemented.
 

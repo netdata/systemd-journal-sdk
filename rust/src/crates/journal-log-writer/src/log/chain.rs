@@ -115,6 +115,16 @@ fn tail_state_from_raw_header(file: &repository::File) -> Option<TailState> {
     })
 }
 
+/// A disposed chain-named file keeps `<source>@...` in its stem, which the
+/// repository parses as an unknown source. Retention must still bound it.
+fn is_disposed_chain_file(file: &repository::File, source_name: &str) -> bool {
+    file.is_disposed()
+        && Path::new(file.path())
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(&format!("{source_name}@")))
+}
+
 impl OwnedChain {
     pub(super) fn new(path: PathBuf, machine_id: Uuid, source: Source) -> Result<Self> {
         #[cfg(debug_assertions)]
@@ -147,7 +157,9 @@ impl OwnedChain {
             let Some(file) = repository::File::from_path(&file_path) else {
                 continue;
             };
-            if file.origin().source != chain.source {
+            if file.origin().source != chain.source
+                && !is_disposed_chain_file(&file, &chain.source_name)
+            {
                 continue;
             }
 
@@ -796,6 +808,51 @@ fn sync_directory(_path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Paired with Go TestRetentionCountsAndDeletesDisposedFilesFirst.
+    #[test]
+    fn retention_counts_and_deletes_disposed_files_first() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let machine_id = Uuid::new_v4();
+        let path = tmp.path().join(machine_id.to_string());
+        fs::create_dir(&path).expect("create machine-id dir");
+        let archived = create_chain_file(&path, "system", machine_id, 1, 1).expect("chain file");
+        fs::write(archived.path(), b"journal").expect("write archive");
+        let stamp = 1_700_000_000_000_000_u64;
+        let chain_name = format!(
+            "system@{:032x}-{:016x}-{:016x}@{stamp:016x}-{:016x}.journal~",
+            1, 1, 1, 2
+        );
+        let strict_name = format!("system@{stamp:016x}-{:016x}.journal~", 1);
+        let foreign = format!("other@{stamp:016x}-{:016x}.journal~", 1);
+        for name in [&chain_name, &strict_name, &foreign] {
+            fs::write(path.join(name), b"x").expect("write disposed");
+        }
+
+        let mut chain =
+            OwnedChain::new(path.clone(), machine_id, Source::System).expect("create chain");
+        assert_eq!(chain.inner.len(), 3, "foreign source is not counted");
+        assert!(
+            chain
+                .delete_oldest_file(None)
+                .expect("delete")
+                .unwrap()
+                .is_disposed()
+        );
+        assert!(
+            chain
+                .delete_oldest_file(None)
+                .expect("delete")
+                .unwrap()
+                .is_disposed()
+        );
+        assert!(!path.join(&chain_name).exists());
+        assert!(!path.join(&strict_name).exists());
+        assert!(path.join(&foreign).exists());
+        assert!(Path::new(archived.path()).exists());
+    }
 
     #[cfg(unix)]
     #[test]
