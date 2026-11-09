@@ -71,6 +71,20 @@ func TestDamagedDataObjectCostsTheFieldNotTheEntry(t *testing.T) {
 			if len(entry.Payloads) != want {
 				t.Fatalf("payloads = %d, want %d", len(entry.Payloads), want)
 			}
+			assertDamagedPayloads := func(api string, got [][]byte) {
+				t.Helper()
+				kept := false
+				for _, payload := range got {
+					kept = kept || bytes.Equal(payload, []byte("MESSAGE=kept"))
+					if bytes.HasPrefix(payload, []byte("BROKEN=")) {
+						t.Fatalf("%s returned the damaged field: %q", api, got)
+					}
+				}
+				if len(got) != want || !kept {
+					t.Fatalf("%s payloads = %q", api, got)
+				}
+			}
+			assertDamagedPayloads("GetEntry", entry.Payloads)
 
 			r, err := OpenFile(path)
 			if err != nil {
@@ -81,23 +95,22 @@ func TestDamagedDataObjectCostsTheFieldNotTheEntry(t *testing.T) {
 				t.Fatalf("step = %v, %v", ok, err)
 			}
 			collected, err := r.CollectEntryPayloads()
-			if err != nil || len(collected) != want {
-				t.Fatalf("collected = %d, %v, want %d", len(collected), err, want)
+			if err != nil {
+				t.Fatal(err)
 			}
-			enumerated := 0
+			assertDamagedPayloads("CollectEntryPayloads", collected)
+			var enumerated [][]byte
 			for {
-				_, ok, err := r.EnumerateEntryPayload()
+				payload, ok, err := r.EnumerateEntryPayload()
 				if err != nil {
 					t.Fatal(err)
 				}
 				if !ok {
 					break
 				}
-				enumerated++
+				enumerated = append(enumerated, bytes.Clone(payload))
 			}
-			if enumerated != want {
-				t.Fatalf("enumerated = %d, want %d", enumerated, want)
-			}
+			assertDamagedPayloads("EnumerateEntryPayload", enumerated)
 		})
 	}
 }

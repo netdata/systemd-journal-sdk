@@ -72,15 +72,29 @@ fn damaged_data_object_costs_the_field_not_the_entry() {
             "{name}"
         );
 
+        let want = 1 + usize::from(payload_kept);
+        let check = |api: &str, got: &[Vec<u8>]| {
+            assert_eq!(got.len(), want, "{name} {api}");
+            assert!(
+                got.iter().any(|p| p == b"MESSAGE=kept"),
+                "{name} {api}: MESSAGE missing"
+            );
+            assert!(
+                !got.iter().any(|p| p.starts_with(b"BROKEN=")),
+                "{name} {api}: damaged field returned"
+            );
+        };
+        check("get_entry", &entry.payloads);
+
         let mut collected = Vec::new();
         reader.collect_entry_payloads(&mut collected).unwrap();
-        assert_eq!(collected.len(), 1 + usize::from(payload_kept), "{name}");
+        check("collect_entry_payloads", &collected);
         reader.entry_data_restart().unwrap();
-        let mut enumerated = 0;
-        while reader.enumerate_entry_payload().unwrap().is_some() {
-            enumerated += 1;
+        let mut enumerated = Vec::new();
+        while let Some(payload) = reader.enumerate_entry_payload().unwrap() {
+            enumerated.push(payload.to_vec());
         }
-        assert_eq!(enumerated, 1 + usize::from(payload_kept), "{name}");
+        check("enumerate_entry_payload", &enumerated);
     }
 }
 

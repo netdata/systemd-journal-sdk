@@ -343,9 +343,9 @@ Reviewer findings:
   holds the file (the Go writer publishes it before `n_entries`); doc wording
   for retention order, field-level damage and `list_boots` errors. Rejected:
   file-identity check before retention deletes, because journald also unlinks
-  by name (journal-vacuum.c:263, 307) and one writer owns the directory. Open
-  for a user decision: whether undecompressible DATA costs one field (systemd)
-  or fails the entry (today, covered by `run_reader_hardening.py` streams).
+  by name (journal-vacuum.c:263, 307) and one writer owns the directory.
+  Undecompressible DATA: the user decided on 2026-11-09 that it costs one field
+  (decision 1B), delivered by SOW-0178; this SOW keeps failing the entry.
 
 Same-failure scan:
 
@@ -394,6 +394,7 @@ Lessons:
 Follow-up mapping:
 
 - `=> Validated` summary line: tracked by SOW-0177.
+- Undecompressible DATA costs one field: delivered by SOW-0178.
 - `FAIL` wording and item 8's two differences: accepted, recorded above.
 
 ## Outcome
