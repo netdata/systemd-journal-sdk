@@ -282,7 +282,7 @@ def main() -> None:
         command = [str(oracle), "--file", str(path), "-o", "export", "--all"]
         print(f"+ {shlex.join(command)}", flush=True)
         result = subprocess.run(
-            command, capture_output=True, env=env, timeout=15, check=False
+            command, capture_output=True, env=env, timeout=15, check=False  # nosemgrep
         )  # nosec B603
         rows = result.stdout.split(b"\n\n")
         messages = result.stdout.count(b"\nMESSAGE")

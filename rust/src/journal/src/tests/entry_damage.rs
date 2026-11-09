@@ -148,28 +148,8 @@ fn damaged_compressed_data_costs_the_field() {
     for compression in [Compression::Zstd, Compression::Xz, Compression::Lz4] {
         let dir = tempfile::tempdir().unwrap();
         let path = journal_path(dir.path());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let repo_file = RepoFile::from_path(&path).expect("journal path");
-        let mut file = JournalFile::<MmapMut>::create(
-            &repo_file,
-            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
-                .with_compression(compression)
-                .with_compress_threshold(16),
-        )
-        .expect("create journal");
-        let mut writer = JournalWriter::new(&mut file, 1, test_uuid(4)).expect("writer");
         let broken = [b"BROKEN=".as_slice(), &[b'z'; 512]].concat();
-        writer
-            .add_entry(
-                &mut file,
-                &[b"MESSAGE=kept", &broken],
-                1_700_000_000_000_000,
-                1,
-            )
-            .expect("write entry");
-        file.sync().expect("sync");
-        drop(file);
-        corrupt_compressed_data(&path, matches!(compression, Compression::Lz4));
+        write_damaged_compressed_entry(&path, compression, &[b"MESSAGE=kept", &broken]);
 
         let mut reader = DirectoryReader::open_files([&path]).unwrap();
         assert!(reader.next().unwrap(), "{compression:?}");
@@ -195,23 +175,8 @@ fn explorer_skips_damaged_compressed_data() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = journal_path(dir.path());
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let repo_file = RepoFile::from_path(&path).expect("journal path");
-    let mut file = JournalFile::<MmapMut>::create(
-        &repo_file,
-        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
-            .with_compression(Compression::Zstd)
-            .with_compress_threshold(32),
-    )
-    .expect("create journal");
-    let mut writer = JournalWriter::new(&mut file, 1, test_uuid(4)).expect("writer");
     let large = [b"MESSAGE=".as_slice(), &[b'z'; 512]].concat();
-    writer
-        .add_entry(&mut file, &[b"PRIORITY=3", &large], 1_000, 1)
-        .expect("write entry");
-    file.sync().expect("sync");
-    drop(file);
-    corrupt_compressed_data(&path, false);
+    write_damaged_compressed_entry(&path, Compression::Zstd, &[b"PRIORITY=3", &large]);
 
     let mut reader = FileReader::open(&path).expect("open reader");
     let query = ExplorerQuery {
@@ -227,6 +192,31 @@ fn explorer_skips_damaged_compressed_data() {
         .expect("priority facet");
     assert_eq!(priority.get(b"3".as_slice()), Some(&1));
     assert_eq!(result.rows.len(), 1);
+}
+
+/// Writes one entry whose large field is compressed, then damages that DATA.
+fn write_damaged_compressed_entry(
+    path: &Path,
+    compression: journal_core::file::Compression,
+    payloads: &[&[u8]],
+) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let repo_file = RepoFile::from_path(path).expect("journal path");
+    let mut file = JournalFile::<MmapMut>::create(
+        &repo_file,
+        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+            .with_compression(compression)
+            .with_compress_threshold(16),
+    )
+    .expect("create journal");
+    let mut writer = JournalWriter::new(&mut file, 1, test_uuid(4)).expect("writer");
+    writer
+        .add_entry(&mut file, payloads, 1_700_000_000_000_000, 1)
+        .expect("write entry");
+    file.sync().expect("sync");
+    drop(file);
+    let lz4 = matches!(compression, journal_core::file::Compression::Lz4);
+    corrupt_compressed_data(path, lz4);
 }
 
 /// Breaks the only compressed DATA object: lz4 by its stored size, the others
