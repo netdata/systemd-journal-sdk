@@ -243,13 +243,7 @@ pub(super) fn verify_entry_at_strict(
 }
 
 pub(super) fn recoverable_entry_data_error(err: &JournalError) -> bool {
-    matches!(
-        err,
-        JournalError::InvalidOffset
-            | JournalError::InvalidObjectSize(_)
-            | JournalError::InvalidObjectType
-            | JournalError::ObjectExceedsFileBounds
-    )
+    err.is_recoverable_entry_data()
 }
 
 pub(super) fn is_zst_file(path: &Path) -> bool {

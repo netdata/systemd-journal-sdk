@@ -804,6 +804,13 @@ Rust applies this policy in JournalReader without changing the public
 JournalCursor layout; the low-level cursor handles positioning and initial
 error recovery, not automatic EOF refresh.
 
+A damaged DATA object behind one entry item (bad offset, type or size, or a
+compressed payload that cannot be decoded) costs that field in current-entry
+reads, Explorer and Netdata facets and journalctl output, in both languages.
+This matches systemd for zstd and lz4; systemd fails the whole read on corrupt
+xz (`-ENOMEM`), an accepted difference (SOW-0178). Unique enumeration and strict
+verification still fail.
+
 Recovery retains native index/header access and does not expand DATA rows to
 establish the prefix. Interior holes followed by readable entries, wrong types,
 cycles, malformed nonzero sizes, decompression failures and general I/O errors

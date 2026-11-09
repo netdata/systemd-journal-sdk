@@ -278,6 +278,21 @@ def main() -> None:
                 f"stock verification disagreement: {path.name}: {result.stderr[-2000:]}"
             )
 
+    def stock_rows(path: Path, expected: list) -> None:
+        command = [str(oracle), "--file", str(path), "-o", "export", "--all"]
+        print(f"+ {shlex.join(command)}", flush=True)
+        result = subprocess.run(
+            command, capture_output=True, env=env, timeout=15, check=False
+        )  # nosec B603
+        rows = result.stdout.split(b"\n\n")
+        messages = result.stdout.count(b"\nMESSAGE")
+        want = sum(
+            any(bytes.fromhex(p).startswith(b"MESSAGE=") for p in row["payloads"])
+            for row in expected
+        )
+        if result.returncode or len([r for r in rows if r.strip()]) != len(expected) or messages != want:
+            raise RuntimeError(f"stock read disagreement: {path.name}: {result.stderr[-2000:]!r}")
+
     zstd = Zstd() if "streams" in selected else None
     for compact in (False, True):
         folder = out / ("compact" if compact else "regular")
@@ -503,6 +518,12 @@ def main() -> None:
                 "oversized": (oversized_zstd_frame(768 * 1024 * 1024 + 1), True),
                 "trailing-garbage": (frame + b"garbage", True),
             }
+            damaged_message_rows = [dict(row) for row in rows]
+            damaged_message_rows[0]["payloads"] = [
+                payload
+                for payload in rows[0]["payloads"]
+                if not bytes.fromhex(payload).startswith(b"MESSAGE=")
+            ]
             for name, (stream, error) in streams.items():
                 padding = end - start - len(stream) - 8
                 if padding < 0:
@@ -515,9 +536,13 @@ def main() -> None:
                 mutated[start:end] = stream + skippable(padding)
                 path = folder / f"zstd-{name}.journal"
                 path.write_bytes(mutated)
-                probe(path, "forward", expected=None if error else rows, error=error)
+                # A damaged stream costs its field, as in stock v262; strict
+                # verification still rejects the file.
+                expected = damaged_message_rows if error else rows
+                probe(path, "forward", expected=expected)
                 probe(path, "verify", error=error)
                 stock_verify(path, error)
+                stock_rows(path, expected)
             split = len(data) // 2
             whole = (
                 zstd.frame(data[:split], known=False)

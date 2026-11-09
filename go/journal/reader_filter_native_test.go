@@ -537,7 +537,12 @@ func TestNativeFilterDoesNotDecodeUnrelatedCompressedData(t *testing.T) {
 		if got, err := candidate.GetRealtimeUsec(); err != nil || got != 1000 {
 			t.Fatalf("cursor time=%d/%v", got, err)
 		}
-		if _, err := candidate.GetEntry(); err == nil {
+		// Reading the payload decodes it; the malformed field is then dropped.
+		entry, err := candidate.GetEntry()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := entry.Fields["MESSAGE"]; ok {
 			t.Fatal("payload control did not detect malformed compression")
 		}
 	}

@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-11-08
+Last updated: 2026-11-09
 
 ## Backlog Order
 
@@ -45,8 +45,6 @@ order; the user may reorder it.
     decision 2026-11-07; after SOW-0097).
 23. SOW-0177 - Report the validated sealed range from verification (tracked
     2026-11-08 from SOW-0176; needs a public API decision).
-24. SOW-0178 - Undecompressible DATA costs one field (user decision 1B,
-    2026-11-09); waiting on the xz decision.
 
 ## Current
 
@@ -77,8 +75,6 @@ order; the user may reorder it.
   by user decision.
 - SOW-0171 - Continue Sealing When Reopening A Sealed File: tracked
   2026-11-03 (SOW-0156 decision N1); not scheduled.
-- SOW-0178 - Undecompressible DATA Costs One Field, Not The Entry: created
-  2026-11-09 (decision 1B); waiting on the xz decision.
 - SOW-0177 - Report The Validated Sealed Range From Verification: tracked from
   SOW-0176 item I7; needs a public API decision.
 - SOW-0175 - Split The journalctl Rewrites By Responsibility: tracked
@@ -86,6 +82,8 @@ order; the user may reorder it.
 
 ## Recently Closed Or Completed
 
+- SOW-0178 - Undecompressible DATA Costs One Field, Not The Entry: completed
+  2026-11-09 (decisions 1B, xz = B).
 - SOW-0176 - Single Ownership Follow-ups: completed 2026-11-08; follow-up
   SOW-0177.
 - SOW-0174 - Rust Registry Unwatch Leaves Files When The Directory Key
