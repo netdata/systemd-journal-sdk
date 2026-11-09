@@ -1181,7 +1181,7 @@ func decompressDataPayload(flags uint8, payload []byte) ([]byte, error) {
 		return payload, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errDataDecompression, err)
+		return nil, fmt.Errorf("%w: %w", errDataDecompression, err)
 	}
 	return out, nil
 }

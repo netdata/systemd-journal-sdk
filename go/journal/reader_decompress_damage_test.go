@@ -103,7 +103,15 @@ func TestExplorerSkipsDamagedCompressedData(t *testing.T) {
 		t.Fatalf("Explore() error = %v", err)
 	}
 	assertExplorerFacetCount(t, result, "PRIORITY", "3", 1)
+	if values := result.Facets["MESSAGE"]; len(values) != 1 || values[string(explorerUnsetValue)] != 1 {
+		t.Fatalf("MESSAGE facet = %#v, want only unset=1", values)
+	}
 	if len(result.Rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(result.Rows))
+	}
+	for _, payload := range result.Rows[0].Payloads {
+		if bytes.HasPrefix(payload, []byte("MESSAGE=")) {
+			t.Fatalf("row kept damaged MESSAGE payload %q", payload[:min(len(payload), 32)])
+		}
 	}
 }

@@ -122,6 +122,36 @@ def skippable(length: int = 0) -> bytes:
     return b"\x50\x2a\x4d\x18" + length.to_bytes(4, "little") + bytes(length)
 
 
+def parse_export(stream: bytes) -> list[dict]:
+    """Parse journalctl export output into expected_rows() shape.
+
+    Address fields (`__*`) and the header-derived `_BOOT_ID` are not entry
+    payloads, so they are left out of the comparison.
+    """
+    rows, payloads, realtime, at = [], [], None, 0
+    while at < len(stream):
+        end = stream.index(b"\n", at)
+        line = stream[at:end]
+        at = end + 1
+        if not line:
+            rows.append({"realtime": realtime, "payloads": sorted(payloads)})
+            payloads, realtime = [], None
+            continue
+        if b"=" in line:
+            name, value = line.split(b"=", 1)
+        else:
+            name, size = line, int.from_bytes(stream[at : at + 8], "little")
+            value = stream[at + 8 : at + 8 + size]
+            at += 8 + size + 1
+        if name == b"__REALTIME_TIMESTAMP":
+            realtime = int(value)
+        elif not name.startswith(b"__") and name != b"_BOOT_ID":
+            payloads.append((name + b"=" + value).hex())
+    if payloads or realtime is not None:
+        rows.append({"realtime": realtime, "payloads": sorted(payloads)})
+    return rows
+
+
 def expected_rows(entries: list[dict]) -> list[dict]:
     return [
         {
@@ -284,14 +314,12 @@ def main() -> None:
         result = subprocess.run(
             command, capture_output=True, env=env, timeout=15, check=False  # nosemgrep
         )  # nosec B603
-        rows = result.stdout.split(b"\n\n")
-        messages = result.stdout.count(b"\nMESSAGE")
-        want = sum(
-            any(bytes.fromhex(p).startswith(b"MESSAGE=") for p in row["payloads"])
-            for row in expected
-        )
-        if result.returncode or len([r for r in rows if r.strip()]) != len(expected) or messages != want:
-            raise RuntimeError(f"stock read disagreement: {path.name}: {result.stderr[-2000:]!r}")
+        got = parse_export(result.stdout)
+        if result.returncode or got != expected:
+            raise RuntimeError(
+                f"stock read disagreement: {path.name}: rc={result.returncode} "
+                f"rows={len(got)}/{len(expected)} {result.stderr[-2000:]!r}"
+            )
 
     zstd = Zstd() if "streams" in selected else None
     for compact in (False, True):

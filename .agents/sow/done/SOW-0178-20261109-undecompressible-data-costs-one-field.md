@@ -31,17 +31,19 @@ Facts:
   streams return `-EBADMSG` (`src/basic/compress.c` lz4 and
   `zstd_ret_to_errno`). Corrupt xz returns `-ENOMEM`
   (`decompress_blob_xz`), which is not skipped.
-- Stock v262 differential (`.local/sow0178/codec_diff.py`, 5-entry files whose
-  one compressed DATA object is shared by every entry):
+- Baseline (before this SOW) stock v262 differential
+  (`.local/sow0178/codec_diff.py`, 5-entry files whose one compressed DATA
+  object is shared by every entry); post-change results are under Validation:
   - zstd corrupt (bit flip, zeroed tail): stock rc 0, 5 rows, field dropped
     (75 to 70 fields). Go and Rust: rc 1, no rows.
   - lz4 bad stored size (+1, -1): stock rc 0, 5 rows, field dropped. Go and
     Rust: rc 1, no rows.
   - xz corrupt: stock rc 1, `Failed to read journal: Cannot allocate memory`,
     no rows. Go and Rust: rc 1, no rows.
-  - Reader-hardening zstd fixtures (bad later checksum, truncated later frame,
-    trailing garbage, oversized 768 MiB + 1): stock keeps all 4 rows and drops
-    only the damaged MESSAGE field.
+  - Baseline reader-hardening zstd fixtures (bad later checksum, truncated
+    later frame, trailing garbage, oversized 768 MiB + 1): stock keeps all 4
+    rows and drops only the damaged MESSAGE field, while the matrix then
+    expected an SDK entry error.
 - Unique-value enumeration returns decompression errors in systemd
   (`sd-journal.c` `sd_journal_enumerate_unique`), so it is out of scope.
 - SDK sites: Go `recoverableEntryDataError` (`go/journal/reader_entry.go`) and
@@ -68,7 +70,9 @@ Unknowns:
 
 See Facts. The change is a classification of decompression errors in one
 predicate per language, plus the consequences in the hardening matrix, tests
-and docs (`docs/Reader-APIs.md`, `docs/Rust-API.md`, `product-scope.md`).
+and docs (`docs/Reader-APIs.md`, `product-scope.md`). `docs/Rust-API.md`
+needs no change: it only says unique enumeration fails on undecompressible
+DATA, which stays true.
 
 ## Pre-Implementation Gate
 
@@ -144,6 +148,12 @@ Implementation:
 
 - The project manager implements both languages in one chunk with tests.
 
+Failure handling:
+
+- A failing test, matrix or audit is recorded in the Execution Log or
+  Validation with its cause, fixed or rerun, and blocks `completed` until it
+  passes; a flaky failure is rerun and both results are recorded.
+
 Reviewers:
 
 - Whole-SOW self-review after local validation; tests are the gate. External
@@ -179,6 +189,14 @@ CRITICAL REPOSITORY BOUNDARY:
   MESSAGE is dropped, which proves the same thing.
 - Duplication gate: the new Rust `impl` first lengthened a baselined block shared
   with the legacy `jf` copy; placing it at the end of `error.rs` fixed it.
+- PR review round (8 bot findings, all accepted): spec sentence scoped to tail
+  recovery; the stock oracle check in `run_reader_hardening.py` now parses
+  `-o export` and compares realtime and payloads per row instead of counts;
+  both explorer tests assert MESSAGE is absent from the row and reported only
+  as unset; Go keeps the decompressor error in the chain (`%w: %w`, Go 1.20+);
+  SOW baseline facts labeled, docs list corrected, failure handling recorded,
+  status entry states the outcome. Reruns: Go and Rust damage tests pass;
+  `run_reader_hardening.py` PASS, 552 observations, adapters rebuilt.
 
 ## Validation
 

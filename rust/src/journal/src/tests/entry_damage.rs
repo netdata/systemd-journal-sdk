@@ -191,7 +191,20 @@ fn explorer_skips_damaged_compressed_data() {
         .get(b"PRIORITY".as_slice())
         .expect("priority facet");
     assert_eq!(priority.get(b"3".as_slice()), Some(&1));
+    let message = result
+        .facets
+        .get(b"MESSAGE".as_slice())
+        .expect("message facet");
+    assert_eq!(message.len(), 1, "MESSAGE facet must hold only unset");
+    assert_eq!(message.get(b"-".as_slice()), Some(&1));
     assert_eq!(result.rows.len(), 1);
+    assert!(
+        !result.rows[0]
+            .payloads
+            .iter()
+            .any(|payload| payload.starts_with(b"MESSAGE=")),
+        "row kept the damaged MESSAGE payload"
+    );
 }
 
 /// Writes one entry whose large field is compressed, then damages that DATA.
