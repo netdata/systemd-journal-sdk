@@ -218,10 +218,11 @@ func formatCursorFromDirectoryKey(key directoryEntryKey) string {
 }
 
 // recoverableEntryDataError reports a bad DATA object that costs one field, not
-// the entry; sd_journal_enumerate_data skips those too (sd-journal.c).
+// the entry; sd_journal_enumerate_data skips those too (sd-journal.c). Corrupt
+// xz is included although systemd reports it as -ENOMEM (SOW-0178).
 func recoverableEntryDataError(err error) bool {
 	var bounds readerBoundsError
-	return errors.Is(err, errCorruptObject) || errors.As(err, &bounds)
+	return errors.Is(err, errCorruptObject) || errors.Is(err, errDataDecompression) || errors.As(err, &bounds)
 }
 
 func (r *Reader) readDataPayloadTemp(offset uint64) ([]byte, error) {

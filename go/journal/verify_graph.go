@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/bits"
 )
@@ -1163,17 +1164,26 @@ func (v *graphVerifier) hash(payload []byte) uint64 {
 	return jenkinsHash64(payload)
 }
 
+// errDataDecompression marks a compressed DATA object that cannot be decoded.
+var errDataDecompression = errors.New("cannot decompress DATA object")
+
 func decompressDataPayload(flags uint8, payload []byte) ([]byte, error) {
+	var out []byte
+	var err error
 	switch {
 	case flags&objectCompressedZSTD != 0:
-		return zstdDecompress(payload)
+		out, err = zstdDecompress(payload)
 	case flags&objectCompressedXZ != 0:
-		return xzDecompress(payload)
+		out, err = xzDecompress(payload)
 	case flags&objectCompressedLZ4 != 0:
-		return lz4Decompress(payload)
+		out, err = lz4Decompress(payload)
 	default:
 		return payload, nil
 	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errDataDecompression, err)
+	}
+	return out, nil
 }
 
 // Build object-specific diagnostic labels only when an offset is invalid.

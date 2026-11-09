@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-11-08
+Last updated: 2026-11-09
 
 ## Backlog Order
 
@@ -82,6 +82,10 @@ order; the user may reorder it.
 
 ## Recently Closed Or Completed
 
+- SOW-0178 - Undecompressible DATA Costs One Field, Not The Entry: completed
+  2026-11-09. Readers drop only the damaged field, as systemd does for zstd and
+  lz4; for corrupt xz the SDK intentionally keeps the entry where systemd fails
+  the read.
 - SOW-0176 - Single Ownership Follow-ups: completed 2026-11-08; follow-up
   SOW-0177.
 - SOW-0174 - Rust Registry Unwatch Leaves Files When The Directory Key
