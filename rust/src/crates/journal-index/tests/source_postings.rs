@@ -191,3 +191,38 @@ fn entry_with_repeated_source_field_counts_once() {
         assert_eq!(fixture.index().unwrap(), 4, "compact={compact}");
     }
 }
+
+/// An entry with the source field twice must sit where the query scanner
+/// reads it (the lowest DATA offset), or a bounded scan stops early and loses
+/// rows. Here the first-written value of A is 3s, so A belongs after B (2s).
+#[test]
+fn repeated_source_field_uses_the_value_the_scanner_reads() {
+    use journal_index::{Anchor, Direction, LogQueryParamsBuilder};
+
+    for compact in [false, true] {
+        let mut fixture = Fixture::new(compact, 0);
+        fixture.append(
+            1..=1,
+            &[
+                b"MESSAGE=row",
+                b"SOURCE_TIMESTAMP=3000000",
+                b"SOURCE_TIMESTAMP=1000000",
+            ],
+        );
+        fixture.append(2..=2, &[b"MESSAGE=row", SOURCE]);
+        let field = FieldName::new_unchecked("SOURCE_TIMESTAMP".to_owned());
+        let index = FileIndexer::default()
+            .index(&fixture.file, Some(&field), &[], Seconds(1))
+            .unwrap();
+        let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
+            .with_source_timestamp_field(Some(field))
+            .with_after(journal_common::Microseconds(2_000_000))
+            .with_before(journal_common::Microseconds(3_000_000))
+            .with_limit(10)
+            .build()
+            .unwrap();
+        let rows = index.find_log_entries(&fixture.file, &params).unwrap();
+        let times: Vec<u64> = rows.iter().map(|row| row.timestamp.0).collect();
+        assert_eq!(times, vec![2_000_000], "compact={compact}");
+    }
+}

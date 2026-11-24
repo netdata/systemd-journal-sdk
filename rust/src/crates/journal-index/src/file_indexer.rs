@@ -82,8 +82,9 @@ pub struct FileIndexer {
     /// Configuration limits for the indexing process.
     limits: IndexingLimits,
 
-    // Associates a source timestamp value with its inlined cursor
-    source_timestamp_cursor_pairs: Vec<(Microseconds, InlinedCursor)>,
+    // Associates a source timestamp DATA object offset with its value and
+    // inlined cursor
+    source_timestamp_cursor_pairs: Vec<(NonZeroU64, Microseconds, InlinedCursor)>,
 
     // Scratch buffer to collect entry offsets from the inlined cursor of a
     // source timestamp value, or the global entry offset array
@@ -377,13 +378,14 @@ impl FileIndexer {
         tail_object_offset: NonZeroU64,
     ) -> Result<()> {
         // Create an iterator over all the different values the field can take
-        let field_data_iterator = journal_file.field_data_objects(source_field_name)?;
+        let field_data_iterator =
+            journal_file.field_data_objects_with_offsets(source_field_name)?;
 
         // Collect all the inlined cursors of the source timestamp field
         self.source_timestamp_cursor_pairs.clear();
         for data_object_result in field_data_iterator {
-            let data_object = match data_object_result {
-                Ok(data_object) => data_object,
+            let (data_offset, data_object) = match data_object_result {
+                Ok(item) => item,
                 Err(JournalError::CyclicObjectChain) => {
                     return Err(JournalError::CyclicObjectChain.into());
                 }
@@ -416,13 +418,23 @@ impl FileIndexer {
                 continue;
             };
 
-            self.source_timestamp_cursor_pairs
-                .push((Microseconds(source_timestamp), ic));
+            self.source_timestamp_cursor_pairs.push((
+                data_offset,
+                Microseconds(source_timestamp),
+                ic,
+            ));
         }
 
-        // Collect all the [source_timestamp, entry-offset] pairs
+        // Collect all the [source_timestamp, entry-offset] pairs. An entry
+        // carrying the source field more than once keeps the value with the
+        // lowest DATA offset: entry items are sorted by DATA offset, so this is
+        // the value the query scanner (`get_timestamp_field`) reads first, and
+        // the time order of the index matches the order the scanner sees.
+        self.source_timestamp_cursor_pairs
+            .sort_unstable_by_key(|(data_offset, _, _)| *data_offset);
         self.source_timestamp_entry_offset_pairs.clear();
-        for (ts, ic) in self.source_timestamp_cursor_pairs.iter() {
+        self.entry_offset_index.clear();
+        for (_, ts, ic) in self.source_timestamp_cursor_pairs.iter() {
             self.entry_offsets.clear();
 
             ic.collect_offsets(journal_file, &mut self.entry_offsets)?;
@@ -430,7 +442,9 @@ impl FileIndexer {
             // Postings past the captured tail belong to entries published
             // after this snapshot, like the global array filter below.
             for entry_offset in &self.entry_offsets {
-                if *entry_offset <= tail_object_offset {
+                if *entry_offset <= tail_object_offset
+                    && self.entry_offset_index.insert(*entry_offset, 0).is_none()
+                {
                     self.source_timestamp_entry_offset_pairs
                         .push((*ts, *entry_offset));
                 }
@@ -443,9 +457,9 @@ impl FileIndexer {
         Ok(())
     }
 
-    /// Maps each entry offset to its position in the time-sorted pairs. An
-    /// entry carrying the source field more than once keeps only its earliest
-    /// timestamp, so the histogram counts every entry once.
+    /// Maps each entry offset to its position in the time-sorted pairs and
+    /// keeps the first pair of any entry seen twice, so the histogram counts
+    /// every entry once.
     fn rebuild_entry_offset_index(&mut self) {
         self.entry_offset_index.clear();
         let pairs = &mut self.source_timestamp_entry_offset_pairs;
