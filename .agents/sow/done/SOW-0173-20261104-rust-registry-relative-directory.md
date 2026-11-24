@@ -46,9 +46,10 @@ Inferences:
   registry, as with the equivalent absolute directory.
 - `unwatch_directory` with the same relative string matches the watch and
   removes its files.
-- An absolute directory string is used unchanged (no behavior change for
-  existing callers); an empty directory is refused with an error instead of
-  scanning the working directory.
+- An absolute directory string keeps its keys and paths except for lexical
+  normalization: `.` components and repeated separators are dropped (decision
+  2); an empty directory is refused with an error instead of scanning the
+  working directory.
 - Tests fail without the fix and pass with it.
 
 ## Analysis
@@ -85,9 +86,10 @@ Affected contracts and surfaces:
 - Rust `journal-registry` `Registry::watch_directory` and
   `unwatch_directory` only. No Go surface exists (registry is Rust-only), so
   no parity work is needed.
-- `std::path::absolute` is lexical: absolute input is returned unchanged
-  (probed: `"/x/y/"` and `"/x/../y"` come back as given), so existing
-  absolute callers see identical keys and paths. Empty input fails with
+- `std::path::absolute` is lexical. The original probe (`"/x/y/"` and
+  `"/x/../y"` come back as given) missed that on POSIX it drops `.`
+  components and collapses repeated separators of absolute input too, so
+  `/var/log/./journal` becomes `/var/log/journal` (PR review; decision 2). Empty input fails with
   `InvalidInput`, which maps to `RegistryError::Io`.
 
 Existing patterns to reuse:
@@ -141,6 +143,14 @@ Open decisions:
 1. 2026-11-05, user: option A. The registry resolves a relative directory
    once against the working directory at call time, like the SOW-0172 writer
    fix.
+2. 2026-11-24, user (PR review): keep the lexical normalization of absolute
+   input and document it, instead of keeping absolute input exactly as given
+   as the SOW-0172 log writer now does. Reason: SOW-0174 (decision 2B,
+   overlapping watches) relies on one key per directory and normalizes
+   further; keeping absolute input as given here left files registered after
+   unwatch (the file key is normalized, the watch string was not) and would be
+   reversed by SOW-0174. The registry has no lstat root check, so the
+   `<symlink>/.` problem of the log writer does not apply.
 
 ## Plan
 
@@ -194,6 +204,12 @@ Failure handling:
 - Probe of unwatch with other directory forms found a pre-existing exact-key
   mismatch; tracked as SOW-0174.
 
+### 2026-11-24
+
+- Applied decision 2: corrected the `absolute_directory` comment, this SOW's
+  criterion and outcome, and added `absolute_directory_spellings_share_one_key`.
+  Registry suites pass (14, 3, 1 tests).
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -202,9 +218,11 @@ Acceptance criteria evidence:
   registers the existing `system.journal`, applies notify create, rename and
   remove events, and `unwatch_directory` with the same relative string removes
   what remains.
-- Absolute input unchanged: `std::path::absolute` returns `"/x/y/"` and
-  `"/x/../y"` as given (probe), so keys and paths for absolute callers are
-  identical; all existing workspace tests pass.
+- Absolute input: `"/x/y/"` and `"/x/../y"` come back as given; `.`
+  components and repeated separators are dropped (decision 2).
+  `absolute_directory_spellings_share_one_key` watches `<dir>//.`, registers
+  the file under `<dir>` and unwatches with `<dir>`. All existing workspace
+  tests pass.
 - Empty directory: `empty_directory_is_refused` passes. It also passes
   without the fix (`walkdir` already errored on an empty path), so it guards
   the contract rather than proving the fix.
@@ -288,7 +306,8 @@ Follow-up mapping:
 ## Outcome
 
 `Registry::watch_directory` and `unwatch_directory` accept a relative
-directory, resolved once at call time, and keep absolute input unchanged.
+directory, resolved once at call time, and normalize absolute input lexically
+(`.` components and repeated separators dropped) so each directory has one key.
 
 ## Lessons Extracted
 

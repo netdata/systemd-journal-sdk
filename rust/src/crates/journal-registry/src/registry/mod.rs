@@ -140,8 +140,11 @@ impl Default for Repository {
 // ============================================================================
 
 /// Journal file parsing needs absolute paths, and notify reports paths in the
-/// form they were watched. Resolve once, lexically, so relative directories work
-/// and absolute ones are kept exactly as given.
+/// form they were watched. Resolve once, lexically. On POSIX this also drops `.`
+/// components and collapses repeated separators of absolute paths, so
+/// `/var/log/./journal` and `/var/log//journal` watch `/var/log/journal`. Unlike
+/// the log writer, which keeps absolute directories as given, the registry wants
+/// one key per directory.
 fn absolute_directory(path: &str) -> Result<String> {
     std::path::absolute(path)?
         .into_os_string()
