@@ -39,22 +39,24 @@ Current report filters remove:
 - Rust LCOV: `internal/testcmd/`, `tests/`, `test/`, `tests.rs`,
   `testdata/`, `*_test.rs`, `*_tests.rs`, and `examples/`.
 
-Codacy upload uses the account-token environment supported by Codacy Coverage
-Reporter:
+Codacy upload uses a repository API token (Codacy repository Settings,
+Integrations, Repository API tokens), which is scoped to this repository and
+not tied to a personal account:
 
 ```text
 Required environment:
-- CODACY_API_TOKEN: account API token stored in the shell or CI secret store
-- CODACY_ORGANIZATION_PROVIDER: gh
-- CODACY_USERNAME: netdata
-- CODACY_PROJECT_NAME: systemd-journal-sdk
+- CODACY_PROJECT_TOKEN: repository API token stored in the shell or CI secret store
 ```
+
+`CODACY_API_TOKEN` is a different secret: an account API token used by the
+Codacy SARIF workflow (`.github/workflows/codacy-sarif.yml`) to fetch the
+remote configuration and export cloud issues. The coverage upload ignores it.
 
 ```bash
 tests/coverage/upload_codacy_coverage.sh .local/coverage-artifacts
 ```
 
-The upload helper intentionally skips when `CODACY_API_TOKEN` is absent. This
+The upload helper intentionally skips when `CODACY_PROJECT_TOKEN` is absent. This
 keeps pull requests from forks and local validation tokenless while still making
 the missing secret visible in the workflow summary.
 

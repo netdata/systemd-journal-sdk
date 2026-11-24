@@ -1,6 +1,6 @@
 ---
 name: project-release
-description: "Prepare, publish, verify, or resume a Rust/Go SDK release using this repository's CI and maintainer tag handoff."
+description: "Use when preparing, publishing, tagging, verifying, or resuming a Rust/Go SDK release, including crates.io publication and go/ module tags."
 ---
 # Project Release
 
@@ -9,17 +9,38 @@ and Go module tags at the same selected source commit. A paired release is
 complete after both languages can consume that exact version.
 
 Read [RELEASING.md](../../../RELEASING.md) for the maintained setup, commands
-and recovery procedure. Use
-[project-release-tagging](../project-release-tagging/SKILL.md) for focused
-package, semver and tag rules, and
-[project-agent-orchestration](../project-agent-orchestration/SKILL.md) for SOW
-and review gates. The release contract is in
+and recovery procedure, and `AGENTS.md` for SOW and review gates. The release
+contract is in
 [product-scope.md](../../sow/specs/product-scope.md#paired-ci-releases).
 
 Follow the user's actual request and existing authorization. Preparing a PR
 or editing instructions does not authorize publication or tag pushes. An
 explicit release request can authorize those steps; do not ask again for
 actions already authorized. Loading this skill does not start a release.
+
+Releases are the place where exact procedure is the point: published crates
+and pushed tags cannot be taken back, so follow `RELEASING.md` exactly and stop
+for the user on anything it does not cover.
+
+## Release invariants
+
+- The Go module lives in `go/` (`go/go.mod`:
+  `github.com/netdata/systemd-journal-sdk/go`), so Go only resolves a version
+  from a `go/vX.Y.Z` tag ([Go modules reference](https://go.dev/ref/mod#vcs-version)).
+  Every paired release has annotated `vX.Y.Z` and `go/vX.Y.Z` tags peeling to
+  the same commit, unless the SOW records a deliberate split release.
+- Never move, delete or force-push a pushed release tag. Go proxies and the
+  checksum database cache the first target, so a moved tag breaks consumers.
+- Rust packages are `systemd-journal-sdk` plus the `systemd-journal-sdk-*`
+  internal crates. Publishable internal dependencies need both `package =` and
+  `version =` so Cargo can replace path dependencies with registry ones.
+- Semver: adding a field to a public Rust struct, or a variant to a public
+  enum, breaks downstream exhaustive literals and matches unless the type is
+  `#[non_exhaustive]`. Record the semver decision in the preparation SOW.
+- Before tagging, scan `README.md`, `go/README.md`, `rust/README.md`, `docs/` and
+  `.agents/sow/specs/` for Rust `version = "…"` and Go `@v…` install examples;
+  every active one must name the new version.
+- Never record crates.io tokens or credential details in durable artifacts.
 
 ## Prepare and merge
 

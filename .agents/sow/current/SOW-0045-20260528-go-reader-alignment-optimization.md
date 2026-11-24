@@ -14,9 +14,12 @@ appended entry when the reader was empty or at forward EOF. This SOW owns the
 original refresh implementation and live-reader claim. It is queued/paused
 under the one-active-SOW rule; prerequisite SOW-0108 and SDK SOW-0159 are
 completed, with journalctl SOW-0121 next after the signed SDK commit.
-Do not insert this separate positioning repair into the approved
-SOW-0108 -> SOW-0159 -> SOW-0121 execution chain without a dependency finding
-or a user scheduling decision. Original completion evidence remains below.
+At that time this repair stayed out of the approved
+SOW-0108 -> SOW-0159 -> SOW-0121 execution chain.
+
+2026-10-31: SOW-0108, SOW-0159 and SOW-0121 are all completed, so that
+ordering no longer blocks this SOW. It waits only for activation in the
+user-approved backlog order recorded in `.agents/sow/SOW-status.md`. Original completion evidence remains below.
 
 ## Requirements
 

@@ -2,10 +2,9 @@
 
 ## Status
 
-Status: open
+Status: closed
 
-Sub-state: created on 2026-05-28 as a component integration SOW, blocked by
-SOW-0026 inventory and writer performance gates.
+Sub-state: closed on 2026-10-31 as obsolete. Netdata's OTel backend no longer writes journal files, so there is no OTel journal writer to migrate.
 
 ## Requirements
 
@@ -232,7 +231,7 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Closed as obsolete without implementation. Netdata master checked on 2026-10-31 (`netdata/netdata @ eaeb95f5c4`): `src/crates/otel-plugin/Cargo.toml:23-25` has no journal crate dependency (only `otel-ledger` and `otel-legacy-logs`); OTel logs go through ingestor, WAL and `otel-ledger`. Vendored `journal-log-writer` has no consumer. Removal of the remaining vendored crates is tracked by SOW-0164.
 
 ## Lessons Extracted
 

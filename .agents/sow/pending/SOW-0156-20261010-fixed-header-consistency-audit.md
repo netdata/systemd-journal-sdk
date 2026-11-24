@@ -7,6 +7,11 @@ Status: open
 Sub-state: separate follow-up agreed by the user; not activated by PR #9's
 concrete array-count correction. No implementation is authorized here yet.
 
+2026-10-31: SOW-0155 (writer tail offset representability) merged into this SOW
+by user decision. Its scope, evidence and open questions in
+`.agents/sow/done/SOW-0155-20261009-writer-tail-offset-representability.md`
+are part of this audit.
+
 ## Requirements
 
 ### Purpose

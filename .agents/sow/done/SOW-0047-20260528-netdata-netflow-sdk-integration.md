@@ -63,7 +63,8 @@ Current state:
 
 - NetFlow has been migrated to the published SDK crates at `0.7.0`.
 - The migration is scoped to `netflow-plugin`; other Netdata journal consumers
-  remain tracked by SOW-0048, SOW-0049, and SOW-0050.
+  were tracked at close by SOW-0048, SOW-0049, and SOW-0050 (now SOW-0164; see
+  Follow-up mapping).
 
 Risks:
 
@@ -266,7 +267,8 @@ Same-failure scan:
 - `rg` over `src/crates/netflow-plugin` and `src/crates/Cargo.lock` found the
   expected SDK aliases and no contradictory NetFlow journal dependency path for
   the scoped binary. The scan also showed other Netdata journal consumers are
-  still separate work, as already tracked by SOW-0048, SOW-0049, and SOW-0050.
+  still separate work, tracked at close by SOW-0048, SOW-0049, and SOW-0050
+  (now SOW-0164; see Follow-up mapping).
 
 Sensitive data gate:
 
@@ -315,11 +317,12 @@ Lessons:
 
 Follow-up mapping:
 
-- SOW-0048 remains open for Netdata OTEL writer integration.
-- SOW-0049 remains open for Netdata reader plugin and static packaging
-  integration.
-- SOW-0050 remains open for final vendored journal code removal after all
-  component integrations are complete.
+- At close, SOW-0048 (Netdata OTEL writer integration), SOW-0049 (Netdata
+  reader plugin and static packaging integration) and SOW-0050 (final vendored
+  journal code removal) held the remaining Netdata work.
+- 2026-10-31: SOW-0048 closed as obsolete; SOW-0049 and SOW-0050 closed as
+  superseded by SOW-0164, which now tracks all remaining Netdata integration
+  work.
 
 ## Outcome
 
@@ -328,7 +331,8 @@ Completed.
 NetFlow is integrated with the published SDK crates at `0.7.0` for both writer
 and reader/query paths in the inspected Netdata checkout. This closes the SDK
 ledger item for NetFlow integration. The remaining Netdata integration work is
-still tracked separately by SOW-0048, SOW-0049, and SOW-0050.
+tracked separately by SOW-0164 (successor of SOW-0048, SOW-0049, and
+SOW-0050).
 
 ## Lessons Extracted
 
@@ -337,9 +341,8 @@ still tracked separately by SOW-0048, SOW-0049, and SOW-0050.
 
 ## Followup
 
-- SOW-0048 - Netdata OTEL Writer SDK Integration.
-- SOW-0049 - Netdata Reader Plugin SDK Integration.
-- SOW-0050 - Netdata Vendored Journal Removal.
+- SOW-0164 - remaining Netdata SDK integration (successor of SOW-0048,
+  SOW-0049 and SOW-0050, all closed).
 
 ## Regression Log
 

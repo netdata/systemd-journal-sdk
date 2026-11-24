@@ -124,10 +124,10 @@ Implementation:
 
 Reviewers:
 
-- [External-review authorization or waiver status. When authorized, use the
-  system-wide `external-reviewers` skill; do not copy model or harness details.]
+- [Whole-SOW self-review after local validation; tests are the gate. External
+  reviewers are not used.]
 
-Repository boundary block for every external-reviewer prompt:
+Repository boundary block for every external-agent prompt:
 
 ```text
 CRITICAL REPOSITORY BOUNDARY:
