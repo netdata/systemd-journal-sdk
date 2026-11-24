@@ -167,7 +167,7 @@ func nativeFilterLiveReader(t *testing.T, mode ReaderAccessMode, initial int) (*
 	return w, r, path
 }
 
-func TestNativeFilterIORetryPreservesCapturedPopulation(t *testing.T) {
+func TestNativeFilterIORetryObservesHealthyAppend(t *testing.T) {
 	for _, mode := range []ReaderAccessMode{ReaderAccessMmap, ReaderAccessReadAt} {
 		t.Run(fmt.Sprint(mode), func(t *testing.T) {
 			w, r, _ := nativeFilterLiveReader(t, mode, 2)
@@ -190,8 +190,15 @@ func TestNativeFilterIORetryPreservesCapturedPopulation(t *testing.T) {
 			if got, err := r.GetRealtimeUsec(); err != nil || got != 1001 {
 				t.Fatalf("retry row=%d/%v", got, err)
 			}
+			// Healthy growth stays visible to an installed filter, as in libsystemd.
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("appended row=%v/%v", ok, err)
+			}
+			if got, err := r.GetRealtimeUsec(); err != nil || got != 1002 {
+				t.Fatalf("appended row time=%d/%v", got, err)
+			}
 			if ok, err := r.Step(); err != nil || ok {
-				t.Fatalf("installed population widened=%v/%v", ok, err)
+				t.Fatalf("EOF=%v/%v", ok, err)
 			}
 		})
 	}

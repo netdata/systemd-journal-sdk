@@ -327,10 +327,11 @@ func TestNativeFilterDirectoryCandidateModesAndMutation(t *testing.T) {
 	if ok, err := dr.Step(); err != nil || ok {
 		t.Fatalf("end=%v/%v", ok, err)
 	}
-	if _, err := dr.GetRealtimeUsec(); err == nil {
-		t.Fatal("directory EOF retained a current row")
+	// libsystemd keeps the last returned row current after a failed move.
+	if got, err := dr.GetRealtimeUsec(); err != nil || got != 1003 {
+		t.Fatalf("EOF time=%d/%v, want the last row", got, err)
 	}
-	if ok, err := dr.TestCursor(cursor); !errors.Is(err, ErrEndOfEntries) || ok {
+	if ok, err := dr.TestCursor(cursor); err != nil || !ok {
 		t.Fatalf("EOF cursor=%v/%v", ok, err)
 	}
 }
@@ -630,8 +631,16 @@ func TestNativeFilterNewGroupsObserveHealthyAppend(t *testing.T) {
 							t.Fatalf("no physical growth: %v", err)
 						}
 					}
-					if ok, err := r.Step(); err != nil || ok {
-						t.Fatalf("resolved absent leaf changed=%v/%v", ok, err)
+					// libsystemd resolves DATA on every movement, so a value absent at
+					// install time matches once a healthy append adds it.
+					if ok, err := r.Step(); err != nil || !ok {
+						t.Fatalf("absent leaf after append=%v/%v", ok, err)
+					}
+					if got, err := r.GetRealtimeUsec(); err != nil || got != 1001 {
+						t.Fatalf("absent leaf after append time=%d/%v", got, err)
+					}
+					if err := r.SeekHead(); err != nil {
+						t.Fatal(err)
 					}
 					trace := &filterAccessTrace{readerAccessor: r.accessor, forbidden: map[uint64]bool{r.entryOffsets[0]: true}}
 					r.accessor = trace
@@ -663,15 +672,8 @@ func TestNativeFilterNewGroupsObserveHealthyAppend(t *testing.T) {
 					if err := r.SeekHead(); err != nil {
 						t.Fatal(err)
 					}
-					if got := recoveryTestTimes(t, r, false); !slices.Equal(got, []uint64{1000, 1001}) {
-						t.Fatalf("captured population changed=%v", got)
-					}
-					r.AddMatch([]byte("COMMON=all"))
-					if ok, err := r.Step(); err != nil || !ok {
-						t.Fatalf("replacement existing DATA=%v/%v", ok, err)
-					}
-					if got, err := r.GetRealtimeUsec(); err != nil || got != 1002 {
-						t.Fatalf("replacement time=%d/%v", got, err)
+					if got := recoveryTestTimes(t, r, false); !slices.Equal(got, []uint64{1000, 1001, 1002}) {
+						t.Fatalf("installed population missed append=%v", got)
 					}
 				})
 			}
@@ -744,7 +746,8 @@ func TestNativeFilterGroupVisibilityKeepsRawGrowth(t *testing.T) {
 									r.FlushMatches()
 								}
 								if refresh {
-									if changed, err := r.Refresh(); err != nil || !changed {
+									// The filtered step already refreshed the live population.
+									if changed, err := r.Refresh(); err != nil || changed != failBuild {
 										t.Fatalf("population refresh=%v/%v", changed, err)
 									}
 								}

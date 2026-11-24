@@ -10,8 +10,8 @@ func filterTailFailure(err error) bool {
 	return eligible || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
-// A new group sees current native indexes. Existing compiled leaves keep their
-// captured population; refreshing visibility must not walk every ENTRY.
+// A new group sees current native indexes. Existing compiled leaves refresh on
+// the next filtered movement; refreshing visibility must not walk every ENTRY.
 func (r *Reader) prepareFilterGroup() error {
 	snapshot := r.refreshSnapshot()
 	header, size, err := r.readCurrentHeader()

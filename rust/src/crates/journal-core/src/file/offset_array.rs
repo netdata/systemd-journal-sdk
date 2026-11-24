@@ -402,6 +402,11 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    /// Number of items the cursor's list had when it was resolved.
+    pub(crate) fn list_items(&self) -> usize {
+        self.list.total_items.get()
+    }
+
     pub fn head(&self) -> Self {
         if let Some(chain) = &self.node_chain {
             if let Some(node) = chain.first().copied() {

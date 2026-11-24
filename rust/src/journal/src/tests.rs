@@ -412,4 +412,5 @@ mod facade;
 mod verification;
 
 mod indexed_snapshot;
+mod position_contract;
 mod reader_hardening;

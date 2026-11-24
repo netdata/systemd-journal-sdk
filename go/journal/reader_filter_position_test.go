@@ -65,10 +65,6 @@ func TestDirectoryPositionAfterEntryLoadError(t *testing.T) {
 				for _, filtered := range []bool{false, true} {
 					for _, backward := range []bool{false, true} {
 						for _, merged := range []bool{false, true} {
-							// Unfiltered backward time-search error propagation is tracked in SOW-0045.
-							if merged && backward && !filtered {
-								continue
-							}
 							t.Run(fmt.Sprintf("compact=%v/mode=%d/facade=%v/filter=%v/back=%v/merge=%v", compact, mode, facadeAPI, filtered, backward, merged), func(t *testing.T) {
 								dir := t.TempDir()
 								times := [2][3]uint64{{1000, 2000, 3000}, {4000, 5000, 6000}}

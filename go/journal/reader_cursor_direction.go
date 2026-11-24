@@ -44,6 +44,20 @@ func (r *Reader) seekCursorDirection(want parsedCursorLocation, direction Direct
 	}
 	r.clearRecoveryEOF()
 	r.clearCurrentEntryState()
+	if r.liveRefreshAllowed() {
+		// A cursor seek resolves against the current population, as a step does.
+		grown, err := r.liveEntriesChanged()
+		if err == nil && grown {
+			var changed bool
+			changed, err = r.refreshEntryOffsets()
+			if changed && r.filter != nil {
+				r.filter.stale, r.filter.walkValid = true, false
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
 	if r.filter != nil && r.filter.retry {
 		r.accessor.invalidateCopiedWindows()
 		r.filter.retry = false
@@ -97,7 +111,7 @@ func (r *Reader) seekCursorDirection(want parsedCursorLocation, direction Direct
 			}
 			index = -2
 		}
-		r.entryIndex, r.realtimeSeek = index, nil
+		r.entryIndex, r.realtimeSeek, r.edge = index, nil, edgeNone
 		r.currentHeader, r.currentHeaderOffset, r.currentHeaderValid = hdr, offset, true
 		if r.filter != nil {
 			f := r.filter
@@ -391,6 +405,7 @@ func (dr *DirectoryReader) SeekCursorDirection(cursor string, direction Directio
 	}
 	for {
 		dr.clearDirectoryPosition()
+		dr.boundary = boundaryNone
 		dr.realtimeSeek, dr.realtimeSeekBound = nil, nil
 		dr.resetCandidates()
 		dr.direction, dr.hasDirection, dr.merging = direction, true, true
@@ -465,7 +480,8 @@ func (dr *DirectoryReader) SeekCursorDirection(cursor string, direction Directio
 			dr.bootNewest = buildDirectoryBootNewest(dr.files)
 			continue
 		}
-		dr.index, dr.currentKey = best, &key
+		dr.index, dr.currentKey, dr.boundary = best, &key, boundaryNone
+		dr.rememberKeyPosition()
 		dr.candidates[best] = nil
 		return nil
 	}

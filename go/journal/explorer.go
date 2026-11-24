@@ -2066,6 +2066,7 @@ func (r *Reader) setCurrentEntryOffset(offset uint64, direction Direction) bool 
 	}
 	r.clearCurrentEntryState()
 	r.entryIndex = index
+	r.edge = edgeNone
 	r.realtimeSeek = nil
 	return true
 }
@@ -2323,6 +2324,7 @@ func (r *Reader) seekExplorerForwardHead(query ExplorerQuery) {
 
 func (r *Reader) seekExplorerBackwardRealtime(usec uint64) {
 	r.clearCurrentEntryState()
+	r.edge = edgeNone
 	idx, err := r.firstRealtimeIndexAtOrAfter(usec)
 	if err != nil {
 		r.entryIndex = -1

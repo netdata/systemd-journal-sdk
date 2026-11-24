@@ -33,6 +33,20 @@ func (r *Reader) stepFiltered(direction Direction) (bool, error) {
 		}
 	}
 	f := r.filter
+	if direction == DirectionBackward && r.edge == edgeTail && r.liveRefreshAllowed() {
+		// libsystemd resolves a tail location against the current population.
+		grown, err := r.liveEntriesChanged()
+		if err == nil && grown {
+			var changed bool
+			changed, err = r.refreshEntryOffsets()
+			if changed {
+				f.stale, f.walkValid = true, false
+			}
+		}
+		if err != nil {
+			return false, err
+		}
+	}
 	if f.retry {
 		// Retry with fresh bytes, including any cached by getters after failure.
 		r.accessor.invalidateCopiedWindows()
@@ -73,6 +87,7 @@ func (r *Reader) stepFiltered(direction Direction) (bool, error) {
 			if err == nil {
 				r.clearRecoveryEOF()
 				r.entryIndex = index
+				r.edge = edgeNone
 				f.overrideOffset = value
 				r.currentHeader, r.currentHeaderOffset, r.currentHeaderValid = header, value, true
 				r.realtimeSeek = nil
@@ -90,9 +105,26 @@ func (r *Reader) stepFiltered(direction Direction) (bool, error) {
 				return false, err
 			}
 		}
+		if err == nil && attempt == 0 && direction == DirectionForward && r.edge != edgeTail && r.liveRefreshAllowed() {
+			// libsystemd sees live appends on every movement; rebuild posting
+			// cursors from refreshed native indexes once before reporting EOF.
+			grown, refreshErr := r.liveEntriesChanged()
+			changed := false
+			if refreshErr == nil && grown {
+				changed, refreshErr = r.refreshEntryOffsets()
+			}
+			if refreshErr != nil {
+				return false, refreshErr
+			}
+			if changed {
+				f.stale, f.walkValid = true, false
+				continue
+			}
+		}
 		if attempt != 0 || err == nil && !r.recovery.Incomplete() {
 			if err == nil {
 				r.rememberRecoveryEOF(direction)
+				r.parkFilteredAtEdge(direction)
 			}
 			return false, err
 		}
@@ -103,9 +135,30 @@ func (r *Reader) stepFiltered(direction Direction) (bool, error) {
 		if !changed {
 			if err == nil {
 				r.rememberRecoveryEOF(direction)
+				r.parkFilteredAtEdge(direction)
 			}
 			return false, err
 		}
+	}
+}
+
+func (r *Reader) liveRefreshAllowed() bool {
+	return r.options.Bounds != ReaderBoundsSnapshot && !r.staged
+}
+
+// parkFilteredAtEdge keeps the last returned entry as the location after a
+// filtered movement found nothing, matching the unfiltered position contract.
+func (r *Reader) parkFilteredAtEdge(direction Direction) {
+	if r.edge == edgeTail {
+		return
+	}
+	if _, err := r.locationOffset(); err != nil {
+		return
+	}
+	if direction == DirectionForward {
+		r.edge = edgeAfter
+	} else {
+		r.edge = edgeBefore
 	}
 }
 
@@ -154,19 +207,19 @@ func (r *Reader) filteredOffset(direction Direction) (uint64, error) {
 		}
 		f.walkValid = false
 		return seekFilterRealtime(f.expr, r, r.entryOffsets[index], direction)
-	} else if r.entryIndex < 0 && r.entryIndex != -2 {
-		if direction == DirectionBackward {
-			return 0, nil
-		}
-		reset = true
-	} else if r.entryIndex >= len(r.entryOffsets) {
+	} else if r.edge == edgeTail || r.entryIndex >= len(r.entryOffsets) {
 		if direction == DirectionForward {
 			return 0, nil
 		}
 		needle = ^uint64(0)
 		reset = true
+	} else if r.entryIndex < 0 && r.entryIndex != -2 {
+		if direction == DirectionBackward {
+			return 0, nil
+		}
+		reset = true
 	} else {
-		current, err := r.currentEntryOffset()
+		current, err := r.locationOffset()
 		if err != nil {
 			return 0, err
 		}

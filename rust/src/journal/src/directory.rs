@@ -10,6 +10,10 @@ pub struct DirectoryReader {
     realtime_seek_bound: Option<(u64, Direction)>,
     candidates: Vec<Option<DirectoryCandidate>>,
     current_key: Option<DirectoryEntryKey>,
+    /// File index and entry offset of `current_key`, so a failed move can park
+    /// on it and keep it current as libsystemd does.
+    key_position: Option<(usize, NonZeroU64)>,
+    boundary: DirectoryBoundary,
     direction: Option<Direction>,
     boot_newest: HashMap<[u8; 16], DirectoryBootNewest>,
     unique_cache: HashMap<DirectoryUniqueCacheKey, DirectoryUniqueCacheEntry>,
@@ -20,6 +24,16 @@ pub struct DirectoryReader {
     pub(super) non_overlapping: bool,
     recovery_changed: bool,
     merging: bool,
+}
+
+/// A head or tail location that has no entry key yet. libsystemd keeps such a
+/// location across failed moves: previous at the head and next at the tail
+/// return nothing, even after live appends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectoryBoundary {
+    Head,
+    Tail,
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -163,6 +177,8 @@ impl DirectoryReader {
             realtime_seek_bound: None,
             candidates,
             current_key: None,
+            key_position: None,
+            boundary: DirectoryBoundary::Head,
             direction: None,
             boot_newest,
             unique_cache: HashMap::new(),
@@ -178,6 +194,7 @@ impl DirectoryReader {
 
     pub fn seek_head(&mut self) {
         self.merging = false;
+        self.boundary = DirectoryBoundary::Head;
         self.pending_realtime_seek = None;
         self.realtime_seek_bound = None;
         self.index = usize::MAX;
@@ -191,6 +208,7 @@ impl DirectoryReader {
 
     pub fn seek_tail(&mut self) {
         self.merging = false;
+        self.boundary = DirectoryBoundary::Tail;
         self.pending_realtime_seek = None;
         self.realtime_seek_bound = None;
         self.index = usize::MAX;
@@ -204,6 +222,7 @@ impl DirectoryReader {
 
     pub fn seek_realtime(&mut self, usec: u64) {
         self.merging = false;
+        self.boundary = DirectoryBoundary::None;
         self.pending_realtime_seek = Some(usec);
         self.realtime_seek_bound = None;
         self.index = usize::MAX;
@@ -253,6 +272,13 @@ impl DirectoryReader {
     }
 
     fn step_merged_inner(&mut self, direction: Direction) -> Result<bool> {
+        if matches!(
+            (self.boundary, direction),
+            (DirectoryBoundary::Head, Direction::Backward)
+                | (DirectoryBoundary::Tail, Direction::Forward)
+        ) {
+            return Ok(false);
+        }
         if self.can_step_sequential(direction) {
             return self.step_sequential(direction);
         }
@@ -286,13 +312,15 @@ impl DirectoryReader {
             }
 
             let Some(best) = best else {
-                self.index = usize::MAX;
                 self.realtime_seek_bound = None;
+                self.park_on_current_key();
                 return Ok(false);
             };
 
             self.index = best.reader_index;
             self.current_key = Some(best.key);
+            self.remember_key_position();
+            self.boundary = DirectoryBoundary::None;
             self.candidates[best.reader_index] = None;
             self.realtime_seek_bound = None;
             return Ok(true);
@@ -555,6 +583,7 @@ impl DirectoryReader {
         loop {
             self.index = self.files.len();
             self.current_key = None;
+            self.boundary = DirectoryBoundary::None;
             self.pending_realtime_seek = None;
             self.realtime_seek_bound = None;
             self.reset_candidates();
@@ -642,6 +671,7 @@ impl DirectoryReader {
             }
             self.index = best;
             self.current_key = Some(key);
+            self.remember_key_position();
             self.candidates[best] = None;
             return Ok(());
         }
@@ -939,6 +969,7 @@ impl DirectoryReader {
         self.merging = false;
         self.index = usize::MAX;
         self.current_key = None;
+        self.boundary = DirectoryBoundary::Head;
         self.direction = None;
         self.realtime_seek_bound = None;
         self.reset_candidates();
@@ -1004,6 +1035,8 @@ impl DirectoryReader {
             }
             if advanced {
                 self.current_key = Some(self.files[self.index].current_directory_entry_key()?);
+                self.remember_key_position();
+                self.boundary = DirectoryBoundary::None;
                 return Ok(true);
             }
             self.index += 1;
@@ -1023,6 +1056,8 @@ impl DirectoryReader {
             }
             if advanced {
                 self.current_key = Some(self.files[self.index].current_directory_entry_key()?);
+                self.remember_key_position();
+                self.boundary = DirectoryBoundary::None;
                 return Ok(true);
             }
             if self.index == 0 {
@@ -1034,15 +1069,46 @@ impl DirectoryReader {
     }
 
     fn finish_sequential_end(&mut self) -> Result<bool> {
-        self.index = usize::MAX;
-        if !self
-            .files
-            .first()
-            .is_some_and(|reader| reader.inner.with_reader(|reader| reader.has_filter()))
-        {
-            self.current_key = None;
-        }
+        // The last returned key stays the location and current entry, as in
+        // libsystemd, so reversing after EOF continues from it.
+        self.park_on_current_key();
         Ok(false)
+    }
+
+    fn remember_key_position(&mut self) {
+        self.key_position = self.files[self.index]
+            .inner
+            .with_reader(|reader| reader.get_entry_offset().ok())
+            .map(|offset| (self.index, offset));
+    }
+
+    /// Leaves the reader of `current_key` on that entry after a failed move,
+    /// or reports no current entry when it cannot be restored.
+    fn park_on_current_key(&mut self) {
+        self.index = usize::MAX;
+        let (Some(key), Some((index, offset))) = (self.current_key, self.key_position) else {
+            return;
+        };
+        let Some(reader) = self.files.get_mut(index) else {
+            return;
+        };
+        if reader.current_directory_entry_key().ok() != Some(key) {
+            reader
+                .inner
+                .with_reader_mut(|reader| reader.release_object_guards());
+            reader
+                .inner
+                .with_file(|file| reader.row.clear_current_best_effort(file));
+            reader
+                .inner
+                .with_reader_mut(|reader| reader.set_location(Location::ResolvedEntry(offset)));
+            if reader.current_directory_entry_key().ok() != Some(key) {
+                return;
+            }
+        }
+        self.index = index;
+        // The parked reader no longer owns the prefetched candidate.
+        self.candidates[index] = None;
     }
 
     fn clear_current_directory_entry(&mut self) {
