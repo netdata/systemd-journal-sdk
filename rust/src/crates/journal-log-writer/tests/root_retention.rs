@@ -1000,3 +1000,28 @@ fn root_retention_with_relative_root_prunes() {
     assert_eq!(inspect(dir.path()).files.len(), 2);
     log.close_without_retention().unwrap();
 }
+
+/// An absolute root is used exactly as given. `<symlink>/.` passes the root
+/// lstat check, as in Go; normalizing it to `<symlink>` would refuse it.
+#[cfg(unix)]
+#[test]
+fn root_retention_with_symlink_dot_root_prunes() {
+    let dir = TempDir::new().unwrap();
+    let real = dir.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let link = dir.path().join("current");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let root = link.join(".");
+    let t = micros(SystemTime::now());
+    let a = fixture(&real, 21, &[t], false);
+    let b = fixture(&real, 22, &[t], false);
+    let mut log = Log::new(&root, config()).unwrap();
+    append(&mut log, SystemTime::now(), true);
+    log.set_root_retention_policy(RetentionPolicy::default().with_number_of_journal_files(2))
+        .unwrap();
+    log.maintain_root_retention(SystemTime::now()).unwrap();
+    assert!(!a.exists());
+    assert!(b.exists());
+    assert_eq!(inspect(&real).files.len(), 2);
+    log.close_without_retention().unwrap();
+}
