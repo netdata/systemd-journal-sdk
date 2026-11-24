@@ -92,3 +92,31 @@ fn empty_directory_is_refused() {
     assert!(registry.watch_directory("").is_err());
     assert!(registered(&registry).is_empty());
 }
+
+/// An absolute directory is normalized lexically (`.` components and repeated
+/// separators dropped), so differently spelled forms share one watch key.
+#[cfg(unix)]
+#[test]
+fn absolute_directory_spellings_share_one_key() {
+    let dir = TempDir::new().unwrap();
+    let machine_dir = dir.path().join(MACHINE);
+    std::fs::create_dir(&machine_dir).unwrap();
+    let existing = machine_dir.join("system.journal");
+    std::fs::write(&existing, b"").unwrap();
+    let plain = dir.path().to_str().unwrap();
+    let spelled = format!("{plain}//.");
+
+    let (monitor, _events) = Monitor::new().unwrap();
+    let registry = Registry::new(monitor);
+    registry.watch_directory(&spelled).unwrap();
+    let paths: Vec<String> = registry
+        .find_files_in_range(Seconds(0), Seconds(u32::MAX))
+        .unwrap()
+        .into_iter()
+        .map(|info| info.file.path().to_owned())
+        .collect();
+    assert_eq!(paths, vec![existing.to_str().unwrap().to_owned()]);
+
+    registry.unwatch_directory(plain).unwrap();
+    assert!(registered(&registry).is_empty());
+}
