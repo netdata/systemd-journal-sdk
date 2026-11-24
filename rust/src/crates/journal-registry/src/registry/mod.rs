@@ -139,8 +139,10 @@ impl Default for Repository {
 // ============================================================================
 
 /// Journal file parsing needs absolute paths, and notify reports paths in the
-/// form they were watched. Resolve once, lexically, and drop trailing and
-/// repeated separators so each directory has a single key.
+/// form they were watched. Resolve once, lexically, and drop `.` components and
+/// trailing and repeated separators, so each directory has a single key. Unlike
+/// the log writer, which keeps absolute directories as given, the registry needs
+/// one key per directory for overlapping watches.
 fn absolute_directory(path: &str) -> Result<String> {
     std::path::absolute(path)?
         .components()
