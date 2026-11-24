@@ -33,8 +33,9 @@ single-writer objects; callers must serialize method calls on one instance.
 Both languages accept a relative directory and refuse an empty one. Rust
 resolves a relative directory once, when the writer is created, by lexical
 join with the working directory (no symlink resolution), and its path
-accessors return absolute paths. Go keeps the path as given, so it follows
-later changes of the process working directory.
+accessors return absolute paths. An absolute directory is used exactly as
+given in both languages. Go keeps the path as given, so it follows later
+changes of the process working directory.
 
 By default, directory writers sync each archived journal file on the caller path
 during rotation, explicit close, and stale-active startup archive. Rust exposes

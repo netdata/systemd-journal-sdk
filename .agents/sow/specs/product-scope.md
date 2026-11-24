@@ -555,7 +555,8 @@ Current Go writer feature slice:
   ID, boot ID, and source prefix;
 - both directory writers accept a relative directory and refuse an empty one.
   Rust resolves it lexically once at construction (no symlink resolution) and
-  its path accessors return absolute paths; Go keeps it as given, so the OS
+  its path accessors return absolute paths, while an absolute directory is used
+  exactly as given; Go keeps it as given, so the OS
   resolves it against the working directory at each file operation;
 - high-level Go lifecycle callbacks report created, rotated, and
   retention-deleted journal paths; artifact-size callbacks include
