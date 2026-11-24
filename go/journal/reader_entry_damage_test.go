@@ -25,25 +25,10 @@ func TestDamagedDataObjectCostsTheFieldNotTheEntry(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "damage.journal")
-			w, err := Create(path, testOptions())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := w.AppendMapWithOptions(map[string]string{"MESSAGE": "kept", "BROKEN": "1"}, testEntryOptions(1)); err != nil {
-				t.Fatal(err)
-			}
-			if err := w.Close(); err != nil {
-				t.Fatal(err)
-			}
-			data := readFileForTest(t, path)
-			at := bytes.Index(data, []byte("BROKEN=1"))
-			if at < 0 {
-				t.Fatal("payload not in file")
-			}
-			c.patch(data, at)
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				t.Fatal(err)
+			path := writeDamagedDataJournal(t, c.patch)
+			want := 1
+			if c.payloadKept {
+				want = 2
 			}
 
 			j, err := SdJournalOpenFiles([]string{path}, 0)
@@ -64,54 +49,85 @@ func TestDamagedDataObjectCostsTheFieldNotTheEntry(t *testing.T) {
 			if _, ok := entry.Fields["BROKEN"]; ok {
 				t.Fatal("damaged field was returned")
 			}
-			want := 1
-			if c.payloadKept {
-				want = 2
-			}
 			if len(entry.Payloads) != want {
 				t.Fatalf("payloads = %d, want %d", len(entry.Payloads), want)
 			}
-			assertDamagedPayloads := func(api string, got [][]byte) {
-				t.Helper()
-				kept := false
-				for _, payload := range got {
-					kept = kept || bytes.Equal(payload, []byte("MESSAGE=kept"))
-					if bytes.HasPrefix(payload, []byte("BROKEN=")) {
-						t.Fatalf("%s returned the damaged field: %q", api, got)
-					}
-				}
-				if len(got) != want || !kept {
-					t.Fatalf("%s payloads = %q", api, got)
-				}
-			}
-			assertDamagedPayloads("GetEntry", entry.Payloads)
+			assertDamagedPayloads(t, "GetEntry", entry.Payloads, want)
 
-			r, err := OpenFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer r.Close()
-			if ok, err := r.Step(); err != nil || !ok {
-				t.Fatalf("step = %v, %v", ok, err)
-			}
-			collected, err := r.CollectEntryPayloads()
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertDamagedPayloads("CollectEntryPayloads", collected)
-			var enumerated [][]byte
-			for {
-				payload, ok, err := r.EnumerateEntryPayload()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !ok {
-					break
-				}
-				enumerated = append(enumerated, bytes.Clone(payload))
-			}
-			assertDamagedPayloads("EnumerateEntryPayload", enumerated)
+			collected, enumerated := readDamagedPayloads(t, path)
+			assertDamagedPayloads(t, "CollectEntryPayloads", collected, want)
+			assertDamagedPayloads(t, "EnumerateEntryPayload", enumerated, want)
 		})
+	}
+}
+
+// writeDamagedDataJournal writes one entry and applies patch to its BROKEN=1
+// DATA payload.
+func writeDamagedDataJournal(t *testing.T, patch func([]byte, int)) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "damage.journal")
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AppendMapWithOptions(map[string]string{"MESSAGE": "kept", "BROKEN": "1"}, testEntryOptions(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := readFileForTest(t, path)
+	at := bytes.Index(data, []byte("BROKEN=1"))
+	if at < 0 {
+		t.Fatal("payload not in file")
+	}
+	patch(data, at)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// readDamagedPayloads returns the first entry's payloads through the
+// collecting and the enumerating reader APIs.
+func readDamagedPayloads(t *testing.T, path string) (collected, enumerated [][]byte) {
+	t.Helper()
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if ok, err := r.Step(); err != nil || !ok {
+		t.Fatalf("step = %v, %v", ok, err)
+	}
+	collected, err = r.CollectEntryPayloads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		payload, ok, err := r.EnumerateEntryPayload()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+		enumerated = append(enumerated, bytes.Clone(payload))
+	}
+	return collected, enumerated
+}
+
+func assertDamagedPayloads(t *testing.T, api string, got [][]byte, want int) {
+	t.Helper()
+	kept := false
+	for _, payload := range got {
+		kept = kept || bytes.Equal(payload, []byte("MESSAGE=kept"))
+		if bytes.HasPrefix(payload, []byte("BROKEN=")) {
+			t.Fatalf("%s returned the damaged field: %q", api, got)
+		}
+	}
+	if len(got) != want || !kept {
+		t.Fatalf("%s payloads = %q", api, got)
 	}
 }
 
