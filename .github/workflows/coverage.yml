@@ -19,9 +19,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CODACY_ORGANIZATION_PROVIDER: gh
-  CODACY_USERNAME: netdata
-  CODACY_PROJECT_NAME: systemd-journal-sdk
   CODACY_REPORTER_VERSION: "14.1.3"
 
 jobs:
@@ -113,7 +110,7 @@ jobs:
 
       - name: Upload coverage
         env:
-          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
         run: tests/coverage/upload_codacy_coverage.sh
 
       - name: Write coverage summary
@@ -121,11 +118,11 @@ jobs:
           {
             echo "## Coverage"
             echo
-            if [ -n "${CODACY_API_TOKEN:-}" ]; then
+            if [ -n "${CODACY_PROJECT_TOKEN:-}" ]; then
               echo "Coverage reports were uploaded to Codacy."
             else
-              echo "Coverage reports were generated, but Codacy upload was skipped because \`CODACY_API_TOKEN\` is not configured for this run."
+              echo "Coverage reports were generated, but Codacy upload was skipped because \`CODACY_PROJECT_TOKEN\` is not configured for this run."
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
         env:
-          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}

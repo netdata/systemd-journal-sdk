@@ -14,14 +14,16 @@ COVERAGE_ROOT=${1:-"${ROOT}/.local/coverage-artifacts"}
 GO_REPORT="${COVERAGE_ROOT}/coverage-go/coverage.out"
 RUST_REPORT="${COVERAGE_ROOT}/coverage-rust/lcov.info"
 
-if [ -z "${CODACY_API_TOKEN:-}" ]; then
-  printf >&2 '%b[SKIP]%b CODACY_API_TOKEN is not set; coverage upload skipped.\n' "${YELLOW}" "${NC}"
+if [ -z "${CODACY_PROJECT_TOKEN:-}" ]; then
+  printf >&2 '%b[SKIP]%b CODACY_PROJECT_TOKEN is not set; coverage upload skipped.\n' "${YELLOW}" "${NC}"
   exit 0
 fi
 
-export CODACY_ORGANIZATION_PROVIDER="${CODACY_ORGANIZATION_PROVIDER:-gh}"
-export CODACY_USERNAME="${CODACY_USERNAME:-netdata}"
-export CODACY_PROJECT_NAME="${CODACY_PROJECT_NAME:-systemd-journal-sdk}"
+# Upload with the repository token only. The reporter switches to account-token
+# mode when these are set, and an account token from the environment would be
+# sent in place of the repository token.
+unset CODACY_API_TOKEN CODACY_ORGANIZATION_PROVIDER CODACY_USERNAME CODACY_PROJECT_NAME
+export CODACY_PROJECT_TOKEN
 export CODACY_REPORTER_VERSION="${CODACY_REPORTER_VERSION:-14.1.3}"
 export CODACY_REPORTER_TMP_FOLDER="${CODACY_REPORTER_TMP_FOLDER:-${ROOT}/.local/codacy/coverage-reporter}"
 

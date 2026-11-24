@@ -217,6 +217,17 @@ Selected: account-token upload using `CODACY_API_TOKEN`,
 Implication: the GitHub repository needs a `CODACY_API_TOKEN` secret with
 coverage-upload rights. Token values remain out of durable artifacts.
 
+Revised 2026-11-24 (user): upload with a repository API token from the
+`CODACY_PROJECT_TOKEN` secret; the organization, username and project-name
+settings are removed. Reason: the account token had "No Write permission on
+Project", and a repository token stored as `CODACY_API_TOKEN` failed both the
+upload ("Request URL not found", the reporter's text for any "not found"
+reply) and the Codacy SARIF workflow, which needs an account token for
+`codacy-analysis init --remote` ("Error: Unauthorized" on `master` since
+2026-11-16). `CODACY_API_TOKEN` stays an account token for the SARIF workflow
+only. The upload script unsets the account-token variables so the reporter
+cannot fall back to account-token mode.
+
 1. Coverage scope
 
 Selected: Rust, Go, Python, and Node.js.
