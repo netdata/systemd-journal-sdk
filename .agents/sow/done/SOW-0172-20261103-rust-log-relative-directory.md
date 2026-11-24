@@ -143,6 +143,16 @@ Open decisions:
 ## Implications And Decisions
 
 1. 2026-11-04, user: option A.
+2. 2026-11-24, user (PR review): absolute directories are kept exactly as
+   given and only relative ones go through `std::path::absolute`. Reason: on
+   POSIX `std::path::absolute` also drops `.` components and collapses
+   repeated separators, so `/a//b/./c` became `/a/b/c`, which broke the
+   "existing absolute-path behavior is unchanged" criterion. Visible effect:
+   a root spelled `<symlink>/.` passed the root-retention lstat check
+   (`root_retention.rs`) before this SOW and was refused after it ("root is
+   not a directory"), while Go (`os.Lstat(dir)` on the path as given) still
+   accepted it. Rejected: keeping the normalization and documenting it, which
+   keeps that Go/Rust difference.
 
 ## Plan
 
@@ -200,6 +210,12 @@ Failure handling:
 - Doc wording first said Go resolves at construction; corrected before close
   (Go keeps the path and the OS resolves it per operation).
 
+### 2026-11-24
+
+- Applied decision 2 in `Log::new_inner`; docs and `product-scope.md` now say
+  an absolute directory is used exactly as given. `journal-log-writer` suites
+  pass (70, 28, 21, 6, 1 tests).
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -211,9 +227,11 @@ Acceptance criteria evidence:
   deletes the oldest of two archived fixtures under a 2-file count policy.
 - Empty directory: Rust returns `InvalidPath` at construction; Go returns an
   error (existing `validateNewLogConfig` check).
-- Absolute paths unchanged: existing Rust and Go tests pass.
-  `std::path::absolute` does not resolve symlinks; its component handling is
-  platform-specific and may keep `..`.
+- Absolute paths unchanged: since decision 2 an absolute directory skips
+  `std::path::absolute` entirely. `root_retention_with_symlink_dot_root_prunes`
+  uses a `<symlink>/.` root; without decision 2 it fails with "root is not a
+  directory", with it the root prunes as in Go. Existing Rust and Go tests
+  pass.
 
 Tests or equivalent validation:
 

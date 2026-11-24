@@ -190,6 +190,16 @@ not affected.
    DATA before `n_entries` advanced). Rejecting such files would make them
    unindexable. Generation 5 stays: it is unreleased, and the change only
    turns former failures into indexes, which are never cached as failures.
+6. 2026-11-24 (user, PR review): decision 3 is revised. An entry with the
+   source field more than once keeps the value with the lowest DATA offset,
+   not the earliest. Reason: the query scanner (`get_timestamp_field`,
+   `file_index.rs`) reads the first matching payload in entry-item order, and
+   items are sorted by DATA offset, so an index sorted by the earliest value
+   disagreed with the scanner and a bounded forward scan could stop early and
+   lose rows. Alternatives rejected: the scanner taking the minimum (reads
+   every item of every scanned entry, a per-query cost) and storing per-entry
+   timestamps in the index (memory and a larger change). Generation 5 stays:
+   it is still unreleased.
 
 Cost: the healthy path adds one comparison per source posting, one counter
 per global entry and no extra lookups (the deduplicating insert replaces the
@@ -251,6 +261,16 @@ Failure handling:
   `unindexed-inline` mutation now expects a 14-entry index on archived files,
   for both the source and requested-field paths.
 
+### 2026-11-24
+
+- Applied decision 6: `collect_source_field_info` walks the source DATA chain
+  with offsets, orders the values by DATA offset and keeps the first value per
+  entry. Index cost: one sort of the distinct source values and one hash
+  insert per posting; the query path is unchanged.
+- `repeated_source_field_uses_the_value_the_scanner_reads` (regular and
+  compact) is the reviewer's case: A carries 3s then 1s, B carries 2s, and a
+  forward scan over [2s, 3s) must return B. It returned no rows before the fix.
+
 ## Validation
 
 - All 5 new tests failed on the original indexer (16, 15, 5 records, accepted
@@ -260,6 +280,9 @@ Failure handling:
 - `cargo test --workspace`: 46 suites pass, including `journal-engine`
   `index_integrity` and the existing `array_integrity` source cases.
 - Clippy: no warning in the changed files.
+- Decision 6: the new test fails on the earliest-value indexer (`[]`, B lost)
+  and passes after the fix; `source_postings` 5/5 and the index and engine
+  suites pass.
 - Same-failure search: the only other consumer of DATA postings in the
   indexer is `collect_data_entry_indices`, fixed the same way. The engine
   consumes `FileIndex` only.
