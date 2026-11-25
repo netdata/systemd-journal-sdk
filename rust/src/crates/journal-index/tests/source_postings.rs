@@ -2,7 +2,7 @@
 //! as the global entry array (SOW-0161).
 
 use journal_common::Seconds;
-use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
+use journal_core::file::{Compression, JournalFile, JournalFileOptions, JournalWriter, MmapMut};
 use journal_core::repository::File;
 use journal_index::{FieldName, FileIndexer};
 use uuid::Uuid;
@@ -40,6 +40,14 @@ impl Fixture {
     }
 
     fn with_name(compact: bool, rows: u64, name: &str) -> Self {
+        Self::with_options(rows, name, |options| options.with_compact(compact))
+    }
+
+    fn with_options(
+        rows: u64,
+        name: &str,
+        configure: impl FnOnce(JournalFileOptions) -> JournalFileOptions,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join(Uuid::from_u128(1).simple().to_string());
         std::fs::create_dir_all(&directory).unwrap();
@@ -47,8 +55,11 @@ impl Fixture {
         let file = File::from_path(&path).unwrap();
         let mut journal = JournalFile::<MmapMut>::create(
             &file,
-            JournalFileOptions::new(Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3))
-                .with_compact(compact),
+            configure(JournalFileOptions::new(
+                Uuid::from_u128(1),
+                Uuid::from_u128(2),
+                Uuid::from_u128(3),
+            )),
         )
         .unwrap();
         let writer = JournalWriter::new(&mut journal, 1, Uuid::from_u128(2)).unwrap();
@@ -224,5 +235,117 @@ fn repeated_source_field_uses_the_value_the_scanner_reads() {
         let rows = index.find_log_entries(&fixture.file, &params).unwrap();
         let times: Vec<u64> = rows.iter().map(|row| row.timestamp.0).collect();
         assert_eq!(times, vec![2_000_000], "compact={compact}");
+    }
+}
+
+/// Finds the item of the first ENTRY object that references `data`.
+fn find_entry_item(bytes: &[u8], compact: bool, data: usize) -> usize {
+    let item_size = if compact { 4 } else { 16 };
+    let mut object = read_u64(bytes, 88) as usize;
+    loop {
+        let size = read_u64(bytes, object + 8) as usize;
+        if bytes[object] == 3 {
+            let mut item = object + 64;
+            while item < object + size {
+                let offset = if compact {
+                    u32::from_le_bytes(bytes[item..item + 4].try_into().unwrap()) as usize
+                } else {
+                    read_u64(bytes, item) as usize
+                };
+                if offset == data {
+                    return item;
+                }
+                item += item_size;
+            }
+        }
+        object += (size + 7) & !7;
+        assert!(object < bytes.len(), "missing ENTRY item");
+    }
+}
+
+fn source_query_times(fixture: &Fixture, after: u64, before: u64) -> Vec<u64> {
+    use journal_index::{Anchor, Direction, LogQueryParamsBuilder};
+
+    let field = FieldName::new_unchecked("SOURCE_TIMESTAMP".to_owned());
+    let index = FileIndexer::default()
+        .index(&fixture.file, Some(&field), &[], Seconds(1))
+        .unwrap();
+    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
+        .with_source_timestamp_field(Some(field))
+        .with_after(journal_common::Microseconds(after))
+        .with_before(journal_common::Microseconds(before))
+        .with_limit(10)
+        .build()
+        .unwrap();
+    let rows = index.find_log_entries(&fixture.file, &params).unwrap();
+    rows.iter().map(|row| row.timestamp.0).collect()
+}
+
+/// journald's flush (`journal_file_copy_entry`) keeps the source entry's item
+/// order, so a repeated field's first item need not have the lowest DATA
+/// offset. The index must still use the value the scanner reads first.
+#[test]
+fn repeated_source_field_follows_unsorted_entry_items() {
+    for compact in [false, true] {
+        let mut fixture = Fixture::new(compact, 0);
+        fixture.append(
+            1..=1,
+            &[
+                b"MESSAGE=row",
+                b"SOURCE_TIMESTAMP=3000000",
+                b"SOURCE_TIMESTAMP=1000000",
+            ],
+        );
+        fixture.append(2..=2, &[b"MESSAGE=row", SOURCE]);
+        let fixture = fixture.close();
+
+        // Swap the two source items, so the higher DATA offset comes first.
+        let mut bytes = fixture.bytes();
+        let late = find_data(&bytes, compact, b"SOURCE_TIMESTAMP=3000000");
+        let early = find_data(&bytes, compact, b"SOURCE_TIMESTAMP=1000000");
+        let first = find_entry_item(&bytes, compact, late);
+        let second = find_entry_item(&bytes, compact, early);
+        let item_size = if compact { 4 } else { 16 };
+        let saved = bytes[first..first + item_size].to_vec();
+        bytes.copy_within(second..second + item_size, first);
+        bytes[second..second + item_size].copy_from_slice(&saved);
+        std::fs::write(&fixture.path, bytes).unwrap();
+
+        assert_eq!(
+            source_query_times(&fixture, 0, 2_500_000),
+            vec![1_000_000, 2_000_000],
+            "compact={compact}"
+        );
+    }
+}
+
+/// The scanner decompresses source timestamps, so the index must too.
+#[test]
+fn compressed_source_timestamp_is_indexed_by_its_value() {
+    let padded = format!("SOURCE_TIMESTAMP={}3000000", "0".repeat(600));
+    for compression in [Compression::Zstd, Compression::Lz4, Compression::Xz] {
+        // The writer compresses payloads of 512 bytes or more.
+        let mut fixture = Fixture::with_options(0, "system.journal", |options| {
+            options.with_compression(compression)
+        });
+        // Row 1 (realtime 1s) has source 4s; row 5 (realtime 5s) has the
+        // compressed source 3s. Indexed by its realtime instead, row 5 would
+        // sort after row 1 and the scan would stop at 4s before reaching it.
+        fixture.append(1..=1, &[b"MESSAGE=row", b"SOURCE_TIMESTAMP=4000000"]);
+        fixture.append(5..=5, &[b"MESSAGE=row", padded.as_bytes()]);
+        let fixture = fixture.close();
+        let bytes = fixture.bytes();
+        assert!(
+            !bytes
+                .windows(padded.len())
+                .any(|window| window == padded.as_bytes()),
+            "{compression:?}: the padded source timestamp was stored uncompressed"
+        );
+
+        assert_eq!(
+            source_query_times(&fixture, 2_500_000, 3_500_000),
+            vec![3_000_000],
+            "{compression:?}"
+        );
     }
 }

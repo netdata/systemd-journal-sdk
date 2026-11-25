@@ -200,6 +200,21 @@ not affected.
    every item of every scanned entry, a per-query cost) and storing per-entry
    timestamps in the index (memory and a larger change). Generation 5 stays:
    it is still unreleased.
+7. 2026-11-25 (user, PR review): decision 6 is revised. An entry with the
+   source field more than once keeps the first matching value in the entry's
+   own item order, exactly what `get_timestamp_field` reads. Reason: journald
+   flushes `/run` to `/var` with `journal_file_copy_entry`
+   (systemd/systemd @ v260.1 `src/libsystemd/sd-journal/journal-file.c:4430`,
+   called from `src/journal/journald-manager.c:1355,1383`), which appends the
+   source entry's items without re-sorting while DATA already in the target
+   keeps its older offset, so "lowest DATA offset" and "first item" can
+   differ. Only entries that carry the field twice read their item list.
+   Alternative rejected: keeping decision 6 and documenting that flushed files
+   can disagree (a known wrong-results case on real journald files). The same
+   review found that a compressed source timestamp was parsed raw by the
+   indexer (`parse_timestamp` uses `raw_payload()`), falling back to realtime
+   while the scanner decompresses it; the indexer now decompresses it.
+   Generation 5 stays: it is still unreleased.
 
 Cost: the healthy path adds one comparison per source posting, one counter
 per global entry and no extra lookups (the deduplicating insert replaces the
@@ -271,6 +286,19 @@ Failure handling:
   compact) is the reviewer's case: A carries 3s then 1s, B carries 2s, and a
   forward scan over [2s, 3s) must return B. It returned no rows before the fix.
 
+### 2026-11-25
+
+- Applied decision 7: `collect_source_field_info` keeps the first value per
+  entry and, when a second value for the same entry appears, compares the two
+  DATA offsets in the entry's item list (`precedes_in_entry`). A compressed
+  source value is decompressed before parsing; a value that cannot be
+  decompressed is skipped like an unparsable one.
+- `repeated_source_field_follows_unsorted_entry_items` (regular and compact)
+  swaps the two source items of an entry, as a flushed file can order them,
+  and expects the scanner's value. `compressed_source_timestamp_is_indexed_by_its_value`
+  (zstd, lz4, xz) stores a compressed source value whose realtime would sort
+  it after a later row.
+
 ## Validation
 
 - All 5 new tests failed on the original indexer (16, 15, 5 records, accepted
@@ -283,6 +311,9 @@ Failure handling:
 - Decision 6: the new test fails on the earliest-value indexer (`[]`, B lost)
   and passes after the fix; `source_postings` 5/5 and the index and engine
   suites pass.
+- Decision 7: both new tests fail on the decision 6 indexer (`[]` for each)
+  and pass after the fix; `source_postings` 7/7 and `cargo test --workspace`
+  (46 suites) pass. Clippy reports nothing in the changed files.
 - Same-failure search: the only other consumer of DATA postings in the
   indexer is `collect_data_entry_indices`, fixed the same way. The engine
   consumes `FileIndex` only.
