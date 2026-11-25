@@ -36,8 +36,9 @@ Facts:
   directly, registers 1 file, and `unwatch_directory` with the same string
   returns `Ok` and leaves that 1 file registered. Its notify watch is gone,
   so the stale entry is never updated again.
-- The behavior predates SOW-0173: `std::path::absolute` returns absolute
-  input unchanged, including a trailing slash.
+- The behavior predates SOW-0173: `std::path::absolute` keeps a trailing
+  slash of absolute input. It drops `.` components and repeated separators,
+  which SOW-0173 documents, but not the trailing slash.
 - In-repo callers never call `unwatch_directory` outside tests. The registry
   is Rust-only, so there is no Go parity gap.
 
