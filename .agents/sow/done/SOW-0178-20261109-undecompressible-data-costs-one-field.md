@@ -352,9 +352,15 @@ Decisions (user, 2026-11-25):
   it as no match. `read_payload_field` skips it too. Alternative rejected:
   recording these paths as strict, which contradicts systemd and Go.
 - 3A: an lz4 size prefix larger than the compressed length times 255, lz4's
-  maximum expansion, is rejected before allocating, in Go and both Rust
-  copies. It can never reject a valid object. Alternative rejected: keeping
-  the systemd-equivalent allocation.
+  maximum expansion, is rejected before allocating, in Go and Rust. It can
+  never reject a valid object. Alternative rejected: keeping the
+  systemd-equivalent allocation.
+- 2026-11-25 (user), scope of 3A: the legacy `jf` crate is left unchanged.
+  Copying the bound and its tests there grew the `jf` to journal-core
+  duplication the CI gate enforces (821 to 867 and 95 to 96 lines). `jf` is
+  unpublished and used only by `journal_reader_ffi`, which returns the error
+  code of each call; a C caller that keeps enumerating still pays one
+  allocation per call there.
 - `docs/Reader-APIs.md` names the Explorer indexed-values exception.
 
 Fix:
@@ -364,7 +370,8 @@ Fix:
   `is_recoverable_entry_data` holds; other errors still fail.
 - lz4 size prefixes above `(compressed length) * 255` are rejected before
   allocating in Go `lz4ClaimedSize` (`writer_compression.go`), Rust
-  `lz4_uncompressed_size` (journal-core and `jf`) and the Rust verifier
+  `lz4_claimed_size` (journal-core `object_compression.rs`, a wrapper so the
+  code shared with `jf` stays one clone) and the Rust verifier
   (`verify_graph/io.rs`, which has its own lz4 decoder; the Go verifier uses
   `lz4Decompress`). The bound: each lz4 sequence costs at least 3 + k input
   bytes and produces at most 19 + 255 * k output bytes; literals copy 1:1.
@@ -391,14 +398,17 @@ Validation:
   tail zeroed): a source-timestamp query returns both rows, and regex
   queries skip the damaged field while still matching the row's other
   fields. Both tests fail on the previous code with `DecompressorError`.
-- lz4 bound: `lz4_decompress_accepts_maximum_expansion` (1 MiB of zeros) and
-  `lz4_decompress_rejects_size_beyond_maximum_expansion` in journal-core and
-  `jf`, `verify_graph::io::lz4_bound_tests`, and Go
+- lz4 bound: `lz4_size_bound_accepts_maximum_expansion` (1 MiB of zeros) and
+  `lz4_size_bound_rejects_forged_prefix_before_allocating` in journal-core
+  `object_compression.rs`, `verify_graph::io::lz4_bound_tests`, and Go
   `TestLZ4DecompressAcceptsMaximumExpansion` and
   `TestLZ4ClaimedSizeRejectsSizeBeyondMaximumExpansion`. The rejection tests
   check the size function directly, because the previous code also ended in
   an error and only differed by allocating first.
 - `cargo test --workspace` (49 suites) and `go test ./journal/...` pass.
+- `check_duplication.py`: OK (the journal-core/`jf` pair shrank 95 to 94).
+  Codacy's Lizard reported the first rejection test as 102 lines; the byte
+  literal `b'a'` is written as `0x61` in the new tests.
 - Matrices with freshly built adapters and the v262 oracle:
   `run_reader_hardening.py` PASS (552 observations, as before),
   `run_compression_matrix.py` 24/24, `run_verify_matrix.py` PASS.

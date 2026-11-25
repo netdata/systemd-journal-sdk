@@ -6,7 +6,7 @@ pub(super) const MAX_UNCOMPRESSED_DATA_OBJECT_SIZE: usize = 768 * 1024 * 1024;
 // Each lz4 sequence costs at least 3 + k input bytes (token, offset and k
 // length bytes) and produces at most 19 + 255 * k output bytes; literals copy
 // 1:1. No block decodes to more than 255 times its size.
-pub(super) const LZ4_MAX_EXPANSION: usize = 255;
+const LZ4_MAX_EXPANSION: usize = 255;
 const DECOMPRESSION_READ_CHUNK_SIZE: usize = 8 * 1024;
 const MIN_DECOMPRESSION_RESERVE_SIZE: usize = 64 * 1024;
 
@@ -89,7 +89,7 @@ pub(super) fn clear_compression_error<T>(buf: &mut Vec<u8>, err: JournalError) -
     Err(err)
 }
 
-pub(super) fn lz4_uncompressed_size(payload: &[u8]) -> Result<usize> {
+fn lz4_uncompressed_size(payload: &[u8]) -> Result<usize> {
     if payload.len() < 8 {
         return Err(JournalError::DecompressorError);
     }
@@ -99,12 +99,6 @@ pub(super) fn lz4_uncompressed_size(payload: &[u8]) -> Result<usize> {
     let uncompressed_size = usize::try_from(u64::from_le_bytes(size_bytes))
         .map_err(|_| JournalError::DecompressorError)?;
     if uncompressed_size > MAX_UNCOMPRESSED_DATA_OBJECT_SIZE {
-        return Err(JournalError::DecompressorError);
-    }
-    // An lz4 block expands at most LZ4_MAX_EXPANSION times, so a larger size
-    // prefix is forged; reject it before allocating (once per entry otherwise,
-    // since readers skip the field and continue).
-    if uncompressed_size > (payload.len() - 8).saturating_mul(LZ4_MAX_EXPANSION) {
         return Err(JournalError::DecompressorError);
     }
     Ok(uncompressed_size)
@@ -195,8 +189,20 @@ fn decompress_zstd_payload_streaming_with_cap(
     Ok(buf.len())
 }
 
+/// The lz4 size prefix, bounded by the block length: an lz4 block expands at
+/// most LZ4_MAX_EXPANSION times, so a larger prefix is forged and is rejected
+/// before allocating (once per entry otherwise, since readers skip the field
+/// and continue).
+fn lz4_claimed_size(payload: &[u8]) -> Result<usize> {
+    let size = lz4_uncompressed_size(payload)?;
+    if size > (payload.len() - 8).saturating_mul(LZ4_MAX_EXPANSION) {
+        return Err(JournalError::DecompressorError);
+    }
+    Ok(size)
+}
+
 pub(super) fn decompress_lz4_payload(payload: &[u8], buf: &mut Vec<u8>) -> Result<usize> {
-    let uncompressed_size = match lz4_uncompressed_size(payload) {
+    let uncompressed_size = match lz4_claimed_size(payload) {
         Ok(size) => size,
         Err(_) => return clear_decompression_error(buf),
     };
@@ -310,5 +316,29 @@ mod tests {
 
         assert_eq!(len, payload.len());
         assert_eq!(&out[..len], payload.as_slice());
+    }
+
+    /// Size prefix followed by an lz4 block.
+    fn lz4_stored(size: usize, block: &[u8]) -> Vec<u8> {
+        [&(size as u64).to_le_bytes()[..], block].concat()
+    }
+
+    #[test]
+    fn lz4_size_bound_accepts_maximum_expansion() {
+        let zeros = vec![0u8; 1 << 20];
+        let stored = lz4_stored(zeros.len(), &lz4_flex::block::compress(&zeros));
+        assert!(zeros.len() <= (stored.len() - 8) * LZ4_MAX_EXPANSION);
+
+        let mut out = Vec::new();
+        let len = decompress_lz4_payload(&stored, &mut out).unwrap();
+        assert_eq!(&out[..len], zeros.as_slice());
+    }
+
+    #[test]
+    fn lz4_size_bound_rejects_forged_prefix_before_allocating() {
+        let block = [0x10, 0x61, 0, 0, 0, 0, 0];
+        let bound = block.len() * LZ4_MAX_EXPANSION;
+        assert_eq!(lz4_claimed_size(&lz4_stored(bound, &block)).unwrap(), bound);
+        assert!(lz4_claimed_size(&lz4_stored(bound + 1, &block)).is_err());
     }
 }

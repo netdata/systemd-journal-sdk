@@ -140,7 +140,7 @@ mod lz4_bound_tests {
 
     #[test]
     fn lz4_prefix_beyond_maximum_expansion_is_rejected() {
-        let compressed = [0x10, b'a', 0, 0, 0, 0, 0];
+        let compressed = [0x10, 0x61, 0, 0, 0, 0, 0];
         let mut payload = ((compressed.len() * 255 + 1) as u64).to_le_bytes().to_vec();
         payload.extend_from_slice(&compressed);
         let err = decompress_payload(OBJECT_COMPRESSED_LZ4, &payload).unwrap_err();

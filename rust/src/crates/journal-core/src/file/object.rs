@@ -1019,8 +1019,7 @@ impl<B: ByteSlice> DataObject<B> {
 mod tests {
     use super::*;
     use crate::file::object_compression::{
-        LZ4_MAX_EXPANSION, MAX_UNCOMPRESSED_DATA_OBJECT_SIZE, lz4_uncompressed_size,
-        read_limited_to_end_with_cap,
+        MAX_UNCOMPRESSED_DATA_OBJECT_SIZE, read_limited_to_end_with_cap,
     };
     use std::io::Read;
 
@@ -1077,52 +1076,6 @@ mod tests {
         ));
         assert!(buf.is_empty());
         assert_eq!(buf.capacity(), 0);
-    }
-
-    #[test]
-    fn lz4_decompress_accepts_maximum_expansion() {
-        let original = vec![0u8; 1 << 20];
-        let compressed = lz4_flex::block::compress(&original);
-        assert!(original.len() <= compressed.len() * LZ4_MAX_EXPANSION);
-        let mut stored_payload = Vec::new();
-        stored_payload.extend_from_slice(&(original.len() as u64).to_le_bytes());
-        stored_payload.extend_from_slice(&compressed);
-
-        let bytes = data_object_bytes(&stored_payload, ObjectFlags::CompressedLz4 as u8);
-        let object = DataObject::from_data(bytes.as_slice(), false).unwrap();
-        let mut buf = Vec::new();
-
-        let len = object.decompress(&mut buf).unwrap();
-        assert_eq!(&buf[..len], original.as_slice());
-    }
-
-    #[test]
-    fn lz4_decompress_rejects_size_beyond_maximum_expansion() {
-        let compressed = [0x10, b'a', 0, 0, 0, 0, 0];
-        let mut stored_payload = Vec::new();
-        stored_payload
-            .extend_from_slice(&((compressed.len() * LZ4_MAX_EXPANSION + 1) as u64).to_le_bytes());
-        stored_payload.extend_from_slice(&compressed);
-
-        let bytes = data_object_bytes(&stored_payload, ObjectFlags::CompressedLz4 as u8);
-        let object = DataObject::from_data(bytes.as_slice(), false).unwrap();
-        let mut buf = Vec::new();
-
-        assert!(matches!(
-            object.decompress(&mut buf),
-            Err(JournalError::DecompressorError)
-        ));
-        // The size check rejects it, before the output buffer is allocated.
-        assert!(matches!(
-            lz4_uncompressed_size(&stored_payload),
-            Err(JournalError::DecompressorError)
-        ));
-        stored_payload[..8]
-            .copy_from_slice(&((compressed.len() * LZ4_MAX_EXPANSION) as u64).to_le_bytes());
-        assert_eq!(
-            lz4_uncompressed_size(&stored_payload).unwrap(),
-            compressed.len() * LZ4_MAX_EXPANSION
-        );
     }
 
     #[test]
