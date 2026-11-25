@@ -387,7 +387,14 @@ fn get_timestamp_field(
     row.load_entry(journal_file, entry_offset)?;
     row.restart_data()?;
     let result = (|| {
-        while let Some((_, payload)) = row.read_next_payload_with_offset(journal_file)? {
+        loop {
+            let payload = match row.read_next_payload_with_offset(journal_file) {
+                Ok(Some((_, payload))) => payload,
+                Ok(None) => break,
+                // A bad DATA object costs its field, as in sd_journal_get_data.
+                Err(err) if err.is_recoverable_entry_data() => continue,
+                Err(err) => return Err(err.into()),
+            };
             let payload = row.payload_slice(payload);
             match crate::field_types::parse_timestamp_payload(field_name.as_bytes(), payload) {
                 Ok(timestamp) => return Ok(timestamp),
@@ -483,7 +490,15 @@ fn entry_matches_regex(
             }
 
             // Cache miss - load the data object and check if it matches
-            let payload = row.read_payload_at(journal_file, data_offset)?;
+            let payload = match row.read_payload_at(journal_file, data_offset) {
+                Ok(payload) => payload,
+                // A bad DATA object costs its field: it matches nothing.
+                Err(err) if err.is_recoverable_entry_data() => {
+                    data_match_cache.insert(data_offset, false);
+                    continue;
+                }
+                Err(err) => return Err(err.into()),
+            };
             let payload_bytes = row.payload_slice(payload);
 
             let matches = if let Ok(payload_str) = std::str::from_utf8(payload_bytes) {

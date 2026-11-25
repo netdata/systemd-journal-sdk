@@ -130,3 +130,19 @@ impl<T: zerocopy::KnownLayout> From<zerocopy::SizeError<&[u8], T>> for JournalEr
 }
 
 pub type Result<T> = std::result::Result<T, JournalError>;
+
+impl JournalError {
+    /// A bad DATA object behind one entry item: readers drop that field and
+    /// keep the entry, as sd_journal_enumerate_data does for -EBADMSG. Corrupt
+    /// xz is included although systemd reports it as -ENOMEM (SOW-0178).
+    pub fn is_recoverable_entry_data(&self) -> bool {
+        matches!(
+            self,
+            JournalError::InvalidOffset
+                | JournalError::InvalidObjectSize(_)
+                | JournalError::InvalidObjectType
+                | JournalError::ObjectExceedsFileBounds
+                | JournalError::DecompressorError
+        )
+    }
+}

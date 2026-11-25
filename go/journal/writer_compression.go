@@ -198,13 +198,34 @@ func lz4Compress(payload []byte) []byte {
 	return out
 }
 
-func lz4Decompress(payload []byte) ([]byte, error) {
+// lz4MaxExpansion bounds lz4 block output: each sequence costs at least 3 + k
+// input bytes (token, offset and k length bytes) and produces at most
+// 19 + 255*k output bytes, and literals copy 1:1, so no block decodes to more
+// than 255 times its size.
+const lz4MaxExpansion = 255
+
+// lz4ClaimedSize returns the size prefix of an lz4 DATA payload. A size no
+// block of that length can produce is forged and is rejected before
+// allocating, since readers skip the field and would otherwise allocate it
+// once per entry.
+func lz4ClaimedSize(payload []byte) (uint64, error) {
 	if len(payload) < 8 {
-		return nil, errors.New("lz4 compressed payload too short")
+		return 0, errors.New("lz4 compressed payload too short")
 	}
 	uncompressedSize := binary.LittleEndian.Uint64(payload[:8])
 	if uncompressedSize > maxUncompressedDataObjectSize {
-		return nil, errors.New("lz4 decompressed payload too large")
+		return 0, errors.New("lz4 decompressed payload too large")
+	}
+	if uncompressedSize > uint64(len(payload)-8)*lz4MaxExpansion {
+		return 0, errors.New("lz4 size prefix exceeds the maximum expansion")
+	}
+	return uncompressedSize, nil
+}
+
+func lz4Decompress(payload []byte) ([]byte, error) {
+	uncompressedSize, err := lz4ClaimedSize(payload)
+	if err != nil {
+		return nil, err
 	}
 	compressedData := payload[8:]
 	decoded := make([]byte, uncompressedSize)

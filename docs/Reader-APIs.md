@@ -108,11 +108,15 @@ Detection is lazy where the native access path permits it. A zero/`None` status
 means no loss has been observed; it does not certify integrity. A catalog query
 does not validate unrelated entry arrays.
 
-A single unreadable DATA object, or one without a field separator, costs that
-field only when reading the current entry: `GetEntry`/`get_entry` still return
-the entry and the payload visitor and enumeration calls continue, and a payload
-without `=` stays in the raw payload list. A DATA object that cannot be decompressed still fails the
-entry.
+A single unreadable DATA object, one that cannot be decompressed, or one without
+a field separator costs that field only when reading the current entry:
+`GetEntry`/`get_entry` still return the entry, the payload visitor and
+enumeration calls continue, the default Explorer `Traversal` strategy and
+Netdata queries skip the field (including source-timestamp ordering and regex
+filters), and a payload without `=` stays in the raw payload list. Unique-value
+enumeration, the Explorer `Index` and `Compare` strategies (which read field
+values the way unique enumeration does) and `--verify` still report the damage. Corrupt zstd and lz4 data match systemd;
+for corrupt xz data systemd fails the whole read, while the SDK drops the field.
 
 Recovery is read-only: the SDK does not reconstruct or overwrite damaged source
 journals. Journald abandons a corrupt file and writes to a new one. Normal live

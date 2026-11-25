@@ -2727,7 +2727,17 @@ fn classify_data_for_accumulator(
         return Ok(class);
     }
 
-    let payload = payload_for_classification(file, row, data_offset, stats)?;
+    let payload = match payload_for_classification(file, row, data_offset, stats) {
+        Ok(payload) => payload,
+        // A bad DATA object costs its field, as in the entry readers.
+        Err(SdkError::Journal(err)) if err.is_recoverable_entry_data() => {
+            accumulator
+                .offset_cache
+                .insert(data_offset, OffsetClass::Irrelevant);
+            return Ok(OffsetClass::Irrelevant);
+        }
+        Err(err) => return Err(err),
+    };
     let Some((field, value)) = split_payload_bytes(payload) else {
         let class = classify_unstructured_payload(payload, needs_fts, query, stats);
         accumulator.offset_cache.insert(data_offset, class);
@@ -2759,7 +2769,12 @@ fn read_payload_field(
     stats: &mut ExplorerStats,
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let was_compressed = file.data_ref(data_offset)?.is_compressed();
-    let payload = row.read_payload_at(file, data_offset)?;
+    let payload = match row.read_payload_at(file, data_offset) {
+        Ok(payload) => payload,
+        // A bad DATA object costs its field, as in classification.
+        Err(err) if err.is_recoverable_entry_data() => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
     if was_compressed {
         stats.payloads_decompressed = stats.payloads_decompressed.saturating_add(1);
     }

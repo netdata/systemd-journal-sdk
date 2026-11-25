@@ -2140,11 +2140,17 @@ func (r *Reader) classifyDataForAccumulator(dataOffset uint64, acc *explorerAccu
 	stats.DataCacheMisses++
 	stats.DataPayloadsLoaded++
 	header, err := r.readDataHeaderAt(dataOffset)
-	if err != nil {
-		return offsetClass{}, err
+	var payload []byte
+	if err == nil {
+		payload, err = r.readDataPayloadWithHeader(dataOffset, header)
 	}
-	payload, err := r.readDataPayloadWithHeader(dataOffset, header)
 	if err != nil {
+		// A bad DATA object costs its field, as in the entry readers.
+		if recoverableEntryDataError(err) {
+			class := offsetClass{kind: offsetClassIrrelevant}
+			acc.offsetCache.insert(dataOffset, class)
+			return class, nil
+		}
 		return offsetClass{}, err
 	}
 	if header.object.flag&(objectCompressedXZ|objectCompressedLZ4|objectCompressedZSTD) != 0 {

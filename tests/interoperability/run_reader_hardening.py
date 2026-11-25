@@ -122,6 +122,36 @@ def skippable(length: int = 0) -> bytes:
     return b"\x50\x2a\x4d\x18" + length.to_bytes(4, "little") + bytes(length)
 
 
+def parse_export(stream: bytes) -> list[dict]:
+    """Parse journalctl export output into expected_rows() shape.
+
+    Address fields (`__*`) and the header-derived `_BOOT_ID` are not entry
+    payloads, so they are left out of the comparison.
+    """
+    rows, payloads, realtime, at = [], [], None, 0
+    while at < len(stream):
+        end = stream.index(b"\n", at)
+        line = stream[at:end]
+        at = end + 1
+        if not line:
+            rows.append({"realtime": realtime, "payloads": sorted(payloads)})
+            payloads, realtime = [], None
+            continue
+        if b"=" in line:
+            name, value = line.split(b"=", 1)
+        else:
+            name, size = line, int.from_bytes(stream[at : at + 8], "little")
+            value = stream[at + 8 : at + 8 + size]
+            at += 8 + size + 1
+        if name == b"__REALTIME_TIMESTAMP":
+            realtime = int(value)
+        elif not name.startswith(b"__") and name != b"_BOOT_ID":
+            payloads.append((name + b"=" + value).hex())
+    if payloads or realtime is not None:
+        rows.append({"realtime": realtime, "payloads": sorted(payloads)})
+    return rows
+
+
 def expected_rows(entries: list[dict]) -> list[dict]:
     return [
         {
@@ -276,6 +306,19 @@ def main() -> None:
         if (result.returncode != 0) != expected_error:
             raise RuntimeError(
                 f"stock verification disagreement: {path.name}: {result.stderr[-2000:]}"
+            )
+
+    def stock_rows(path: Path, expected: list) -> None:
+        command = [str(oracle), "--file", str(path), "-o", "export", "--all"]
+        print(f"+ {shlex.join(command)}", flush=True)
+        result = subprocess.run(
+            command, capture_output=True, env=env, timeout=15, check=False  # nosemgrep
+        )  # nosec B603
+        got = parse_export(result.stdout)
+        if result.returncode or got != expected:
+            raise RuntimeError(
+                f"stock read disagreement: {path.name}: rc={result.returncode} "
+                f"rows={len(got)}/{len(expected)} {result.stderr[-2000:]!r}"
             )
 
     zstd = Zstd() if "streams" in selected else None
@@ -503,6 +546,12 @@ def main() -> None:
                 "oversized": (oversized_zstd_frame(768 * 1024 * 1024 + 1), True),
                 "trailing-garbage": (frame + b"garbage", True),
             }
+            damaged_message_rows = [dict(row) for row in rows]
+            damaged_message_rows[0]["payloads"] = [
+                payload
+                for payload in rows[0]["payloads"]
+                if not bytes.fromhex(payload).startswith(b"MESSAGE=")
+            ]
             for name, (stream, error) in streams.items():
                 padding = end - start - len(stream) - 8
                 if padding < 0:
@@ -515,9 +564,13 @@ def main() -> None:
                 mutated[start:end] = stream + skippable(padding)
                 path = folder / f"zstd-{name}.journal"
                 path.write_bytes(mutated)
-                probe(path, "forward", expected=None if error else rows, error=error)
+                # A damaged stream costs its field, as in stock v262; strict
+                # verification still rejects the file.
+                expected = damaged_message_rows if error else rows
+                probe(path, "forward", expected=expected)
                 probe(path, "verify", error=error)
                 stock_verify(path, error)
+                stock_rows(path, expected)
             split = len(data) // 2
             whole = (
                 zstd.frame(data[:split], known=False)

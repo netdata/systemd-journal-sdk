@@ -239,3 +239,37 @@ func TestCreateRejectsUnsupportedCompression(t *testing.T) {
 		t.Fatal("Create() with unsupported compression succeeded")
 	}
 }
+
+func TestLZ4DecompressAcceptsMaximumExpansion(t *testing.T) {
+	original := make([]byte, 1<<20)
+	payload := lz4Compress(original)
+	if bytes.Equal(payload, original) {
+		t.Fatal("lz4Compress() left zeros uncompressed")
+	}
+	if uint64(len(original)) > uint64(len(payload)-8)*lz4MaxExpansion {
+		t.Fatalf("zeros expand past the bound: %d from %d", len(original), len(payload)-8)
+	}
+	decoded, err := lz4Decompress(payload)
+	if err != nil || !bytes.Equal(decoded, original) {
+		t.Fatalf("lz4Decompress() = %d bytes, %v; want the original", len(decoded), err)
+	}
+}
+
+func TestLZ4ClaimedSizeRejectsSizeBeyondMaximumExpansion(t *testing.T) {
+	compressed := []byte{0x10, 'a', 0, 0, 0, 0, 0}
+	payload := make([]byte, 8, 8+len(compressed))
+	payload = append(payload, compressed...)
+
+	binary.LittleEndian.PutUint64(payload[:8], uint64(len(compressed)*lz4MaxExpansion+1))
+	if _, err := lz4ClaimedSize(payload); err == nil {
+		t.Fatal("lz4ClaimedSize() accepted a size beyond the maximum expansion")
+	}
+	if _, err := lz4Decompress(payload); err == nil {
+		t.Fatal("lz4Decompress() accepted a size beyond the maximum expansion")
+	}
+
+	binary.LittleEndian.PutUint64(payload[:8], uint64(len(compressed)*lz4MaxExpansion))
+	if size, err := lz4ClaimedSize(payload); err != nil || size != uint64(len(compressed)*lz4MaxExpansion) {
+		t.Fatalf("lz4ClaimedSize() = %d, %v; want the bound itself", size, err)
+	}
+}

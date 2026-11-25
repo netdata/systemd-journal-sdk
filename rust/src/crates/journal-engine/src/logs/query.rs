@@ -612,7 +612,13 @@ fn read_entry_fields(
     row.restart_data()?;
 
     let result = (|| {
-        while let Some((_, payload)) = row.read_next_payload_with_offset(journal_file)? {
+        loop {
+            let payload = match row.read_next_payload_with_offset(journal_file) {
+                Ok(Some((_, payload))) => payload,
+                Ok(None) => break,
+                Err(err) if err.is_recoverable_entry_data() => continue,
+                Err(err) => return Err(err.into()),
+            };
             let payload = row.payload_slice(payload);
             if let Some(pair) = read_projected_pair(payload, output_fields) {
                 fields.push(pair);
