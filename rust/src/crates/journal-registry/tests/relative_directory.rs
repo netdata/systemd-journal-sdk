@@ -93,8 +93,9 @@ fn empty_directory_is_refused() {
     assert!(registered(&registry).is_empty());
 }
 
-/// An absolute directory is normalized lexically (`.` components and repeated
-/// separators dropped), so differently spelled forms share one watch key.
+/// An absolute directory is normalized lexically (`.` components and trailing
+/// and repeated separators dropped), so differently spelled forms share one
+/// watch key.
 #[cfg(unix)]
 #[test]
 fn absolute_directory_spellings_share_one_key() {
