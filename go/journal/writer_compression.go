@@ -154,8 +154,14 @@ func zstdDecompress(payload []byte) ([]byte, error) {
 	return decoder.DecodeAll(payload, nil)
 }
 
+// xzDictCap is the LZMA2 dictionary the writer declares. Every XZ reader,
+// including liblzma and this SDK's, allocates the declared dictionary per DATA
+// decode, so the library's 8 MiB default costs far more than the payload
+// needs. 256 KiB matches the Rust writer (lzma-rust2 preset 0).
+const xzDictCap = 256 << 10
+
 func xzCompress(payload []byte) ([]byte, error) {
-	cfg := xz.WriterConfig{NoCheckSum: true}
+	cfg := xz.WriterConfig{NoCheckSum: true, DictCap: xzDictCap}
 	var buf bytes.Buffer
 	w, err := cfg.NewWriter(&buf)
 	if err != nil {

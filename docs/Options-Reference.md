@@ -42,7 +42,7 @@ and Go APIs use native names, shown in the relevant tables.
 |---|---:|---|---|
 | no DATA compression | yes | Maximum write/read speed and no decompression cost. | Best baseline for high-throughput ingestion. |
 | zstd DATA compression | explicit | Better footprint, extra CPU, compressed `FIELD=value` payloads. | Use when disk footprint dominates and queries rarely need compressed fields. |
-| xz DATA compression | explicit | Higher compression cost. | Compatibility feature, not a high-throughput default. |
+| xz DATA compression | explicit | Higher compression cost; each DATA decode allocates the writer's declared dictionary (256 KiB in both SDKs, 1 MiB for journald). | Compatibility feature, not a high-throughput default. |
 | lz4 DATA compression | explicit | Faster compression than xz, still requires decompression on read. | Measure for the workload. |
 | compression threshold | systemd default | Compresses payloads above the configured threshold. | Keep default unless a footprint benchmark justifies tuning. |
 

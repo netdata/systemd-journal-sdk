@@ -283,6 +283,17 @@ func requireJournalctl(t *testing.T) {
 	}
 }
 
+// requireJournalctlFSS also skips builds without sealing, where every
+// --verify-key run fails and negative seal tests would pass for the wrong reason.
+func requireJournalctlFSS(t *testing.T) {
+	t.Helper()
+	requireJournalctl(t)
+	out, _ := exec.Command("journalctl", "--verify", "--verify-key=probe", "--file=/nonexistent.journal").CombinedOutput()
+	if strings.Contains(string(out), "without forward-secure sealing") {
+		t.Skip("journalctl was built without forward-secure sealing")
+	}
+}
+
 func journalctlAvailable() bool {
 	if runtime.GOOS != "linux" {
 		return false
