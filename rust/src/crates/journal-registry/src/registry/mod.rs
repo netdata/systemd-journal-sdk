@@ -139,6 +139,26 @@ impl Default for Repository {
 // Registry
 // ============================================================================
 
+/// Journal file parsing needs absolute paths, and notify reports paths in the
+/// form they were watched. Resolve once, lexically. On POSIX this also drops `.`
+/// components and collapses repeated separators of absolute paths, so
+/// `/var/log/./journal` and `/var/log//journal` watch `/var/log/journal`. Unlike
+/// the log writer, which keeps absolute directories as given, the registry wants
+/// one key per directory; a trailing separator still makes a second key here
+/// (SOW-0174).
+fn absolute_directory(path: &str) -> Result<String> {
+    std::path::absolute(path)?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "directory path is not valid UTF-8 once made absolute",
+            )
+            .into()
+        })
+}
+
 /// Internal state for Registry
 struct RegistryInner {
     repository: Repository,
@@ -169,7 +189,10 @@ impl Registry {
     /// Watch a directory for journal files
     ///
     /// Performs an initial scan to discover existing files, then monitors for changes.
+    /// A relative directory is resolved against the working directory at call time;
+    /// an empty one is refused.
     pub fn watch_directory(&self, path: &str) -> Result<()> {
+        let path = &absolute_directory(path)?;
         let mut inner = self.inner.write();
 
         if inner.watched_directories.contains(path) {
@@ -203,7 +226,10 @@ impl Registry {
     }
 
     /// Stop watching a directory and remove its files from the repository
+    ///
+    /// The directory is resolved the same way as in [`Registry::watch_directory`].
     pub fn unwatch_directory(&self, path: &str) -> Result<()> {
+        let path = &absolute_directory(path)?;
         let mut inner = self.inner.write();
 
         if !inner.watched_directories.contains(path) {
