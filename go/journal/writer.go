@@ -16,11 +16,16 @@ import (
 // UUID is a 128-bit identifier stored in journal files.
 type UUID [16]byte
 
-// NewUUID returns a random UUID-shaped identifier.
+// NewUUID returns a random version 4 UUID, as systemd's sd_id128_randomize
+// does.
 func NewUUID() (UUID, error) {
 	var id UUID
-	_, err := io.ReadFull(rand.Reader, id[:])
-	return id, err
+	if _, err := io.ReadFull(rand.Reader, id[:]); err != nil {
+		return id, err
+	}
+	id[6] = (id[6] & 0x0f) | 0x40
+	id[8] = (id[8] & 0x3f) | 0x80
+	return id, nil
 }
 
 // Options controls journal file creation.

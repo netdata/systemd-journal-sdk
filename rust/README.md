@@ -244,9 +244,29 @@ Platform behavior:
   still pass Linux stock `journalctl --verify --file` and repository
   interoperability checks before production compatibility is claimed.
 
+Journal behavior helpers, also used by the journalctl rewrites instead of
+their own copies:
+
+- `directory_files(path)` lists the journal files of a directory as systemd
+  does; `unique_files(paths)` removes repeated spellings of the same file,
+  keeping the first.
+- `EntryEncoder` renders systemd export and JSON output;
+  `is_printable_text` is systemd's text-versus-binary rule.
+- `FileReader::list_boots` / `DirectoryReader::list_boots` list boots as
+  `journalctl --list-boots` does.
+- `HeaderCompatibleFlags` / `HeaderIncompatibleFlags` name the header flag
+  bits.
+
 Reader limitations:
 
-- `list_boots` uses file-level boot metadata in this slice;
+- `FileReader::list_boots`, `DirectoryReader::list_boots` and
+  `SdJournalListBoots` list every boot from the `_BOOT_ID` DATA entry arrays,
+  as `journalctl --list-boots` does, falling back to an entry-header scan when
+  no usable canonical index exists (for a directory, only when no file has one
+  or one cannot be read). `DirectoryReader::list_boots` and
+  `SdJournal::list_boots` cannot return an error, so when the files cannot be
+  read they report one boot per file header; `SdJournalListBoots` and
+  `FileReader::list_boots` return the error;
 - full systemd object-graph verification parity is tracked separately;
 - daemon-only journalctl operations are not implemented.
 

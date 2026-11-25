@@ -5,6 +5,7 @@
 //! the imported implementation and adds byte-safe entries, directory reading,
 //! export/JSON formatting, and a libsystemd-style facade.
 
+mod boots;
 mod indexed_snapshot;
 pub use indexed_snapshot::{
     CapturedValue, IndexedSnapshot, IndexedSnapshotOptions, SnapshotControl, SnapshotEntry,
@@ -21,14 +22,17 @@ mod reader_helpers;
 mod sealed_verify;
 mod verify_graph;
 
-pub use directory::DirectoryReader;
+pub use directory::{DirectoryReader, directory_files, unique_files};
 pub use explorer::{
     ExplorerAnchor, ExplorerComparison, ExplorerControl, ExplorerFieldMode, ExplorerFilter,
     ExplorerFtsPattern, ExplorerHistogram, ExplorerHistogramBucket, ExplorerProgress,
     ExplorerQuery, ExplorerResult, ExplorerRow, ExplorerSampling, ExplorerStats,
     ExplorerStopReason, ExplorerStrategy,
 };
-pub use export::{export_entry, export_entry_bytes, format_entry_text, json_entry};
+pub use export::{
+    EntryEncoder, EntryOutputOptions, export_entry, export_entry_bytes, format_entry_text,
+    is_printable_text, json_entry,
+};
 pub use parse::{ParseError, ParsedCursor, parse_cursor, parse_match_bytes, parse_match_string};
 pub use sealed_verify::{verify_file, verify_file_with_key, verify_index};
 
@@ -69,7 +73,8 @@ pub use journal_core::error::JournalError;
 use journal_core::file::ExperimentalMmapStrategy;
 pub use journal_core::file::{
     BucketUtilization, Compression, Direction, EntryItemsType, FieldNamePolicy, HashableObject,
-    JournalFile, JournalReader, Location, Mmap, RecoveryReason, RecoveryStatus, WindowManagerStats,
+    HeaderCompatibleFlags, HeaderIncompatibleFlags, JournalFile, JournalReader, Location, Mmap,
+    RecoveryReason, RecoveryStatus, WindowManagerStats,
 };
 use journal_core::file::{CurrentRowMetadata, CurrentRowView};
 pub use journal_log_writer::{

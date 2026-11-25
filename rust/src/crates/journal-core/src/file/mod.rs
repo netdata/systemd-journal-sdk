@@ -56,7 +56,9 @@ pub use cursor::JournalCursor;
 pub use filter::{FilterExpr, JournalFilter, LogicalOp};
 
 // For FFI compatibility and advanced object manipulation
-pub use object::{EntryItemsType, HashableObject, HeaderIncompatibleFlags, JournalState};
+pub use object::{
+    EntryItemsType, HashableObject, HeaderCompatibleFlags, HeaderIncompatibleFlags, JournalState,
+};
 #[doc(hidden)]
 pub use object::{TIMESTAMP_LIMIT_USEC, valid_monotonic, valid_realtime};
 #[doc(hidden)]

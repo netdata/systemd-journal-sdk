@@ -65,6 +65,31 @@ and a user decision.
 - Record any intentionally slower path in the SOW, docs and tests with its
   reason, measured cost and acceptable conditions.
 
+## Single Ownership Of Journal Behavior
+
+Each journal behavior has exactly one owner per language: file naming and
+directory layout, header interpretation, ID, cursor and match grammars, field
+validation, output formats, boot listing, verification key syntax. The SDK
+owns it; the journalctl rewrites, the Netdata layer and the facades call the
+owner instead of copying it. A copy means every later fix must be made twice
+and is usually missed, so duplication is a correctness risk, not a style
+issue.
+
+- When a consumer needs behavior the SDK keeps private, expose it as a public
+  SDK function in both languages rather than copying it (Go `internal/` has no
+  Rust equivalent across crates).
+- When a consumer and the SDK disagree, decide which one is right against the
+  owning oracle (systemd for journalctl and the format, the Netdata plugin for
+  Netdata behavior) before merging; never merge a difference silently.
+- Look-alikes that follow different contracts (for example journalctl's
+  systemd vacuum rules versus the SDK writer's own retention) are not
+  duplicates; say so in a comment at the less obvious one.
+- `tests/duplication/check_duplication.py` (CI: `duplication.yml`) fails when
+  production code gains duplicated blocks against
+  `tests/duplication/baseline.json`. It catches copy-paste only; reviews must
+  still ask whether the SDK already does what new code reimplements. Rerun it
+  with `--update` only to lock in a reduction or an approved exception.
+
 ## Runtime Purity Architecture
 
 Keep four layers separate in both languages:
@@ -115,7 +140,8 @@ not run or recommend external reviewers.
 - Finish the whole active SOW locally, including tests and evidence, then
   review the entire SOW and changed surface as one batch, not partial churn.
 - Review for behavior, regressions, Go/Rust parity, security, unwanted side
-  effects and production readiness; record each finding and its disposition.
+  effects, production readiness and single ownership (does the SDK already
+  do what the change reimplements?); record each finding and its disposition.
 - After material fixes, rerun tests and re-review the whole scope.
 - A phase advances only when tests pass and blocking findings are resolved,
   never on "mostly ok".

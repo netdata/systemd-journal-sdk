@@ -174,7 +174,11 @@ impl EntryWriteOptions {
     }
 }
 
-fn is_journal_field_name_valid(field_name: &[u8], allow_protected: bool) -> bool {
+/// journald's field-name rule: 1-64 bytes of `A-Z`, `0-9` and `_`, not
+/// starting with a digit, and starting with `_` only when `allow_protected`.
+#[doc(hidden)]
+#[inline]
+pub fn is_journal_field_name_valid(field_name: &[u8], allow_protected: bool) -> bool {
     if field_name.is_empty() || field_name.len() > 64 {
         return false;
     }

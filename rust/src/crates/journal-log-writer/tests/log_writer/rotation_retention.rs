@@ -518,15 +518,35 @@ fn test_default_chain_replaces_unsupported_online_active_file() {
     clear_keyed_hash_flag(&path);
     write_data_hash_table_offset(&path, fs::metadata(&path).unwrap().len() + 4096);
 
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64;
     let mut log = Log::new(dir.path(), test_config()).unwrap();
+    let after = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64;
     assert!(
         !path.exists(),
         "unsupported online active file should be moved out of the way"
     );
+    let disposed = disposed_journal_paths(&journal_dir);
     assert_eq!(
-        disposed_journal_paths(&journal_dir).len(),
+        disposed.len(),
         1,
         "unsupported active file should be retained as .journal~"
+    );
+    // systemd names disposed files with CLOCK_REALTIME microseconds.
+    let name = disposed[0].file_name().unwrap().to_str().unwrap();
+    let stamp = name
+        .rsplit_once('@')
+        .and_then(|(_, rest)| rest.split_once('-'))
+        .map(|(stamp, _)| u64::from_str_radix(stamp, 16).unwrap())
+        .expect("disposed name timestamp");
+    assert!(
+        (before..=after).contains(&stamp),
+        "disposed timestamp {stamp} outside [{before}, {after}] microseconds"
     );
     log.write_entry_with_timestamps(
         &[b"MESSAGE=replaced default active"],

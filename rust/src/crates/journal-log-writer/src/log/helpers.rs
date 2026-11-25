@@ -35,15 +35,7 @@ pub(super) fn filter_structured_fields_for_journal_app<'a>(
 }
 
 pub(super) fn is_journal_app_field_name(field_name: &[u8]) -> bool {
-    if field_name.is_empty() || field_name.len() > 64 {
-        return false;
-    }
-    if field_name[0] == b'_' || field_name[0].is_ascii_digit() {
-        return false;
-    }
-    field_name
-        .iter()
-        .all(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    journal_core::file::writer::is_journal_field_name_valid(field_name, false)
 }
 
 #[cfg(feature = "serde-api")]
@@ -284,4 +276,39 @@ pub(super) fn derive_rotation_policy(config: &Config) -> RotationPolicy {
         rotation.duration_of_journal_file = Some(std::time::Duration::from_micros(micros));
     }
     rotation
+}
+
+#[cfg(test)]
+mod field_name_tests {
+    use super::is_journal_app_field_name;
+
+    #[test]
+    fn journal_app_field_names_follow_journald_rules() {
+        let max = "A".repeat(64);
+        let too_long = "A".repeat(65);
+        for name in ["MESSAGE", "X1_", "A", max.as_str(), "CODE_LINE", "Z9"] {
+            assert!(
+                is_journal_app_field_name(name.as_bytes()),
+                "{name} rejected"
+            );
+        }
+        for name in [
+            "",
+            too_long.as_str(),
+            "_PID",
+            "__CURSOR",
+            "1ABC",
+            "lower",
+            "Mixed",
+            "A-B",
+            "A=B",
+            "A B",
+        ] {
+            assert!(
+                !is_journal_app_field_name(name.as_bytes()),
+                "{name} accepted"
+            );
+        }
+        assert!(!is_journal_app_field_name(b"\xffNAME"));
+    }
 }

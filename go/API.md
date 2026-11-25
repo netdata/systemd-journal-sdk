@@ -80,6 +80,14 @@ libsystemd/Netdata `jf` needed by Netdata readers:
   `SdJournalGetSeqnum`, `SdJournalGetCursor`, `SdJournalTestCursor`, and
   `SdJournalListBoots`
 
+`Reader.ListBoots`, `DirectoryReader.ListBoots` and `SdJournalListBoots` list
+every boot, oldest first, as `journalctl --list-boots` does: each boot's first
+and last entries come from its `_BOOT_ID` DATA entry array (merged in directory
+order across files). When no usable canonical index exists they scan entry
+headers instead, and a directory does so only when no file has such an index
+or one cannot be read. Only the canonical lowercase `_BOOT_ID` spelling names
+an indexed boot. Listing boots does not change matches or the read position.
+
 `SdJournalSeekCursor` accepts a syntactically valid cursor as a seek location
 even when no exact entry exists. Use `SdJournalTestCursor` to check whether the
 current entry exactly matches a cursor. Cursor metadata is emitted in the
@@ -139,6 +147,21 @@ refreshes/remaps the file, or closes. Callback payload slices passed to
 `VisitEntryPayloads` remain callback-scoped and do not have the row-level
 guarantee. Use `CollectEntryPayloads`, `GetEntryPayload`, `GetRaw`,
 `GetRawValues`, or an explicit copy when longer ownership is required.
+
+## Journal Behavior Helpers
+
+The journalctl rewrites use these SDK functions instead of their own copies;
+other callers may use them too:
+
+- `DirectoryFiles(path)` lists the journal files of a directory as systemd
+  does (root plus one machine-ID subdirectory level); `UniqueFiles(paths)`
+  removes repeated spellings of the same file, keeping the first.
+- `NewEntryEncoder` renders systemd export and JSON output; `IsPrintableText`
+  is systemd's text-versus-binary rule.
+- `Reader.ListBoots` / `DirectoryReader.ListBoots` list boots as
+  `journalctl --list-boots` does.
+- `HeaderCompatible*` / `HeaderIncompatible*` name the header flag bits.
+- `SipHash24` is the SipHash-2-4 systemd uses for keyed hashes.
 
 ## Explorer And Netdata Function APIs
 

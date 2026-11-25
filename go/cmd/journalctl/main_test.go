@@ -265,8 +265,6 @@ func (j *trackingCLIJournal) GetEntry() (*journal.Entry, error) {
 	j.getEntryCalls++
 	return nil, nil
 }
-func (j *trackingCLIJournal) SetOutputMode(string)                         {}
-func (j *trackingCLIJournal) ProcessOutput(*journal.Entry) (string, error) { return "", nil }
 func (j *trackingCLIJournal) ListBoots() ([]journal.BootInfo, error)       { return nil, nil }
 func (j *trackingCLIJournal) EnumerateFields() ([]string, error)           { return nil, nil }
 func (j *trackingCLIJournal) VisitUnique(string, func([]byte) error) error { return nil }
@@ -442,7 +440,7 @@ func TestRunVerifyKeyEmptySeed(t *testing.T) {
 
 func TestRunVerifySealedWithoutKeyRequiresKey(t *testing.T) {
 	path := writeCLIJournal(t, []cliEntry{{message: "sealed-without-key", priority: "6"}})
-	patchCompatibleFlags(t, path, compatibleSealed)
+	patchCompatibleFlags(t, path, journal.HeaderCompatibleSealed)
 
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"--verify", "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {
@@ -735,6 +733,30 @@ func TestResolveFileInputsDeduplicatesRepeatedPaths(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != path {
 		t.Fatalf("resolveFileInputs returned %#v, want one copy of %q", got, path)
+	}
+}
+
+func TestResolveFileInputsDeduplicatesAliases(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "real.journal")
+	other := filepath.Join(dir, "other.journal")
+	for _, p := range []string{path, other} {
+		if err := os.WriteFile(p, []byte("not-a-real-journal"), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+	}
+	link := filepath.Join(dir, "link.journal")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	dotted := dir + string(filepath.Separator) + "." + string(filepath.Separator) + "real.journal"
+
+	got, err := resolveFileInputs([]string{link, path, dotted, other, path})
+	if err != nil {
+		t.Fatalf("resolveFileInputs error: %v", err)
+	}
+	if len(got) != 2 || got[0] != link || got[1] != other {
+		t.Fatalf("resolveFileInputs returned %#v, want first spelling %q then %q", got, link, other)
 	}
 }
 

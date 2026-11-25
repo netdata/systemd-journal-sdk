@@ -47,7 +47,7 @@ func displayColoredMessage(entry *journal.Entry, options outputOptions, prefix, 
 			documentation = documentationLink(url)
 		}
 	}
-	if !options.showAll && !journalTextPrintable(value) {
+	if !options.showAll && !journal.IsPrintableText(value, true) {
 		return documentation + blobData(len(value))
 	}
 	if config, ok := lastEntryValue(entry, "CONFIG_FILE"); ok && bytes.HasPrefix(value, config) &&

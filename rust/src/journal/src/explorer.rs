@@ -3151,6 +3151,10 @@ fn parse_source_realtime(value: &[u8]) -> Option<u64> {
     std::str::from_utf8(value).ok()?.parse().ok()
 }
 
+/// Applies the Netdata systemd-journal plugin rule: a non-zero
+/// `_SOURCE_REALTIME_TIMESTAMP` earlier than the commit time wins. The
+/// journalctl rewrites follow systemd's display rule instead; the two
+/// contracts differ on purpose, so do not merge them.
 fn effective_realtime_from_scan(source_realtime: Option<u64>, commit_realtime: u64) -> u64 {
     match source_realtime {
         Some(source_realtime) if source_realtime != 0 && source_realtime < commit_realtime => {

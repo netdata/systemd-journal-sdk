@@ -1,8 +1,8 @@
 use super::colors::{self, Colors, MatchRange};
 use super::{Args, OutputModeArg, format_journal_bytes};
 use anyhow::{Result, anyhow};
-use journal::Entry;
-use serde_json::{Map, Value};
+use journal::{Entry, EntryEncoder, EntryOutputOptions};
+use serde_json::Value;
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
@@ -23,7 +23,6 @@ pub(crate) struct OutputOptions {
 }
 
 const PRINT_CHAR_THRESHOLD: usize = 300;
-const JSON_THRESHOLD: usize = 4096;
 const DEFAULT_COLUMNS: usize = 80;
 
 pub(super) fn valid_field_name(name: &str) -> bool {
@@ -81,6 +80,7 @@ pub(crate) struct OutputRenderer {
     previous_delta: Option<(u64, u64, [u8; 16])>,
     columns: usize,
     highlight: MatchRange,
+    encoder: EntryEncoder,
 }
 
 impl OutputRenderer {
@@ -99,11 +99,18 @@ impl OutputRenderer {
         } else {
             DEFAULT_COLUMNS
         };
+        let encoder = EntryEncoder::new(EntryOutputOptions {
+            fields: options
+                .output_fields_set
+                .then(|| options.output_fields.clone()),
+            show_all: options.show_all,
+        });
         Self {
             options,
             previous_delta: None,
             columns,
             highlight: MatchRange::default(),
+            encoder,
         }
     }
 
@@ -307,7 +314,7 @@ impl OutputRenderer {
                 && (self.options.show_all
                     || (self.options.full_width
                         || name.len() + value.len() + 1 < PRINT_CHAR_THRESHOLD)
-                        && journal_text_printable(value))
+                        && journal::is_printable_text(value, true))
             {
                 if let Some(linked) = super::output_links::file(value, self.options.urlify) {
                     displayed = full_message_with_nul(&linked, 4 + name.len() + 1);
@@ -317,7 +324,7 @@ impl OutputRenderer {
             let printable = off.is_empty()
                 || self.options.show_all
                 || (self.options.full_width || name.len() + value.len() + 1 < PRINT_CHAR_THRESHOLD)
-                    && journal_text_printable(value);
+                    && journal::is_printable_text(value, true);
             if !printable {
                 out.extend_from_slice(off.as_bytes());
             }
@@ -329,44 +336,26 @@ impl OutputRenderer {
         Ok(out)
     }
 
-    fn render_export(&self, entry: &Entry) -> Vec<u8> {
+    fn render_export(&mut self, entry: &Entry) -> Vec<u8> {
         let mut out = Vec::new();
-        let mut metadata = metadata_fields(entry);
-        for (name, value) in &mut metadata {
-            write_export_field(&mut out, name.as_bytes(), value);
-        }
-        for (name, value) in entry_fields(entry, &self.options) {
-            write_export_field(&mut out, name.as_bytes(), value);
-        }
-        out.push(b'\n');
+        self.encoder.append_export(&mut out, entry);
         out
     }
 
-    fn render_json(&self, entry: &Entry, frame: JsonFrame) -> Result<Vec<u8>> {
-        let object = json_object(entry, &self.options);
+    fn render_json(&mut self, entry: &Entry, frame: JsonFrame) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         match frame {
-            JsonFrame::Line => {
-                serde_json::to_writer(&mut out, &Value::Object(object))
-                    .map_err(|err| anyhow!("json output: {err}"))?;
-                out.push(b'\n');
-            }
-            JsonFrame::Pretty => {
-                write_systemd_pretty_json(&mut out, &Value::Object(object))?;
-                out.push(b'\n');
-            }
-            JsonFrame::Sse => {
-                out.extend_from_slice(b"data: ");
-                serde_json::to_writer(&mut out, &Value::Object(object))
-                    .map_err(|err| anyhow!("json output: {err}"))?;
-                out.extend_from_slice(b"\n\n");
-            }
-            JsonFrame::Seq => {
-                out.push(0x1e);
-                serde_json::to_writer(&mut out, &Value::Object(object))
-                    .map_err(|err| anyhow!("json output: {err}"))?;
-                out.push(b'\n');
-            }
+            JsonFrame::Sse => out.extend_from_slice(b"data: "),
+            JsonFrame::Seq => out.push(0x1e),
+            JsonFrame::Line | JsonFrame::Pretty => {}
+        }
+        if matches!(frame, JsonFrame::Pretty) {
+            self.encoder.append_json_pretty(&mut out, entry);
+        } else {
+            self.encoder.append_json(&mut out, entry);
+        }
+        if matches!(frame, JsonFrame::Sse) {
+            out.push(b'\n');
         }
         if self.options.colors.enabled() {
             let start = match frame {
@@ -537,7 +526,8 @@ fn short_field<'a>(entry: &'a Entry, name: &str, options: &OutputOptions) -> Opt
 }
 
 fn short_field_printable(value: &[u8], options: &OutputOptions) -> bool {
-    options.show_all || value.len() < PRINT_CHAR_THRESHOLD && journal_text_printable(value)
+    options.show_all
+        || value.len() < PRINT_CHAR_THRESHOLD && journal::is_printable_text(value, true)
 }
 
 fn short_header(entry: &Entry, options: &OutputOptions, with_unit: bool) -> (Vec<u8>, usize) {
@@ -688,7 +678,7 @@ fn display_colored_message(
     } else {
         Vec::new()
     };
-    if !options.show_all && !journal_text_printable(value) {
+    if !options.show_all && !journal::is_printable_text(value, true) {
         out.extend_from_slice(blob_data(value.len()).as_bytes());
         return out;
     }
@@ -772,23 +762,27 @@ fn display_colored_message(
 
 fn prepare_short_message(value: &[u8], truncate: bool) -> (Cow<'_, [u8]>, bool) {
     if let Ok(text) = std::str::from_utf8(value) {
-        let mut printable = true;
         for (index, ch) in text.char_indices() {
             if matches!(ch, '\x1b' | '\t' | '\r') {
                 let mut out = strip_short_controls(value, index);
                 if truncate {
                     out.truncate(truncate_at_newline(&out).len());
                 }
-                let printable = journal_text_printable(&out);
+                let printable = journal::is_printable_text(&out, true);
                 return (Cow::Owned(out), printable);
             }
             if truncate && matches!(ch, '\n' | '\0') {
-                return (Cow::Borrowed(&value[..index]), printable);
+                let prefix = &value[..index];
+                return (
+                    Cow::Borrowed(prefix),
+                    journal::is_printable_text(prefix, true),
+                );
             }
-            let cp = ch as u32;
-            printable &= (cp >= 0x20 || ch == '\n') && !(0x7f..=0x9f).contains(&cp);
         }
-        return (Cow::Borrowed(value), printable);
+        return (
+            Cow::Borrowed(value),
+            journal::is_printable_text(value, true),
+        );
     }
     let mut out = match value
         .iter()
@@ -804,7 +798,7 @@ fn prepare_short_message(value: &[u8], truncate: bool) -> (Cow<'_, [u8]>, bool) 
             Cow::Borrowed(value) => *value = &value[..len],
         }
     }
-    let printable = journal_text_printable(&out);
+    let printable = journal::is_printable_text(&out, true);
     (out, printable)
 }
 
@@ -955,7 +949,7 @@ fn values_for_name<'a>(entry: &'a Entry, name: &str) -> Vec<&'a [u8]> {
 
 fn display_verbose_value(name: &str, value: &[u8], options: &OutputOptions) -> Vec<u8> {
     if !options.show_all
-        && (!journal_text_printable(value)
+        && (!journal::is_printable_text(value, true)
             || (!options.full_width && name.len() + 1 + value.len() >= PRINT_CHAR_THRESHOLD))
     {
         return blob_data(value.len()).into_bytes();
@@ -1139,62 +1133,8 @@ fn journal_char_width(ch: char) -> usize {
     }
 }
 
-fn journal_text_printable(value: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(value) else {
-        return false;
-    };
-    text.chars().all(|ch| {
-        let cp = ch as u32;
-        (cp >= 0x20 || ch == '\t' || ch == '\n') && !(0x7f..=0x9f).contains(&cp)
-    })
-}
-
-fn journal_export_text_printable(value: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(value) else {
-        return false;
-    };
-    text.chars().all(|ch| {
-        let cp = ch as u32;
-        (cp >= 0x20 || ch == '\t') && !(0x7f..=0x9f).contains(&cp)
-    })
-}
-
 fn blob_data(size: usize) -> String {
     format!("[{} blob data]", format_journal_bytes(size as u64))
-}
-
-fn metadata_fields(entry: &Entry) -> Vec<(String, Vec<u8>)> {
-    let mut out = Vec::new();
-    if !entry.cursor.is_empty() {
-        out.push(("__CURSOR".to_string(), entry.cursor.as_bytes().to_vec()));
-    }
-    out.push((
-        "__REALTIME_TIMESTAMP".to_string(),
-        entry.realtime.to_string().into_bytes(),
-    ));
-    out.push((
-        "__MONOTONIC_TIMESTAMP".to_string(),
-        entry.monotonic.to_string().into_bytes(),
-    ));
-    out.push((
-        "__SEQNUM".to_string(),
-        entry.seqnum.to_string().into_bytes(),
-    ));
-    if let Some(seqnum_id) = cursor_component(&entry.cursor, "s") {
-        out.push(("__SEQNUM_ID".to_string(), seqnum_id.into_bytes()));
-    }
-    out.push((
-        "_BOOT_ID".to_string(),
-        hex::encode(entry.boot_id).into_bytes(),
-    ));
-    out
-}
-
-fn cursor_component(cursor: &str, name: &str) -> Option<String> {
-    cursor.split(';').find_map(|part| {
-        let (key, value) = part.split_once('=')?;
-        (key == name).then(|| value.to_string())
-    })
 }
 
 fn verbose_fields<'a>(entry: &'a Entry, options: &OutputOptions) -> Vec<(String, &'a [u8])> {
@@ -1203,25 +1143,6 @@ fn verbose_fields<'a>(entry: &'a Entry, options: &OutputOptions) -> Vec<(String,
     }
     entry
         .raw_fields()
-        .map(|field| {
-            (
-                String::from_utf8_lossy(field.name).into_owned(),
-                field.value,
-            )
-        })
-        .collect()
-}
-
-fn entry_fields<'a>(entry: &'a Entry, options: &OutputOptions) -> Vec<(String, &'a [u8])> {
-    if options.output_fields_set {
-        return selected_entry_fields(entry, &options.output_fields)
-            .into_iter()
-            .filter(|(name, _)| !is_metadata_field(name))
-            .collect();
-    }
-    entry
-        .raw_fields()
-        .filter(|field| field.name != b"_BOOT_ID")
         .map(|field| {
             (
                 String::from_utf8_lossy(field.name).into_owned(),
@@ -1241,87 +1162,8 @@ fn selected_entry_fields<'a>(entry: &'a Entry, names: &[String]) -> Vec<(String,
     out
 }
 
-fn is_metadata_field(name: &str) -> bool {
-    matches!(
-        name,
-        "__CURSOR"
-            | "__REALTIME_TIMESTAMP"
-            | "__MONOTONIC_TIMESTAMP"
-            | "__SEQNUM"
-            | "__SEQNUM_ID"
-            | "_BOOT_ID"
-    )
-}
-
-fn json_object(entry: &Entry, options: &OutputOptions) -> Map<String, Value> {
-    let mut map = Map::new();
-    for (name, value) in metadata_fields(entry) {
-        add_json_value(&mut map, name, &value, options.show_all);
-    }
-    for (name, value) in entry_fields(entry, options) {
-        add_json_value(&mut map, name, value, options.show_all);
-    }
-    map
-}
-
-fn add_json_value(map: &mut Map<String, Value>, name: String, value: &[u8], show_all: bool) {
-    let value = json_value_for_bytes(&name, value, show_all);
-    match map.remove(&name) {
-        // Scalar byte arrays contain numbers; repeated values never do.
-        Some(Value::Array(mut values)) if values.first().is_some_and(|v| !v.is_number()) => {
-            values.push(value);
-            map.insert(name, Value::Array(values));
-        }
-        Some(existing) => {
-            map.insert(name, Value::Array(vec![existing, value]));
-        }
-        None => {
-            map.insert(name, value);
-        }
-    }
-}
-
-fn json_value_for_bytes(name: &str, value: &[u8], show_all: bool) -> Value {
-    if !show_all && name.len() + 1 + value.len() >= JSON_THRESHOLD {
-        return Value::Null;
-    }
-    if let Ok(text) = std::str::from_utf8(value) {
-        if text.chars().all(|ch| {
-            let cp = ch as u32;
-            (cp >= 0x20 || ch == '\t' || ch == '\n') && !(0x7f..=0x9f).contains(&cp)
-        }) {
-            return Value::String(text.to_string());
-        }
-    }
-    Value::Array(
-        value
-            .iter()
-            .map(|byte| Value::Number((*byte).into()))
-            .collect(),
-    )
-}
-
-fn write_export_field(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
-    let mut text = Vec::with_capacity(name.len() + 1 + value.len());
-    text.extend_from_slice(name);
-    text.push(b'=');
-    text.extend_from_slice(value);
-    if journal_export_text_printable(&text) {
-        out.extend_from_slice(&text);
-        out.push(b'\n');
-        return;
-    }
-    out.extend_from_slice(name);
-    out.push(b'\n');
-    out.extend_from_slice(&(value.len() as u64).to_le_bytes());
-    out.extend_from_slice(value);
-    out.push(b'\n');
-}
-
-fn write_systemd_pretty_json(out: &mut Vec<u8>, value: &Value) -> Result<()> {
-    write_systemd_pretty_json_at(out, value, 0)
-}
-
+// Table output (for example --list-boots) is CLI-only; entry JSON comes from
+// the SDK EntryEncoder.
 fn write_systemd_pretty_json_at(out: &mut Vec<u8>, value: &Value, depth: usize) -> Result<()> {
     match value {
         Value::Object(map) => {
@@ -1379,4 +1221,19 @@ pub(super) fn write_systemd_pretty_json_array_at(
 
 fn write_json_tabs(out: &mut Vec<u8>, depth: usize) {
     out.extend(std::iter::repeat(b'\t').take(depth));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_short_message;
+
+    // systemd's printable rule treats Unicode noncharacters as binary, so the
+    // short family prints them as blob data.
+    #[test]
+    fn short_message_noncharacters_are_not_printable() {
+        assert!(!prepare_short_message("x\u{fdd0}y".as_bytes(), true).1);
+        assert!(!prepare_short_message("x\u{fdd0}y\tz".as_bytes(), true).1);
+        let (prefix, printable) = prepare_short_message("ok\n\u{fdd0}".as_bytes(), true);
+        assert_eq!((prefix.as_ref(), printable), (b"ok".as_slice(), true));
+    }
 }

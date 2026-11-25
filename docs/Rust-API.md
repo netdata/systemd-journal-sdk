@@ -182,6 +182,60 @@ while reader.previous()? {
 Directory reading merges journal files in journal order. It is the right API
 for `journalctl --directory` style behavior.
 
+## Render Entries As Export Or JSON
+
+`EntryEncoder` renders entries as `journalctl -o export`, `-o json` and
+`-o json-pretty` do in systemd v262, including `--output-fields` and `--all`:
+export byte for byte, JSON with the same values and sorted keys. It appends to a caller buffer, so one buffer serves many entries.
+
+<!-- verify-example: lang=rust id=rust-entry-encoder -->
+```rust
+use journal::{EntryEncoder, EntryOutputOptions, FileReader};
+use std::io::Write;
+
+let mut reader = FileReader::open("/var/log/journal/example/system.journal")?;
+let mut encoder = EntryEncoder::new(EntryOutputOptions {
+    fields: Some(vec!["MESSAGE".to_string()]),
+    ..Default::default()
+});
+let mut out = Vec::new();
+while reader.next()? {
+    let entry = reader.get_entry()?;
+    out.clear();
+    encoder.append_json(&mut out, &entry);
+    std::io::stdout().write_all(&out)?;
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The metadata fields (`__CURSOR`, timestamps, `__SEQNUM`, `__SEQNUM_ID`,
+`_BOOT_ID`) are always printed. JSON keys are sorted; systemd's order is hash
+order. `is_printable_text` is systemd's text-versus-binary rule used by these
+formats. `export_entry_bytes` and `json_entry` keep their older, lossless
+contract.
+
+## List Boots
+
+`list_boots` lists every boot as `journalctl --list-boots` does, from the
+`_BOOT_ID` indexes when a usable canonical index exists, otherwise from entry
+headers (a directory scans headers only when no file has such an index or one
+cannot be read), without changing matches or the read position.
+
+<!-- verify-example: lang=rust id=rust-list-boots -->
+```rust
+use journal::DirectoryReader;
+
+let reader = DirectoryReader::open("/var/log/journal")?;
+for boot in reader.list_boots() {
+    println!("{} {} {} {}", boot.index, boot.boot_id, boot.first_entry, boot.last_entry);
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`FileReader::list_boots` and `SdJournalListBoots` return an error when the
+file cannot be read; `DirectoryReader::list_boots` falls back to one boot per
+file header instead.
+
 ## Use Snapshot Bounds For Query Workloads
 
 The default reader is live. Use snapshot bounds when a query may ignore entries
