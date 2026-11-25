@@ -144,7 +144,8 @@ impl Default for Repository {
 /// components and collapses repeated separators of absolute paths, so
 /// `/var/log/./journal` and `/var/log//journal` watch `/var/log/journal`. Unlike
 /// the log writer, which keeps absolute directories as given, the registry wants
-/// one key per directory.
+/// one key per directory; a trailing separator still makes a second key here
+/// (SOW-0174).
 fn absolute_directory(path: &str) -> Result<String> {
     std::path::absolute(path)?
         .into_os_string()
