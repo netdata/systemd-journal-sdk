@@ -3,6 +3,10 @@ use std::io::Read;
 
 // systemd limits journal DATA field payloads to 768 MiB; reject corrupt size prefixes before allocating.
 pub(super) const MAX_UNCOMPRESSED_DATA_OBJECT_SIZE: usize = 768 * 1024 * 1024;
+// Each lz4 sequence costs at least 3 + k input bytes (token, offset and k
+// length bytes) and produces at most 19 + 255 * k output bytes; literals copy
+// 1:1. No block decodes to more than 255 times its size.
+pub(super) const LZ4_MAX_EXPANSION: usize = 255;
 const DECOMPRESSION_READ_CHUNK_SIZE: usize = 8 * 1024;
 const MIN_DECOMPRESSION_RESERVE_SIZE: usize = 64 * 1024;
 
@@ -85,7 +89,7 @@ pub(super) fn clear_compression_error<T>(buf: &mut Vec<u8>, err: JournalError) -
     Err(err)
 }
 
-fn lz4_uncompressed_size(payload: &[u8]) -> Result<usize> {
+pub(super) fn lz4_uncompressed_size(payload: &[u8]) -> Result<usize> {
     if payload.len() < 8 {
         return Err(JournalError::DecompressorError);
     }
@@ -95,6 +99,12 @@ fn lz4_uncompressed_size(payload: &[u8]) -> Result<usize> {
     let uncompressed_size = usize::try_from(u64::from_le_bytes(size_bytes))
         .map_err(|_| JournalError::DecompressorError)?;
     if uncompressed_size > MAX_UNCOMPRESSED_DATA_OBJECT_SIZE {
+        return Err(JournalError::DecompressorError);
+    }
+    // An lz4 block expands at most LZ4_MAX_EXPANSION times, so a larger size
+    // prefix is forged; reject it before allocating (once per entry otherwise,
+    // since readers skip the field and continue).
+    if uncompressed_size > (payload.len() - 8).saturating_mul(LZ4_MAX_EXPANSION) {
         return Err(JournalError::DecompressorError);
     }
     Ok(uncompressed_size)

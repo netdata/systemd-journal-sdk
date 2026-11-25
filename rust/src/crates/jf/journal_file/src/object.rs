@@ -779,6 +779,10 @@ pub struct DataObject<B: ByteSlice> {
 
 // systemd limits journal DATA field payloads to 768 MiB; reject corrupt size prefixes before allocating.
 const MAX_UNCOMPRESSED_DATA_OBJECT_SIZE: usize = 768 * 1024 * 1024;
+// Each lz4 sequence costs at least 3 + k input bytes (token, offset and k
+// length bytes) and produces at most 19 + 255 * k output bytes; literals copy
+// 1:1. No block decodes to more than 255 times its size.
+const LZ4_MAX_EXPANSION: usize = 255;
 const DECOMPRESSION_READ_CHUNK_SIZE: usize = 8 * 1024;
 const MIN_DECOMPRESSION_RESERVE_SIZE: usize = 64 * 1024;
 
@@ -868,6 +872,12 @@ fn lz4_uncompressed_size(payload: &[u8]) -> Result<usize> {
     let uncompressed_size = usize::try_from(u64::from_le_bytes(size_bytes))
         .map_err(|_| JournalError::DecompressorError)?;
     if uncompressed_size > MAX_UNCOMPRESSED_DATA_OBJECT_SIZE {
+        return Err(JournalError::DecompressorError);
+    }
+    // An lz4 block expands at most LZ4_MAX_EXPANSION times, so a larger size
+    // prefix is forged; reject it before allocating (once per entry otherwise,
+    // since readers skip the field and continue).
+    if uncompressed_size > (payload.len() - 8).saturating_mul(LZ4_MAX_EXPANSION) {
         return Err(JournalError::DecompressorError);
     }
     Ok(uncompressed_size)
@@ -1076,6 +1086,52 @@ mod tests {
         ));
         assert!(buf.is_empty());
         assert_eq!(buf.capacity(), 0);
+    }
+
+    #[test]
+    fn lz4_decompress_accepts_maximum_expansion() {
+        let original = vec![0u8; 1 << 20];
+        let compressed = lz4_flex::block::compress(&original);
+        assert!(original.len() <= compressed.len() * LZ4_MAX_EXPANSION);
+        let mut stored_payload = Vec::new();
+        stored_payload.extend_from_slice(&(original.len() as u64).to_le_bytes());
+        stored_payload.extend_from_slice(&compressed);
+
+        let bytes = data_object_bytes(&stored_payload, ObjectFlags::CompressedLz4 as u8);
+        let object = DataObject::from_data(bytes.as_slice(), false).unwrap();
+        let mut buf = Vec::new();
+
+        let len = object.decompress(&mut buf).unwrap();
+        assert_eq!(&buf[..len], original.as_slice());
+    }
+
+    #[test]
+    fn lz4_decompress_rejects_size_beyond_maximum_expansion() {
+        let compressed = [0x10, b'a', 0, 0, 0, 0, 0];
+        let mut stored_payload = Vec::new();
+        stored_payload
+            .extend_from_slice(&((compressed.len() * LZ4_MAX_EXPANSION + 1) as u64).to_le_bytes());
+        stored_payload.extend_from_slice(&compressed);
+
+        let bytes = data_object_bytes(&stored_payload, ObjectFlags::CompressedLz4 as u8);
+        let object = DataObject::from_data(bytes.as_slice(), false).unwrap();
+        let mut buf = Vec::new();
+
+        assert!(matches!(
+            object.decompress(&mut buf),
+            Err(JournalError::DecompressorError)
+        ));
+        // The size check rejects it, before the output buffer is allocated.
+        assert!(matches!(
+            lz4_uncompressed_size(&stored_payload),
+            Err(JournalError::DecompressorError)
+        ));
+        stored_payload[..8]
+            .copy_from_slice(&((compressed.len() * LZ4_MAX_EXPANSION) as u64).to_le_bytes());
+        assert_eq!(
+            lz4_uncompressed_size(&stored_payload).unwrap(),
+            compressed.len() * LZ4_MAX_EXPANSION
+        );
     }
 
     #[test]

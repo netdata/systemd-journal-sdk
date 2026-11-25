@@ -33,6 +33,11 @@ pub(super) fn decompress_payload(flags: u8, payload: &[u8]) -> Result<Vec<u8>, S
         if expected > MAX_UNCOMPRESSED_DATA_OBJECT_SIZE {
             return Err("lz4 decompressed payload too large".to_string());
         }
+        // No lz4 block decodes to more than 255 times its size (see
+        // journal-core `LZ4_MAX_EXPANSION`); reject a forged prefix unallocated.
+        if expected > (payload.len() - 8).saturating_mul(255) {
+            return Err("lz4 size prefix exceeds the maximum expansion".to_string());
+        }
         let mut out = vec![0; expected];
         let len = lz4_flex::block::decompress_into(&payload[8..], &mut out)
             .map_err(|err| err.to_string())?;
@@ -127,4 +132,29 @@ pub(super) fn slice_u64(
         .checked_sub(start)
         .ok_or_else(|| format!("slice {start}..{end} is invalid"))?;
     source.read_vec(start, size)
+}
+
+#[cfg(test)]
+mod lz4_bound_tests {
+    use super::*;
+
+    #[test]
+    fn lz4_prefix_beyond_maximum_expansion_is_rejected() {
+        let compressed = [0x10, b'a', 0, 0, 0, 0, 0];
+        let mut payload = ((compressed.len() * 255 + 1) as u64).to_le_bytes().to_vec();
+        payload.extend_from_slice(&compressed);
+        let err = decompress_payload(OBJECT_COMPRESSED_LZ4, &payload).unwrap_err();
+        assert!(err.contains("maximum expansion"), "{err}");
+    }
+
+    #[test]
+    fn lz4_maximum_expansion_still_decodes() {
+        let original = vec![0u8; 1 << 20];
+        let mut payload = (original.len() as u64).to_le_bytes().to_vec();
+        payload.extend_from_slice(&lz4_flex::block::compress(&original));
+        assert_eq!(
+            decompress_payload(OBJECT_COMPRESSED_LZ4, &payload).unwrap(),
+            original
+        );
+    }
 }

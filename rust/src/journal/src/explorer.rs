@@ -2769,7 +2769,12 @@ fn read_payload_field(
     stats: &mut ExplorerStats,
 ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     let was_compressed = file.data_ref(data_offset)?.is_compressed();
-    let payload = row.read_payload_at(file, data_offset)?;
+    let payload = match row.read_payload_at(file, data_offset) {
+        Ok(payload) => payload,
+        // A bad DATA object costs its field, as in classification.
+        Err(err) if err.is_recoverable_entry_data() => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
     if was_compressed {
         stats.payloads_decompressed = stats.payloads_decompressed.saturating_add(1);
     }

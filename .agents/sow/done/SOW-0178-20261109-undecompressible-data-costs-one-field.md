@@ -304,4 +304,111 @@ None.
 
 ## Regression Log
 
-None.
+- 2026-11-25: PR #28 review found query paths the same-failure scan missed.
+  See `## Regression - 2026-11-25`.
+
+## Regression - 2026-11-25
+
+What broke: the reviewer of PR #28 (before merge) found two Rust query paths
+that still fail the whole query on one bad DATA object, which the claimed
+same-failure scan ("every caller of `.decompress(` was checked") missed:
+
+- `journal-index/src/file_index.rs` `get_timestamp_field` (source-timestamp
+  queries) and `entry_matches_regex` (regex filters) propagate the error of
+  `CurrentRowView::read_next_payload_with_offset` / `read_payload_at`
+  (`journal-core/src/file/row_view.rs:179,227`).
+- systemd skips such objects in `sd_journal_get_data`
+  (systemd/systemd @ v260.1 `src/libsystemd/sd-journal/sd-journal.c:2852`:
+  `-EADDRNOTAVAIL`/`-EBADMSG` continue), and the Go explorer reads the source
+  timestamp from row payloads that already skip the field. Rust-only gap.
+- The scan also missed `explorer.rs` `read_payload_field` (only reached by
+  the debug column-traversal tool, on an offset already classified).
+
+Why validation missed it: the scan looked at direct `.decompress(` callers and
+treated `CurrentRowView` as covered by the entry readers, without listing the
+callers of `read_next_payload_with_offset` and `read_payload_at`.
+
+The review also raised two documentation and cost points:
+
+- `docs/Reader-APIs.md` said "Explorer and Netdata facets skip the field";
+  Explorer indexed values still return the error by design (unique
+  enumeration semantics).
+- Now that reads continue past the error, a forged lz4 size prefix costs one
+  allocation of up to the 768 MiB cap per entry: Go `lz4Decompress`
+  (`go/journal/writer_compression.go:201`) allocates it, Rust
+  `prepare_lz4_output_buffer` (`journal-core/src/file/object_compression.rs:103`
+  and `jf/journal_file/src/object.rs:876`) reserves and zero-fills it. systemd
+  allocates the claimed size too (`src/basic/compress.c:434-441`, up to
+  `INT_MAX`), so this is stricter than systemd, and only crafted files reach
+  it. zstd and xz are not affected the same way: Rust zstd reserves without
+  touching and frees on error, Go zstd decodes under a memory cap, and xz in
+  both languages grows with the real output under the cap.
+
+Decisions (user, 2026-11-25):
+
+- 2A: the Rust query paths skip a bad DATA object like the entry readers
+  (`is_recoverable_entry_data`): `get_timestamp_field` moves on to the next
+  item (no source value falls back to realtime), `entry_matches_regex` treats
+  it as no match. `read_payload_field` skips it too. Alternative rejected:
+  recording these paths as strict, which contradicts systemd and Go.
+- 3A: an lz4 size prefix larger than the compressed length times 255, lz4's
+  maximum expansion, is rejected before allocating, in Go and both Rust
+  copies. It can never reject a valid object. Alternative rejected: keeping
+  the systemd-equivalent allocation.
+- `docs/Reader-APIs.md` names the Explorer indexed-values exception.
+
+Fix:
+
+- `file_index.rs` `get_timestamp_field` and `entry_matches_regex`, and
+  `explorer.rs` `read_payload_field`, skip errors for which
+  `is_recoverable_entry_data` holds; other errors still fail.
+- lz4 size prefixes above `(compressed length) * 255` are rejected before
+  allocating in Go `lz4ClaimedSize` (`writer_compression.go`), Rust
+  `lz4_uncompressed_size` (journal-core and `jf`) and the Rust verifier
+  (`verify_graph/io.rs`, which has its own lz4 decoder; the Go verifier uses
+  `lz4Decompress`). The bound: each lz4 sequence costs at least 3 + k input
+  bytes and produces at most 19 + 255 * k output bytes; literals copy 1:1.
+- `docs/Reader-APIs.md` and `product-scope.md` name the Explorer `Index` and
+  `Compare` exception, the query paths and the lz4 bound.
+
+Same-failure scan, redone by caller rather than by `.decompress(`: every
+caller of `CurrentRowView::read_next_payload_with_offset` and
+`read_payload_at`, and every other `.decompress(` caller, was listed:
+
+- Now skip: `file_index.rs` (2), `explorer.rs` `read_payload_field`.
+- Already skip: `journal-engine` `read_entry_fields`, `reader_helpers.rs`
+  entry reads, `explorer.rs` `payload_for_classification` (its caller).
+- Errors by design: unique enumeration (`lib.rs` `enumerate_unique_payload`,
+  `indexed_snapshot.rs`, `explorer.rs` `indexed_value_and_cursor`), boot
+  listing (`boots.rs`), verification, writer deduplication, and the hash
+  lookup `PayloadMatcher` (`file.rs`), which systemd's
+  `journal_file_find_data_object_with_hash` also fails.
+- The legacy `jf` crate matcher and FFI are outside the SDK query surface.
+
+Validation:
+
+- `journal-index/tests/damaged_data.rs` (zstd, first row's MESSAGE frame
+  tail zeroed): a source-timestamp query returns both rows, and regex
+  queries skip the damaged field while still matching the row's other
+  fields. Both tests fail on the previous code with `DecompressorError`.
+- lz4 bound: `lz4_decompress_accepts_maximum_expansion` (1 MiB of zeros) and
+  `lz4_decompress_rejects_size_beyond_maximum_expansion` in journal-core and
+  `jf`, `verify_graph::io::lz4_bound_tests`, and Go
+  `TestLZ4DecompressAcceptsMaximumExpansion` and
+  `TestLZ4ClaimedSizeRejectsSizeBeyondMaximumExpansion`. The rejection tests
+  check the size function directly, because the previous code also ended in
+  an error and only differed by allocating first.
+- `cargo test --workspace` (49 suites) and `go test ./journal/...` pass.
+- Matrices with freshly built adapters and the v262 oracle:
+  `run_reader_hardening.py` PASS (552 observations, as before),
+  `run_compression_matrix.py` 24/24, `run_verify_matrix.py` PASS.
+- Artifact maintenance: `docs/Reader-APIs.md`, `product-scope.md` and
+  `SOW-status.md` updated; AGENTS.md and project skills unchanged (no new
+  rule: the scan-by-caller lesson is recorded below).
+  Clippy reports nothing in the changed files; `check_wiki_docs.py` passes.
+- Side finding, not changed: ruzstd's fastest level did not shrink
+  `MESSAGE=first ` followed by 600 `x` (627 bytes for 614), so the Rust writer
+  correctly stored it uncompressed. The test uses payloads that compress.
+
+Lesson: a same-failure scan lists the callers of every function that can
+return the error, not only the call sites of the lowest-level function.
