@@ -15,6 +15,7 @@ use journal_core::collections::{HashMap, HashSet};
 use journal_core::error::JournalError;
 use journal_core::file::{HashableObject, JournalFile, Mmap, offset_array::InlinedCursor};
 use journal_registry::File;
+use std::collections::hash_map::Entry;
 use std::num::NonZeroU64;
 use tracing::{trace, warn};
 
@@ -103,6 +104,30 @@ pub struct FileIndexer {
     // Maps entry offsets to an index of an implicitly defined time-ordered
     // array of entries
     entry_offset_index: HashMap<NonZeroU64, u64>,
+}
+
+/// Whether `candidate` comes before `current` in the item list of the entry at
+/// `entry_offset`. An unreadable entry keeps `current`; postings that name no
+/// entry are dropped later by the global entry array membership check.
+fn precedes_in_entry(
+    journal_file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+    candidate: NonZeroU64,
+    current: NonZeroU64,
+) -> bool {
+    let Ok(entry) = journal_file.entry_ref(entry_offset) else {
+        return false;
+    };
+    for index in 0..entry.items.len() {
+        let item = entry.items.get(index);
+        if item == candidate.get() {
+            return true;
+        }
+        if item == current.get() {
+            return false;
+        }
+    }
+    false
 }
 
 impl Default for FileIndexer {
@@ -383,6 +408,7 @@ impl FileIndexer {
 
         // Collect all the inlined cursors of the source timestamp field
         self.source_timestamp_cursor_pairs.clear();
+        let mut decompressed = Vec::new();
         for data_object_result in field_data_iterator {
             let (data_offset, data_object) = match data_object_result {
                 Ok(item) => item,
@@ -395,9 +421,23 @@ impl FileIndexer {
                 }
             };
 
-            let Ok(source_timestamp) =
+            // The query scanner reads decompressed payloads, so a compressed
+            // value is decompressed here too.
+            let parsed = if data_object.is_compressed() {
+                match data_object.decompress(&mut decompressed) {
+                    Ok(len) => crate::field_types::parse_timestamp_payload(
+                        source_field_name,
+                        &decompressed[..len],
+                    ),
+                    Err(_) => {
+                        warn!("decompressing source timestamp failed");
+                        continue;
+                    }
+                }
+            } else {
                 crate::field_types::parse_timestamp(source_field_name, &data_object)
-            else {
+            };
+            let Ok(source_timestamp) = parsed else {
                 warn!("parsing source timestamp failed");
                 continue;
             };
@@ -426,15 +466,15 @@ impl FileIndexer {
         }
 
         // Collect all the [source_timestamp, entry-offset] pairs. An entry
-        // carrying the source field more than once keeps the value with the
-        // lowest DATA offset: entry items are sorted by DATA offset, so this is
-        // the value the query scanner (`get_timestamp_field`) reads first, and
-        // the time order of the index matches the order the scanner sees.
-        self.source_timestamp_cursor_pairs
-            .sort_unstable_by_key(|(data_offset, _, _)| *data_offset);
+        // carrying the source field more than once keeps the value the query
+        // scanner (`get_timestamp_field`) reads: the first one in the entry's
+        // item order. Writers usually sort items by DATA offset, but journald's
+        // flush (`journal_file_copy_entry`) keeps the source entry's order, so
+        // the order is read from the entry itself. Only repeated fields pay it.
         self.source_timestamp_entry_offset_pairs.clear();
         self.entry_offset_index.clear();
-        for (_, ts, ic) in self.source_timestamp_cursor_pairs.iter() {
+        let mut pair_data_offsets: Vec<NonZeroU64> = Vec::new();
+        for (data_offset, ts, ic) in self.source_timestamp_cursor_pairs.iter() {
             self.entry_offsets.clear();
 
             ic.collect_offsets(journal_file, &mut self.entry_offsets)?;
@@ -442,11 +482,28 @@ impl FileIndexer {
             // Postings past the captured tail belong to entries published
             // after this snapshot, like the global array filter below.
             for entry_offset in &self.entry_offsets {
-                if *entry_offset <= tail_object_offset
-                    && self.entry_offset_index.insert(*entry_offset, 0).is_none()
-                {
-                    self.source_timestamp_entry_offset_pairs
-                        .push((*ts, *entry_offset));
+                if *entry_offset > tail_object_offset {
+                    continue;
+                }
+                match self.entry_offset_index.entry(*entry_offset) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(self.source_timestamp_entry_offset_pairs.len() as u64);
+                        self.source_timestamp_entry_offset_pairs
+                            .push((*ts, *entry_offset));
+                        pair_data_offsets.push(*data_offset);
+                    }
+                    Entry::Occupied(slot) => {
+                        let index = *slot.get() as usize;
+                        if precedes_in_entry(
+                            journal_file,
+                            *entry_offset,
+                            *data_offset,
+                            pair_data_offsets[index],
+                        ) {
+                            self.source_timestamp_entry_offset_pairs[index].0 = *ts;
+                            pair_data_offsets[index] = *data_offset;
+                        }
+                    }
                 }
             }
         }
