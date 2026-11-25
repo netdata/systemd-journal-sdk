@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1061,6 +1062,10 @@ func relativeToCwd(t *testing.T, target string) string {
 }
 
 func TestLogRelativeDirectoryWritesRotatesAndReopens(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The temp directory may sit on another drive, where no relative path reaches it.
+		t.Skip("relative directory test is Unix-only")
+	}
 	root := t.TempDir()
 	rel := relativeToCwd(t, root)
 	if filepath.IsAbs(rel) {
