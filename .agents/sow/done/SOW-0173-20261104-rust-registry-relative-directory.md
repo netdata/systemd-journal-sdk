@@ -210,6 +210,14 @@ Failure handling:
   criterion and outcome, and added `absolute_directory_spellings_share_one_key`.
   Registry suites pass (14, 3, 1 tests).
 
+### 2026-11-25
+
+- PR #24 review: "one key per directory" overstated the normalization,
+  because `std::path::absolute` keeps a trailing separator. The comment, the
+  test comment and this SOW's outcome now name that exception (removed by
+  SOW-0174), and SOW-0174's analysis no longer says absolute input is
+  returned unchanged. Wording only.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -307,7 +315,8 @@ Follow-up mapping:
 
 `Registry::watch_directory` and `unwatch_directory` accept a relative
 directory, resolved once at call time, and normalize absolute input lexically
-(`.` components and repeated separators dropped) so each directory has one key.
+(`.` components and repeated separators dropped). A trailing separator is
+kept, so `/x/j` and `/x/j/` remain two keys; SOW-0174 removes that case.
 
 ## Lessons Extracted
 
