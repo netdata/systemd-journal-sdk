@@ -1956,17 +1956,13 @@ fn run_list_boots(input: &CliInput, args: &Args) -> Result<()> {
         })).collect();
         return print_json_table(args.output, &rows);
     }
+    let index_width = table_index_width(rows.iter().map(|boot| boot.index), args.quiet);
     if !args.quiet {
-        print!("{}", colors::Colors::detect().table_header("BOOT ID"));
+        print!(
+            "{}",
+            colors::Colors::detect().table_header("BOOT ID", index_width)
+        );
     }
-    let index_width = if args.quiet {
-        rows.iter()
-            .map(|boot| boot.index.to_string().len())
-            .max()
-            .unwrap_or(1)
-    } else {
-        3
-    };
     for boot in &rows {
         println!(
             "{:>width$} {} {} {}",
@@ -1996,17 +1992,13 @@ fn run_list_invocations(input: &CliInput, args: &Args) -> Result<()> {
         })).collect();
         return print_json_table(args.output, &rows);
     }
+    let index_width = table_index_width(rows.iter().map(|(index, _)| *index), args.quiet);
     if !args.quiet {
-        print!("{}", colors::Colors::detect().table_header("INVOCATION ID"));
+        print!(
+            "{}",
+            colors::Colors::detect().table_header("INVOCATION ID", index_width)
+        );
     }
-    let quiet_index_width = if args.quiet {
-        rows.iter()
-            .map(|(row_index, _)| row_index.to_string().len())
-            .max()
-            .unwrap_or(1)
-    } else {
-        1
-    };
     for (row_index, entry) in rows {
         if args.quiet {
             println!(
@@ -2015,19 +2007,30 @@ fn run_list_invocations(input: &CliInput, args: &Args) -> Result<()> {
                 entry.id,
                 output::format_header_timestamp(entry.first_usec)?,
                 output::format_header_timestamp(entry.last_usec)?,
-                width = quiet_index_width,
+                width = index_width,
             );
         } else {
             println!(
-                "{:>3} {:<32} {} {}",
+                "{:>width$} {:<32} {} {}",
                 row_index,
                 entry.id,
                 output::format_header_timestamp(entry.first_usec)?,
                 output::format_header_timestamp(entry.last_usec)?,
+                width = index_width,
             );
         }
     }
     Ok(())
+}
+
+/// Stock table formatting sizes IDX to the widest index, and to at least the
+/// header when it is shown.
+fn table_index_width<T: ToString>(indexes: impl Iterator<Item = T>, quiet: bool) -> usize {
+    let widest = indexes
+        .map(|index| index.to_string().len())
+        .max()
+        .unwrap_or(1);
+    if quiet { widest } else { widest.max(3) }
 }
 
 fn header_state_name(state: u8) -> &'static str {
@@ -4308,6 +4311,17 @@ fn run_follow(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Paired with Go TestTableIndexWidthFollowsWidestIndex.
+    #[test]
+    fn table_index_width_follows_widest_index() {
+        assert_eq!(table_index_width([-5, 0].into_iter(), false), 3);
+        assert_eq!(table_index_width([-5, 0].into_iter(), true), 2);
+        assert_eq!(table_index_width([-220, 0].into_iter(), false), 4);
+        assert_eq!(table_index_width(std::iter::empty::<i64>(), true), 1);
+        let header = colors::Colors::default().table_header("INVOCATION ID", 4);
+        assert!(header.starts_with("IDX  INVOCATION ID "), "{header:?}");
+    }
     use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
     use journal_core::repository::File as RepoFile;
     use journal_core::seal::SealOptions;

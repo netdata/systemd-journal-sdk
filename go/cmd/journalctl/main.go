@@ -1982,18 +1982,13 @@ func runListBoots(input cliInput, flags *cliFlags, stdout io.Writer) error {
 		}
 		return writeTableJSON(stdout, *flags.output, rows)
 	}
-	if !*flags.quietFlag {
-		fmt.Fprint(stdout, detectOutputColors().tableHeader("BOOT ID"))
+	indexes := make([]int, 0, len(display))
+	for _, boot := range display {
+		indexes = append(indexes, boot.index)
 	}
-	idxWidth := 1
-	if *flags.quietFlag {
-		for _, boot := range display {
-			if width := len(fmt.Sprintf("%d", boot.index)); width > idxWidth {
-				idxWidth = width
-			}
-		}
-	} else {
-		idxWidth = 3
+	idxWidth := tableIndexWidth(indexes, *flags.quietFlag)
+	if !*flags.quietFlag {
+		fmt.Fprint(stdout, detectOutputColors().tableHeader("BOOT ID", idxWidth))
 	}
 	for _, boot := range display {
 		fmt.Fprintf(
@@ -3646,17 +3641,13 @@ func runListInvocations(input cliInput, flags *cliFlags, stdout io.Writer) error
 		}
 		return writeTableJSON(stdout, *flags.output, rows)
 	}
-	if !*flags.quietFlag {
-		fmt.Fprint(stdout, detectOutputColors().tableHeader("INVOCATION ID"))
+	indexes := make([]int, 0, len(display))
+	for _, row := range display {
+		indexes = append(indexes, row.index)
 	}
-	idxWidth := 1
-	if *flags.quietFlag {
-		for _, row := range display {
-			idxText := fmt.Sprintf("%d", row.index)
-			if len(idxText) > idxWidth {
-				idxWidth = len(idxText)
-			}
-		}
+	idxWidth := tableIndexWidth(indexes, *flags.quietFlag)
+	if !*flags.quietFlag {
+		fmt.Fprint(stdout, detectOutputColors().tableHeader("INVOCATION ID", idxWidth))
 	}
 	for _, row := range display {
 		info := row.info
@@ -3673,7 +3664,8 @@ func runListInvocations(input cliInput, flags *cliFlags, stdout io.Writer) error
 		} else {
 			fmt.Fprintf(
 				stdout,
-				"%3d %-32s %s %s\n",
+				"%*d %-32s %s %s\n",
+				idxWidth,
 				row.index,
 				info.id,
 				formatHeaderTimestamp(info.firstUsec),
@@ -4123,4 +4115,17 @@ func consumeHex(s string, start int) (int, bool) {
 
 func isHex(b byte) bool {
 	return ('0' <= b && b <= '9') || ('a' <= b && b <= 'f') || ('A' <= b && b <= 'F')
+}
+
+// tableIndexWidth follows stock table formatting: IDX is as wide as the widest
+// index, and at least as wide as its header when the header is shown.
+func tableIndexWidth(indexes []int, quiet bool) int {
+	width := 1
+	for _, index := range indexes {
+		width = max(width, len(strconv.Itoa(index)))
+	}
+	if !quiet {
+		width = max(width, 3)
+	}
+	return width
 }

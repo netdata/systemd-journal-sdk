@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -110,15 +111,17 @@ func (c outputColors) boot(id string) string {
 	return ansiHighlight + strings.TrimSuffix(text, "\n") + ansiNormal + "\n"
 }
 
-func (c outputColors) tableHeader(id string) string {
+// indexWidth is the IDX column width; stock sizes it to the widest index.
+func (c outputColors) tableHeader(id string, indexWidth int) string {
+	idx := fmt.Sprintf("%-*s", indexWidth, "IDX")
 	if c.level == 0 || !c.underline {
-		return "IDX " + id + strings.Repeat(" ", 33-len(id)) + "FIRST ENTRY                 LAST ENTRY\n"
+		return idx + " " + id + strings.Repeat(" ", 33-len(id)) + "FIRST ENTRY                 LAST ENTRY\n"
 	}
 	on := ""
 	if c.underline {
 		on = "\x1b[4m"
 	}
-	fields := []string{"IDX", id + strings.Repeat(" ", 32-len(id)), "FIRST ENTRY                ", "LAST ENTRY                 "}
+	fields := []string{idx, id + strings.Repeat(" ", 32-len(id)), "FIRST ENTRY                ", "LAST ENTRY                 "}
 	return on + strings.Join(fields, ansiNormal+on+" "+ansiNormal+on) + ansiNormal + "\n"
 }
 

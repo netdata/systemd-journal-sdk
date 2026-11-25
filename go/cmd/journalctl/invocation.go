@@ -135,6 +135,12 @@ func newInvocationWalker(input cliInput, flags *cliFlags, option string, older, 
 			return nil, err
 		}
 		w.done = len(w.eligibility) == 0
+		// The OR prefilter costs one term per step. With many IDs that is
+		// slower than visiting the unit's rows, which is what native discovery
+		// does; rows without a valid ID are skipped either way.
+		if len(w.eligibility) > invocationEligibilityMaxTerms {
+			w.eligibility = nil
+		}
 	}
 	if w.done {
 		ok = true
@@ -198,6 +204,10 @@ func parseInvocationIDValue(value []byte) string {
 	}
 	return hex.EncodeToString(id[:])
 }
+
+// invocationEligibilityMaxTerms bounds the valid-ID prefilter; paired with
+// Rust ELIGIBILITY_MAX_TERMS.
+const invocationEligibilityMaxTerms = 32
 
 func invocationEligibility(j cliJournal) ([][]byte, error) {
 	var matches [][]byte
