@@ -73,7 +73,8 @@ pub(super) fn read_current_row_entry(
             let value = payload[eq + 1..].to_vec();
             if let Ok(name) = std::str::from_utf8(raw_name) {
                 let name = name.to_string();
-                fields.insert(name.clone(), value.clone());
+                // The first repeated value wins, as sd_journal_get_data returns it.
+                fields.entry(name.clone()).or_insert_with(|| value.clone());
                 field_values.entry(name).or_default().push(value);
             }
         }
@@ -245,7 +246,8 @@ pub(super) fn recoverable_entry_data_error(err: &JournalError) -> bool {
     matches!(
         err,
         JournalError::InvalidOffset
-            | JournalError::InvalidObjectSize(0)
+            | JournalError::InvalidObjectSize(_)
+            | JournalError::InvalidObjectType
             | JournalError::ObjectExceedsFileBounds
     )
 }

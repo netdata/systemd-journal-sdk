@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -3023,11 +3024,61 @@ func journalFileExactSourceName(path string) string {
 			name = trimJournalSuffix(name)
 		}
 		if strings.HasPrefix(name, "remote-") {
-			return name
+			return lossyUTF8(name)
 		}
 		return ""
 	}
-	return localNamespaceSourceName(path)
+	return lossyUTF8(localNamespaceSourceName(path))
+}
+
+// lossyUTF8 replaces each maximal invalid subsequence with U+FFFD, exactly as
+// Rust's to_string_lossy does, so both languages expose the same source name.
+func lossyUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var out strings.Builder
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		if r == utf8.RuneError && size == 1 {
+			out.WriteRune(utf8.RuneError)
+			s = s[invalidUTF8PrefixLen(s):]
+			continue
+		}
+		out.WriteString(s[:size])
+		s = s[size:]
+	}
+	return out.String()
+}
+
+// invalidUTF8PrefixLen returns how many bytes of an invalid sequence form a
+// truncated but so far well-formed character.
+func invalidUTF8PrefixLen(s string) int {
+	want, low, high := 0, byte(0x80), byte(0xBF)
+	switch lead := s[0]; {
+	case lead >= 0xC2 && lead <= 0xDF:
+		want = 2
+	case lead >= 0xE0 && lead <= 0xEF:
+		want = 3
+		if lead == 0xE0 {
+			low = 0xA0
+		} else if lead == 0xED {
+			high = 0x9F
+		}
+	case lead >= 0xF0 && lead <= 0xF4:
+		want = 4
+		if lead == 0xF0 {
+			low = 0x90
+		} else if lead == 0xF4 {
+			high = 0x8F
+		}
+	}
+	n := 1
+	for n < want && n < len(s) && s[n] >= low && s[n] <= high {
+		n++
+		low, high = 0x80, 0xBF
+	}
+	return n
 }
 
 func trimJournalSuffix(name string) string {

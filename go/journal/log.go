@@ -272,6 +272,7 @@ type archivedJournalFile struct {
 	headSeqnum   uint64
 	headRealtime uint64
 	size         uint64
+	disposed     bool
 }
 
 type chainState struct {
@@ -1321,6 +1322,40 @@ func parseArchivedJournalName(name, source string) (archivedJournalFile, bool) {
 		return archivedJournalFile{}, false
 	}
 	return archivedJournalFile{headSeqnum: headSeqnum, headRealtime: headRealtime}, true
+}
+
+// disposedMicrosLimit is systemd's realtime limit; earlier SDK releases wrote
+// disposed-name timestamps in nanoseconds, which are all above it.
+const disposedMicrosLimit = 1 << 55
+
+// parseDisposedJournalName reads <active stem>@<usec>-<number>.journal~. For
+// retention the timestamp stands in for head realtime and the number for head
+// seqnum, as the Rust repository orders these files.
+func parseDisposedJournalName(name, source string) (archivedJournalFile, bool) {
+	stem, ok := strings.CutSuffix(name, ".journal~")
+	if !ok {
+		return archivedJournalFile{}, false
+	}
+	at := strings.LastIndexByte(stem, '@')
+	if at < 0 || (stem[:at] != source && !strings.HasPrefix(stem[:at], source+"@")) {
+		return archivedJournalFile{}, false
+	}
+	stamp, number, ok := strings.Cut(stem[at+1:], "-")
+	if !ok {
+		return archivedJournalFile{}, false
+	}
+	realtime, err := strconv.ParseUint(stamp, 16, 64)
+	if err != nil {
+		return archivedJournalFile{}, false
+	}
+	seqnum, err := strconv.ParseUint(number, 16, 64)
+	if err != nil {
+		return archivedJournalFile{}, false
+	}
+	if realtime >= disposedMicrosLimit {
+		realtime /= 1000
+	}
+	return archivedJournalFile{headSeqnum: seqnum, headRealtime: realtime, disposed: true}, true
 }
 
 func validateJournalSource(source string) error {

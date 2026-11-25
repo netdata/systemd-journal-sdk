@@ -92,8 +92,7 @@ fn list_boots_multi_boot() {
         boot(-1, 0xb0, 200, 220),
         boot(0, 0xa0, 100, 300),
     ];
-    assert_eq!(rows(directory.try_list_boots().unwrap()), want);
-    assert_eq!(rows(directory.list_boots()), want);
+    assert_eq!(rows(directory.list_boots().unwrap()), want);
 
     let mut facade = SdJournalOpenDirectory(temp.path().to_str().unwrap(), 0).unwrap();
     assert_eq!(rows(SdJournalListBoots(&mut facade).unwrap()), want);
@@ -104,7 +103,8 @@ fn list_boots_multi_boot() {
     );
 }
 
-/// Journals without `_BOOT_ID` DATA fall back to ENTRY header boot IDs.
+/// Journals without `_BOOT_ID` DATA list no boots, as v262 journalctl does,
+/// unless the caller opts into the ENTRY header boot IDs.
 #[test]
 fn list_boots_falls_back_to_entry_headers() {
     let temp = tempfile::tempdir().unwrap();
@@ -116,8 +116,12 @@ fn list_boots_falls_back_to_entry_headers() {
         None,
     );
     let reader = FileReader::open(&path).unwrap();
+    assert!(reader.list_boots().unwrap().is_empty());
+    let options = BootListOptions {
+        header_fallback: true,
+    };
     assert_eq!(
-        rows(reader.list_boots().unwrap()),
+        rows(reader.list_boots_with_options(options).unwrap()),
         vec![boot(-1, 0xd0, 500, 510), boot(0, 0xe0, 600, 600)]
     );
 }
@@ -147,6 +151,83 @@ fn list_boots_ignores_non_canonical_boot_id_data() {
     );
 }
 
+/// Noncanonical `_BOOT_ID` DATA still counts as present, so the fallback must
+/// not report boots a `_BOOT_ID` match would not find.
+#[test]
+fn list_boots_fallback_ignores_all_non_canonical_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("system.journal");
+    write_boot_journal(
+        &path,
+        0x51,
+        &[(0xbb, 200, 1)],
+        Some(|b| boot_hex(b).to_ascii_uppercase()),
+    );
+    let reader = FileReader::open(&path).unwrap();
+    let options = BootListOptions {
+        header_fallback: true,
+    };
+    assert!(reader.list_boots_with_options(options).unwrap().is_empty());
+}
+
+/// Postings past the visible tail do not reach the boot list.
+#[test]
+fn list_boots_stops_at_the_visible_tail() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("system.journal");
+    write_boot_journal(
+        &path,
+        0x52,
+        &[(0xa0, 100, 1), (0xa0, 200, 2)],
+        Some(boot_hex),
+    );
+    let repo = RepoFile::from_path(&path).unwrap();
+    let mut offsets = Vec::new();
+    JournalFile::<Mmap>::open(&repo, 4096)
+        .unwrap()
+        .entry_offsets(&mut offsets)
+        .unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[264..272].copy_from_slice(&offsets[0].get().to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
+    let reader = FileReader::open(&path).unwrap();
+    assert_eq!(
+        rows(reader.list_boots().unwrap()),
+        vec![boot(0, 0xa0, 100, 100)]
+    );
+}
+
+/// While a writer holds the file, the tail hint may lead `n_entries`.
+#[test]
+fn list_boots_ignores_a_tail_hint_ahead_of_the_entry_count() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("system.journal");
+    write_boot_journal(
+        &path,
+        0x53,
+        &[(0xa0, 100, 1), (0xb0, 200, 1)],
+        Some(boot_hex),
+    );
+    let repo = RepoFile::from_path(&path).unwrap();
+    let mut offsets = Vec::new();
+    JournalFile::<Mmap>::open(&repo, 4096)
+        .unwrap()
+        .entry_offsets(&mut offsets)
+        .unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[16] = 1;
+    bytes[152..160].copy_from_slice(&1u64.to_le_bytes());
+    bytes[264..272].copy_from_slice(&offsets[1].get().to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
+    let reader = FileReader::open(&path).unwrap();
+    assert_eq!(
+        rows(reader.list_boots().unwrap()),
+        vec![boot(0, 0xa0, 100, 100)]
+    );
+}
+
 /// list_boots leaves the caller's matches and read position alone.
 #[test]
 fn list_boots_keeps_matches_and_position() {
@@ -167,7 +248,7 @@ fn list_boots_keeps_matches_and_position() {
     let mut directory = DirectoryReader::open_files([&path]).unwrap();
     directory.add_match(format!("_BOOT_ID={}", boot_hex(0xb0)).as_bytes());
     assert!(directory.next().unwrap());
-    assert_eq!(directory.list_boots().len(), 2);
+    assert_eq!(directory.list_boots().unwrap().len(), 2);
     assert!(directory.next().unwrap());
     assert_eq!(directory.get_realtime_usec().unwrap(), 210);
     assert!(!directory.next().unwrap(), "match was lost");
@@ -205,7 +286,7 @@ fn list_boots_dirty_archives_fresh_reader() {
         ),
     ];
     let directory = DirectoryReader::open(&dir).unwrap();
-    assert_eq!(rows(directory.try_list_boots().unwrap()), want);
+    assert_eq!(rows(directory.list_boots().unwrap()), want);
     let mut facade = SdJournalOpenDirectory(dir.to_str().unwrap(), 0).unwrap();
     assert_eq!(rows(SdJournalListBoots(&mut facade).unwrap()), want);
 }

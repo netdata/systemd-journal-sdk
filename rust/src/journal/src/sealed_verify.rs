@@ -91,10 +91,11 @@ pub(crate) fn verify_file_with_key_options(
         let incompatible_flags = read_u32_for_verify(&source, 12, "incompatible_flags")?;
         let sealed = (compatible_flags & 1) != 0;
         if sealed {
-            let (seed, start_usec, interval_usec) = parse_verification_key(verification_key)
-                .map_err(|e| {
-                    SdkError::VerificationError(format!("invalid verification key: {e}"))
-                })?;
+            let VerificationKey {
+                seed,
+                start_epoch: start_usec,
+                interval_usec,
+            } = parse_verification_key(verification_key)?;
             verify_sealed(
                 &source,
                 compatible_flags,
@@ -122,74 +123,107 @@ fn verify_reader_object_graph(reader: &FileReader) -> Result<()> {
     })
 }
 
-fn parse_verification_key(key: &str) -> std::result::Result<([u8; 12], u64, u64), String> {
-    let bytes = key.as_bytes();
-    let (seed, slash_offset) = parse_verification_seed(bytes)?;
-    if slash_offset >= bytes.len() || bytes[slash_offset] != b'/' {
-        return Err("missing / separator".into());
-    }
-    let (start_usec, dash_offset) = parse_verification_hex_value(bytes, slash_offset + 1, "start")?;
-    if dash_offset >= bytes.len() || bytes[dash_offset] != b'-' {
-        return Err("bad start hex".into());
-    }
-    let (interval_usec, end_offset) =
-        parse_verification_hex_value(bytes, dash_offset + 1, "interval")?;
-    if end_offset != bytes.len() {
-        return Err("trailing data".into());
-    }
-    if interval_usec == 0 {
-        return Err("zero interval".into());
-    }
-    Ok((seed, start_usec, interval_usec))
+/// A parsed Forward Secure Sealing verification key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerificationKey {
+    pub seed: [u8; 12],
+    pub start_epoch: u64,
+    pub interval_usec: u64,
 }
 
-fn parse_verification_seed(bytes: &[u8]) -> std::result::Result<([u8; 12], usize), String> {
+/// Parses `<seed>/<start>-<interval>` with the grammar of systemd v262
+/// `journal_auth_load_key`, including its tolerance for content after the
+/// interval.
+pub fn parse_verification_key(key: &str) -> Result<VerificationKey> {
+    parse_verification_key_parts(key).map_err(|reason| {
+        SdkError::VerificationError(format!("invalid verification key: {reason}"))
+    })
+}
+
+fn parse_verification_key_parts(key: &str) -> std::result::Result<VerificationKey, &'static str> {
+    let bytes = key.as_bytes();
+    let (seed, slash_offset) = parse_verification_seed(bytes)?;
+    if bytes.get(slash_offset) != Some(&b'/') {
+        return Err("missing / separator");
+    }
+    let (start_epoch, dash_offset) =
+        parse_verification_number(bytes, slash_offset + 1).ok_or("bad start hex")?;
+    if bytes.get(dash_offset) != Some(&b'-') {
+        return Err("bad start hex");
+    }
+    let (interval_usec, _) =
+        parse_verification_number(bytes, dash_offset + 1).ok_or("bad interval hex")?;
+    if start_epoch == 0 || interval_usec == 0 {
+        return Err("zero start or interval");
+    }
+    if start_epoch.checked_mul(interval_usec).is_none() {
+        return Err("start time overflows");
+    }
+    Ok(VerificationKey {
+        seed,
+        start_epoch,
+        interval_usec,
+    })
+}
+
+fn parse_verification_seed(bytes: &[u8]) -> std::result::Result<([u8; 12], usize), &'static str> {
     let mut seed = [0u8; 12];
     let mut i = 0;
-    for c in 0..12 {
-        let (next, val) = parse_verification_seed_byte(bytes, i)?;
-        seed[c] = val;
-        i = next;
+    for byte in &mut seed {
+        while bytes.get(i) == Some(&b'-') {
+            i += 1;
+        }
+        let high = hex_digit_value(bytes.get(i).copied()).ok_or("bad seed hex")?;
+        let low = hex_digit_value(bytes.get(i + 1).copied()).ok_or("bad seed hex")?;
+        *byte = high << 4 | low;
+        i += 2;
     }
     Ok((seed, i))
 }
 
-fn parse_verification_seed_byte(
-    bytes: &[u8],
-    start: usize,
-) -> std::result::Result<(usize, u8), String> {
+/// Follows sscanf's `%lx`, which systemd uses here: leading whitespace, a
+/// sign, a `0x` prefix, and saturation on overflow.
+fn parse_verification_number(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
     let mut i = start;
-    while i < bytes.len() && bytes[i] == b'-' {
+    while bytes
+        .get(i)
+        .is_some_and(|b| *b == b' ' || (b'\t'..=b'\r').contains(b))
+    {
         i += 1;
     }
-    if i + 2 > bytes.len() {
-        return Err("seed too short".into());
-    }
-    let val = u8::from_str_radix(std::str::from_utf8(&bytes[i..i + 2]).unwrap_or("xx"), 16)
-        .map_err(|_| "bad seed hex".to_string())?;
-    Ok((i + 2, val))
-}
-
-fn parse_verification_hex_value(
-    bytes: &[u8],
-    start: usize,
-    label: &str,
-) -> std::result::Result<(u64, usize), String> {
-    let (next, ok) = consume_hex(bytes, start);
-    if !ok {
-        return Err(format!("bad {label} hex"));
-    }
-    let value = u64::from_str_radix(std::str::from_utf8(&bytes[start..next]).unwrap_or("0"), 16)
-        .map_err(|_| format!("bad {label} hex"))?;
-    Ok((value, next))
-}
-
-fn consume_hex(bytes: &[u8], start: usize) -> (usize, bool) {
-    let mut i = start;
-    while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+    let negative = bytes.get(i) == Some(&b'-');
+    if matches!(bytes.get(i), Some(b'+' | b'-')) {
         i += 1;
     }
-    (i, i > start)
+    if bytes.get(i) == Some(&b'0') && matches!(bytes.get(i + 1), Some(b'x' | b'X')) {
+        i += 2;
+    }
+    let digits = i;
+    let mut value = 0u64;
+    let mut overflow = false;
+    while let Some(digit) = hex_digit_value(bytes.get(i).copied()) {
+        overflow |= value >> 60 != 0;
+        value = value << 4 | u64::from(digit);
+        i += 1;
+    }
+    if i == digits {
+        return None;
+    }
+    if overflow {
+        return Some((u64::MAX, i));
+    }
+    Some((
+        if negative {
+            value.wrapping_neg()
+        } else {
+            value
+        },
+        i,
+    ))
+}
+
+fn hex_digit_value(byte: Option<u8>) -> Option<u8> {
+    char::from(byte?).to_digit(16).map(|digit| digit as u8)
 }
 
 pub(super) fn align8(v: u64) -> u64 {

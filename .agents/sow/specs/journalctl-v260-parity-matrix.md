@@ -154,7 +154,7 @@ Every official v262 output mode is `file-backed-required`:
 
 | Option | Args | Classification | Required portable behavior |
 | --- | --- | --- | --- |
-| `--verify-key=` | key | file-backed-required | Verify sealed journal files when combined with `--verify` or implied verification. Invalid seed/key text must fail with official-style parse errors. |
+| `--verify-key=` | key | file-backed-required | Verify sealed journal files when combined with `--verify` or implied verification. Key text follows v262 `journal_auth_load_key` through the SDK parser, is judged per file, and a rejected key stops the run with v262's message. |
 | `--interval=` | duration | recognized-no-op | Parse for `--setup-keys`; no portable behavior exists without `--setup-keys`, so it is accepted as a no-op elsewhere. |
 | `--force` | none | recognized-no-op | Parse for `--setup-keys`; no portable behavior exists without `--setup-keys`, so it is accepted as a no-op elsewhere. |
 | `--setup-keys` | none | recognized-unsupported | Official v262 checks `/var/log/journal`, reads host machine and boot IDs, and writes `/var/log/journal/<machine-id>/fss`; portable file-backed commands must reject it instead of mutating host journal state. Evidence: `systemd/systemd @ 8cc40e0c5e9234bf45084751ac53b1fbfe70b492`, `src/journal/journalctl-authenticate.c:80`, `src/journal/journalctl-authenticate.c:89`, `src/journal/journalctl-authenticate.c:93`, `src/journal/journalctl-authenticate.c:97`, `src/journal/journalctl-authenticate.c:139`. |

@@ -1,5 +1,5 @@
 use super::*;
-use crate::boots::{BootRange, BootTimes, merge_boot_times, order_boots};
+use crate::boots::{BootRange, order_boots};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 const DIRECTORY_UNIQUE_CACHE_CAPACITY: usize = 8;
@@ -142,16 +142,19 @@ impl DirectoryReader {
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
     {
+        let paths: Vec<PathBuf> = paths
+            .into_iter()
+            .map(|p| p.as_ref().to_path_buf())
+            .collect();
         let mut files = Vec::new();
-        for path in paths {
-            let path = path.as_ref();
-            if !path.is_file() || !is_journal_file_name(path) {
+        for path in unique_files(&paths) {
+            if !path.is_file() || !is_journal_file_name(&path) {
                 return Err(SdkError::InvalidPath(format!(
                     "not a journal file: {}",
                     path.display()
                 )));
             }
-            files.push(FileReader::open_with_options(path, options)?);
+            files.push(FileReader::open_with_options(&path, options)?);
         }
 
         Self::from_readers(files, false)
@@ -882,21 +885,19 @@ impl DirectoryReader {
     /// `journalctl --list-boots` does. A boot's first and last entries are the
     /// ones a `_BOOT_ID` match reaches from the head and from the tail of the
     /// merged directory order. It does not change matches or the read
-    /// position. If the files cannot be read it falls back to one boot per
-    /// file header.
-    pub fn list_boots(&self) -> Vec<BootInfo> {
-        self.try_list_boots()
-            .unwrap_or_else(|_| self.list_header_boots())
+    /// position.
+    pub fn list_boots(&self) -> Result<Vec<BootInfo>> {
+        self.list_boots_with_options(BootListOptions::default())
     }
 
-    pub(crate) fn try_list_boots(&self) -> Result<Vec<BootInfo>> {
+    /// [`Self::list_boots`] with the given options. `header_fallback` applies
+    /// only when no file in the directory has `_BOOT_ID` DATA.
+    pub fn list_boots_with_options(&self, options: BootListOptions) -> Result<Vec<BootInfo>> {
         let mut merged: HashMap<[u8; 16], BootRange> = HashMap::new();
-        let mut indexed = true;
+        let mut any_data = false;
         for reader in &self.files {
-            let Ok(ranges) = reader.boot_ranges() else {
-                indexed = false;
-                break;
-            };
+            let (ranges, has_data) = reader.boot_ranges()?;
+            any_data |= has_data;
             for boot in ranges {
                 merged
                     .entry(boot.boot_id)
@@ -911,7 +912,7 @@ impl DirectoryReader {
                     .or_insert(boot);
             }
         }
-        if indexed && !merged.is_empty() {
+        if any_data || !options.header_fallback {
             return Ok(order_boots(merged.values().map(BootRange::times).collect()));
         }
         let mut boots = HashMap::new();
@@ -919,27 +920,6 @@ impl DirectoryReader {
             reader.scan_boot_times(&mut boots)?;
         }
         Ok(order_boots(boots.into_values().collect()))
-    }
-
-    /// One boot per file header: the pre-index summary, kept only as the
-    /// fallback of the infallible list_boots.
-    fn list_header_boots(&self) -> Vec<BootInfo> {
-        let mut boots: HashMap<[u8; 16], BootTimes> = HashMap::new();
-        for reader in &self.files {
-            let header = reader.effective_header();
-            if reader.recovery_status().incomplete() && header.n_entries == 0 {
-                continue;
-            }
-            merge_boot_times(
-                &mut boots,
-                BootTimes {
-                    boot_id: header.tail_entry_boot_id,
-                    first: header.head_entry_realtime,
-                    last: header.tail_entry_realtime,
-                },
-            );
-        }
-        order_boots(boots.into_values().collect())
     }
 
     pub fn add_match(&mut self, data: &[u8]) {

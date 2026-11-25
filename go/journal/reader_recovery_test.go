@@ -700,7 +700,7 @@ func TestRecoveryDirectoryRepairPreservesPendingMergeRows(t *testing.T) {
 		if len(dr.RecoveryStatuses()) != 0 {
 			t.Fatal("directory status stale")
 		}
-		boots, err := dr.ListBoots()
+		boots, err := dr.ListBootsWithOptions(BootListOptions{HeaderFallback: true})
 		if err != nil || len(boots) != 1 || boots[0].LastEntry != 3000 {
 			t.Fatalf("boots=%v %v", boots, err)
 		}

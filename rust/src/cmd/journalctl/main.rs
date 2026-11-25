@@ -24,7 +24,7 @@ use journal::{
     SdJournalListBoots, SdJournalNext, SdJournalOpenDirectoryPath, SdJournalOpenFilePaths,
     SdJournalPrevious, SdJournalSeekCursorDirection, SdJournalSeekHead, SdJournalSeekRealtimeUsec,
     SdJournalSeekTail, SdJournalTestCursor, SdJournalVisitUniqueValues, parse_match_bytes,
-    parse_match_string, verify_file, verify_file_with_key,
+    parse_match_string, parse_verification_key, verify_file, verify_file_with_key,
 };
 use output::{OutputOptions, OutputRenderer};
 use regex::Regex;
@@ -440,7 +440,7 @@ enum OutputModeArg {
 
 fn main() {
     if let Err(err) = run() {
-        if !err.is::<SilentNoData>() {
+        if !err.is::<SilentNoData>() && !err.is::<VerificationKeyRejected>() {
             eprintln!("Error: {err}");
         }
         exit(1);
@@ -1242,11 +1242,6 @@ fn run_verify(path: &Path, verify_key: Option<&str>) -> Result<()> {
 }
 
 fn run_verify_input(input: &CliInput, verify_key: Option<&str>, quiet: bool) -> Result<()> {
-    if verify_key.is_some_and(|key| !valid_verification_key(key)) {
-        eprintln!("Failed to parse seed.");
-        return Err(anyhow!("failed to parse seed"));
-    }
-
     let (files, directory_input) = input.journal_files("verify")?;
 
     if files.is_empty() {
@@ -1271,6 +1266,14 @@ fn run_verify_input(input: &CliInput, verify_key: Option<&str>, quiet: bool) -> 
                 continue;
             }
         };
+
+        // Judged per file, as systemd does, and fatal for the whole run.
+        if let Some(key) = verify_key {
+            if parse_verification_key(key).is_err() {
+                eprintln!("Failed to load verification key: Key was rejected by service");
+                return Err(VerificationKeyRejected.into());
+            }
+        }
 
         if sealed && verify_key.is_some() {
             match verify_file_with_key(file, verify_key.unwrap()) {
@@ -2131,43 +2134,6 @@ fn format_journal_bytes(bytes: u64) -> String {
     }
 
     format!("{bytes}B")
-}
-
-fn valid_verification_key(key: &str) -> bool {
-    let bytes = key.as_bytes();
-    let mut i = 0usize;
-    for _ in 0..12 {
-        while i < bytes.len() && bytes[i] == b'-' {
-            i += 1;
-        }
-        if i + 2 > bytes.len() || !is_hex(bytes[i]) || !is_hex(bytes[i + 1]) {
-            return false;
-        }
-        i += 2;
-    }
-    if i >= bytes.len() || bytes[i] != b'/' {
-        return false;
-    }
-    i += 1;
-
-    let (next, ok) = consume_hex(bytes, i);
-    if !ok || next >= bytes.len() || bytes[next] != b'-' {
-        return false;
-    }
-    let (end, ok) = consume_hex(bytes, next + 1);
-    ok && end == bytes.len() && bytes[next + 1..end].iter().any(|b| *b != b'0')
-}
-
-fn consume_hex(bytes: &[u8], start: usize) -> (usize, bool) {
-    let mut i = start;
-    while i < bytes.len() && is_hex(bytes[i]) {
-        i += 1;
-    }
-    (i, i > start)
-}
-
-fn is_hex(b: u8) -> bool {
-    b.is_ascii_hexdigit()
 }
 
 fn apply_matches(journal: &mut SdJournal, matches: &[OsString]) -> Result<()> {
@@ -4144,7 +4110,7 @@ mod tests {
         let path = repo_root().join("fixtures/systemd/test-data/no-rtc/system.journal.zst");
         let err = run_verify(&path, Some("synthetic-test-key")).expect_err("verify should fail");
         assert!(
-            err.to_string().contains("failed to parse seed"),
+            err.to_string().contains("verification key rejected"),
             "expected parse seed error, got: {err}"
         );
     }
@@ -4154,7 +4120,7 @@ mod tests {
         let path = repo_root().join("fixtures/systemd/test-data/no-rtc/system.journal.zst");
         let err = run_verify(&path, Some("")).expect_err("verify should fail");
         assert!(
-            err.to_string().contains("failed to parse seed"),
+            err.to_string().contains("verification key rejected"),
             "expected parse seed error, got: {err}"
         );
     }
@@ -4175,6 +4141,13 @@ mod tests {
     fn verify_directory_empty() {
         let dir = tempfile::tempdir().expect("create temp dir");
         run_verify(dir.path(), None).expect("empty directory verification should pass");
+    }
+
+    #[test]
+    fn verify_key_is_judged_only_when_a_file_is_reached() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        run_verify(dir.path(), Some("not-a-key"))
+            .expect("no file reached, so the key is not judged");
     }
 
     fn test_uuid(n: u8) -> uuid::Uuid {
@@ -4659,6 +4632,15 @@ mod tests {
         enforce_boot_merge_conflict(&args).expect("boot=all must not conflict with --merge");
     }
 }
+
+#[derive(Debug)]
+struct VerificationKeyRejected;
+impl std::fmt::Display for VerificationKeyRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "verification key rejected")
+    }
+}
+impl std::error::Error for VerificationKeyRejected {}
 
 #[derive(Debug)]
 struct SilentNoData;

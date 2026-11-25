@@ -617,10 +617,18 @@ func formatEntryText(entry *Entry) string {
 }
 
 func SdJournalListBoots(j *sdJournal) ([]BootInfo, error) {
-	if lister, ok := j.reader.(interface{ ListBoots() ([]BootInfo, error) }); ok {
-		return lister.ListBoots()
+	return SdJournalListBootsWithOptions(j, BootListOptions{})
+}
+
+// SdJournalListBootsWithOptions is SdJournalListBoots with the given options.
+func SdJournalListBootsWithOptions(j *sdJournal, options BootListOptions) ([]BootInfo, error) {
+	lister, ok := j.reader.(interface {
+		ListBootsWithOptions(BootListOptions) ([]BootInfo, error)
+	})
+	if !ok {
+		return nil, ErrUnsupported
 	}
-	return nil, ErrUnsupported
+	return lister.ListBootsWithOptions(options)
 }
 
 func SdJournalQueryUniqueState(j *sdJournal, field string) error {

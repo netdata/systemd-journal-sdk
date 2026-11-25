@@ -217,24 +217,26 @@ contract.
 ## List Boots
 
 `list_boots` lists every boot as `journalctl --list-boots` does, from the
-`_BOOT_ID` indexes when a usable canonical index exists, otherwise from entry
-headers (a directory scans headers only when no file has such an index or one
-cannot be read), without changing matches or the read position.
+`_BOOT_ID` indexes, without changing matches or the read position. A journal
+with no `_BOOT_ID` DATA lists no boots. Pass
+`BootListOptions { header_fallback: true }` to `list_boots_with_options` to
+list the boot IDs from entry headers instead; a directory does so only when no
+file has `_BOOT_ID` DATA.
 
 <!-- verify-example: lang=rust id=rust-list-boots -->
 ```rust
 use journal::DirectoryReader;
 
 let reader = DirectoryReader::open("/var/log/journal")?;
-for boot in reader.list_boots() {
+for boot in reader.list_boots()? {
     println!("{} {} {} {}", boot.index, boot.boot_id, boot.first_entry, boot.last_entry);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`FileReader::list_boots` and `SdJournalListBoots` return an error when the
-file cannot be read; `DirectoryReader::list_boots` falls back to one boot per
-file header instead.
+`FileReader::list_boots`, `DirectoryReader::list_boots` and
+`SdJournalListBoots` return an error when an open file cannot be read. Opening
+a directory skips files that cannot be opened, so those are not reported here.
 
 ## Use Snapshot Bounds For Query Workloads
 
@@ -658,6 +660,9 @@ use journal::verify_file;
 verify_file("/var/log/journal/example/system.journal")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+`parse_verification_key()` validates a key with the same grammar as systemd
+v262.
 
 Use `verify_file_with_key()` for sealed files when a verification key is
 available. Verification is for integrity checks, not normal query serving.
