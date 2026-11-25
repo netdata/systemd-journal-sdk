@@ -976,3 +976,52 @@ fn root_sub_microsecond_age_retains_exact_tail_and_expires_one_microsecond_later
     assert!(expired.inventory.files.is_empty());
     log.close_without_retention().unwrap();
 }
+
+#[cfg(unix)] // Windows temp directories may sit on another drive.
+#[test]
+fn root_retention_with_relative_root_prunes() {
+    let dir = TempDir::new().unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let mut rel = PathBuf::new();
+    for _ in cwd.components().skip(1) {
+        rel.push("..");
+    }
+    let rel = rel.join(dir.path().strip_prefix("/").unwrap());
+    let t = micros(SystemTime::now());
+    let a = fixture(dir.path(), 21, &[t], false);
+    let b = fixture(dir.path(), 22, &[t], false);
+    let mut log = Log::new(&rel, config()).unwrap();
+    append(&mut log, SystemTime::now(), true);
+    log.set_root_retention_policy(RetentionPolicy::default().with_number_of_journal_files(2))
+        .unwrap();
+    log.maintain_root_retention(SystemTime::now()).unwrap();
+    assert!(!a.exists());
+    assert!(b.exists());
+    assert_eq!(inspect(dir.path()).files.len(), 2);
+    log.close_without_retention().unwrap();
+}
+
+/// An absolute root is used exactly as given. `<symlink>/.` passes the root
+/// lstat check, as in Go; normalizing it to `<symlink>` would refuse it.
+#[cfg(unix)]
+#[test]
+fn root_retention_with_symlink_dot_root_prunes() {
+    let dir = TempDir::new().unwrap();
+    let real = dir.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let link = dir.path().join("current");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let root = link.join(".");
+    let t = micros(SystemTime::now());
+    let a = fixture(&real, 21, &[t], false);
+    let b = fixture(&real, 22, &[t], false);
+    let mut log = Log::new(&root, config()).unwrap();
+    append(&mut log, SystemTime::now(), true);
+    log.set_root_retention_policy(RetentionPolicy::default().with_number_of_journal_files(2))
+        .unwrap();
+    log.maintain_root_retention(SystemTime::now()).unwrap();
+    assert!(!a.exists());
+    assert!(b.exists());
+    assert_eq!(inspect(&real).files.len(), 2);
+    log.close_without_retention().unwrap();
+}

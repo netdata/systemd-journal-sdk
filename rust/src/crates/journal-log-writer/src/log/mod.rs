@@ -383,6 +383,16 @@ impl Log {
                 "root retention does not support artifact sizing hooks".into(),
             ));
         }
+        // Journal file registration needs absolute paths. Resolve relative ones
+        // once, lexically, so they behave as in Go. Absolute ones stay exactly as
+        // given: `std::path::absolute` would drop `.` components, and a root
+        // spelled `<symlink>/.` passes the root-retention lstat check only as given.
+        let path = &if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::path::absolute(path)
+                .map_err(|e| WriterError::InvalidPath(format!("invalid log directory: {e}")))?
+        };
         let root_rotation = config.rotation_policy;
         let startup = build_startup_state(path, config)?;
 
@@ -856,6 +866,8 @@ impl Log {
             .map(|active_file| Path::new(active_file.repository_file.path()))
     }
 
+    /// Returns the directory passed to the constructor, made absolute against
+    /// the working directory at construction time.
     pub fn configured_directory(&self) -> &Path {
         &self.configured_dir
     }
