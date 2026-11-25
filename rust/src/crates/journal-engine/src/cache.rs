@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 ///     are not reused across SDK versions with different index rules.
 /// v4: Native array traversal rejects missing required links and counted
 ///     revisits; older cached indexes may contain incomplete or duplicate rows.
-const CACHE_VERSION: u32 = 4;
+/// v5: Source-timestamp postings are limited to the captured ENTRY population
+///     and count each entry once; older indexes may count repeated or bogus
+///     postings.
+const CACHE_VERSION: u32 = 5;
 
 /// Cache key for file indexes that includes the file, facets, source timestamp
 /// field, and cache version. Different facet configurations or timestamp fields
