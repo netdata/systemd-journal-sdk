@@ -216,6 +216,13 @@ Failure handling:
   an absolute directory is used exactly as given. `journal-log-writer` suites
   pass (70, 28, 21, 6, 1 tests).
 
+### 2026-11-25
+
+- PR #23 review: the Go relative-directory test was not Unix-only although
+  the 2026-11-08 fix said so (only the Rust tests were gated). It now skips
+  on Windows, where the temp directory may sit on another drive. The Go
+  `journal` tests pass, and the package's tests compile for `GOOS=windows`.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -258,8 +265,8 @@ Real-use evidence:
 Reviewer findings:
 
 - PR #23 bot review (2026-11-08): T34, T35, T38-T42 fixed (empty-directory
-  tests now check the filesystem, relative tests are Unix-only, wording
-  corrected); T36 fixed in SOW-0173. T32 and T37 rejected with evidence in
+  tests now check the filesystem, relative tests are Unix-only (the Go test
+  only from 2026-11-25), wording corrected); T36 fixed in SOW-0173. T32 and T37 rejected with evidence in
   their threads. T33 (test-helper duplication) left as is by user decision.
 - Self-review of the whole diff. One finding: the first doc and spec
   wording misdescribed Go as resolving at construction; fixed. The discarded
